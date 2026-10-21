@@ -20,7 +20,7 @@ const { values, positionals } = parseArgs({
   },
 });
 const command = positionals[0];
-const commands = ['create', 'list', 'rotate', 'revoke', 'subscriptions', 'add-sink', 'remove-sink'];
+const commands = ['create', 'list', 'set-scopes', 'rotate', 'revoke', 'subscriptions', 'add-sink', 'remove-sink'];
 requireCondition(positionals.length === 1 && commands.includes(command), 400, 'usage', `Usage: npm run admin -- ${commands.join('|')} [options]. See docs/OPERATIONS.md.`);
 const tenant = string(values.tenant, 'tenant', 100);
 requireCondition(/^[a-z0-9][a-z0-9_-]*$/.test(tenant), 400, 'invalid_tenant', 'Tenant must use lowercase letters, digits, underscore and hyphen.');
@@ -51,17 +51,22 @@ async function lookupPrincipal() {
   return result.rows[0];
 }
 
+function parseScopes(role: Role): string[] {
+  const scopes = [...new Set(string(values.scopes, 'scopes', 4096).split(',').map(s => s.trim()))];
+  requireCondition(scopes.length >= 1 && scopes.length <= 64, 400, 'invalid_scopes', 'Grant between one and 64 explicit scopes.');
+  for (const scope of scopes) {
+    if (scope === '*') requireCondition(role === 'admin', 400, 'invalid_scopes', 'Only local owner credentials may have a wildcard scope.');
+    else scopeName(scope);
+  }
+  return scopes;
+}
+
 try {
   if (command === 'create') {
     const name = string(values.name, 'name', 100);
     requireCondition(/^[a-z][a-z0-9_.-]+$/.test(name), 400, 'invalid_name', 'Use a stable lowercase connection name, such as claude-macmini.');
     const role: Role = enumValue(values.role, 'role', ['admin', 'frontend', 'worker']);
-    const scopes = [...new Set(string(values.scopes, 'scopes', 4096).split(',').map(s => s.trim()))];
-    requireCondition(scopes.length >= 1 && scopes.length <= 64, 400, 'invalid_scopes', 'Grant between one and 64 explicit scopes.');
-    for (const scope of scopes) {
-      if (scope === '*') requireCondition(role === 'admin', 400, 'invalid_scopes', 'Only local owner credentials may have a wildcard scope.');
-      else scopeName(scope);
-    }
+    const scopes = parseScopes(role);
     const extra = (values.grant ?? []).map(v => enumValue<Permission>(v, 'grant', ['task:patch', 'task:submit', 'task:cancel']));
     requireCondition(!extra.includes('task:patch') || role === 'worker', 400, 'invalid_grant', 'task:patch is a worker execution grant.');
     const token = newToken();
@@ -72,6 +77,16 @@ try {
   } else if (command === 'list') {
     const result = await pool.query('SELECT id,name,role,scopes,permissions,disabled,created_at FROM principals WHERE tenant_id=$1 ORDER BY name', [tenant]);
     await emit(result.rows);
+  } else if (command === 'set-scopes') {
+    // OAuth grants intersect their snapshot with these scopes and event delivery rechecks
+    // them, so removing a scope takes effect on the next request without a token change.
+    const principal = await lookupPrincipal();
+    const scopes = parseScopes(principal.role as Role);
+    await transaction(pool, async client => {
+      await client.query('UPDATE principals SET scopes=$2 WHERE id=$1', [principal.id, scopes]);
+      await client.query('INSERT INTO audit_log(id,tenant_id,actor_id,operation,subject_id,details) VALUES($1,$2,$3,$4,$5,$6::jsonb)', [randomUUID(), tenant, principal.id, 'principal.set-scopes', principal.id, JSON.stringify({ local_owner: true, scopes })]);
+    });
+    await emit({ id: principal.id, name: principal.name, scopes });
   } else if (command === 'rotate' || command === 'revoke') {
     const principal = await lookupPrincipal();
     const token = command === 'rotate' ? newToken() : undefined;
@@ -84,7 +99,7 @@ try {
       await client.query('DELETE FROM oauth_codes WHERE principal_id=$1', [principal.id]);
       await client.query('UPDATE oauth_grants SET revoked_at=clock_timestamp() WHERE principal_id=$1', [principal.id]);
       await client.query('UPDATE event_subscriptions SET active=false,revision=revision+1,updated_at=clock_timestamp() WHERE principal_id=$1', [principal.id]);
-      await client.query('INSERT INTO audit_log(id,tenant_id,actor_id,operation,subject_id,details) VALUES($1,$2,$3,$4,$3,$5::jsonb)', [randomUUID(), tenant, principal.id, `principal.${command}`, JSON.stringify({ local_owner: true })]);
+      await client.query('INSERT INTO audit_log(id,tenant_id,actor_id,operation,subject_id,details) VALUES($1,$2,$3,$4,$5,$6::jsonb)', [randomUUID(), tenant, principal.id, `principal.${command}`, principal.id, JSON.stringify({ local_owner: true })]);
     });
     await emit({ id: principal.id, name: principal.name, action: command, ...(token ? { token } : {}) }, !!token);
   } else if (command === 'subscriptions') {
