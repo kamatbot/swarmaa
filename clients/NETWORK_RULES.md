@@ -1,4 +1,4 @@
-# Collective Network client instructions
+# Swarma client instructions
 
 Copy the relevant instructions into each agent's project instructions. This file is guidance;
 server permissions and worker restrictions are the enforcement boundaries.

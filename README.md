@@ -1,4 +1,6 @@
-# Collective Agent Network
+# Swarma
+
+Shared memory, task routing and MCP access for Claude Code, Codex, Antigravity, Dot and Grok. Start with `npm run setup` and [docs/SWARMA.md](docs/SWARMA.md); the sections below describe the underlying companion service.
 
 Shared project memory and durable tasks for **Dot and Grok Bot as equal entrypoints**, with Claude, Codex and Antigravity connected to the same records.
 
