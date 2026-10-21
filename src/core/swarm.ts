@@ -97,7 +97,7 @@ export class SwarmService {
           count(*) FILTER (WHERE status='completed' AND updated_at>now()-interval '24 hours')::int AS completed_24h,
           count(*) FILTER (WHERE status='failed' AND updated_at>now()-interval '24 hours')::int AS failed_24h
         FROM tasks WHERE tenant_id=$1 AND ($2::boolean OR scope=ANY($3::text[])) GROUP BY scope ORDER BY scope`, [p.tenantId, all, scopes]),
-      this.pool.query(`SELECT t.id,t.scope,t.kind,t.status,left(t.objective,140) AS objective,t.required_capability,t.updated_at,w.name AS worker
+      this.pool.query(`SELECT t.id,t.scope,t.kind,t.status,t.version,left(t.objective,140) AS objective,t.required_capability,t.updated_at,w.name AS worker
         FROM tasks t LEFT JOIN principals w ON w.id=t.lease_owner
         WHERE t.tenant_id=$1 AND ($2::boolean OR t.scope=ANY($3::text[])) ORDER BY t.updated_at DESC LIMIT 15`, [p.tenantId, all, scopes]),
     ]);
