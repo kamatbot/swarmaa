@@ -17,6 +17,7 @@ export interface ProjectConfig {
 export interface BridgeConfig {
   service_url: string;
   token_env: string;
+  token_file?: string;
   poll_seconds: number;
   lease_seconds: number;
   heartbeat_seconds: number;

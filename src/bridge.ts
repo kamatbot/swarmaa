@@ -1,6 +1,6 @@
 import { pathToFileURL } from 'node:url';
 import { resolve } from 'node:path';
-import { loadBridgeConfig } from './bridge/config.js';
+import { loadBridgeConfig, readTokenFile } from './bridge/config.js';
 import { HttpToolClient } from './bridge/client.js';
 import { BridgeWorker } from './bridge/worker.js';
 
@@ -9,8 +9,8 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
   const configPath = configIndex >= 0 ? args[configIndex + 1] : undefined;
   if (!configPath || args.some((arg, i) => !['--config', '--once'].includes(arg) && i !== configIndex + 1)) throw new Error('Usage: node dist/src/bridge.js --config /absolute/path/bridge.json [--once]');
   const config = await loadBridgeConfig(resolve(configPath));
-  const token = process.env[config.token_env];
-  if (!token) throw new Error(`Set ${config.token_env} before starting the bridge`);
+  const token = config.token_file ? await readTokenFile(config.token_file) : process.env[config.token_env];
+  if (!token) throw new Error(`Set ${config.token_env} or token_file before starting the bridge`);
   // Child environments are explicit allowlists. Do not print this token or pass it as argv.
   const client = new HttpToolClient(config.service_url, token, config.request_timeout_ms);
   const controller = new AbortController();

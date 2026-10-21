@@ -76,13 +76,24 @@ export function parseBridgeConfig(value: unknown): BridgeConfig {
     reason = { binary: absolute(r.binary, 'reason.binary'), recipient, cwd: absolute(r.cwd, 'reason.cwd') };
   }
   return {
-    service_url: serviceUrl(raw.service_url), token_env, agents, projects, reason,
+    service_url: serviceUrl(raw.service_url), token_env, agents,
+    token_file: raw.token_file === undefined ? undefined : absolute(raw.token_file, 'token_file'), projects, reason,
     poll_seconds: integer(raw.poll_seconds, 5, 'poll_seconds', 1, 300),
     lease_seconds, heartbeat_seconds, request_timeout_ms,
     task_timeout_seconds: integer(raw.task_timeout_seconds, 900, 'task_timeout_seconds', 10, 7200),
     max_output_bytes: integer(raw.max_output_bytes, 128 * 1024, 'max_output_bytes', 4096, 256 * 1024),
     max_prompt_bytes: integer(raw.max_prompt_bytes, 128 * 1024, 'max_prompt_bytes', 4096, 512 * 1024)
   };
+}
+
+/** Reads an owner-only JSON credential file, as written by `npm run admin -- create --out`. */
+export async function readTokenFile(filename: string): Promise<string> {
+  const info = await stat(filename);
+  if (!info.isFile() || info.size > 64 * 1024) throw new Error('token_file must be a small regular file');
+  if (info.mode & 0o077) throw new Error('token_file must not be readable by group or others (chmod 600)');
+  const token = (JSON.parse(await readFile(filename, 'utf8')) as { token?: unknown }).token;
+  if (typeof token !== 'string' || !token) throw new Error('token_file does not contain a token');
+  return token;
 }
 
 export async function loadBridgeConfig(filename: string): Promise<BridgeConfig> {

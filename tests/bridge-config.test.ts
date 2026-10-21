@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { parseBridgeConfig, serviceUrl } from '../src/bridge/config.js';
+import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { parseBridgeConfig, readTokenFile, serviceUrl } from '../src/bridge/config.js';
 import { buildInvocation, projectCapabilities, providerEnvironment, providerSucceeded } from '../src/bridge/adapters.js';
 import type { ProcessResult, Task } from '../src/bridge/types.js';
 
@@ -57,4 +60,17 @@ test('exit zero without provider completion is not reported successful', () => {
   assert.equal(providerSucceeded('claude', {...result, stdout:JSON.stringify({type:'result',subtype:'success',is_error:false})}), true);
   assert.equal(providerSucceeded('codex', {...result,stdout:'{"type":"turn.completed"}\n'}), true);
   assert.equal(providerSucceeded('codex', {...result,stdout:'{"type":"turn.completed"}\n{"type":"turn.failed"}\n'}), false);
+});
+
+test('token_file must be absolute and owner-only', async () => {
+  assert.throws(() => parseBridgeConfig({ ...input(), token_file: 'relative.json' }));
+  const dir = await mkdtemp(join(tmpdir(), 'swarma-token-'));
+  try {
+    const file = join(dir, 'worker.json');
+    await writeFile(file, JSON.stringify({ token: 'cn_test' }), { mode: 0o644 });
+    await assert.rejects(readTokenFile(file), /chmod 600/);
+    await chmod(file, 0o600);
+    assert.equal(await readTokenFile(file), 'cn_test');
+    assert.equal(parseBridgeConfig({ ...input(), token_file: file }).token_file, file);
+  } finally { await rm(dir, { recursive: true, force: true }); }
 });
