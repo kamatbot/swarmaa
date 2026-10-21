@@ -6,10 +6,11 @@ import type { Permission, Principal, ToolBackend, ToolDefinition } from '../type
 import { integer, object, optionalString, scopeName, string, uuid } from '../validation.js';
 import { booleanOption, MemoryService } from './memory.js';
 import { assertKnownScope, noExtraKeys } from './shared.js';
+import { SwarmService } from './swarm.js';
 import { findTask, TaskService, taskWithInstructions, type TaskRow } from './tasks.js';
 import { TOOL_PERMISSIONS, TOOLS } from './tools.js';
 
-const workerTools = new Set(['task_claim','task_heartbeat','task_checkpoint','task_finish','artifact_put']);
+const workerTools = new Set(['usage_report','task_claim','task_heartbeat','task_checkpoint','task_finish','artifact_put']);
 const ownerTools = new Set(['memory_promote','memory_retract']);
 const responseReadPermissions:Partial<Record<string,Permission>> = {
   memory_propose:'memory:read',memory_promote:'memory:read',memory_retract:'memory:read',
@@ -21,10 +22,12 @@ const responseReadPermissions:Partial<Record<string,Permission>> = {
 export class CoreService implements ToolBackend {
   private readonly memories:MemoryService;
   private readonly tasks:TaskService;
+  private readonly swarm:SwarmService;
 
   constructor(private readonly pool:Pool) {
     this.memories = new MemoryService(pool);
     this.tasks = new TaskService(pool);
+    this.swarm = new SwarmService(pool);
   }
 
   listTools(principal:Principal):ToolDefinition[] {
@@ -62,6 +65,8 @@ export class CoreService implements ToolBackend {
       case 'artifact_put': return this.tasks.artifactPut(principal,input);
       case 'artifact_get': return this.tasks.artifactGet(principal,input);
       case 'events_poll': return this.eventsPoll(principal,input);
+      case 'swarm_status': return this.swarm.status(principal,input);
+      case 'usage_report': return this.swarm.report(principal,input);
       default: throw new AppError(404,'unknown_tool','Unknown tool name.');
     }
   }

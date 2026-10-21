@@ -1,5 +1,5 @@
 import { setTimeout as delay } from 'node:timers/promises';
-import { buildInvocation, capability, projectCapabilities, providerSucceeded } from './adapters.js';
+import { AUTO_READ, buildInvocation, capability, projectCapabilities, providerSucceeded } from './adapters.js';
 import { runBoundedProcess } from './process.js';
 import { reasonNotify } from './reason.js';
 import { acquirePatchWorkspaceLock } from './workspace-lock.js';
@@ -13,11 +13,15 @@ function errorCode(error: unknown): string {
   if (error && typeof error === 'object' && 'code' in error && typeof error.code === 'string' && /^[a-z0-9_]+$/u.test(error.code)) return error.code;
   return 'worker_operation_failed';
 }
-function validateClaim(claim: Claim, project: ProjectConfig, agents: AgentConfig[]): { task: Task; lease: Lease; agent: AgentConfig } | null {
+/** headroom: provider -> percent of quota left, from the latest local usage reading. */
+function validateClaim(claim: Claim, project: ProjectConfig, agents: AgentConfig[], headroom: ReadonlyMap<string, number> = new Map()): { task: Task; lease: Lease; agent: AgentConfig } | null {
   if (!claim.task) return null;
   const task = claim.task;
   if (task.scope !== project.scope || !['research', 'review', 'patch'].includes(task.kind) || typeof task.id !== 'string' || !claim.lease_token || !Number.isInteger(claim.lease_generation)) throw new Error('Invalid or misrouted task claim');
-  const agent = agents.find(a => project.agents.includes(a.id) && task.required_capability === capability(a, task.kind === 'patch'));
+  const auto = task.required_capability === AUTO_READ && task.kind !== 'patch';
+  const agent = auto
+    ? agents.filter(a => project.agents.includes(a.id)).sort((a, b) => (headroom.get(b.provider) ?? 50) - (headroom.get(a.provider) ?? 50))[0]
+    : agents.find(a => project.agents.includes(a.id) && task.required_capability === capability(a, task.kind === 'patch'));
   if (!agent || (task.kind === 'patch' && (!project.allow_patch || !agent.enable_patch || agent.provider !== 'claude'))) throw new Error('Service returned a capability this worker did not advertise');
   return { task, agent, lease: { task_id: task.id, lease_token: claim.lease_token, lease_generation: claim.lease_generation as number } };
 }

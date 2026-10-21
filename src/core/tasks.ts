@@ -6,6 +6,7 @@ import { hasPermission } from '../policy.js';
 import type { Principal } from '../types.js';
 import { enumValue, integer, optionalString, scopeName, string, strings, uuid } from '../validation.js';
 import { assertKnownScope, audit, canonicalJson, event, jsonObject, newId, noExtraKeys, requireFound, scopeLock, scopeSql, sha256, uuidArray, type Db } from './shared.js';
+import { AUTO_READ, bestProvider, touchWorker, workerProviders } from './swarm.js';
 
 export const TASK_KINDS = ['research','review','patch'] as const;
 export const TASK_STATUSES = ['queued','running','blocked','completed','failed','cancelled'] as const;
@@ -140,6 +141,7 @@ export class TaskService {
     const idempotency = string(input.idempotency_key,'idempotency_key',200);
     const capability = string(input.required_capability,'required_capability',128);
     const resource = optionalString(input.resource_key,'resource_key',240) ?? null;
+    requireCondition(capability !== AUTO_READ || kind !== 'patch',400,'invalid_arguments','auto.read routes read-only work; patch tasks name an explicit capability.');
     requireCondition(kind !== 'patch' || resource !== null,400,'resource_required','Patch work requires a resource_key.');
     const constraints = input.constraints === undefined ? [] : strings(input.constraints,'constraints',30,1000);
     const acceptance = input.acceptance_criteria === undefined ? [] : strings(input.acceptance_criteria,'acceptance_criteria',30,1000);
@@ -262,6 +264,13 @@ export class TaskService {
     const seconds = leaseSeconds(input.lease_seconds);
     return transaction(this.pool,async db => {
       await scopeLock(db,'tasks',p,scope);
+      await touchWorker(db,p);
+      // Auto-routed work goes to the live provider with most quota headroom; without fresh readings, to anyone.
+      let eligible = capabilities;
+      if (capabilities.includes(AUTO_READ)) {
+        const best = await bestProvider(db,p.tenantId,scope);
+        if (best && !workerProviders(capabilities).includes(best)) eligible = capabilities.filter(c => c !== AUTO_READ);
+      }
       // Sweep expired attempts before selection. No process-local retry state is needed after a restart.
       const expired = await db.query<TaskRow>(`SELECT * FROM tasks WHERE tenant_id=$1 AND scope=$2 AND status='running'
         AND lease_expires_at<=clock_timestamp() ORDER BY created_at,id FOR UPDATE`,[p.tenantId,scope]);
@@ -282,7 +291,7 @@ export class TaskService {
         AND attempt_count<max_attempts AND required_capability=ANY($3::text[]) AND kind=ANY($4::text[])
         AND (kind<>'patch' OR NOT EXISTS (SELECT 1 FROM task_resource_leases r WHERE r.tenant_id=tasks.tenant_id
           AND r.scope=tasks.scope AND r.resource_key=tasks.resource_key AND r.expires_at>clock_timestamp()))
-        ORDER BY created_at,id LIMIT 100 FOR UPDATE SKIP LOCKED`,[p.tenantId,scope,capabilities,kinds]);
+        ORDER BY created_at,id LIMIT 100 FOR UPDATE SKIP LOCKED`,[p.tenantId,scope,eligible,kinds]);
       for (const row of candidates.rows) {
         const generation = row.lease_generation+1;
         if (row.kind === 'patch') {

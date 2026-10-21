@@ -44,11 +44,11 @@ test('task text remains stdin data and cannot select executable, args, or cwd', 
 
 test('patch requires explicit project and provider opt-ins; unsupported modes fail closed', () => {
   const config = parseBridgeConfig(input());
-  assert.deepEqual(projectCapabilities(config.projects[0]!, config.agents), ['claude.read']);
+  assert.deepEqual(projectCapabilities(config.projects[0]!, config.agents), ['claude.read','auto.read']);
   assert.throws(() => buildInvocation(config.agents[0]!, config.projects[0]!, {...task, kind:'patch', required_capability:'claude.patch'}, {}, config, new AbortController().signal));
   const enabled = input(); enabled.agents[0]!.enable_patch = true; enabled.projects[0]!.allow_patch = true;
   const patchConfig = parseBridgeConfig(enabled);
-  assert.deepEqual(projectCapabilities(patchConfig.projects[0]!, patchConfig.agents), ['claude.read','claude.patch']);
+  assert.deepEqual(projectCapabilities(patchConfig.projects[0]!, patchConfig.agents), ['claude.read','claude.patch','auto.read']);
   assert.throws(() => parseBridgeConfig({...input(), agents:[{id:'agy',provider:'antigravity',binary:'/bin/agy'}]}));
   assert.throws(() => parseBridgeConfig({...input(), agents:[{id:'codex',provider:'codex',binary:'/bin/codex',enable_patch:true}]}));
 });
@@ -73,4 +73,12 @@ test('token_file must be absolute and owner-only', async () => {
     assert.equal(await readTokenFile(file), 'cn_test');
     assert.equal(parseBridgeConfig({ ...input(), token_file: file }).token_file, file);
   } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test('auto.read runs as a read-only invocation and never as a patch', () => {
+  const config = { ...parseBridgeConfig(input()), token_env: 'COLLECTIVE_WORKER_TOKEN' };
+  const signal = new AbortController().signal;
+  const auto = buildInvocation(config.agents[0]!, config.projects[0]!, { ...task, required_capability: 'auto.read' }, null, config, signal, {});
+  assert.ok(auto.args.includes('Read,Glob,Grep'));
+  assert.throws(() => buildInvocation(config.agents[0]!, config.projects[0]!, { ...task, kind: 'patch', required_capability: 'auto.read' }, null, config, signal, {}));
 });

@@ -10,11 +10,15 @@ export function providerEnvironment(provider: string, parent: NodeJS.ProcessEnv,
   return env;
 }
 
+/** Read work the service routes to whichever provider has most quota headroom. */
+export const AUTO_READ = 'auto.read';
+
 export function capability(agent: AgentConfig, patch = false): string {
   return `${agent.id}.${patch ? 'patch' : 'read'}`;
 }
 export function projectCapabilities(project: ProjectConfig, agents: AgentConfig[]): string[] {
-  return agents.filter(a => project.agents.includes(a.id)).flatMap(a => [capability(a), ...(project.allow_patch && a.enable_patch && a.provider === 'claude' ? [capability(a, true)] : [])]);
+  const own = agents.filter(a => project.agents.includes(a.id)).flatMap(a => [capability(a), ...(project.allow_patch && a.enable_patch && a.provider === 'claude' ? [capability(a, true)] : [])]);
+  return own.length ? [...own, AUTO_READ] : own;
 }
 
 export function buildPrompt(task: Task, context: unknown, maxBytes: number): string {
@@ -35,7 +39,7 @@ export function buildPrompt(task: Task, context: unknown, maxBytes: number): str
 export function buildInvocation(agent: AgentConfig, project: ProjectConfig, task: Task, context: unknown, config: BridgeConfig, signal: AbortSignal, parentEnv = process.env): ProcessRequest {
   if (task.scope !== project.scope || !project.agents.includes(agent.id)) throw new Error('Task does not match this configured project');
   const patch = task.kind === 'patch';
-  if (task.required_capability !== capability(agent, patch)) throw new Error('Task capability does not match this provider/mode');
+  if (task.required_capability !== capability(agent, patch) && (patch || task.required_capability !== AUTO_READ)) throw new Error('Task capability does not match this provider/mode');
   if (patch && (!project.allow_patch || !agent.enable_patch || agent.provider !== 'claude')) throw new Error('Patch execution is not enabled for this project/provider');
   let args: string[];
   if (agent.provider === 'claude') {
