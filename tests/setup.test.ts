@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict';
+import { mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { request } from 'node:http';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
-import { AGY_TOOLS, bridgeConfig, mergeAgyPermissions, parseEnv, plist, slugScopes, yes } from '../scripts/setup-lib.js';
+import { createOnboarding, runSetup, type Detected, type SetupSummary } from '../scripts/setup.js';
+import { AGY_TOOLS, GENERAL_SCOPE, PlanError, bridgeConfig, identityScopes, mergeAgyPermissions, parseEnv, plist, slugScopes, stateFile, validHostname, validatePlan, yes } from '../scripts/setup-lib.js';
 
 test('slugScopes normalizes basenames and suffixes collisions', () => {
   assert.deepEqual(slugScopes(['/a/My App!', '/b/my-app', '/c/My App!', '/a/My App!', '/d/Demo']).map(s => s.scope),
@@ -52,4 +57,185 @@ test('yes honours defaults', () => {
   assert.equal(yes('Y', false), true);
   assert.equal(yes(' no ', true), false);
   assert.equal(yes('maybe', true), true);
+});
+
+// ---- plan validation, scopes, state shape ----
+
+const dir = realpathSync(mkdtempSync(join(tmpdir(), 'swarmaa-setup-')));
+const okPlan = () => ({ harnesses: { claude: { connect: true, worker: true } }, folders: [dir], autostart: true });
+const rejects = (input: unknown, re: RegExp) => assert.throws(() => validatePlan(input), (e: unknown) => e instanceof PlanError && re.test(e.message));
+
+test('validatePlan accepts a good plan and fills defaults', () => {
+  const p = validatePlan({ ...okPlan(), harnesses: { claude: { connect: true, worker: true }, agy: { connect: true }, grok: { connect: true }, codex: { connect: false, worker: true } }, remote: { hostname: ' API.Example.com ' } });
+  assert.deepEqual(p.folders, [dir]);
+  assert.deepEqual(p.harnesses.claude, { connect: true, worker: true, share: true });
+  assert.deepEqual(p.harnesses.agy, { connect: true, worker: false, share: true });
+  assert.deepEqual(p.harnesses.grok, { connect: true, worker: false, share: false });
+  assert.deepEqual(p.harnesses.codex, { connect: false, worker: false, share: false });
+  assert.deepEqual(p.remote, { hostname: 'api.example.com' });
+  assert.deepEqual(validatePlan({ ...okPlan(), folders: [dir, dir] }).folders, [dir]);
+});
+
+test('validatePlan rejects unknown harnesses, bad folders, bad hostnames and junk', () => {
+  rejects({ ...okPlan(), harnesses: { evil: { connect: true } } }, /unknown harness/);
+  rejects({ ...okPlan(), harnesses: { claude: { connect: true, exec: 'rm -rf /' } } }, /unknown field/);
+  rejects({ ...okPlan(), harnesses: { agy: { connect: true, worker: true } } }, /cannot run as a background worker/);
+  rejects({ ...okPlan(), harnesses: { grok: { connect: true, share: true } } }, /does not support chat sharing/);
+  rejects({ ...okPlan(), folders: ['relative/dir'] }, /not an absolute path/);
+  rejects({ ...okPlan(), folders: [join(dir, 'missing')] }, /not an existing directory/);
+  writeFileSync(join(dir, 'file.txt'), 'x');
+  rejects({ ...okPlan(), folders: [join(dir, 'file.txt')] }, /not an existing directory/);
+  rejects({ ...okPlan(), folders: [42] }, /path string/);
+  rejects({ ...okPlan(), folders: 'nope' }, /list/);
+  for (const bad of ['localhost', '1.2.3.4', 'a b.com', 'x.com/path', '-a.example.com', 'a..com', 'https://x.com', 'x.c', '', 5, 'a'.repeat(64) + '.com']) rejects({ ...okPlan(), remote: { hostname: bad } }, /hostname/);
+  rejects({ ...okPlan(), autostart: 'yes' }, /autostart/);
+  rejects({ ...okPlan(), extra: 1 }, /unknown field/);
+  rejects(null, /object/);
+  rejects([], /object/);
+  assert.equal(validHostname('api.swarmaa.com'), 'api.swarmaa.com');
+  assert.equal(validHostname('xn--bcher-kva.example'), 'xn--bcher-kva.example');
+});
+
+test('interactive identities get project:general, workers never do', () => {
+  const projects = [{ scope: 'project:demo', root: '/d' }, { scope: 'project:app', root: '/a' }];
+  assert.deepEqual(identityScopes('interactive', projects), ['project:demo', 'project:app', GENERAL_SCOPE]);
+  assert.deepEqual(identityScopes('worker', projects), ['project:demo', 'project:app']);
+  assert.equal(GENERAL_SCOPE, 'project:general');
+});
+
+test('setup.json carries projects as [{scope, root}] including project:demo', () => {
+  const projects = [{ scope: 'project:demo', root: '/d' }, ...slugScopes(['/x/App'], ['demo'])];
+  const s = stateFile({ folders: ['/x/App'], projects, agents: ['claude'], workers: [], sharing: ['claude'], autostart: true, remote: { hostname: 'api.swarmaa.com' } });
+  assert.deepEqual(s.projects, [{ scope: 'project:demo', root: '/d' }, { scope: 'project:app', root: '/x/App' }]);
+  assert.deepEqual(s.folders, ['/x/App']);
+  assert.deepEqual(s.sharing, ['claude']);
+  assert.ok(!s.projects!.some(p => p.scope === GENERAL_SCOPE));
+});
+
+const fakeDetected = (): Detected => ({ clis: { claude: '/bin/claude-fake', codex: '/bin/codex-fake' }, notchtrader: false, postgres: { found: true, reachable: true }, envExists: false, state: {} });
+
+test('runSetup dry-run assigns scopes by identity kind and only plans', async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'swarmaa-root-')));
+  const lines: string[] = [];
+  const plan = validatePlan({ harnesses: { claude: { connect: true, worker: true, share: false }, codex: { connect: true }, grok: { connect: true }, dot: { connect: true } }, folders: [dir], autostart: false });
+  const s = await runSetup(plan, { dry: true, log: l => lines.push(l), root, detected: fakeDetected() });
+  const text = lines.join('\n');
+  assert.equal(s.ok, true, String(s.error));
+  assert.deepEqual(s.agents, ['claude', 'codex', 'grok', 'dot']);
+  assert.deepEqual(s.workers, ['claude']);
+  const cmd = (name: string) => lines.find(l => l.includes('admin.ts') && l.includes(`--name ${name}`)) ?? '';
+  for (const n of ['claude-interactive', 'codex-interactive', 'grok', 'dot']) assert.match(cmd(n), /--scopes \S*project:general\b/, n);
+  assert.match(cmd('worker-claude'), /--role worker/);
+  assert.doesNotMatch(cmd('worker-claude'), /project:general/);
+  assert.match(cmd('worker-claude'), /project:demo,project:/);
+  assert.match(text, /write .*setup\.json/);
+  assert.match(text, /\[dry-run\]/);
+  assert.deepEqual(s.projects.map(p => p.scope)[0], 'project:demo');
+  assert.ok(s.nextSteps.some(n => /Grok/.test(n) && /clients\/grok\/README\.md/.test(n)));
+  assert.equal(s.mcpUrl, undefined);
+  // dry run wrote nothing into the fresh root
+  assert.throws(() => readFileSync(join(root, '.local/setup.json')));
+});
+
+test('runSetup reports a failing tunnel or hook per item instead of aborting', async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'swarmaa-root-')));
+  const plan = validatePlan({ harnesses: { claude: { connect: true }, grok: { connect: true } }, folders: [], remote: { hostname: 'api.example.com' }, autostart: false });
+  const s = await runSetup(plan, { dry: true, log: () => undefined, root, detected: fakeDetected() });
+  assert.equal(s.ok, true);
+  assert.ok(s.steps.some(x => x.id === 'remote'), 'remote step recorded');
+  assert.equal(s.steps.at(-1)!.id, 'save');
+});
+
+// ---- onboarding server ----
+
+interface Res { status: number; body: string; json: () => any }
+function req(base: string, path: string, o: { method?: string; headers?: Record<string, string>; body?: string; host?: string } = {}): Promise<Res> {
+  const u = new URL(base);
+  return new Promise((ok, fail) => {
+    const r = request({ host: '127.0.0.1', port: u.port, path, method: o.method ?? 'GET', headers: { host: o.host ?? `127.0.0.1:${u.port}`, ...(o.body !== undefined ? { 'content-length': String(Buffer.byteLength(o.body)) } : {}), ...o.headers } }, res => {
+      let b = ''; res.on('data', c => { b += c; }); res.on('end', () => ok({ status: res.statusCode!, body: b, json: () => JSON.parse(b) }));
+    });
+    r.on('error', fail);
+    if (o.body !== undefined) r.write(o.body);
+    r.end();
+  });
+}
+
+async function withServer(fn: (ctx: { base: string; token: string; t: (extra?: Record<string, string>) => Record<string, string>; calls: { dry: boolean }[] }) => Promise<void>, idleMs = 0) {
+  const calls: { dry: boolean }[] = [];
+  const fakeRun = (async (_p, o) => { calls.push({ dry: o.dry }); o.log('hello'); o.onStep?.({ id: 'db', label: 'Database', status: 'ok' }); return { dry: o.dry, ok: true, agents: [], workers: [], sharing: [], projects: [], serviceUrl: 'http://127.0.0.1:8787', steps: [], warnings: [], nextSteps: [] } satisfies SetupSummary; }) as typeof runSetup;
+  const ob = createOnboarding({ dry: true, idleMs, run: fakeRun, detectFn: async () => fakeDetected(), html: '<!doctype html><title>Swarmaa</title>' });
+  const url = await ob.listen();
+  const base = new URL(url).origin;
+  try { await fn({ base, token: ob.token, t: (extra = {}) => ({ 'x-swarmaa-token': ob.token, ...extra }), calls }); } finally { ob.close(); await ob.closed; }
+}
+const json = { 'content-type': 'application/json' };
+
+test('server: page needs the token, Host and Origin are enforced', async () => {
+  await withServer(async ({ base, token, t }) => {
+    assert.equal((await req(base, `/?t=${token}`)).status, 200);
+    assert.equal((await req(base, '/')).status, 403);
+    assert.equal((await req(base, '/?t=wrong')).status, 403);
+    assert.equal((await req(base, `/?t=${token.slice(1)}`)).status, 403);
+    assert.equal((await req(base, `/?t=${token}`, { host: 'evil.example:80' })).status, 403);
+    assert.equal((await req(base, `/?t=${token}`, { host: 'localhost' })).status, 403);
+    assert.equal((await req(base, '/api/detect')).status, 403);
+    assert.equal((await req(base, `/api/detect?t=${token}`)).status, 403, 'query token only works for the page');
+    assert.equal((await req(base, '/api/detect', { headers: t({ origin: 'http://evil.example' }) })).status, 403);
+    assert.equal((await req(base, '/api/detect', { headers: t({ origin: 'null' }) })).status, 403);
+    assert.equal((await req(base, '/api/detect', { headers: t({ 'sec-fetch-site': 'cross-site' }) })).status, 403);
+    const ok = await req(base, '/api/detect', { headers: t({ origin: base }) });
+    assert.equal(ok.status, 200);
+    assert.deepEqual(ok.json().installed, { claude: true, codex: true, agy: false, notchtrader: false });
+    assert.equal(ok.body.includes('/bin/claude-fake'), false, 'binary paths are not sent to the page');
+  });
+});
+
+test('server: actions are JSON POST only, bounded, validated', async () => {
+  await withServer(async ({ base, t, calls }) => {
+    assert.equal((await req(base, '/api/run', { headers: t() })).status, 405);
+    assert.equal((await req(base, '/api/detect', { method: 'POST', headers: t(json), body: '{}' })).status, 405);
+    assert.equal((await req(base, '/api/nope', { headers: t() })).status, 404);
+    assert.equal((await req(base, '/api/run', { method: 'POST', headers: t({ 'content-type': 'text/plain' }), body: '{}' })).status, 415);
+    assert.equal((await req(base, '/api/run', { method: 'POST', headers: t(json), body: '{not json' })).status, 400);
+    assert.equal((await req(base, '/api/run', { method: 'POST', headers: t(json), body: JSON.stringify({ pad: 'x'.repeat(70 * 1024) }) }).catch(() => ({ status: 413 }))).status, 413);
+    const bad = await req(base, '/api/run', { method: 'POST', headers: t(json), body: JSON.stringify({ plan: { harnesses: { evil: {} }, folders: ['rel'], autostart: true, remote: { hostname: 'x' } } }) });
+    assert.equal(bad.status, 400);
+    assert.ok(bad.json().details.length >= 3);
+    assert.equal(calls.length, 0, 'nothing ran for invalid plans');
+  });
+});
+
+test('server: a dry plan runs, is forced dry, and the job is readable', async () => {
+  await withServer(async ({ base, t, calls }) => {
+    const r = await req(base, '/api/run', { method: 'POST', headers: t(json), body: JSON.stringify({ dry: false, plan: { ...okPlan(), harnesses: { claude: { connect: true } } } }) });
+    assert.equal(r.status, 202);
+    assert.equal(r.json().dry, true, 'server started with --dry-run ignores dry:false');
+    let job: any;
+    for (let i = 0; i < 50; i++) { job = (await req(base, '/api/job?after=0', { headers: t() })).json(); if (!job.running && job.summary) break; await new Promise(r => setTimeout(r, 20)); }
+    assert.deepEqual(calls, [{ dry: true }]);
+    assert.deepEqual(job.lines, ['hello']);
+    assert.equal(job.summary.ok, true);
+    assert.equal(job.steps[0].id, 'db');
+    assert.deepEqual((await req(base, '/api/job?after=1', { headers: t() })).json().lines, []);
+    assert.equal((await req(base, '/api/close', { method: 'POST', headers: t(json), body: '{}' })).status, 200);
+  });
+});
+
+test('server: shuts down after the idle timeout', async () => {
+  const ob = createOnboarding({ dry: true, idleMs: 30, html: 'x' });
+  await ob.listen();
+  await ob.closed;
+});
+
+test('onboarding page contains no secrets and no inline token', () => {
+  const html = readFileSync(new URL('../scripts/onboarding.html', import.meta.url), 'utf8');
+  assert.doesNotMatch(html, /[A-Za-z0-9_-]{32,}/, 'no long opaque strings');
+  assert.doesNotMatch(html, /Bearer|password\s*[:=]|api[_-]?key/i);
+  try {
+    const env = parseEnv(readFileSync(new URL('../.env', import.meta.url), 'utf8'));
+    for (const v of Object.values(env)) if (v.length >= 8) assert.ok(!html.includes(v), 'an .env value appears in the page');
+  } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e; }
+  assert.match(html, /Set up your swarm/);
+  assert.match(html, /api\.swarmaa\.com|defaultHostname/);
 });

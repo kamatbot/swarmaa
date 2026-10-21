@@ -12,7 +12,7 @@ npm install
 npm run setup
 ```
 
-The wizard asks which project folders the swarm may read, which installed CLIs to connect, which
+`npm run setup` opens a one-page onboarding in your browser (`-- --cli` for terminal prompts). It asks which project folders the swarm may read, which installed CLIs to connect, which
 ones to run as background workers, whether to show Swarmaa in NotchTrader, and whether to start
 everything at login. It is safe to re-run; answers are remembered in `.local/setup.json`.
 `npm run setup -- --dry-run` prints every action without changing anything.

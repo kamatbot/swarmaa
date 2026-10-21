@@ -1,5 +1,6 @@
 // Pure helpers for scripts/setup.ts. No side effects at import.
-import { basename } from 'node:path';
+import { statSync } from 'node:fs';
+import { basename, isAbsolute, resolve } from 'node:path';
 
 export interface ScopeRoot { scope: string; root: string }
 
@@ -91,4 +92,83 @@ export function bridgeConfig({ port, tokenFile, agent, projects }: BridgeConfigI
     projects: projects.map(p => ({ scope: p.scope, root: p.root, agents: [agent.id], allow_patch: false })),
     reason: null,
   };
+}
+
+// ---- Setup plan: shared by the terminal wizard and the browser onboarding ----
+export const HARNESS_KEYS = ['claude', 'codex', 'agy', 'grok', 'dot', 'notchtrader'] as const;
+export type HarnessKey = typeof HARNESS_KEYS[number];
+export const WORKER_HARNESSES: readonly HarnessKey[] = ['claude', 'codex'];
+export const SHARING_HARNESSES: readonly HarnessKey[] = ['claude', 'codex', 'agy'];
+export const GENERAL_SCOPE = 'project:general';
+export const DEFAULT_HOSTNAME = 'api.swarmaa.com';
+
+export interface HarnessPlan { connect: boolean; worker: boolean; share: boolean }
+export interface SetupPlan {
+  harnesses: Partial<Record<HarnessKey, HarnessPlan>>;
+  folders: string[];
+  remote?: { hostname: string };
+  autostart: boolean;
+}
+export interface State { folders?: string[]; projects?: ScopeRoot[]; agents?: string[]; workers?: string[]; sharing?: string[]; autostart?: boolean; remote?: { hostname: string } }
+
+/** Interactive identities see every project plus project:general; workers never get project:general (it has no folder). */
+export function identityScopes(kind: 'interactive' | 'worker', projects: ScopeRoot[]): string[] {
+  const scopes = projects.map(p => p.scope);
+  return kind === 'interactive' ? [...scopes, GENERAL_SCOPE] : scopes;
+}
+
+/** Contents of .local/setup.json; the chat-journal hooks read `projects`. */
+export function stateFile(s: { folders: string[]; projects: ScopeRoot[]; agents: string[]; workers: string[]; sharing: string[]; autostart: boolean; remote?: { hostname: string } }): State {
+  return { folders: s.folders, projects: s.projects.map(p => ({ scope: p.scope, root: p.root })), agents: s.agents, workers: s.workers, sharing: s.sharing, autostart: s.autostart, ...(s.remote ? { remote: s.remote } : {}) };
+}
+
+/** Lowercased DNS name with at least two labels and an alphabetic (or punycode) TLD; undefined if invalid. */
+export function validHostname(h: unknown): string | undefined {
+  if (typeof h !== 'string') return undefined;
+  const s = h.trim().toLowerCase().replace(/\.$/, '');
+  return s.length <= 253 && /^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+(xn--[a-z0-9-]{1,59}|[a-z]{2,63})$/.test(s) ? s : undefined;
+}
+
+export class PlanError extends Error {
+  constructor(readonly errors: string[]) { super(errors.join('; ')); }
+}
+
+const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
+
+/** Validates untrusted input (the browser page) into a SetupPlan. Throws PlanError listing every problem. */
+export function validatePlan(input: unknown): SetupPlan {
+  const errors: string[] = [];
+  if (!isObj(input)) throw new PlanError(['plan must be an object']);
+  for (const k of Object.keys(input)) if (!['harnesses', 'folders', 'remote', 'autostart'].includes(k)) errors.push(`unknown field "${k}"`);
+  const harnesses: SetupPlan['harnesses'] = {};
+  if (!isObj(input.harnesses)) errors.push('harnesses must be an object');
+  else for (const [key, v] of Object.entries(input.harnesses)) {
+    if (!(HARNESS_KEYS as readonly string[]).includes(key)) { errors.push(`unknown harness "${key.slice(0, 40)}"`); continue; }
+    const k = key as HarnessKey;
+    if (!isObj(v)) { errors.push(`harness ${k} must be an object`); continue; }
+    for (const f of Object.keys(v)) if (!['connect', 'worker', 'share'].includes(f)) errors.push(`harness ${k}: unknown field "${f.slice(0, 40)}"`);
+    for (const f of ['connect', 'worker', 'share']) if (v[f] !== undefined && typeof v[f] !== 'boolean') errors.push(`harness ${k}: ${f} must be true or false`);
+    if (v.worker === true && !WORKER_HARNESSES.includes(k)) errors.push(`harness ${k} cannot run as a background worker`);
+    if (v.share === true && !SHARING_HARNESSES.includes(k)) errors.push(`harness ${k} does not support chat sharing`);
+    const connect = v.connect === true;
+    harnesses[k] = { connect, worker: connect && v.worker === true, share: connect && SHARING_HARNESSES.includes(k) && v.share !== false };
+  }
+  const folders: string[] = [];
+  if (!Array.isArray(input.folders) || input.folders.length > 64) errors.push('folders must be a list of at most 64 paths');
+  else for (const f of input.folders) {
+    if (typeof f !== 'string' || !f || f.length > 4096 || f.includes('\0')) { errors.push('folder must be a path string'); continue; }
+    if (!isAbsolute(f)) { errors.push(`folder is not an absolute path: ${f}`); continue; }
+    try { if (!statSync(f).isDirectory()) throw new Error('not a directory'); } catch { errors.push(`folder is not an existing directory: ${f}`); continue; }
+    const r = resolve(f);
+    if (!folders.includes(r)) folders.push(r);
+  }
+  let remote: SetupPlan['remote'];
+  if (input.remote !== undefined && input.remote !== null) {
+    const host = isObj(input.remote) ? validHostname(input.remote.hostname) : undefined;
+    if (!host) errors.push('remote.hostname must be a valid DNS name such as api.example.com');
+    else remote = { hostname: host };
+  }
+  if (typeof input.autostart !== 'boolean') errors.push('autostart must be true or false');
+  if (errors.length) throw new PlanError(errors);
+  return { harnesses, folders, ...(remote ? { remote } : {}), autostart: input.autostart === true };
 }

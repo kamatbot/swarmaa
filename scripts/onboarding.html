@@ -1,0 +1,314 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Set up Swarmaa</title>
+<meta name="theme-color" content="#06060a" />
+<meta name="referrer" content="no-referrer" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='32' y2='32' gradientUnits='userSpaceOnUse'%3E%3Cstop stop-color='%239be15d'/%3E%3Cstop offset='.5' stop-color='%234cc4e8'/%3E%3Cstop offset='1' stop-color='%23a78bfa'/%3E%3C/linearGradient%3E%3C/defs%3E%3Cpath d='M16 2 30 16 16 30 2 16Z' fill='url(%23g)'/%3E%3Cpath d='M16 9 23 16 16 23 9 16Z' fill='%2306060a'/%3E%3C/svg%3E" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+<style>
+:root {
+  --bg: #06060a; --surface: rgba(255,255,255,.035); --surface-2: rgba(255,255,255,.07);
+  --line: rgba(255,255,255,.1); --line-2: rgba(255,255,255,.2);
+  --text: #f4f4f7; --muted: #a6a6b6; --ok: #9be15d; --warn: #ffd37a; --bad: #ff9a9a;
+  --g1: #9be15d; --g2: #3fd1a8; --g3: #4cc4e8; --g4: #7f9cff; --g5: #a78bfa;
+  --grad: linear-gradient(90deg, var(--g1) 0%, var(--g2) 30%, var(--g3) 50%, var(--g4) 72%, var(--g5) 100%);
+  --ease: cubic-bezier(.2,.8,.2,1);
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: var(--bg); color: var(--text); font: 400 1rem/1.5 "Outfit", system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+body::before { content: ""; position: fixed; inset: 0; z-index: -1; pointer-events: none;
+  background: radial-gradient(ellipse 60% 40% at 15% 0%, rgba(59,63,174,.28), transparent 70%), radial-gradient(ellipse 50% 35% at 90% 0%, rgba(30,143,120,.2), transparent 70%); }
+code, .mono { font: 400 .88em ui-monospace, SFMono-Regular, Menlo, monospace; }
+a { color: var(--g3); }
+:focus-visible { outline: 2px solid var(--g3); outline-offset: 3px; border-radius: 6px; }
+main { width: min(760px, 100% - 32px); margin: 0 auto; padding: 40px 0 150px; }
+header { display: flex; align-items: center; gap: 14px; margin-bottom: 8px; }
+header svg { width: 36px; height: 36px; flex: none; }
+h1 { font-size: 1.9rem; font-weight: 600; letter-spacing: -.03em; }
+.lede { color: var(--muted); margin: 0 0 28px 50px; max-width: 56ch; }
+h2 { font-size: .8rem; font-weight: 600; text-transform: uppercase; letter-spacing: .1em; color: var(--muted); margin: 34px 0 12px; }
+.banner { border: 1px solid var(--warn); color: var(--warn); border-radius: 12px; padding: 10px 14px; margin-bottom: 16px; font-size: .92rem; }
+.card { border: 1px solid var(--line); background: var(--surface); border-radius: 18px; padding: 16px 18px; margin-bottom: 10px; transition: border-color .25s var(--ease), background .25s; }
+.card.on { border-color: var(--line-2); background: var(--surface-2); }
+.card.off .name { color: var(--muted); }
+.row { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+.name { font-weight: 600; font-size: 1.05rem; letter-spacing: -.01em; }
+.pill { display: inline-block; margin-left: 10px; font-size: .74rem; font-weight: 500; padding: 2px 9px; border-radius: 999px; border: 1px solid var(--line-2); color: var(--muted); vertical-align: 2px; }
+.pill.ok { color: var(--ok); border-color: rgba(155,225,93,.4); }
+.pill.warn { color: var(--warn); border-color: rgba(255,211,122,.4); }
+.hint { color: var(--muted); font-size: .9rem; margin-top: 4px; }
+.sub { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); display: grid; gap: 10px; }
+.sub .row { padding-left: 2px; }
+.sub label.t { font-size: .95rem; }
+.sub small { display: block; color: var(--muted); font-size: .84rem; }
+/* switch: a real checkbox, so it is keyboard operable and announced */
+.switch { position: relative; flex: none; width: 46px; height: 28px; }
+.switch input { appearance: none; -webkit-appearance: none; position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; border-radius: 999px; background: #2a2a38; border: 1px solid var(--line-2); cursor: pointer; transition: background .25s var(--ease); }
+.switch input::before { content: ""; position: absolute; top: 3px; left: 3px; width: 20px; height: 20px; border-radius: 50%; background: #e9e9f0; transition: transform .25s var(--ease); }
+.switch input:checked { background: var(--g2); border-color: var(--g2); }
+.switch input:checked::before { transform: translateX(18px); background: #06060a; }
+.switch input:disabled { opacity: .4; cursor: not-allowed; }
+.switch input:focus-visible { outline: 2px solid var(--g3); outline-offset: 3px; border-radius: 999px; }
+label.t { cursor: pointer; }
+.proj { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 4px; border-bottom: 1px solid var(--line); }
+.proj .mono { overflow-wrap: anywhere; }
+.proj .sc { color: var(--muted); font-size: .84rem; }
+.field { display: flex; gap: 8px; margin-top: 12px; }
+input[type=text] { flex: 1; min-width: 0; background: rgba(255,255,255,.05); border: 1px solid var(--line-2); color: var(--text); border-radius: 12px; padding: 11px 14px; font: inherit; }
+input[type=text]::placeholder { color: #8a8a9c; }
+button { font: 500 .95rem "Outfit", sans-serif; cursor: pointer; border-radius: 999px; padding: 11px 22px; border: 1px solid var(--line-2); background: transparent; color: var(--text); transition: transform .25s var(--ease), background .25s; }
+button:hover:not(:disabled) { background: var(--surface-2); transform: translateY(-1px); }
+button:disabled { opacity: .5; cursor: not-allowed; }
+button.link { border: 0; padding: 4px 8px; color: var(--muted); background: none; }
+button.link:hover:not(:disabled) { color: var(--text); background: none; transform: none; }
+button.primary { border: 0; color: #06060a; font-weight: 600; background: var(--grad); background-size: 200% 100%; box-shadow: 0 6px 18px -8px rgba(0,0,0,.6), inset 0 1px 0 rgba(255,255,255,.5); }
+button.primary:hover:not(:disabled) { background: var(--grad); background-size: 200% 100%; background-position: 100% 0; }
+.err { color: var(--bad); font-size: .92rem; margin-top: 8px; min-height: 1.3em; }
+.bar { position: fixed; left: 0; right: 0; bottom: 0; background: linear-gradient(180deg, transparent, rgba(6,6,10,.92) 30%); padding: 26px 0 max(16px, env(safe-area-inset-bottom)); }
+.bar .in { width: min(760px, 100% - 32px); margin: 0 auto; display: flex; gap: 10px; justify-content: flex-end; align-items: center; flex-wrap: wrap; }
+.bar .err { flex: 1; margin: 0; min-width: 12ch; }
+/* progress + summary */
+ol.steps { list-style: none; display: grid; gap: 8px; }
+ol.steps li { display: flex; gap: 12px; align-items: baseline; border: 1px solid var(--line); background: var(--surface); border-radius: 14px; padding: 10px 14px; }
+.dot { flex: none; width: 10px; height: 10px; border-radius: 50%; background: #55556a; transform: translateY(1px); }
+.running .dot { background: var(--g3); animation: pulse 1.2s ease-in-out infinite; }
+.s-ok .dot { background: var(--ok); } .s-skipped .dot { background: var(--warn); } .s-failed .dot { background: var(--bad); }
+.step-note { color: var(--muted); font-size: .88rem; overflow-wrap: anywhere; }
+.st { margin-left: auto; font-size: .8rem; color: var(--muted); white-space: nowrap; }
+@keyframes pulse { 50% { opacity: .35; } }
+pre.log { margin-top: 14px; max-height: 260px; overflow: auto; border: 1px solid var(--line); background: rgba(0,0,0,.35); border-radius: 14px; padding: 12px 14px; font: 400 .8rem/1.55 ui-monospace, Menlo, monospace; color: #cfcfdc; white-space: pre-wrap; overflow-wrap: anywhere; }
+dl.sum { display: grid; grid-template-columns: max-content 1fr; gap: 8px 18px; }
+dl.sum dt { color: var(--muted); } dl.sum dd { overflow-wrap: anywhere; }
+.url { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+ul.plain { list-style: none; display: grid; gap: 6px; }
+.warn-t { color: var(--warn); }
+.hidden { display: none !important; }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+@media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+@media (max-width: 520px) { .lede { margin-left: 0; } dl.sum { grid-template-columns: 1fr; gap: 2px; } dl.sum dd { margin-bottom: 8px; } }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <svg viewBox="0 0 32 32" aria-hidden="true"><defs><linearGradient id="lg" x1="0" y1="0" x2="32" y2="32" gradientUnits="userSpaceOnUse"><stop stop-color="#9be15d"/><stop offset=".5" stop-color="#4cc4e8"/><stop offset="1" stop-color="#a78bfa"/></linearGradient></defs><path d="M16 2 30 16 16 30 2 16Z" fill="url(#lg)"/><path d="M16 9 23 16 16 23 9 16Z" fill="#06060a"/></svg>
+    <h1>Set up your swarm</h1>
+  </header>
+  <p class="lede">Swarmaa gives your agents one shared memory and task queue, kept on this Mac. Pick what to connect; you can re-run this any time.</p>
+  <div id="banner" class="banner hidden" role="status">Dry run: nothing will be changed. You will only see what would happen.</div>
+
+  <div id="form">
+    <h2 id="h-services">Services</h2>
+    <div id="services" role="group" aria-labelledby="h-services"></div>
+
+    <h2 id="h-projects">Projects</h2>
+    <p class="hint">Folders the swarm may read. Each becomes a scope named <code>project:&lt;folder&gt;</code>. <code>project:demo</code> (a scratch sandbox) always exists, and your interactive agents also get <code>project:general</code>, a scope with no folder.</p>
+    <div id="projects" role="list" aria-labelledby="h-projects"></div>
+    <div class="field">
+      <label for="newfolder" class="sr">Folder path</label>
+      <input type="text" id="newfolder" placeholder="/Users/you/Projects/my-app" autocomplete="off" spellcheck="false" />
+      <button type="button" id="addfolder">Add folder</button>
+    </div>
+    <div class="err" id="folderErr" role="alert"></div>
+
+    <section id="remote" class="hidden" aria-labelledby="h-remote">
+      <h2 id="h-remote">Remote access</h2>
+      <div class="card on">
+        <p class="hint" style="margin:0 0 12px">Grok and Dot are hosted, so they reach Swarmaa through a public HTTPS address. Setup will open Cloudflare in your browser so you can authorize a tunnel for it.</p>
+        <div class="row"><label class="t" for="remoteOn"><span class="name">Set up the tunnel now</span></label><span class="switch"><input type="checkbox" id="remoteOn" checked /></span></div>
+        <div class="field"><label for="hostname" class="sr">Hostname</label><input type="text" id="hostname" autocomplete="off" spellcheck="false" aria-describedby="hostHint" /></div>
+        <p class="hint" id="hostHint">A domain you control in Cloudflare, for example <code>api.swarmaa.com</code>.</p>
+      </div>
+    </section>
+
+    <h2 id="h-startup">Startup</h2>
+    <div class="card on"><div class="row">
+      <label class="t" for="autostart"><span class="name">Start at login</span><div class="hint">Keeps the database, the service and any workers running in the background.</div></label>
+      <span class="switch"><input type="checkbox" id="autostart" checked /></span>
+    </div></div>
+  </div>
+
+  <div id="progress" class="hidden">
+    <h2 id="h-prog">Progress</h2>
+    <ol class="steps" id="steps" aria-live="polite" aria-labelledby="h-prog"></ol>
+    <pre class="log" id="log" tabindex="0" aria-label="Setup log"></pre>
+    <div id="summary" class="hidden"></div>
+  </div>
+</main>
+
+<div class="bar" id="bar"><div class="in">
+  <div class="err" id="err" role="alert"></div>
+  <button type="button" id="preview">Preview changes</button>
+  <button type="button" id="connect" class="primary">Connect</button>
+</div></div>
+
+<script>
+'use strict';
+const T = new URLSearchParams(location.search).get('t') || '';
+const $ = id => document.getElementById(id);
+const h = (tag, attrs = {}, ...kids) => {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) { if (k === 'class') e.className = v; else if (k.startsWith('on')) e.addEventListener(k.slice(2), v); else if (v === true) e.setAttribute(k, ''); else if (v !== false && v != null) e.setAttribute(k, v); }
+  for (const k of kids.flat()) if (k != null) e.append(k.nodeType ? k : document.createTextNode(k));
+  return e;
+};
+async function api(path, body) {
+  const r = await fetch(path, { method: body ? 'POST' : 'GET', headers: { 'x-swarmaa-token': T, ...(body ? { 'content-type': 'application/json' } : {}) }, body: body ? JSON.stringify(body) : undefined });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw Object.assign(new Error(j.error || r.statusText), { details: j.details });
+  return j;
+}
+
+const SERVICES = [
+  { key: 'claude', label: 'Claude Code', kind: 'cli', cmd: 'claude', worker: true, share: true },
+  { key: 'codex', label: 'Codex', kind: 'cli', cmd: 'codex', worker: true, share: true },
+  { key: 'agy', label: 'Antigravity', kind: 'cli', cmd: 'agy', share: true },
+  { key: 'grok', label: 'Grok', kind: 'hosted' },
+  { key: 'dot', label: 'Dot', kind: 'hosted' },
+  { key: 'notchtrader', label: 'NotchTrader', kind: 'app' },
+];
+let det, folders = [];
+const sv = {}; // key -> { card, connect, worker, share }
+
+function subRow(id, title, desc, checked, key) {
+  const input = h('input', { type: 'checkbox', id, checked, onchange: sync });
+  return { input, row: h('div', { class: 'row' }, h('label', { class: 't', for: id }, title, h('small', {}, desc)), h('span', { class: 'switch' }, input)) };
+}
+
+function buildServices() {
+  const st = det.state || {};
+  for (const s of SERVICES) {
+    const installed = s.kind === 'hosted' || !!det.installed[s.key];
+    const wasOn = st.agents ? st.agents.includes(s.key) : (s.kind === 'cli' || s.kind === 'app') && installed;
+    const connect = h('input', { type: 'checkbox', id: `c-${s.key}`, checked: installed && wasOn, disabled: !installed, onchange: sync });
+    const pill = s.kind === 'hosted' ? h('span', { class: 'pill warn' }, 'Hosted, needs remote access')
+      : h('span', { class: 'pill ' + (installed ? 'ok' : '') }, installed ? 'Installed' : 'Not found');
+    const hint = installed ? (s.kind === 'cli' ? `Registers the swarma MCP server in ${s.label}.` : s.kind === 'hosted' ? `Creates a ${s.label} identity; ${s.label} connects over HTTPS.` : 'Shows agents and swarms in the notch.')
+      : s.kind === 'cli' ? `The ${s.cmd} command was not found on this Mac. Install ${s.label}, then run setup again.` : 'NotchTrader.app is not in /Applications.';
+    const card = h('section', { class: 'card', 'aria-label': s.label });
+    card.append(h('div', { class: 'row' },
+      h('label', { class: 't', for: `c-${s.key}` }, h('span', { class: 'name' }, s.label), pill, h('div', { class: 'hint' }, hint)),
+      h('span', { class: 'switch' }, connect)));
+    const rec = { card, connect, s };
+    const sub = h('div', { class: 'sub' });
+    if (s.worker) { const r = subRow(`w-${s.key}`, 'Run background worker', 'Picks up read-only review and research tasks.', !!(st.workers || []).includes(s.key)); rec.worker = r.input; sub.append(r.row); }
+    if (s.share) { const r = subRow(`s-${s.key}`, 'Share chats across harnesses', 'Records this tool’s chats so your other agents can recall them.', st.sharing ? st.sharing.includes(s.key) : true); rec.share = r.input; sub.append(r.row); }
+    if (sub.children.length) { card.append(sub); rec.sub = sub; }
+    sv[s.key] = rec; $('services').append(card);
+  }
+}
+
+function sync() {
+  for (const k in sv) {
+    const r = sv[k], on = r.connect.checked;
+    r.card.classList.toggle('on', on); r.card.classList.toggle('off', !on);
+    for (const x of [r.worker, r.share]) if (x) { x.disabled = !on; }
+  }
+  const hosted = sv.grok.connect.checked || sv.dot.connect.checked;
+  $('remote').classList.toggle('hidden', !hosted);
+  $('hostname').disabled = !$('remoteOn').checked;
+}
+
+function renderFolders() {
+  const box = $('projects'); box.replaceChildren();
+  box.append(h('div', { class: 'proj', role: 'listitem' }, h('div', {}, h('div', {}, 'Demo sandbox'), h('div', { class: 'sc mono' }, 'project:demo')), h('span', { class: 'hint' }, 'always on')));
+  for (const f of folders) box.append(h('div', { class: 'proj', role: 'listitem' }, h('div', {}, h('div', { class: 'mono' }, f)),
+    h('button', { type: 'button', class: 'link', 'aria-label': `Remove ${f}`, onclick: () => { folders = folders.filter(x => x !== f); renderFolders(); } }, 'Remove')));
+}
+function addFolder() {
+  const v = $('newfolder').value.trim(); const e = $('folderErr'); e.textContent = '';
+  if (!v) return;
+  if (!v.startsWith('/')) { e.textContent = 'Use an absolute path that starts with /.'; return; }
+  const p = v.length > 1 ? v.replace(/\/+$/, '') : v;
+  if (!folders.includes(p)) folders.push(p);
+  $('newfolder').value = ''; renderFolders();
+}
+
+function plan() {
+  const harnesses = {};
+  for (const k in sv) { const r = sv[k]; harnesses[k] = { connect: r.connect.checked, worker: !!r.worker?.checked, share: r.share ? r.share.checked : false }; }
+  const hosted = sv.grok.connect.checked || sv.dot.connect.checked;
+  return { harnesses, folders, autostart: $('autostart').checked, ...(hosted && $('remoteOn').checked ? { remote: { hostname: $('hostname').value.trim() } } : {}) };
+}
+
+let polling;
+async function start(dry) {
+  $('err').textContent = '';
+  const btns = [$('preview'), $('connect')]; btns.forEach(b => b.disabled = true);
+  try {
+    await api('/api/run', { plan: plan(), dry });
+  } catch (e) {
+    $('err').textContent = e.details ? e.details.join(' ') : e.message;
+    btns.forEach(b => b.disabled = false); return;
+  }
+  $('form').classList.add('hidden'); $('bar').classList.add('hidden'); $('progress').classList.remove('hidden');
+  $('steps').replaceChildren(); $('log').textContent = ''; $('summary').classList.add('hidden'); $('summary').replaceChildren();
+  window.scrollTo(0, 0);
+  let after = 0;
+  const tick = async () => {
+    try {
+      const j = await api(`/api/job?after=${after}`);
+      if (j.lines.length) { const log = $('log'); log.textContent += j.lines.join('\n') + '\n'; log.scrollTop = log.scrollHeight; }
+      after = j.next; renderSteps(j.steps, j.dry);
+      if (!j.running && j.summary) { renderSummary(j.summary); return; }
+    } catch (e) { $('log').textContent += `\n(lost contact with setup: ${e.message})\n`; return; }
+    polling = setTimeout(tick, 600);
+  };
+  tick();
+}
+const STATUS = (s, dry) => ({ running: 'working', ok: dry ? 'planned' : 'done', skipped: 'skipped', failed: 'failed' }[s]);
+function renderSteps(steps, dry) {
+  $('steps').replaceChildren(...steps.map(s => h('li', { class: `s-${s.status} ${s.status}` },
+    h('span', { class: 'dot', 'aria-hidden': 'true' }), h('div', {}, h('div', {}, s.label), s.note ? h('div', { class: 'step-note' }, s.note) : null), h('span', { class: 'st' }, STATUS(s.status, dry)))));
+}
+
+const LABEL = Object.fromEntries(SERVICES.map(s => [s.key, s.label]));
+const names = a => a.length ? a.map(k => LABEL[k] || k).join(', ') : 'none';
+function renderSummary(s) {
+  const box = $('summary'); box.classList.remove('hidden');
+  const dl = h('dl', { class: 'sum' });
+  const add = (t, d) => { dl.append(h('dt', {}, t), h('dd', {}, d)); };
+  add('Connected', names(s.agents));
+  add('Background workers', names(s.workers));
+  add('Chat sharing', names(s.sharing));
+  add('Scopes', h('ul', { class: 'plain' }, s.projects.map(p => h('li', {}, h('span', { class: 'mono' }, p.scope), ' → ', h('span', { class: 'mono' }, p.root))), h('li', {}, h('span', { class: 'mono' }, 'project:general'), ' → no folder (interactive agents only)')));
+  add('Service', h('span', { class: 'mono' }, s.serviceUrl));
+  if (s.mcpUrl) {
+    const copy = h('button', { type: 'button', onclick: async () => { try { await navigator.clipboard.writeText(s.mcpUrl); copy.textContent = 'Copied'; } catch { copy.textContent = 'Select and copy'; } } }, 'Copy');
+    add('MCP URL for Grok / Dot', h('div', { class: 'url' }, h('span', { class: 'mono' }, s.mcpUrl), copy));
+  }
+  box.append(h('h2', {}, s.ok ? (s.dry ? 'Preview' : 'Done') : 'Setup did not finish'));
+  if (!s.ok) box.append(h('p', { class: 'err' }, s.error || 'Unknown error'));
+  box.append(dl);
+  if (s.warnings.length) box.append(h('h2', {}, 'Needs attention'), h('ul', { class: 'plain warn-t' }, s.warnings.map(w => h('li', {}, w))));
+  if (s.nextSteps.length) box.append(h('h2', {}, 'Next steps'), h('ul', { class: 'plain' }, s.nextSteps.map(n => h('li', {}, n))));
+  const act = h('div', { class: 'field', style: 'justify-content:flex-end;margin-top:22px' });
+  act.append(h('button', { type: 'button', onclick: () => { $('progress').classList.add('hidden'); $('form').classList.remove('hidden'); $('bar').classList.remove('hidden'); $('preview').disabled = $('connect').disabled = false; window.scrollTo(0, 0); } }, s.dry ? 'Back to settings' : 'Change settings'));
+  act.append(h('button', { type: 'button', class: 'primary', onclick: async e => { e.target.disabled = true; try { await api('/api/close', {}); } catch { /* already closed */ } box.append(h('p', { class: 'hint', role: 'status' }, 'Setup server stopped. You can close this tab.')); } }, 'Finish and close'));
+  box.append(act);
+  box.scrollIntoView({ block: 'start', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
+}
+
+async function init() {
+  $('addfolder').addEventListener('click', addFolder);
+  $('newfolder').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); addFolder(); } });
+  $('remoteOn').addEventListener('change', sync);
+  $('preview').addEventListener('click', () => start(true));
+  $('connect').addEventListener('click', () => start(false));
+  try { det = await api('/api/detect'); } catch (e) { $('err').textContent = `Cannot reach the setup server (${e.message}). Reopen the address printed in your terminal.`; $('connect').disabled = $('preview').disabled = true; return; }
+  const st = det.state || {};
+  folders = [...(st.folders || [])];
+  $('hostname').value = (st.remote && st.remote.hostname) || det.defaultHostname;
+  $('autostart').checked = st.autostart ?? true;
+  if (det.dry) $('banner').classList.remove('hidden');
+  buildServices(); renderFolders(); sync();
+}
+init();
+</script>
+</body>
+</html>
