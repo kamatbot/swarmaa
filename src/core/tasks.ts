@@ -330,6 +330,7 @@ export class TaskService {
     return transaction(this.pool,async db => {
       const row = await lockedTask(db,p,lease.taskId);
       await requireLease(db,p,row,lease);
+      await touchWorker(db,p);
       const updated = await db.query<TaskRow>(`UPDATE tasks SET
         lease_expires_at=clock_timestamp()+$2::integer*interval '1 second'
         WHERE id=$1 AND lease_expires_at>clock_timestamp() RETURNING *`,[row.id,seconds]);

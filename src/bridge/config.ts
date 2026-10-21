@@ -79,6 +79,7 @@ export function parseBridgeConfig(value: unknown): BridgeConfig {
     service_url: serviceUrl(raw.service_url), token_env, agents,
     token_file: raw.token_file === undefined ? undefined : absolute(raw.token_file, 'token_file'), projects, reason,
     poll_seconds: integer(raw.poll_seconds, 5, 'poll_seconds', 1, 300),
+    usage_seconds: integer(raw.usage_seconds, 300, 'usage_seconds', 0, 3600),
     lease_seconds, heartbeat_seconds, request_timeout_ms,
     task_timeout_seconds: integer(raw.task_timeout_seconds, 900, 'task_timeout_seconds', 10, 7200),
     max_output_bytes: integer(raw.max_output_bytes, 128 * 1024, 'max_output_bytes', 4096, 256 * 1024),

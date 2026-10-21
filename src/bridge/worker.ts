@@ -1,5 +1,7 @@
 import { setTimeout as delay } from 'node:timers/promises';
 import { AUTO_READ, buildInvocation, capability, projectCapabilities, providerSucceeded } from './adapters.js';
+import { collectUsage, headroom } from '../usage/index.js';
+import type { UsageProviderId, UsageSnapshot } from '../usage/types.js';
 import { runBoundedProcess } from './process.js';
 import { reasonNotify } from './reason.js';
 import { acquirePatchWorkspaceLock } from './workspace-lock.js';
@@ -27,17 +29,38 @@ function validateClaim(claim: Claim, project: ProjectConfig, agents: AgentConfig
 }
 
 export class BridgeWorker {
+  /** Latest local quota headroom per provider, used to pick an agent for auto-routed work. */
+  private readonly headroom = new Map<string, number>();
+  private nextUsageAt = 0;
+
   constructor(
     private readonly config: BridgeConfig,
     private readonly client: ToolClient,
     private readonly logger: BridgeLogger = (event, metadata) => process.stderr.write(`${JSON.stringify({ event, ...metadata })}\n`),
-    private readonly runner: ProcessRunner = runBoundedProcess
+    private readonly runner: ProcessRunner = runBoundedProcess,
+    private readonly usage: (providers: UsageProviderId[]) => Promise<UsageSnapshot[]> = providers => collectUsage(providers)
   ) {}
+
+  /** Report provider quota to the service between tasks. Failures only delay routing data. */
+  async reportUsage(signal: AbortSignal): Promise<void> {
+    if (!this.config.usage_seconds || Date.now() < this.nextUsageAt) return;
+    this.nextUsageAt = Date.now() + this.config.usage_seconds * 1000;
+    const providers = [...new Set(this.config.agents.map(a => a.provider))] as UsageProviderId[];
+    try {
+      const snapshots = await this.usage(providers);
+      for (const s of snapshots) this.headroom.set(s.provider, headroom(s));
+      await this.client.call('usage_report', { reports: snapshots.map(s => ({ provider: s.provider, ok: s.ok, windows: s.windows, fetched_at: s.fetched_at,
+        ...(s.plan ? { plan: s.plan.slice(0, 80) } : {}), ...(s.error ? { error: s.error.slice(0, 200) } : {}) })) }, signal);
+    } catch (error) {
+      this.logger('usage_report_failed', { code: errorCode(error) });
+    }
+  }
 
   /** Poll projects fairly; one process owns at most one local task at a time. */
   async run(signal: AbortSignal, once = false): Promise<void> {
     while (!signal.aborted) {
       let claimedAny = false;
+      await this.reportUsage(signal);
       for (const project of this.config.projects) {
         if (signal.aborted) return;
         try {
@@ -64,7 +87,7 @@ export class BridgeWorker {
       kinds: allowsPatch ? ['research', 'review', 'patch'] : ['research', 'review'],
       lease_seconds: this.config.lease_seconds
     }, signal);
-    const valid = validateClaim(claim, project, this.config.agents);
+    const valid = validateClaim(claim, project, this.config.agents, this.headroom);
     if (!valid) return false;
     await this.execute(valid.task, valid.lease, valid.agent, project, signal, claimStarted);
     return true;

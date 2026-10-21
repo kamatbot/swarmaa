@@ -86,3 +86,33 @@ test('an already consumed conservative lease window prevents provider start', as
   await new BridgeWorker(cfg,client,()=>{},async()=>{invoked=true;return result;}).claimAndRun(cfg.projects[0]!,new AbortController().signal);
   assert.equal(invoked,false);
 });
+
+test('usage readings are reported and steer auto.read to the agent with most headroom', async () => {
+  const calls: {name:string;args:Record<string,unknown>}[] = [];
+  const autoTask = {...task,required_capability:'auto.read'};
+  const client: ToolClient = { async call<T>(name:string,args:Record<string,unknown>):Promise<T> {
+    calls.push({name,args});
+    if(name==='task_claim') return {task:autoTask,lease_token:'lease-secret',lease_generation:1} as T;
+    if(name==='context_get') return {scope:task.scope,task:autoTask,memories:[],conflicts:[]} as T;
+    if(name==='artifact_put') return {artifact:{id:'22222222-2222-4222-8222-222222222222'}} as T;
+    return {task:autoTask,accepted:2} as T;
+  } };
+  const cfg = parseBridgeConfig({ service_url:'http://localhost:8080',
+    agents:[{id:'claude',provider:'claude',binary:'/bin/claude'},{id:'codex',provider:'codex',binary:'/bin/codex'}],
+    projects:[{scope:'project:demo',root:'/projects/demo',agents:['claude','codex']}] });
+  const at = new Date().toISOString();
+  const usage = async () => [
+    {provider:'claude' as const,ok:true,windows:[{name:'5h',used_percent:90,resets_at:null}],fetched_at:at},
+    {provider:'codex' as const,ok:true,windows:[{name:'weekly',used_percent:10,resets_at:null}],fetched_at:at}];
+  let command = '';
+  const worker = new BridgeWorker(cfg,client,()=>{},async request => {command = request.command;return result;},usage);
+  const signal = new AbortController().signal;
+  await worker.reportUsage(signal);
+  await worker.reportUsage(signal);
+  const reports = calls.filter(c => c.name==='usage_report');
+  assert.equal(reports.length,1);
+  assert.deepEqual((reports[0]!.args.reports as {provider:string}[]).map(r => r.provider),['claude','codex']);
+  await worker.claimAndRun(cfg.projects[0]!,signal);
+  assert.equal(command,'/bin/codex');
+  assert.ok((calls.find(c => c.name==='task_claim')!.args.capabilities as string[]).includes('auto.read'));
+});

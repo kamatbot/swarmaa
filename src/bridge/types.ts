@@ -19,6 +19,7 @@ export interface BridgeConfig {
   token_env: string;
   token_file?: string;
   poll_seconds: number;
+  usage_seconds: number;
   lease_seconds: number;
   heartbeat_seconds: number;
   request_timeout_ms: number;
