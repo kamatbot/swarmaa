@@ -1,5 +1,20 @@
 # Grok Bot entrypoint
 
+## Swarmaa quick start
+
+1. Publish the local service over HTTPS (planned host `https://api.swarmaa.com`) with a Cloudflare
+   Tunnel. **Not set up yet**: exposing the Mac's service publicly needs the owner's explicit go-ahead.
+2. In the Grok Bot's MCP setup, add a custom Remote HTTPS server: `https://api.swarmaa.com/mcp`.
+   Sign in through the Swarmaa consent page as the `grok` identity (it can see every project plus
+   `project:general`, never admin).
+3. Verify: ask Grok to call `swarm_status`, then `session_list`.
+4. Paste [INSTRUCTIONS.md](INSTRUCTIONS.md) into the Bot's instructions to make Grok the swarm's
+   front desk: status, dispatch with `auto.read`, follow-ups, and continuing chats from other harnesses.
+
+Grok monitors by calling `swarm_status` and `events_poll` whenever it is asked (or on a schedule,
+if your Grok plan supports scheduled tasks). Push notifications into Grok need a documented
+inbound webhook; none is configured.
+
 ## Native Grok Bot connection
 
 Use Grok Bot's custom MCP **Remote HTTPS** connection as the primary integration. The official
@@ -9,7 +24,7 @@ Bot credential or each person's OAuth sign-in.
 1. Reuse the `frontend` principal named `grok` provisioned by the repository README, with the
    same exact project scopes as Dot. Create it only if it does not already exist.
 2. In the Bot's plugin/MCP setup, add a custom Remote HTTPS server using
-   `https://collective.example.com/mcp`, replacing the domain with your deployed service.
+   `https://api.swarmaa.com/mcp`, replacing the domain with your deployed service.
 3. For OAuth, complete the service consent flow using that principal's provisioned non-admin
    token. Configure the exact client callback hostname as described in `docs/OPERATIONS.md`.
    If you deliberately choose the Bot's shared token connection instead, store its credential
@@ -38,7 +53,7 @@ If you operate your own bot backend, `rest-client.mjs` forwards authorized front
 the REST API. It is an alternative integration component, not a requirement for native Grok Bot.
 Set these variables privately in that backend:
 
-- `COLLECTIVE_URL`: the HTTPS service origin, such as `https://collective.example.com`, without `/mcp`.
+- `COLLECTIVE_URL`: the HTTPS service origin, such as `https://api.swarmaa.com`, without `/mcp`.
 - `COLLECTIVE_GROK_TOKEN`: the provisioned token for that backend's scoped frontend principal.
 
 OAuth-issued access tokens cannot authenticate these REST routes. Keep the provisioned token
