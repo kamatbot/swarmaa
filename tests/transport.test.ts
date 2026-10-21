@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { createServer, type Server } from 'node:http';
+import { createServer, request, type Server } from 'node:http';
 import { test, type TestContext } from 'node:test';
 import type { Pool } from 'pg';
 import { AppError } from '../src/errors.js';
@@ -98,7 +98,7 @@ test('Mcp-Name base64 decoding is canonical and rejects invalid UTF-8', () => {
   assert.equal(decodeMcpHeader(' padded '), null);
 });
 
-async function listeningServer(t: TestContext, maxBodyBytes = 4096, toolBackend: ToolBackend = core): Promise<{ url: string; server: Server }> {
+async function listeningServer(t: TestContext, maxBodyBytes = 4096, toolBackend: ToolBackend = core, publicUrl?: string): Promise<{ url: string; server: Server }> {
   const server = createServer();
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(async () => {
@@ -109,7 +109,7 @@ async function listeningServer(t: TestContext, maxBodyBytes = 4096, toolBackend:
   assert.ok(address && typeof address === 'object');
   const url = `http://127.0.0.1:${address.port}`;
   const config: ServerConfig = {
-    host: '127.0.0.1', port: address.port, publicUrl: url, allowedOrigins: [], allowInsecureLocalhost: true,
+    host: '127.0.0.1', port: address.port, publicUrl: publicUrl ?? url, allowedOrigins: [], allowInsecureLocalhost: true,
     maxBodyBytes, oauthEnabled: false, oauthRedirectHosts: [], eventCallbackHosts: [], eventEncryptionKey: '',
   };
   const dependencies: HttpDependencies = {
@@ -134,6 +134,18 @@ test('HTTP rejects hostile origins, absent auth, and unsupported GET streams', a
   const stream = await fetch(`${url}/mcp`);
   assert.equal(stream.status, 405);
   assert.equal(stream.headers.get('allow'), 'POST');
+});
+
+test('tunnel PUBLIC_URL keeps loopback clients working and still rejects foreign hosts', async t => {
+  const { url } = await listeningServer(t, 4096, core, 'https://swarma.example.com');
+  const local = await fetch(`${url}/api/tools/context_get`, { method: 'POST', headers: rpcHeaders, body: '{}' });
+  assert.equal(local.status, 200);
+  const port = new URL(url).port;
+  const foreign = await new Promise<number>((resolve, reject) => {
+    const req = request({ host: '127.0.0.1', port, path: '/api/tools/context_get', method: 'POST', headers: { ...rpcHeaders, host: 'rebind.attacker.example' } }, res => { res.resume(); resolve(res.statusCode ?? 0); });
+    req.on('error', reject); req.end('{}');
+  });
+  assert.equal(foreign, 403);
 });
 
 test('HTTP bounds bodies, reports JSON parse errors, and returns legacy RPC results', async t => {

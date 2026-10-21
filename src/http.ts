@@ -168,9 +168,11 @@ export function createHttpHandler(dependencies: HttpDependencies): (request: Inc
     const path = url.pathname;
     const host = oneHeader(request, 'host')?.toLowerCase();
     const remote = request.socket.remoteAddress ?? 'unknown';
-    const localHealth = ['/healthz', '/readyz'].includes(path) && ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(remote) &&
+    // Same-machine clients (bridges, stdio proxies) keep the fast loopback path when PUBLIC_URL is a
+    // tunnel origin. A literal loopback Host from a loopback socket cannot be a DNS-rebinding name.
+    const loopback = ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(remote) &&
       localNames.some(name => host === `${name}:${config.port}` || (config.port === 80 && host === name));
-    if (host !== publicUrl.host.toLowerCase() && !localHealth) throw new AppError(403, 'invalid_host', 'Host is not allowed.');
+    if (host !== publicUrl.host.toLowerCase() && !loopback) throw new AppError(403, 'invalid_host', 'Host is not allowed.');
     const origin = oneHeader(request, 'origin');
     if (origin !== undefined && !allowedOrigins.has(origin)) throw new AppError(403, 'invalid_origin', 'Origin is not allowed.');
     if (origin) {
