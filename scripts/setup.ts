@@ -180,6 +180,10 @@ async function main(): Promise<void> {
     put(join(ROOT, `.local/bridge-${a.key}.json`), `${JSON.stringify(cfg, null, 2)}\n`);
     workers.push(a.key);
   }
+  // NotchTrader's Swarma view reads swarm_status with its own frontend identity from this token file.
+  if (existsSync('/Applications/NotchTrader.app') && await askYes('Show Swarma agents and swarms in NotchTrader?', true)) {
+    if (ensureIdentity('notchtrader', 'frontend', join(ROOT, '.local/notchtrader.json'))) agents.push('notchtrader');
+  }
 
   // 7. autostart
   const autostart = await askYes('Start Swarma automatically at login?', state.autostart ?? true);
