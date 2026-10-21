@@ -20,7 +20,7 @@ describe('swarm usage routing and status', {skip:!connectionString,concurrency:f
     control = new pg.Pool({connectionString,max:2});
     await control.query(`CREATE SCHEMA "${schema}"`);
     pool = new pg.Pool({connectionString,max:8,options:`-c search_path=${schema},public`});
-    for (const file of ['001_identity.sql','002_core.sql','005_swarm.sql']) {
+    for (const file of ['001_identity.sql','002_core.sql','005_swarm.sql','006_sessions.sql']) {
       await pool.query(await readFile(new URL(`../db/migrations/${file}`,import.meta.url),'utf8'));
     }
     core = new CoreService(pool);
@@ -84,5 +84,33 @@ describe('swarm usage routing and status', {skip:!connectionString,concurrency:f
     const hidden = await call(outsider,'swarm_status',{});
     assert.deepEqual([hidden.workers,hidden.scopes,hidden.recent],[[],[],[]]);
     await assert.rejects(() => call(outsider,'swarm_status',{scope:'project:a'}),(e:unknown) => e instanceof AppError && e.code === 'scope_forbidden');
+  });
+
+  it('records chats per harness, lists them across harnesses and keeps other identities out', async () => {
+    const {front,claude,outsider} = await fixture();
+    const turns = [{role:'user',text:'Fix the login redirect'},{role:'assistant',text:'Patched the callback URL check.'}];
+    const rec = await call(front,'session_record',{harness:'claude-code',session_id:'s-1',scope:'project:a',cwd:'/x',turns});
+    assert.equal(rec.session.title,'Fix the login redirect');
+    assert.equal(rec.session.active,true);
+    await call(front,'session_record',{harness:'claude-code',session_id:'s-1',scope:'project:a',turns:[...turns,{role:'user',text:'Thanks'}],ended:true});
+    const listed = await call(front,'session_list',{harness:'claude-code'});
+    assert.deepEqual(listed.sessions.map((s:any) => [s.session_id,s.turn_count,s.last_text,s.ended,s.active]),[['s-1',3,'Thanks',true,false]]);
+    const got = await call(front,'session_get',{id:listed.sessions[0].id});
+    assert.equal(got.session.turns.length,3);
+    await assert.rejects(() => call(claude,'session_record',{harness:'claude-code',session_id:'s-1',scope:'project:a',turns}),(e:unknown) => e instanceof AppError && e.code === 'forbidden');
+    await assert.rejects(() => call(outsider,'session_get',{id:listed.sessions[0].id}),(e:unknown) => e instanceof AppError && e.code === 'not_found');
+    assert.deepEqual((await call(outsider,'session_list',{})).sessions,[]);
+    await assert.rejects(() => call(outsider,'session_record',{harness:'codex',session_id:'s-2',scope:'project:a',turns}),(e:unknown) => e instanceof AppError && e.code === 'scope_forbidden');
+  });
+
+  it('swarm_status explains routing and shows active chats', async () => {
+    const {front,claude,codex} = await fixture();
+    await call(claude,'usage_report',report('claude',95));
+    await call(codex,'usage_report',report('codex',10));
+    await call(front,'session_record',{harness:'codex',session_id:'c-1',scope:'project:a',turns:[{role:'user',text:'Review auth'}]});
+    const status = await call(front,'swarm_status',{});
+    assert.equal(status.routing.recommended,'codex');
+    assert.match(status.routing.reason,/^codex has the most quota left \(90%\); claude 5h at 95%, resets /);
+    assert.deepEqual(status.sessions.map((s:any) => [s.harness,s.title]),[['codex','Review auth']]);
   });
 });

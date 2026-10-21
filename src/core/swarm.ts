@@ -2,6 +2,7 @@ import type { Pool } from 'pg';
 import { requireCondition } from '../errors.js';
 import type { Principal } from '../types.js';
 import { object, optionalString, scopeName, string } from '../validation.js';
+import { SessionService } from './sessions.js';
 import { assertKnownScope, noExtraKeys, scopeSql, type Db } from './shared.js';
 
 /** Capability a submitter uses to let the service route read work to the provider with most quota left. */
@@ -30,12 +31,32 @@ export async function touchWorker(db: Db, p: Principal): Promise<void> {
     AND (last_seen_at IS NULL OR last_seen_at<clock_timestamp()-interval '10 seconds')`, [p.id]);
 }
 
+interface Window { name: string; used_percent: number; resets_at: string | null }
+interface UsageView { provider: string; ok: boolean; headroom: number; windows?: Window[]; fetched_at: Date | string }
+
+/** Explains auto.read routing for people and front ends; the claim path applies the same rule per scope. */
+export function routing(usage: UsageView[], liveProviders: Set<string>, now = Date.now()) {
+  const providers = usage.map(u => ({ provider: u.provider, headroom: u.headroom, live_worker: liveProviders.has(u.provider), windows: u.windows ?? [],
+    fresh: now - new Date(u.fetched_at).getTime() < 15 * 60e3, ok: u.ok }));
+  const best = providers.filter(x => x.ok && x.fresh && x.live_worker && x.headroom > 5)
+    .sort((a, b) => b.headroom - a.headroom || a.provider.localeCompare(b.provider))[0];
+  const tight = providers.filter(x => x.ok && x.headroom <= 25 && x.windows.length).map(x => {
+    const w = x.windows.reduce((a, b) => (b.used_percent > a.used_percent ? b : a));
+    return `${x.provider} ${w.name} at ${Math.round(w.used_percent)}%${w.resets_at ? `, resets ${w.resets_at}` : ''}`;
+  });
+  const reason = best
+    ? [`${best.provider} has the most quota left (${Math.round(best.headroom)}%)`, ...tight].join('; ')
+    : 'No fresh quota reading from a live worker; any live worker may take auto.read work.';
+  return { recommended: best?.provider ?? null, reason, providers: providers.map(({ fresh, ok, ...rest }) => ({ ...rest, ok, fresh })) };
+}
+
 function headroom(windows: { used_percent: number }[], ok: boolean): number {
   return ok && windows.length ? Math.max(0, 100 - Math.max(...windows.map(w => w.used_percent))) : 0;
 }
 
 export class SwarmService {
-  constructor(private readonly pool: Pool) {}
+  private readonly sessions: SessionService;
+  constructor(private readonly pool: Pool) { this.sessions = new SessionService(pool); }
 
   /** Worker-reported quota readings for the providers it runs. Readings are data, never authority. */
   async report(p: Principal, input: Record<string, unknown>): Promise<unknown> {
@@ -83,7 +104,7 @@ export class SwarmService {
       assertKnownScope(p, scope);
       [all, scopes] = [false, [scope]];
     }
-    const [workers, usage, counts, recent] = await Promise.all([
+    const [workers, usage, counts, recent, sessions] = await Promise.all([
       this.pool.query(`SELECT w.name,w.last_seen_at,coalesce(w.last_seen_at>clock_timestamp()-interval '60 seconds',false) AS live,
           (SELECT coalesce(json_agg(json_build_object('task_id',t.id,'scope',t.scope)),'[]') FROM tasks t
             WHERE t.lease_owner=w.id AND t.status='running' AND ($2::boolean OR t.scope=ANY($3::text[]))) AS running,
@@ -100,10 +121,12 @@ export class SwarmService {
       this.pool.query(`SELECT t.id,t.scope,t.kind,t.status,t.version,left(t.objective,140) AS objective,t.required_capability,t.updated_at,w.name AS worker
         FROM tasks t LEFT JOIN principals w ON w.id=t.lease_owner
         WHERE t.tenant_id=$1 AND ($2::boolean OR t.scope=ANY($3::text[])) ORDER BY t.updated_at DESC LIMIT 15`, [p.tenantId, all, scopes]),
+      this.sessions.active(p, all, scopes),
     ]);
+    const usageView: UsageView[] = usage.rows.map(r => ({ provider: r.provider, ok: r.ok, headroom: r.headroom, ...r.windows, fetched_at: r.fetched_at }));
+    const live = new Set<string>(workers.rows.filter(w => w.live).flatMap(w => w.providers as string[]));
     return {
-      workers: workers.rows,
-      usage: usage.rows.map(r => ({ provider: r.provider, ok: r.ok, headroom: r.headroom, ...r.windows, fetched_at: r.fetched_at })),
+      workers: workers.rows, usage: usageView, routing: routing(usageView, live), sessions,
       scopes: counts.rows, recent: recent.rows, generated_at: new Date().toISOString(),
     };
   }

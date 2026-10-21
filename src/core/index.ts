@@ -6,6 +6,7 @@ import type { Permission, Principal, ToolBackend, ToolDefinition } from '../type
 import { integer, object, optionalString, scopeName, string, uuid } from '../validation.js';
 import { booleanOption, MemoryService } from './memory.js';
 import { assertKnownScope, noExtraKeys } from './shared.js';
+import { SessionService } from './sessions.js';
 import { SwarmService } from './swarm.js';
 import { findTask, TaskService, taskWithInstructions, type TaskRow } from './tasks.js';
 import { TOOL_PERMISSIONS, TOOLS } from './tools.js';
@@ -23,11 +24,13 @@ export class CoreService implements ToolBackend {
   private readonly memories:MemoryService;
   private readonly tasks:TaskService;
   private readonly swarm:SwarmService;
+  private readonly sessions:SessionService;
 
   constructor(private readonly pool:Pool) {
     this.memories = new MemoryService(pool);
     this.tasks = new TaskService(pool);
     this.swarm = new SwarmService(pool);
+    this.sessions = new SessionService(pool);
   }
 
   listTools(principal:Principal):ToolDefinition[] {
@@ -66,6 +69,9 @@ export class CoreService implements ToolBackend {
       case 'artifact_get': return this.tasks.artifactGet(principal,input);
       case 'events_poll': return this.eventsPoll(principal,input);
       case 'swarm_status': return this.swarm.status(principal,input);
+      case 'session_record': return this.sessions.record(principal,input);
+      case 'session_list': return this.sessions.list(principal,input);
+      case 'session_get': return this.sessions.get(principal,input);
       case 'usage_report': return this.swarm.report(principal,input);
       default: throw new AppError(404,'unknown_tool','Unknown tool name.');
     }
