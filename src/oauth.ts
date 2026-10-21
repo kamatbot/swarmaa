@@ -1,0 +1,400 @@
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
+import type { Pool, PoolClient } from 'pg';
+import { transaction } from './db.js';
+import { AppError } from './errors.js';
+import type { AuthBackend, Principal, ServerConfig } from './types.js';
+
+const ACCESS_SECONDS = 3600;
+const GRANT_SECONDS = 30 * 24 * 3600;
+const PENDING_SECONDS = 600;
+const CODE_SECONDS = 120;
+export const OAUTH_COOKIE = 'collective_oauth_browser';
+
+export class OAuthError extends AppError {
+  constructor(code: string, message: string, status = 400) {
+    super(status, code, message);
+  }
+}
+
+export interface AuthorizationForm {
+  kind: 'form';
+  requestId: string;
+  csrf: string;
+  browserCookie: string;
+  clientName: string;
+  redirectUri: string;
+  principal?: Principal;
+}
+
+export type AuthorizationReply = AuthorizationForm | { kind: 'redirect'; location: string };
+
+interface PendingRow {
+  id: string;
+  client_id: string;
+  client_name: string;
+  redirect_uri: string;
+  state: string | null;
+  challenge: string;
+  resource: string;
+  csrf_hash: string;
+  browser_hash: string;
+  grant_snapshot: Principal | null;
+}
+
+function opaque(prefix: string): string {
+  return `${prefix}_${randomBytes(32).toString('base64url')}`;
+}
+
+export function tokenHash(value: string): string {
+  return createHash('sha256').update(value).digest('hex');
+}
+
+function equalHash(left: string, right: string): boolean {
+  const a = Buffer.from(left, 'hex');
+  const b = Buffer.from(right, 'hex');
+  return a.length === 32 && b.length === 32 && timingSafeEqual(a, b);
+}
+
+export function pkceChallenge(verifier: string): string {
+  return createHash('sha256').update(verifier).digest('base64url');
+}
+
+function record(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new OAuthError('invalid_request', 'Expected an object.');
+  }
+  return value as Record<string, unknown>;
+}
+
+function field(value: unknown, name: string, max = 2048): string {
+  if (typeof value !== 'string' || value.length === 0 || value.length > max || /[\u0000-\u001f\u007f]/u.test(value)) {
+    throw new OAuthError('invalid_request', `Invalid ${name}.`);
+  }
+  return value;
+}
+
+function optionalField(value: unknown, name: string, max = 2048): string | undefined {
+  return value === undefined ? undefined : field(value, name, max);
+}
+
+function requiredParameter(params: URLSearchParams, name: string, max = 2048): string {
+  if (params.getAll(name).length !== 1) throw new OAuthError('invalid_request', `Exactly one ${name} is required.`);
+  return field(params.get(name), name, max);
+}
+
+function parameter(params: URLSearchParams, name: string, max = 2048): string | undefined {
+  const values = params.getAll(name);
+  if (values.length > 1) throw new OAuthError('invalid_request', `Duplicate ${name}.`);
+  return values.length ? field(values[0], name, max) : undefined;
+}
+
+function allowedScope(scope: string | undefined): void {
+  if (scope !== undefined && scope !== 'mcp') throw new OAuthError('invalid_scope', 'The only OAuth scope is mcp. Project grants come from the connection identity.');
+}
+
+/** Never widen a grant when the underlying principal changes. */
+export function narrowGrant(snapshot: Principal, current: Principal | null): Principal | null {
+  if (!current || current.role === 'admin' || snapshot.role === 'admin' ||
+      snapshot.id !== current.id || snapshot.tenantId !== current.tenantId ||
+      snapshot.credentialVersion !== current.credentialVersion ||
+      snapshot.role !== current.role || snapshot.permissions.includes('admin') ||
+      current.permissions.includes('admin') || snapshot.scopes.includes('*')) return null;
+  const scopes = snapshot.scopes.filter(scope => current.scopes.includes(scope));
+  const permissions = snapshot.permissions.filter(permission => current.permissions.includes(permission));
+  if (!scopes.length || !permissions.length) return null;
+  return { ...current, scopes, permissions };
+}
+
+export function validateRedirectUri(value: unknown, config: ServerConfig): string {
+  const raw = field(value, 'redirect_uri');
+  let url: URL;
+  try { url = new URL(raw); } catch { throw new OAuthError('invalid_redirect_uri', 'Redirect URI must be an absolute URL.'); }
+  const loopback = ['127.0.0.1', '[::1]', 'localhost'].includes(url.hostname.toLowerCase());
+  const safeScheme = url.protocol === 'https:' || (config.allowInsecureLocalhost && loopback && url.protocol === 'http:');
+  const allowed = config.oauthRedirectHosts.map(host => host.toLowerCase()).includes(url.hostname.toLowerCase());
+  if (!safeScheme || !allowed || url.username || url.password || raw.includes('#') || raw !== url.href) {
+    throw new OAuthError('invalid_redirect_uri', 'Redirect URI must be canonical, use an allowed host, and have no credentials or fragment.');
+  }
+  // Exact URI matching is enforced again on authorization and code exchange.
+  return raw;
+}
+
+export class OAuthService {
+  readonly issuer: string;
+  readonly resource: string;
+
+  constructor(private readonly pool: Pool, private readonly auth: AuthBackend, private readonly config: ServerConfig) {
+    const url = new URL(config.publicUrl);
+    if (url.pathname !== '/' || url.search || url.hash || url.username || url.password) {
+      throw new Error('PUBLIC_URL must be an origin with no path, credentials, query or fragment.');
+    }
+    this.issuer = url.origin;
+    this.resource = `${this.issuer}/mcp`;
+  }
+
+  authorizationMetadata(): Record<string, unknown> {
+    return {
+      issuer: this.issuer,
+      authorization_endpoint: `${this.issuer}/oauth/authorize`,
+      token_endpoint: `${this.issuer}/oauth/token`,
+      registration_endpoint: `${this.issuer}/oauth/register`,
+      revocation_endpoint: `${this.issuer}/oauth/revoke`,
+      response_types_supported: ['code'],
+      grant_types_supported: ['authorization_code', 'refresh_token'],
+      token_endpoint_auth_methods_supported: ['none'],
+      revocation_endpoint_auth_methods_supported: ['none'],
+      code_challenge_methods_supported: ['S256'],
+      scopes_supported: ['mcp'],
+      authorization_response_iss_parameter_supported: true,
+    };
+  }
+
+  resourceMetadata(): Record<string, unknown> {
+    return { resource: this.resource, authorization_servers: [this.issuer], scopes_supported: ['mcp'], bearer_methods_supported: ['header'] };
+  }
+
+  async registerClient(input: unknown): Promise<Record<string, unknown>> {
+    const data = record(input);
+    if (!Array.isArray(data.redirect_uris) || data.redirect_uris.length < 1 || data.redirect_uris.length > 8) {
+      throw new OAuthError('invalid_client_metadata', 'Provide between one and eight redirect URIs.');
+    }
+    const redirects = [...new Set(data.redirect_uris.map(uri => validateRedirectUri(uri, this.config)))];
+    if (data.token_endpoint_auth_method !== undefined && data.token_endpoint_auth_method !== 'none') {
+      throw new OAuthError('invalid_client_metadata', 'Only public clients with token_endpoint_auth_method none are supported.');
+    }
+    const grants = data.grant_types ?? ['authorization_code', 'refresh_token'];
+    if (!Array.isArray(grants) || !grants.includes('authorization_code') || grants.some(grant => !['authorization_code', 'refresh_token'].includes(grant))) {
+      throw new OAuthError('invalid_client_metadata', 'Only authorization_code and refresh_token grants are supported.');
+    }
+    if (data.response_types !== undefined && (!Array.isArray(data.response_types) || data.response_types.length !== 1 || data.response_types[0] !== 'code')) {
+      throw new OAuthError('invalid_client_metadata', 'Only the code response type is supported.');
+    }
+    allowedScope(optionalField(data.scope, 'scope', 128));
+    const name = data.client_name === undefined ? 'MCP client' : field(data.client_name, 'client_name', 160);
+    const id = opaque('cn_client');
+    await transaction(this.pool, async client => {
+      // Serialize registration to enforce a durable ceiling across API replicas.
+      await client.query("SELECT pg_advisory_xact_lock(420315903)");
+      const count = await client.query<{ count: string }>('SELECT count(*)::text AS count FROM oauth_clients');
+      if (Number(count.rows[0]?.count ?? 0) >= 1000) throw new OAuthError('temporarily_unavailable', 'Client registration capacity reached. Contact the service owner.', 503);
+      await client.query('INSERT INTO oauth_clients(client_id, client_name, redirect_uris) VALUES ($1,$2,$3)', [id, name, redirects]);
+    });
+    return {
+      client_id: id, client_name: name, redirect_uris: redirects,
+      token_endpoint_auth_method: 'none', grant_types: ['authorization_code', 'refresh_token'],
+      response_types: ['code'], scope: 'mcp', client_id_issued_at: Math.floor(Date.now() / 1000),
+    };
+  }
+
+  async beginAuthorize(params: URLSearchParams, browserCookie?: string): Promise<AuthorizationForm> {
+    const clientId = requiredParameter(params, 'client_id', 128);
+    const redirectUri = requiredParameter(params, 'redirect_uri');
+    const responseType = requiredParameter(params, 'response_type', 64);
+    const resource = requiredParameter(params, 'resource');
+    const challenge = requiredParameter(params, 'code_challenge', 128);
+    const method = requiredParameter(params, 'code_challenge_method', 32);
+    const state = parameter(params, 'state');
+    allowedScope(parameter(params, 'scope', 128));
+    if (responseType !== 'code') throw new OAuthError('unsupported_response_type', 'Only authorization code flow is supported.');
+    if (resource !== this.resource) throw new OAuthError('invalid_target', 'Resource must match this server MCP endpoint.');
+    if (method !== 'S256' || !/^[A-Za-z0-9_-]{43}$/u.test(challenge)) throw new OAuthError('invalid_request', 'A valid S256 PKCE challenge is required.');
+    const client = await this.pool.query<{ client_name: string; redirect_uris: string[] }>('SELECT client_name, redirect_uris FROM oauth_clients WHERE client_id=$1', [clientId]);
+    const registered = client.rows[0];
+    if (!registered || !registered.redirect_uris.includes(redirectUri)) throw new OAuthError('invalid_request', 'Client and redirect URI do not match a registration.');
+    validateRedirectUri(redirectUri, this.config); // Allowlist changes take effect immediately.
+    const browser = browserCookie && /^[A-Za-z0-9_-]{43}$/u.test(browserCookie) ? browserCookie : randomBytes(32).toString('base64url');
+    const csrf = randomBytes(32).toString('base64url');
+    const requestId = randomUUID();
+    await this.pool.query('DELETE FROM oauth_pending WHERE expires_at <= now()');
+    await this.pool.query(
+      'INSERT INTO oauth_pending(id,client_id,redirect_uri,state,challenge,resource,csrf_hash,browser_hash,expires_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,now()+make_interval(secs=>$9))',
+      [requestId, clientId, redirectUri, state ?? null, challenge, resource, tokenHash(csrf), tokenHash(browser), PENDING_SECONDS],
+    );
+    return { kind: 'form', requestId, csrf, browserCookie: browser, clientName: registered.client_name, redirectUri };
+  }
+
+  async respondAuthorize(form: URLSearchParams, browserCookie?: string): Promise<AuthorizationReply> {
+    const requestId = requiredParameter(form, 'request_id', 64);
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(requestId)) throw new OAuthError('invalid_request', 'Invalid authorization request.');
+    const csrf = requiredParameter(form, 'csrf', 128);
+    const action = requiredParameter(form, 'action', 32);
+    if (!['identify', 'approve', 'deny'].includes(action)) throw new OAuthError('invalid_request', 'Invalid authorization action.');
+    if (!browserCookie || !/^[A-Za-z0-9_-]{43}$/u.test(browserCookie)) throw new OAuthError('invalid_request', 'Authorization browser cookie is missing.', 403);
+    const browser = browserCookie;
+    let identifyingPrincipal: Principal | null = null;
+    let identifyingTokenHash: string | undefined;
+    if (action === 'identify') {
+      const token = requiredParameter(form, 'connection_token', 4096);
+      identifyingPrincipal = await this.auth.authenticate(token);
+      if (!identifyingPrincipal || identifyingPrincipal.role === 'admin' || identifyingPrincipal.permissions.includes('admin') || identifyingPrincipal.scopes.includes('*')) {
+        throw new OAuthError('access_denied', 'Use a valid non-admin connection token issued for this client.', 403);
+      }
+      identifyingTokenHash = tokenHash(token);
+    }
+    return transaction<AuthorizationReply>(this.pool, async client => {
+      if (identifyingPrincipal) {
+        // The owner rotates/revokes by locking the principal before pending
+        // requests. Use the same order and recheck the credential after taking
+        // the lock: an old token cannot outlive rotation through an in-flight
+        // identity step whose pending grant_snapshot was still null.
+        const locked = await client.query(
+          'SELECT id FROM principals WHERE id=$1 AND token_hash=$2 AND disabled=false FOR SHARE',
+          [identifyingPrincipal.id, identifyingTokenHash],
+        );
+        if (!locked.rows.length) throw new OAuthError('access_denied', 'This connection token was rotated or revoked.', 403);
+      }
+      const selected = await client.query<PendingRow>(
+        'SELECT p.*, c.client_name FROM oauth_pending p JOIN oauth_clients c USING(client_id) WHERE p.id=$1 AND p.expires_at>now() FOR UPDATE OF p', [requestId],
+      );
+      const pending = selected.rows[0];
+      if (!pending || !equalHash(pending.csrf_hash, tokenHash(csrf)) || !equalHash(pending.browser_hash, tokenHash(browser))) {
+        throw new OAuthError('invalid_request', 'Authorization request expired or verification failed.', 403);
+      }
+      validateRedirectUri(pending.redirect_uri, this.config);
+      if (action === 'deny') {
+        await client.query('DELETE FROM oauth_pending WHERE id=$1', [requestId]);
+        return { kind: 'redirect', location: this.redirect(pending, { error: 'access_denied' }) };
+      }
+      if (action === 'identify') {
+        // Connection tokens are checked but never stored or re-rendered.
+        const principal = identifyingPrincipal!;
+        const nextCsrf = randomBytes(32).toString('base64url');
+        await client.query('UPDATE oauth_pending SET grant_snapshot=$2::jsonb,csrf_hash=$3 WHERE id=$1', [requestId, JSON.stringify(principal), tokenHash(nextCsrf)]);
+        return { kind: 'form', requestId, csrf: nextCsrf, browserCookie: browser, clientName: pending.client_name, redirectUri: pending.redirect_uri, principal };
+      }
+      if (!pending.grant_snapshot) throw new OAuthError('invalid_request', 'Identify the connection before approving.');
+      const principal = narrowGrant(pending.grant_snapshot, await this.auth.getPrincipal(pending.grant_snapshot.id));
+      if (!principal) throw new OAuthError('access_denied', 'This connection identity is no longer authorized.', 403);
+      const code = opaque('cn_code');
+      await client.query(
+        'INSERT INTO oauth_codes(code_hash,client_id,principal_id,redirect_uri,challenge,resource,grant_snapshot,expires_at) VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,now()+make_interval(secs=>$8))',
+        [tokenHash(code), pending.client_id, principal.id, pending.redirect_uri, pending.challenge, pending.resource, JSON.stringify(principal), CODE_SECONDS],
+      );
+      await client.query('DELETE FROM oauth_pending WHERE id=$1', [requestId]);
+      return { kind: 'redirect', location: this.redirect(pending, { code }) };
+    });
+  }
+
+  private redirect(pending: PendingRow, fields: Record<string, string>): string {
+    const redirect = new URL(pending.redirect_uri);
+    for (const [key, value] of Object.entries(fields)) redirect.searchParams.set(key, value);
+    if (pending.state !== null) redirect.searchParams.set('state', pending.state);
+    redirect.searchParams.set('iss', this.issuer);
+    return redirect.href;
+  }
+
+  async exchangeToken(form: URLSearchParams): Promise<Record<string, unknown>> {
+    const grantType = requiredParameter(form, 'grant_type', 64);
+    const clientId = requiredParameter(form, 'client_id', 128);
+    const resource = requiredParameter(form, 'resource');
+    if (form.has('client_secret')) throw new OAuthError('invalid_client', 'This server supports public clients without client secrets.');
+    allowedScope(parameter(form, 'scope', 128));
+    if (resource !== this.resource) throw new OAuthError('invalid_target', 'Resource must match this server MCP endpoint.');
+    if (grantType === 'authorization_code') {
+      const code = requiredParameter(form, 'code', 256);
+      const redirect = requiredParameter(form, 'redirect_uri');
+      const verifier = requiredParameter(form, 'code_verifier', 128);
+      if (!/^[A-Za-z0-9._~-]{43,128}$/u.test(verifier)) throw new OAuthError('invalid_grant', 'Invalid authorization code or PKCE verifier.');
+      validateRedirectUri(redirect, this.config);
+      return transaction(this.pool, async client => {
+        const result = await client.query<{
+          client_id: string; principal_id: string; redirect_uri: string; challenge: string;
+          resource: string; grant_snapshot: Principal; used_at: Date | null;
+        }>('SELECT * FROM oauth_codes WHERE code_hash=$1 AND expires_at>now() FOR UPDATE', [tokenHash(code)]);
+        const row = result.rows[0];
+        if (!row || row.used_at || row.client_id !== clientId || row.redirect_uri !== redirect || row.resource !== resource ||
+            !equalHash(tokenHash(row.challenge), tokenHash(pkceChallenge(verifier)))) {
+          throw new OAuthError('invalid_grant', 'Invalid authorization code or PKCE verifier.');
+        }
+        const principal = narrowGrant(row.grant_snapshot, await this.auth.getPrincipal(row.principal_id));
+        if (!principal) throw new OAuthError('invalid_grant', 'The connection identity is no longer authorized.');
+        await client.query('UPDATE oauth_codes SET used_at=now() WHERE code_hash=$1', [tokenHash(code)]);
+        const grantId = randomUUID();
+        await client.query(
+          'INSERT INTO oauth_grants(id,principal_id,client_id,resource,grant_snapshot,expires_at) VALUES ($1,$2,$3,$4,$5::jsonb,now()+make_interval(secs=>$6))',
+          [grantId, principal.id, clientId, resource, JSON.stringify(principal), GRANT_SECONDS],
+        );
+        return this.issueTokens(client, grantId);
+      });
+    }
+    if (grantType !== 'refresh_token') throw new OAuthError('unsupported_grant_type', 'Only authorization_code and refresh_token grants are supported.');
+    const refreshToken = requiredParameter(form, 'refresh_token', 256);
+    const reply = await transaction(this.pool, async client => {
+      const result = await client.query<{
+        id: string; client_id: string; principal_id: string; resource: string;
+        grant_snapshot: Principal; used_at: Date | null; revoked_at: Date | null; live: boolean;
+      }>(
+        'SELECT g.*, r.used_at, (g.expires_at>now() AND r.expires_at>now()) AS live FROM oauth_refresh_tokens r JOIN oauth_grants g ON g.id=r.grant_id WHERE r.token_hash=$1 FOR UPDATE OF g, r',
+        [tokenHash(refreshToken)],
+      );
+      const row = result.rows[0];
+      if (!row || row.client_id !== clientId || row.resource !== resource || !row.live || row.revoked_at) return null;
+      if (row.used_at) {
+        // Commit revocation before returning invalid_grant: throwing here would roll it back.
+        await client.query('UPDATE oauth_grants SET revoked_at=now() WHERE id=$1', [row.id]);
+        return null;
+      }
+      const principal = narrowGrant(row.grant_snapshot, await this.auth.getPrincipal(row.principal_id));
+      if (!principal) {
+        await client.query('UPDATE oauth_grants SET revoked_at=now() WHERE id=$1', [row.id]);
+        return null;
+      }
+      await client.query('UPDATE oauth_refresh_tokens SET used_at=now() WHERE token_hash=$1', [tokenHash(refreshToken)]);
+      // Persist narrowing: a removed permission cannot reappear later in this family.
+      await client.query('UPDATE oauth_grants SET grant_snapshot=$2::jsonb WHERE id=$1', [row.id, JSON.stringify(principal)]);
+      return this.issueTokens(client, row.id);
+    });
+    if (!reply) throw new OAuthError('invalid_grant', 'Refresh token expired, was already used, or was revoked. Reconnect the client.');
+    return reply;
+  }
+
+  private async issueTokens(client: PoolClient, grantId: string): Promise<Record<string, unknown>> {
+    const access = opaque('cn_access');
+    const refresh = opaque('cn_refresh');
+    await client.query(
+      'INSERT INTO oauth_access_tokens(token_hash,grant_id,expires_at) SELECT $1,id,LEAST(expires_at,now()+make_interval(secs=>$3)) FROM oauth_grants WHERE id=$2',
+      [tokenHash(access), grantId, ACCESS_SECONDS],
+    );
+    await client.query('INSERT INTO oauth_refresh_tokens(token_hash,grant_id,expires_at) SELECT $1,id,expires_at FROM oauth_grants WHERE id=$2', [tokenHash(refresh), grantId]);
+    const remaining = await client.query<{ remaining: number }>(
+      'SELECT GREATEST(0,FLOOR(EXTRACT(EPOCH FROM expires_at-now())))::int AS remaining FROM oauth_access_tokens WHERE token_hash=$1', [tokenHash(access)],
+    );
+    return { access_token: access, token_type: 'Bearer', expires_in: remaining.rows[0]?.remaining ?? ACCESS_SECONDS, refresh_token: refresh, scope: 'mcp' };
+  }
+
+  async authenticate(token: string): Promise<Principal | null> {
+    if (!/^cn_access_[A-Za-z0-9_-]{43}$/u.test(token)) return null;
+    const result = await this.pool.query<{ grant_id: string; principal_id: string; grant_snapshot: Principal }>(
+      'SELECT g.id AS grant_id,g.principal_id,g.grant_snapshot FROM oauth_access_tokens a JOIN oauth_grants g ON g.id=a.grant_id WHERE a.token_hash=$1 AND a.expires_at>now() AND g.expires_at>now() AND g.revoked_at IS NULL AND g.resource=$2',
+      [tokenHash(token), this.resource],
+    );
+    const row = result.rows[0];
+    if (!row) return null;
+    const principal = narrowGrant(row.grant_snapshot, await this.auth.getPrincipal(row.principal_id));
+    return principal ? { ...principal, oauthGrantId: row.grant_id } : null;
+  }
+
+  async revokeToken(form: URLSearchParams): Promise<void> {
+    const clientId = requiredParameter(form, 'client_id', 128);
+    const token = requiredParameter(form, 'token', 4096);
+    if (form.has('client_secret')) throw new OAuthError('invalid_client', 'Client secrets are not supported.');
+    // RFC 7009: success is deliberately indistinguishable for unknown tokens.
+    await this.pool.query(
+      'UPDATE oauth_grants g SET revoked_at=now() WHERE g.client_id=$1 AND g.id IN (SELECT grant_id FROM oauth_refresh_tokens WHERE token_hash=$2 UNION SELECT grant_id FROM oauth_access_tokens WHERE token_hash=$2)',
+      [clientId, tokenHash(token)],
+    );
+  }
+}
+
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>"']/gu, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]!);
+}
+
+export function authorizationHtml(form: AuthorizationForm): string {
+  const hidden = `<input type="hidden" name="request_id" value="${escapeHtml(form.requestId)}"><input type="hidden" name="csrf" value="${escapeHtml(form.csrf)}">`;
+  const grant = form.principal;
+  const fields = grant
+    ? `<p>Identity: <strong>${escapeHtml(grant.name)}</strong> (${escapeHtml(grant.role)}).</p><p>Projects: ${grant.scopes.map(escapeHtml).join(', ')}.</p><p>Permissions: ${grant.permissions.map(escapeHtml).join(', ')}.</p><p>This client will receive only these grants. Authorization expires in at most 30 days. Disabling the connection identity revokes its access.</p><button name="action" value="approve">Approve connection</button>`
+    : '<p>Enter the non-admin connection token your service owner issued for this client. The next screen shows the exact projects and permissions before you approve.</p><label>Connection token <input name="connection_token" type="password" autocomplete="off" spellcheck="false" required maxlength="4096"></label><button name="action" value="identify">Review permissions</button>';
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Connect collective network</title></head><body><main><h1>Connect collective network</h1><p>Client: <strong>${escapeHtml(form.clientName)}</strong>. This client name is self-reported.</p><p>Return address: <code>${escapeHtml(form.redirectUri)}</code></p><form method="post" action="/oauth/authorize">${hidden}${fields}<button name="action" value="deny" formnovalidate>Deny</button></form></main></body></html>`;
+}

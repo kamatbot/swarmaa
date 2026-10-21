@@ -1,0 +1,493 @@
+//! Who is where: this machine's sessions, teammates' sessions (from their presence), and resolving an address
+//! like `alice/api-cursor`, `repo:api` or `*` to recipients.
+
+use super::Daemon;
+use crate::{
+    CLI, agent,
+    claude::{self, ClaudeSession},
+    doing,
+    git::GitInfo,
+    net::{Presence, Remote},
+    proto::*,
+    store::Remembered,
+    util,
+};
+use anyhow::{Result, bail};
+use iroh::EndpointId;
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
+
+/// A resolved recipient.
+pub(super) enum Target {
+    /// A session on this machine; `key` is set when it is running.
+    Session { address: String, key: Option<String> },
+    /// A session or person on a teammate's machine.
+    Remote { address: String, machine: EndpointId, machine_name: String, online: bool },
+}
+
+impl Target {
+    pub(super) fn address(&self) -> String {
+        match self {
+            Target::Session { address, .. } | Target::Remote { address, .. } => address.clone(),
+        }
+    }
+}
+
+/// Something an address can match.
+struct Cand {
+    person: String,
+    name: String,
+    machine: String,
+    live: bool,
+    repo: Option<String>,
+    place: Place,
+}
+
+enum Place {
+    Local(Option<String>),
+    Remote(EndpointId, bool),
+}
+
+impl Daemon {
+    /// This machine's sessions: running ones, plus (if `unmanaged`) Claude Code sessions without Reason Network.
+    pub(super) async fn local_rows(self: &Arc<Self>, me: Option<&str>, unmanaged: bool) -> Result<Vec<SessionInfo>> {
+        let claude = self.shared(tokio::task::spawn_blocking(claude::scan).await?);
+        let mut cwds: Vec<String> = self.inner.lock().unwrap().live.values().map(|l| l.reg.cwd.clone()).collect();
+        cwds.extend(claude.iter().filter_map(|c| c.cwd.clone()));
+        let mut gits: HashMap<String, GitInfo> = HashMap::new();
+        for cwd in cwds {
+            let info = self.git(&cwd).await;
+            gits.insert(cwd, info);
+        }
+
+        // With Claude Code on Reason Network, every open Claude session is on it: sessions started before Reason Network was set
+        // up have no Reason Network tools, but take messages through their own socket and reply with the CLI.
+        if claude::wired() {
+            let now = util::now_ms();
+            for c in &claude {
+                let Some(id) = &c.session_id else { continue };
+                let key = format!("{}:{id}", agent::CLAUDE_CODE);
+                if !self.inner.lock().unwrap().live.contains_key(&key) {
+                    let cwd = c.cwd.clone().unwrap_or_else(|| "/".into());
+                    let git = gits.get(&cwd).cloned().unwrap_or_default();
+                    let named = matches!(c.name_source.as_deref(), Some("user" | "peer" | "hook" | "auto"));
+                    let reg = SessionReg {
+                        key: key.clone(),
+                        agent: agent::CLAUDE_CODE.into(),
+                        cwd,
+                        agent_session_id: Some(id.clone()),
+                        pid: Some(c.pid),
+                        tier: Tier::Push,
+                        name: if named { c.label() } else { None },
+                    };
+                    if let Err(e) = self.register(None, reg, git) {
+                        super::log(&format!("adding Claude session {id}: {e:#}"));
+                    }
+                }
+                // Seen alive just now (it goes when its process does).
+                if let Some(l) = self.inner.lock().unwrap().live.get_mut(&key) {
+                    l.last_hook = Some(now);
+                }
+            }
+        }
+        // A Claude Code session someone renamed goes by that name here too.
+        let renames: Vec<(String, String)> = {
+            let g = self.inner.lock().unwrap();
+            g.live
+                .iter()
+                .filter_map(|(k, l)| {
+                    let name = util::slug(claude.iter().find(|c| claude_match(c, &l.reg))?.chosen_name()?);
+                    (!name.is_empty() && name != l.name).then(|| (k.clone(), name))
+                })
+                .collect()
+        };
+        for (key, name) in renames {
+            let _ = self.set_status(&key, None, Some(name));
+        }
+        // What each session is doing, from what its agent records anyway (title, task in progress).
+        let sources: Vec<(String, doing::Source)> = {
+            let g = self.inner.lock().unwrap();
+            let live = g.live.iter().map(|(k, l)| {
+                let session = claude.iter().find(|c| claude_match(c, &l.reg)).and_then(|c| c.session_id.clone());
+                let session = session.or_else(|| l.reg.agent_session_id.clone());
+                (k.clone(), doing::Source { agent: l.reg.agent.clone(), session, transcript: l.transcript.clone() })
+            });
+            let unmanaged = claude.iter().map(|c| {
+                let source =
+                    doing::Source { agent: agent::CLAUDE_CODE.into(), session: c.session_id.clone(), transcript: None };
+                (format!("pid:{}", c.pid), source)
+            });
+            live.chain(unmanaged).collect()
+        };
+        let doings: HashMap<String, String> = tokio::task::spawn_blocking(move || {
+            sources.into_iter().filter_map(|(k, s)| Some((k, doing::of(&s)?))).collect()
+        })
+        .await?;
+
+        let mut g = self.inner.lock().unwrap();
+        self.prune(&mut g);
+        for l in g.live.values_mut() {
+            if let Some(info) = gits.get(&l.reg.cwd) {
+                l.git = info.clone();
+            }
+        }
+        let mut rows = Vec::new();
+        let mut matched = HashSet::new();
+        for l in g.live.values() {
+            let mut row = self.row(&l.name, &l.reg.agent, &l.reg.cwd, Some(&l.git));
+            row.since = Some(l.since);
+            if let Some((st, at)) = &l.status {
+                row.status = st.clone();
+                row.since = Some(*at);
+            }
+            // Claude Code's registry knows whether the session is busy or idle.
+            if let Some(c) = claude.iter().find(|c| claude_match(c, &l.reg)) {
+                matched.insert(c.pid);
+                if let Some(st) = &c.status {
+                    row.status = st.clone();
+                    row.since = c.status_updated_at.or(row.since);
+                }
+            }
+            row.doing = l.doing.clone().or_else(|| doings.get(&l.reg.key).cloned());
+            row.tier = l.reg.tier;
+            row.unread = g.store.unread_count(&row.address)?;
+            row.is_me = me == Some(l.reg.key.as_str());
+            rows.push(row);
+        }
+        if unmanaged {
+            for c in claude.iter().filter(|c| !matched.contains(&c.pid)) {
+                let cwd = c.cwd.clone().unwrap_or_default();
+                let name = c.label().unwrap_or_else(|| format!("claude-{}", c.pid));
+                let mut row = self.row(&name, agent::CLAUDE_CODE, &cwd, gits.get(&cwd));
+                row.status = c.status.clone().unwrap_or_else(|| "live".into());
+                row.since = c.status_updated_at.or(c.started_at);
+                row.doing = doings.get(&format!("pid:{}", c.pid)).cloned();
+                rows.push(row);
+            }
+        }
+        Ok(rows)
+    }
+
+    fn row(&self, name: &str, agent: &str, cwd: &str, git: Option<&GitInfo>) -> SessionInfo {
+        SessionInfo {
+            address: self.addr(name),
+            name: name.to_string(),
+            person: self.person.clone(),
+            machine: self.machine.clone(),
+            agent: agent.to_string(),
+            cwd: util::tilde(cwd),
+            repo: git.and_then(|g| g.repo.clone()),
+            branch: git.and_then(|g| g.branch.clone()),
+            status: "live".into(),
+            since: None,
+            doing: None,
+            tier: Tier::None,
+            unread: 0,
+            is_me: false,
+        }
+    }
+
+    /// Claude Code sessions outside the folders that are off.
+    fn shared(&self, mut claude: Vec<ClaudeSession>) -> Vec<ClaudeSession> {
+        claude.retain(|c| !c.cwd.as_deref().is_some_and(|d| self.cfg.off_in(d)));
+        claude
+    }
+
+    /// Sessions this machine remembers (gone for now), but none from a folder that is off.
+    fn remembered(&self, g: &super::Inner) -> Vec<Remembered> {
+        let live: HashSet<&str> = g.live.values().map(|l| l.name.as_str()).collect();
+        let mut known = g.store.sessions().unwrap_or_default();
+        known.retain(|r| !live.contains(r.name.as_str()) && !self.cfg.off_in(&r.cwd));
+        known
+    }
+
+    /// What this machine tells teammates about itself.
+    pub async fn presence(self: &Arc<Self>) -> Presence {
+        let sessions = self.local_rows(None, self.cfg.share_unmanaged).await.unwrap_or_default();
+        self.presence_of(sessions)
+    }
+
+    fn presence_of(&self, mut sessions: Vec<SessionInfo>) -> Presence {
+        if !self.cfg.share_paths {
+            for s in &mut sessions {
+                s.cwd =
+                    std::path::Path::new(&s.cwd).file_name().map_or("~".into(), |n| n.to_string_lossy().into_owned());
+            }
+        }
+        let g = self.inner.lock().unwrap();
+        let mut known = self.remembered(&g);
+        known.sort_by_key(|r| -r.last_seen);
+        Presence {
+            sessions,
+            known: known.into_iter().take(100).map(|r| r.name).collect(),
+            features: vec![crate::files::FEATURE.into()],
+        }
+    }
+
+    pub(super) async fn who(
+        self: &Arc<Self>,
+        me: Option<String>,
+        filter: Option<String>,
+        all: bool,
+    ) -> Result<Directory> {
+        let mut rows = self.local_rows(me.as_deref(), true).await?;
+        if all {
+            let g = self.inner.lock().unwrap();
+            for r in self.remembered(&g) {
+                let git = GitInfo { root: None, repo: r.repo.clone(), branch: r.branch.clone() };
+                let mut row = self.row(&r.name, &r.agent, &r.cwd, Some(&git));
+                row.status = "offline".into();
+                row.since = Some(r.last_seen);
+                row.doing = r.doing.clone();
+                row.tier = r.tier;
+                row.unread = g.store.unread_count(&row.address)?;
+                rows.push(row);
+            }
+        }
+        let machines = self.machines();
+        if let (Some(net), Some(team)) = (self.net(), self.team_state()) {
+            for (id, rem) in net.remotes() {
+                let Some(m) = team.member(&id).filter(|m| m.active) else { continue };
+                if !rem.online && !all {
+                    continue;
+                }
+                for mut s in rem.presence.sessions {
+                    // Trust the roster, not the peer, for who and where.
+                    s.person = m.person.clone();
+                    s.machine = m.machine.clone();
+                    s.address = format!("{}/{}", m.person, s.name);
+                    s.is_me = false;
+                    if !rem.online {
+                        s.status = "offline".into();
+                        s.since = Some(rem.last_seen);
+                    }
+                    rows.push(s);
+                }
+            }
+        }
+        if let Some(f) = filter.map(|f| f.to_lowercase()).filter(|f| !f.is_empty()) {
+            rows.retain(|r| {
+                [&r.address, &r.agent, &r.cwd, &r.machine]
+                    .into_iter()
+                    .chain([&r.repo, &r.branch, &r.doing].into_iter().flatten())
+                    .any(|s| s.to_lowercase().contains(&f))
+            });
+        }
+        // Me first, then teammates; on Reason Network before not; live before offline.
+        let rank = |r: &SessionInfo| {
+            (
+                r.person != self.person,
+                r.person.clone(),
+                r.machine.clone(),
+                r.tier == Tier::None,
+                r.status == "offline",
+                r.name.clone(),
+            )
+        };
+        rows.sort_by_key(rank);
+        Ok(Directory {
+            team: self.team_state().map(|t| t.shown_name()),
+            person: self.person.clone(),
+            machine: self.machine.clone(),
+            machines,
+            sessions: rows,
+            invite_line: self.current_link().map(|l| crate::invite_line(&l)),
+        })
+    }
+
+    /// Every address target we know about, here and on teammates' machines.
+    fn candidates(&self, g: &super::Inner, remotes: &HashMap<EndpointId, Remote>) -> Vec<Cand> {
+        let mut out = Vec::new();
+        for l in g.live.values() {
+            out.push(Cand {
+                person: self.person.clone(),
+                name: l.name.clone(),
+                machine: self.machine.clone(),
+                live: true,
+                repo: l.git.repo.clone(),
+                place: Place::Local(Some(l.reg.key.clone())),
+            });
+        }
+        for r in self.remembered(g) {
+            out.push(Cand {
+                person: self.person.clone(),
+                name: r.name,
+                machine: self.machine.clone(),
+                live: false,
+                repo: r.repo,
+                place: Place::Local(None),
+            });
+        }
+        let Some(team) = &g.team else { return out };
+        for (id, rem) in remotes {
+            let Some(m) = team.member(id).filter(|m| m.active) else { continue };
+            let names: HashSet<&str> = rem.presence.sessions.iter().map(|s| s.name.as_str()).collect();
+            for s in &rem.presence.sessions {
+                out.push(Cand {
+                    person: m.person.clone(),
+                    name: s.name.clone(),
+                    machine: m.machine.clone(),
+                    live: rem.online && s.tier != Tier::None,
+                    repo: s.repo.clone(),
+                    place: Place::Remote(*id, rem.online),
+                });
+            }
+            for n in rem.presence.known.iter().filter(|n| !names.contains(n.as_str())) {
+                out.push(Cand {
+                    person: m.person.clone(),
+                    name: n.clone(),
+                    machine: m.machine.clone(),
+                    live: false,
+                    repo: None,
+                    place: Place::Remote(*id, rem.online),
+                });
+            }
+        }
+        out
+    }
+
+    /// Resolves an address. `exclude` is the sender's session key (not messaged by its own broadcasts).
+    pub(super) fn resolve(
+        &self,
+        g: &super::Inner,
+        remotes: &HashMap<EndpointId, Remote>,
+        to: &str,
+        exclude: Option<&str>,
+    ) -> Result<Vec<Target>> {
+        let all = self.candidates(g, remotes);
+        let (spec, at) = match to.rsplit_once('@') {
+            Some((s, m)) if !s.is_empty() && !m.is_empty() => (s, Some(m)),
+            _ => (to, None),
+        };
+        let cands: Vec<&Cand> = all
+            .iter()
+            .filter(|c| at.is_none_or(|m| c.machine == m))
+            .filter(|c| !matches!(&c.place, Place::Local(Some(k)) if Some(k.as_str()) == exclude))
+            .filter(|c| !(c.person == self.person && c.name == "*"))
+            .collect();
+        let mut people: Vec<String> = g.team.as_ref().map(|t| t.people()).unwrap_or_default();
+        if !people.contains(&self.person) {
+            people.push(self.person.clone());
+        }
+        let target = |c: &Cand| match &c.place {
+            Place::Local(key) => Target::Session { address: self.addr(&c.name), key: key.clone() },
+            Place::Remote(id, online) => Target::Remote {
+                address: format!("{}/{}", c.person, c.name),
+                machine: *id,
+                machine_name: c.machine.clone(),
+                online: *online,
+            },
+        };
+        let live_matching = |f: &dyn Fn(&Cand) -> bool| -> Vec<Target> {
+            cands.iter().filter(|c| c.live && f(c)).map(|c| target(c)).collect()
+        };
+
+        let targets = if spec == "*" {
+            live_matching(&|_| true)
+        } else if let Some(repo) = spec.strip_prefix("repo:") {
+            let repo = repo.to_lowercase();
+            live_matching(&|c| {
+                c.repo.as_deref().is_some_and(|r| {
+                    let r = r.to_lowercase();
+                    r == repo || r.ends_with(&format!("/{repo}"))
+                })
+            })
+        } else if let Some((person, name)) = spec.split_once('/') {
+            if !people.iter().any(|p| p == person) {
+                bail!("nobody called '{person}' in the team (people: {})", people.join(", "));
+            }
+            if name == "*" {
+                live_matching(&|c| c.person == person)
+            } else {
+                self.pick(
+                    cands.iter().copied().filter(|c| c.person == person && c.name == name).collect(),
+                    spec,
+                    &target,
+                )?
+            }
+        } else if people.iter().any(|p| p == spec) && !cands.iter().any(|c| c.name == spec) {
+            // Messages go to agents, never to a person.
+            let mut theirs: Vec<String> = cands
+                .iter()
+                .filter(|c| c.person == spec && c.live)
+                .map(|c| format!("{}/{}", c.person, c.name))
+                .collect();
+            theirs.sort();
+            theirs.dedup();
+            if theirs.is_empty() {
+                bail!("messages go to agent sessions, and {spec} has none on Reason Network right now");
+            }
+            bail!("messages go to agent sessions; {spec}'s are: {}", theirs.join(", "));
+        } else {
+            self.pick(cands.iter().copied().filter(|c| c.name == spec).collect(), spec, &target)?
+        };
+        if targets.is_empty() {
+            bail!("nobody matches '{to}' right now; run list_team (or `{CLI} who`) to see who is around");
+        }
+        Ok(targets)
+    }
+
+    /// One session among same-named candidates: the live one, else an offline one to queue for.
+    fn pick(&self, found: Vec<&Cand>, spec: &str, target: &dyn Fn(&Cand) -> Target) -> Result<Vec<Target>> {
+        let live: Vec<&&Cand> = found.iter().filter(|c| c.live).collect();
+        let pool: Vec<&&Cand> = if live.is_empty() { found.iter().collect() } else { live };
+        match pool.as_slice() {
+            [] => bail!(
+                "no session called '{spec}'. Run list_team (or `{CLI} who`) to see who is around (sessions without Reason Network can't \
+                 receive)."
+            ),
+            [one] => Ok(vec![target(one)]),
+            many => {
+                let opts: Vec<String> = many.iter().map(|c| format!("{}/{}@{}", c.person, c.name, c.machine)).collect();
+                bail!("'{spec}' is ambiguous: {}", opts.join(", "))
+            }
+        }
+    }
+}
+
+fn claude_match(c: &ClaudeSession, reg: &SessionReg) -> bool {
+    (reg.agent_session_id.is_some() && c.session_id == reg.agent_session_id) || reg.pid == Some(c.pid)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn presence_leaves_out_sessions_in_a_folder_that_is_off() {
+        let cfg = crate::config::Config {
+            folders: [("/work/private".to_string(), "off".to_string())].into(),
+            share_unmanaged: true,
+            ..Default::default()
+        };
+        let d = super::super::test_daemon(cfg);
+        // Remembered from before the folder was off, and one that wasn't in it.
+        for (name, cwd) in [("taxes-claude", "/work/private/taxes"), ("api-claude", "/work/api")] {
+            let r = Remembered {
+                name: name.into(),
+                key: format!("claude-code:{name}"),
+                agent: agent::CLAUDE_CODE.into(),
+                cwd: cwd.into(),
+                repo: None,
+                branch: None,
+                doing: None,
+                tier: Tier::Push,
+                last_seen: util::now_ms(),
+            };
+            d.inner.lock().unwrap().store.upsert_session(&r).unwrap();
+        }
+        assert_eq!(d.presence_of(Vec::new()).known, ["api-claude"]);
+        // Claude Code's own list: neither registered nor shown without Reason Network.
+        let claude = |pid: u32, cwd: &str| -> ClaudeSession {
+            serde_json::from_value(serde_json::json!({ "pid": pid, "cwd": cwd })).unwrap()
+        };
+        let shown = d.shared(vec![claude(1, "/work/private"), claude(2, "/work/api"), claude(3, "/work/private/x")]);
+        assert_eq!(shown.iter().map(|c| c.pid).collect::<Vec<_>>(), [2]);
+        // Nor can a message reach the remembered one.
+        let g = d.inner.lock().unwrap();
+        let names: Vec<String> = d.candidates(&g, &HashMap::new()).into_iter().map(|c| c.name).collect();
+        assert_eq!(names, ["api-claude"]);
+    }
+}

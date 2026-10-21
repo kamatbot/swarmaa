@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "collective-network": {
+      "command": "/opt/homebrew/bin/node",
+      "args": [
+        "/ABSOLUTE/PATH/collective-network/dist/src/stdio-proxy.js",
+        "--url", "https://collective.example.com",
+        "--token-env", "COLLECTIVE_ANTIGRAVITY_TOKEN"
+      ]
+    }
+  }
+}

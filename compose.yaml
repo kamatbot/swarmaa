@@ -1,0 +1,39 @@
+services:
+  db:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: collective
+      POSTGRES_DB: collective
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Generate .env with npm run init:local}
+    ports:
+      - "127.0.0.1:${PG_PORT:-54329}:5432"
+    volumes:
+      - collective-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U collective -d collective"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+  service:
+    profiles: ["app"]
+    build: .
+    environment:
+      DATABASE_URL: postgresql://collective:${POSTGRES_PASSWORD}@db:5432/collective
+      HOST: 0.0.0.0
+      PORT: 8787
+      PUBLIC_URL: ${PUBLIC_URL:-http://127.0.0.1:8787}
+      ALLOW_INSECURE_LOCALHOST: ${ALLOW_INSECURE_LOCALHOST:-false}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-}
+      OAUTH_ENABLED: ${OAUTH_ENABLED:-true}
+      OAUTH_REDIRECT_HOSTS: ${OAUTH_REDIRECT_HOSTS:-}
+      EVENT_CALLBACK_HOSTS: ${EVENT_CALLBACK_HOSTS:-}
+      EVENT_ENCRYPTION_KEY: ${EVENT_ENCRYPTION_KEY:-}
+    ports:
+      - "127.0.0.1:8787:8787"
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+volumes:
+  collective-data:

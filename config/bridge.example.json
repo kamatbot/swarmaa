@@ -1,0 +1,34 @@
+{
+  "service_url": "https://collective.example.com",
+  "token_env": "COLLECTIVE_WORKER_TOKEN",
+  "poll_seconds": 5,
+  "lease_seconds": 120,
+  "heartbeat_seconds": 20,
+  "request_timeout_ms": 10000,
+  "task_timeout_seconds": 900,
+  "max_output_bytes": 131072,
+  "max_prompt_bytes": 131072,
+  "agents": [
+    {
+      "id": "claude",
+      "provider": "claude",
+      "binary": "/Users/YOUR_USER/.local/bin/claude",
+      "enable_patch": false
+    },
+    {
+      "id": "codex",
+      "provider": "codex",
+      "binary": "/opt/homebrew/bin/codex",
+      "enable_patch": false
+    }
+  ],
+  "projects": [
+    {
+      "scope": "project:demo",
+      "root": "/Users/YOUR_USER/Projects/demo",
+      "agents": ["claude", "codex"],
+      "allow_patch": false
+    }
+  ],
+  "reason": null
+}

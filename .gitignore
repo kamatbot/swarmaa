@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.env
+.env.*
+!.env.example
+.local/
+config/bridge.json
+*.log
+*.dump
+coverage/
+.DS_Store

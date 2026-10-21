@@ -1,0 +1,276 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Collective Agent Network — Architecture and Build Plan</title>
+<style>
+:root{--ink:#17222e;--muted:#596777;--paper:#fff;--wash:#f3f6f8;--line:#dbe3e8;--navy:#11283c;--blue:#215c86;--teal:#087d72;--light:#edf8f5;--gold:#fff4da}
+*{box-sizing:border-box}body{margin:0;background:var(--wash);color:var(--ink);font:16px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}main{max-width:1120px;margin:auto;background:var(--paper);padding:0 64px 64px}header{background:var(--navy);color:white;margin:0 -64px;padding:56px 64px 42px}.eyebrow{font-size:12px;font-weight:750;letter-spacing:.16em;text-transform:uppercase;color:#8edbd1}h1{font-size:44px;line-height:1.12;max-width:800px;margin:18px 0}header p{max-width:800px;color:#d2e1ec;font-size:18px}.meta{font-size:13px;color:#b9ccd9;margin-top:26px}.pill{display:inline-block;padding:5px 11px;border:1px solid #6c8b9e;border-radius:30px;font-size:12px;margin:0 6px 8px 0}.lead{border-left:5px solid var(--teal);padding:18px 24px;background:var(--light);margin:32px 0}.lead p:first-child{margin-top:0}.lead p:last-child{margin-bottom:0}h2{font-size:27px;line-height:1.25;margin:48px 0 16px;padding-top:16px;border-top:1px solid var(--line)}h3{font-size:20px;line-height:1.3;margin:29px 0 10px}h4{font-size:16px;margin:22px 0 8px}p{margin:12px 0}a{color:var(--blue);text-underline-offset:3px}header a{color:#a9dfef}nav{padding:20px 0;border-bottom:1px solid var(--line)}nav ol{display:grid;grid-template-columns:1fr 1fr;gap:5px 28px;padding-left:22px}code{background:#edf1f5;padding:2px 5px;border-radius:4px;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:.88em;overflow-wrap:anywhere}header code{color:white;background:#294154}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#f1f5f8;border:1px solid var(--line);padding:18px;border-radius:8px;font-size:13px;line-height:1.6}pre code{background:transparent;padding:0}table{width:100%;border-collapse:collapse;margin:16px 0 24px;font-size:14px}th{background:#eaf0f4;text-align:left;vertical-align:top;color:#223b4d}th,td{border-bottom:1px solid var(--line);padding:12px 13px;vertical-align:top}tbody tr:nth-child(even){background:#fafcfd}.table-wrap{overflow-x:auto}ul,ol{padding-left:24px}li{margin:7px 0}.small{font-size:13px;color:var(--muted)}.note{background:var(--gold);border-left:4px solid #ba8b20;padding:15px 20px;margin:22px 0}.flow{border:1px solid var(--line);border-radius:12px;padding:24px;background:#f8fbfc;margin:24px 0}.flow-row{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.flow-row.three{grid-template-columns:repeat(3,minmax(0,1fr))}.box{background:white;border:1px solid #b8cdd8;border-radius:8px;padding:16px;text-align:center}.box strong{display:block;color:var(--navy)}.box span{display:block;font-size:13px;color:var(--muted);margin-top:5px}.box.authority{background:var(--navy);color:white}.box.authority strong,.box.authority span{color:white}.arrow{text-align:center;color:var(--teal);font-size:14px;font-weight:700;margin:10px 0}.cards{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.card{border:1px solid var(--line);padding:18px;border-radius:8px}.card h3{margin-top:0}.status{font-weight:700;color:var(--teal)}blockquote{margin:18px 0;padding:16px 22px;border-left:4px solid #99b8cf;background:#f5f8fa}footer{border-top:1px solid var(--line);margin-top:40px;padding-top:20px;color:var(--muted);font-size:13px}.sources li{font-size:14px;overflow-wrap:anywhere}.nowrap{white-space:nowrap}@media(max-width:760px){main{padding:0 22px 38px}header{margin:0 -22px;padding:36px 22px 28px}h1{font-size:33px}h2{font-size:24px}nav ol,.cards{grid-template-columns:1fr}.flow{padding:14px}.flow-row.three{grid-template-columns:1fr}.table-wrap table{min-width:650px}th,td{padding:10px}header p{font-size:16px}}@media print{body{background:white;font-size:10.5pt}main{max-width:none;padding:0}header{margin:0;padding:28px;color:var(--ink);background:#eef4f8}header p,.meta,.eyebrow{color:var(--ink)}header code{color:var(--ink);background:#e4ebf0}h1{font-size:28pt}h2{break-after:avoid;margin-top:26px}h3,thead{break-after:avoid}tr,.card,.box{break-inside:avoid}nav{display:none}a{color:inherit}pre{font-size:9pt}.flow{break-inside:avoid}.table-wrap{overflow:visible}.table-wrap table{min-width:0}footer{font-size:9pt}}
+</style>
+</head>
+<body><main>
+<header>
+<div class="eyebrow">Source review · System architecture · Engineering handoff</div>
+<h1>One collective memory.<br>Two primary access points.</h1>
+<p>A practical network for Dot, Grok Bot, Claude Code, Codex, and Google Antigravity, built around Reason Network.</p>
+<div class="meta"><span class="pill">21 October 2026 · Asia/Bangkok</span><span class="pill">Source review complete</span><span class="pill">Implementation proposed</span><br>Reviewed upstream: <code>reason-machines/reason-network</code> · package <code>0.12.3</code> · commit <code>3e08ce1d4e538a5576f52cc06b62ca36c2360998</code></div>
+</header>
+
+<div class="lead"><p><strong>Recommendation:</strong> reuse Reason for live-agent discovery and message delivery. Build a companion service that owns shared memory, durable tasks, artifacts, and authorization. Connect Dot and Grok Bot to the same service as equal entry points.</p><p>This gives the desired experience: start work in Dot, let Codex or Claude execute it, involve Antigravity when appropriate, and later continue in Grok without reconstructing the task from chat history.</p></div>
+<p class="small">The repository was cloned into <code>/workspace/scratch/727645e4b741/reason-network</code> and inspected at the revision above. This is a local source sync, not a fork in your GitHub account or a network installation on your Macs. The upstream checkout is unchanged. Technical findings below are observed in source or current vendor documentation; architecture, roles, schemas, and milestones are recommendations.</p>
+
+<nav aria-label="Contents"><ol>
+<li><a href="#goal">The experience to build</a></li><li><a href="#audit">What the repository provides</a></li>
+<li><a href="#clients">How each agent connects</a></li><li><a href="#architecture">Recommended architecture</a></li>
+<li><a href="#memory">Collective-memory contract</a></li><li><a href="#tasks">Durable tasks and coordination</a></li>
+<li><a href="#interfaces">Tools and data interfaces</a></li><li><a href="#implementation">Implementation boundaries</a></li>
+<li><a href="#milestones">Milestones and acceptance</a></li><li><a href="#sources">Evidence and source map</a></li>
+</ol></nav>
+
+<section id="goal"><h2>1. The experience to build</h2>
+<p>Dot and Grok should each understand what the network knows, which tasks are active, and what another agent has already produced. A user should be able to ask either one to continue work, inspect evidence, or delegate a bounded part of a task.</p>
+<blockquote><strong>Example target workflow:</strong> “Dot, investigate the OpsOdds signal issue and ask Codex for a proposed fix. Have Claude review the reasoning. Save the decision and patch.” Later: “Grok, what did the network conclude, and what is ready for me to review?”</blockquote>
+<p>The second question should return the same task, revision, evidence, and artifacts created by the first workflow. It should distinguish a proposed patch from a validated or deployed change. If Grok requests further work, it should append an instruction to that task rather than start an independent competing job.</p>
+<p>Use capability-based roles. Dot and Grok handle conversation, planning, research, and results; Codex and Claude provide coding/review capabilities; Antigravity contributes its configured development and browser capabilities. These are defaults, not claims that a particular model is universally best at a role. Each client may both contribute to memory and use it.</p>
+<p><strong>Scope the first pilot to project work.</strong> Your wider personal and family knowledge can be added later with its own permissions. Existing FamETC parent-governed memory should remain under FamETC’s approval rules if it is ever connected.</p>
+</section>
+
+<section id="audit"><h2>2. What the repository provides</h2>
+<p>Reason is a Rust daemon with MCP tools and agent adapters. Its public documentation presents it as a directory and message bus, and the source confirms that boundary. It offers a useful foundation for reaching existing sessions across machines. <a href="#s1">[1]</a> <a href="#s2">[2]</a></p>
+<div class="table-wrap"><table><thead><tr><th>Capability</th><th>Observed status</th><th>Implication for this network</th></tr></thead><tbody>
+<tr><td>Session discovery and addressing</td><td>Directory includes agent, machine, repository, branch, and availability hints.</td><td>Reuse for selecting a currently reachable session.</td></tr>
+<tr><td>Cross-machine messaging</td><td>Authenticated iroh transport, reconnect, message receipts and relay fallback.</td><td>Reuse as a notification and collaboration path.</td></tr>
+<tr><td>Local MCP tools</td><td><code>list_team</code>, <code>send_message</code>, <code>check_inbox</code>, <code>ask_user</code>.</td><td>Add separate memory/task tools rather than overloading messages.</td></tr>
+<tr><td>Claude Code and Codex adapters</td><td>Source includes session identification and delivery integration.</td><td>Start with these; verify against installed client versions during the pilot.</td></tr>
+<tr><td>Hosted assistants</td><td>Reason documents a hosted MCP path for Grok Bot and Dots.</td><td>Useful for a first connection, with a service dependency outside this repo.</td></tr>
+<tr><td>Durable shared knowledge</td><td>No dedicated knowledge/revision/index model in the store.</td><td>Build an authoritative memory service.</td></tr>
+<tr><td>Task scheduling and completion</td><td>No task leases, durable result contract, or application-level completion ledger.</td><td>Build a durable task layer with explicit ownership.</td></tr>
+<tr><td>Antigravity</td><td>No dedicated entry in the reviewed setup registry.</td><td>Add an adapter using Google’s documented APIs.</td></tr>
+</tbody></table></div>
+
+<h3>The persistence limits matter</h3>
+<p>The store is designed around message/session lifetimes. Undelivered outbox entries age out after seven days. Stale non-CLI sessions are normally forgotten after roughly a day, with unread non-held mail removed. Attached files also expire. These are intentional transport policies, not bugs. <a href="#s3">[3]</a></p>
+<p>Therefore a durable task must be written to the new database before Reason sends its notification. Reports, patches, decisions, and checkpoints must be stored independently of a Reason inbox. The source’s delivery path permits redelivery; receiving or reading a message cannot be treated as executing its requested action. <a href="#s4">[4]</a></p>
+
+<h3>The hosted bridge is a separate component</h3>
+<p>The local daemon supervises the external command <code>reason network __relay</code>. The public hosted HTTP MCP service is not implemented by this engine’s stdio MCP module. A clone of this repository therefore does not supply the entire hosted-assistant stack. <a href="#s5">[5]</a></p>
+<p>For a pilot, use the existing hosted bridge and add the shared memory/task endpoint. For an owned deployment, implement a narrow authenticated gateway and Mac bridge. Hosting an iroh relay alone would not replace the HTTP MCP gateway or its authentication.</p>
+<p class="note"><strong>Trust boundary:</strong> Reason documents encrypted computer-to-computer traffic, while hosted-assistant messages pass through its server. The shared memory service and model providers also receive the context sent to them. The complete system must be described according to those actual paths, rather than inheriting an end-to-end privacy claim from the peer transport. <a href="#s6">[6]</a></p>
+</section>
+
+<section id="clients"><h2>3. How each agent connects</h2>
+<div class="table-wrap"><table><thead><tr><th>Client</th><th>Connection design</th><th>Delivery and integration boundary</th></tr></thead><tbody>
+<tr><td><strong>Dot / OpenAI dots</strong></td><td>Personal plugin with remote memory/task MCP tools.</td><td>Use MCP Events for task updates after implementing and verifying subscriptions. This is additional work, not a claim that Reason already supplies it. <a href="#s7">[7]</a></td></tr>
+<tr><td><strong>Grok Bot</strong></td><td>Remote HTTPS MCP for the same service; optionally Reason’s hosted MCP for peer messaging.</td><td>Webhook routines can wake the bot to retrieve an update. Preserve the authenticated user/client identity. Grok Bot and Grok CLI are different integrations. <a href="#s8">[8]</a> <a href="#s9">[9]</a></td></tr>
+<tr><td><strong>Claude Code</strong></td><td>Reuse Reason’s adapter; add the shared memory/task endpoint.</td><td>Remote HTTP and local stdio MCP are documented. This review assumes Claude Code for local coding work; Claude chat would be configured as another client. <a href="#s10">[10]</a></td></tr>
+<tr><td><strong>Codex</strong></td><td>Reuse Reason’s adapter; add the same memory service. Use a controlled SDK worker for new autonomous tasks.</td><td>Codex MCP configuration is separate from hosted ChatGPT. The SDK supports persistent thread IDs and resume. <a href="#s11">[11]</a> <a href="#s12">[12]</a></td></tr>
+<tr><td><strong>Antigravity</strong></td><td>Start with its supported MCP connection, then add a dedicated identity/delivery adapter.</td><td>Hooks, headless CLI, and App-only sidecars provide documented building blocks. Native Reason discovery/wake remains unimplemented and unverified. <a href="#s13">[13]</a>–<a href="#s16">[16]</a></td></tr>
+</tbody></table></div>
+
+<h3>Antigravity adapter: concrete scope</h3>
+<p>Use its real conversation ID, project paths, and installed surface to register a logical worker. On session start, retrieve a bounded context packet. At suitable lifecycle points, check task updates and capture selected evidence. A stop event should create a checkpoint; only a completed result satisfying task criteria should close the task.</p>
+<p>Use documented headless workers for unattended jobs. An enabled App sidecar is another path for sending messages into existing App conversations. Do not assume the same facility exists in the IDE or that a generic MCP connection can wake an idle conversation.</p>
+<p>Current Antigravity remote MCP configuration uses <code>serverUrl</code>. A future endpoint could be registered as follows; the address is an illustrative placeholder, not a deployed service. <a href="#s13">[13]</a></p>
+<pre><code>{
+  "mcpServers": {
+    "collective-memory": {
+      "serverUrl": "https://YOUR-SERVICE/mcp"
+    }
+  }
+}</code></pre>
+<p>Authentication and scope assignment belong in setup. Reuse the host’s supported authentication flow; do not place a shared master credential in checked-in configuration.</p>
+
+<h3>Notifications to both access points</h3>
+<p>Publish concise task-change events containing an event ID, task ID, revision and status. The receiving bot fetches authorized content from the shared service. Persist event delivery attempts and deduplicate retries. A successful notification delivery is not evidence that a user read it or that a worker completed a task.</p>
+<p>Dot’s current documented path uses MCP Events with protocol <code>2026-07-28</code>, persistent subscriptions and verified webhook delivery. Grok uses a webhook routine. These are separate adapters over the same task-event outbox. Actual account controls and end-to-end delivery must be checked during setup. <a href="#s7">[7]</a> <a href="#s9">[9]</a></p>
+</section>
+
+<section id="architecture"><h2>4. Recommended architecture</h2>
+<div class="flow" role="img" aria-label="Dot and Grok access a shared authenticated memory and task service. It owns database and artifacts. A Mac bridge dispatches through Reason to local agents.">
+<div class="flow-row"><div class="box"><strong>Dot</strong><span>Conversation, planning, results</span></div><div class="box"><strong>Grok Bot</strong><span>Conversation, planning, results</span></div></div>
+<div class="arrow">Authenticated MCP tools · task events</div>
+<div class="box authority"><strong>Shared memory and task service</strong><span>Context · permissions · tasks · claims · outcomes</span></div>
+<div class="arrow">One durable authority</div>
+<div class="flow-row"><div class="box"><strong>Transactional database</strong><span>Memory revisions, task ledger, event outbox</span></div><div class="box"><strong>Artifact storage</strong><span>Patches, reports, logs, evidence</span></div></div>
+<div class="arrow">Mac bridge claims work over an outbound connection</div>
+<div class="box"><strong>Reason Network on the Macs</strong><span>Live-session directory · targeted messages · wake-up</span></div>
+<div class="arrow">Workers also read/write durable state through the shared service</div>
+<div class="flow-row three"><div class="box"><strong>Claude Code</strong><span>Registered worker or peer</span></div><div class="box"><strong>Codex</strong><span>Registered worker or peer</span></div><div class="box"><strong>Antigravity</strong><span>Dedicated adapter</span></div></div>
+</div>
+<p><strong>Reference stack:</strong> one TypeScript service, one PostgreSQL database, and object storage for artifacts. Start with structured filtering and full-text search. Add vector retrieval when real recall examples demonstrate a need. Keep the queue and event outbox in the database initially, so task creation and notification intent can commit together.</p>
+<p>The service is the authority; the model chosen to plan a task can vary. Dot and Grok do not need separate coordinator databases or separate copies of memory. Avoid a vector database, a graph database, a message broker, and a multi-master replication system before the first useful workflow works.</p>
+<div class="table-wrap"><table><thead><tr><th>Location</th><th>Proposed role</th><th>Failure behavior</th></tr></thead><tbody>
+<tr><td>Small cloud service</td><td>Memory/task MCP, database, artifact metadata, event delivery.</td><td>If temporarily unavailable, workers pause new authoritative mutations and retain bounded local checkpoints for later reconciliation.</td></tr>
+<tr><td>Always-on Mac mini</td><td>Primary bridge, worker supervisor, Reason daemon, project checkouts.</td><td>If unavailable, memory and task status remain accessible; local-execution jobs stay queued.</td></tr>
+<tr><td>Mac Studio</td><td>Additional workers, especially work requiring its local tools or macOS environment.</td><td>Scheduler routes only to current, compatible workers; unavailable work remains queued.</td></tr>
+<tr><td>Dot and Grok</td><td>Authenticated entry points sharing user identity and task records.</td><td>Reopening either client restores context from the service rather than depending on the other conversation.</td></tr>
+</tbody></table></div>
+<p>A Mac-only service is a possible deployment variant, but it makes both hosted entry points depend on the Mac and home connection. For the intended everyday experience, cloud state with local execution is the stronger default. No additional cloud account or hosting plan has been selected or purchased.</p>
+<p>Reason daemons operate within an OS user’s environment. On your Macs, configure the actual accounts that run the agents, and map each bridge explicitly. Do not assume an agent in one logged-in account can see the sessions or credentials of another. <a href="#s2">[2]</a></p>
+</section>
+
+<section id="memory"><h2>5. Collective-memory contract</h2>
+<p>Collective memory should store reusable knowledge with evidence and revision history. It should give an agent the relevant current context for a task, while retaining where that context came from.</p>
+<div class="table-wrap"><table><thead><tr><th>Record category</th><th>Examples</th><th>Write/read behavior</th></tr></thead><tbody>
+<tr><td>Preferences and constraints</td><td>Preferred response format; a project’s standing deployment restriction.</td><td>Promote from attributable user input; distinguish preferences from enforced tool permissions.</td></tr>
+<tr><td>Project decisions</td><td>Calendar-first dashboard; accepted architecture; rejected feature.</td><td>Keep decision rationale, source, effective date and superseded version.</td></tr>
+<tr><td>Observed facts</td><td>Repository revision inspected; version installed; outcome returned by a tool.</td><td>Store the observation’s evidence and time; set expiry where the fact can change.</td></tr>
+<tr><td>Procedures</td><td>How to reproduce a failure or perform an authorized local workflow.</td><td>Record scope, prerequisites, last successful use, and owner.</td></tr>
+<tr><td>Proposals and hypotheses</td><td>An agent’s diagnosis or suggested architectural choice.</td><td>Remain labeled as proposals until supporting evidence or an explicit decision changes their status.</td></tr>
+</tbody></table></div>
+<p>Task checkpoints belong to the task ledger and can reference memory records. Large documents, code patches and logs belong in artifact storage. This avoids turning every token of a conversation into an equally authoritative “memory.”</p>
+
+<h3>Minimal record model</h3>
+<pre><code>MemoryRecord
+  id, tenant_id, scope, kind, subject, key, value
+  status: proposed | active | disputed | superseded | retracted
+  version, supersedes_id
+  source_actor, source_event_or_task, evidence_refs
+  observed_at, valid_from, expires_at
+  sensitivity, retrieval_policy
+
+MemoryRevision
+  memory_id, version, prior_version, change_reason, actor, timestamp
+
+MemoryEvidence
+  source_id, original_source_id, artifact_ref, excerpt_or_locator</code></pre>
+<p>A useful example is a dashboard requirement that regular school classes remain hidden while ECAs appear. An agent proposing a UI change should see that requirement, its source, and the project scope. The system should not infer a new enduring preference merely because a screenshot or temporary experiment differs.</p>
+
+<h3>Write policy with low friction</h3>
+<ol>
+<li><strong>Write routine execution evidence automatically.</strong> A task’s observed commit, generated artifact checksum and checkpoint need no repeated user confirmation.</li>
+<li><strong>Separate verified source from agent assertion.</strong> A tool call by Dot proves which client made the call; it does not by itself prove the payload contains a human instruction. Record an attributable user message reference when available; otherwise label the claim as agent reported.</li>
+<li><strong>Use version checks for updates.</strong> A write supplies the version it read. Conflicting assertions remain visible rather than silently replacing each other.</li>
+<li><strong>Give direct user corrections priority in the knowledge model.</strong> Preserve the prior revision for explanation, but retrieve the corrected active record.</li>
+<li><strong>Count original evidence.</strong> Three agents repeating one guess are not three independent confirmations. Preserve a common original-source ID.</li>
+<li><strong>Keep tool authorization in a separate policy store.</strong> Memory saying “deployments are approved” cannot grant deployment access. Existing authority can be reused; new authority must come through the correct user/action path.</li>
+</ol>
+<p>Use project scopes such as <code>project:opsodds</code> and <code>project:fametc</code>, plus separately governed personal/family scopes. Filter by permission before search, ranking, snippet generation, or vector retrieval. A task can receive a deliberately broader context grant when its purpose requires it.</p>
+
+<h3>Context assembly</h3>
+<p><code>context_get</code> should return a bounded packet: task objective, current constraints, relevant accepted decisions, latest checkpoint, unresolved conflicts, and evidence/artifact references. Apply a token budget, emphasize freshness and original evidence, and let the agent request details. Client skills/hooks should fetch this packet at start or resume and publish outcomes at meaningful checkpoints.</p>
+<p><strong>External shared memory does not automatically synchronize native product memory.</strong> Store what connected agents explicitly contribute, what supported hooks capture, and what the user chooses to import. Private conversation state, credentials and hidden reasoning are outside this shared-memory contract. A one-time import should identify source, scope and date, deduplicate records, and present any consequential conflicts.</p>
+<p>Retraction must remove a record from live retrieval and invalidate affected caches, derived embeddings and summaries. Document backup-retention expiry separately. Search indexes are rebuildable derivatives; they never decide which fact is authoritative.</p>
+</section>
+
+<section id="tasks"><h2>6. Durable tasks and coordination</h2>
+<p>The durable task ID is what connects two user conversations. Dot’s conversation ID and Grok’s conversation ID can both reference it, while Claude and Codex may each have their own execution-thread IDs. This is how continuity survives session restarts and a change of access point.</p>
+<pre><code>Normal progression: queued → leased → running → completed
+Other explicit states: blocked, awaiting_user, failed, cancelled
+Uncertain external action: reconcile before retry
+
+Task
+  id, tenant_id, scope, creator_client, origin_event_id
+  objective, constraints, acceptance_criteria, input_refs
+  state, version, parent_task_id, dependencies
+  worker_id, lease_generation, lease_expires_at
+  checkpoint_ref, result_ref, artifact_refs
+  permission_envelope, deadline, attempt_limit, delegation_budget
+
+Worker
+  stable_id, machine_id, os_user, capabilities, allowed_scopes
+  current_reason_session, capacity, last_heartbeat</code></pre>
+<p>The service assigns or accepts one active lease for a task. A worker must validate it before doing consequential work and send it with checkpoints and completion. A newer assignment increments the lease generation, allowing the service to reject an old worker’s late result.</p>
+<p><strong>Reason messages carry hints:</strong> “Task X has work ready” or “Review artifact Y.” The worker fetches the structured task and checks its permission envelope. A free-text peer message is never enough to grant a tool permission or prove task completion.</p>
+
+<h3>Two distinct duplication problems</h3>
+<p><strong>Transport retries:</strong> enforce a unique idempotency key for the original authenticated submission. A retried webhook or tool request returns the existing task rather than creating another.</p>
+<p><strong>Two separately worded requests:</strong> Dot and Grok may each be asked to fix the same issue. Resolve known task/repository/issue references first. Serialize incompatible mutations with a resource lease, and attach a continuation to the existing task when its identity is clear. Similar wording or embedding similarity alone cannot safely prove two instructions are the same job.</p>
+<p>For code work, separate worktrees or branches support parallel investigation. Hold a resource lease for integration into the same target. Read-only research can run concurrently; two agents should not edit the same worktree unsupervised.</p>
+
+<h3>Completion, retries and external actions</h3>
+<p>A worker’s final output should include the base commit, changed artifacts, checks actually performed, remaining limitations, and a proposed next action. Store that evidence before sending a completion event. A “delivered” Reason receipt is only transport evidence.</p>
+<p>Lease fencing prevents stale writes to the service; it cannot promise exactly-once effects in an external system. An action such as sending mail, publishing, or deploying needs a supported idempotency key or a recorded submitted/confirmed/unknown outcome followed by reconciliation. The first pilot can prove continuity with read-only reviews and local patches.</p>
+<p>Keep routine work autonomous within the task’s existing permission envelope. Only a genuinely new authorization or unresolved decision should move work to <code>awaiting_user</code>. Both access points should show the same concrete pending action and any recorded approval, with its scope and expiry.</p>
+
+<h3>Bounded collaboration</h3>
+<p>Prefer a small explicit graph: one investigator, one implementation worker if requested, and one reviewer when the task warrants review. Set maximum child tasks, retries, elapsed time and model/spend limits. The coordinator should not ask all models to debate every message. If an existing interactive session is not instrumented to enforce task scope, keep it an informational peer until a controlled worker is available.</p>
+</section>
+
+<section id="interfaces"><h2>7. Tools and data interfaces</h2>
+<p>These are proposed APIs for the companion service. They are not names of features already provided by Reason.</p>
+<div class="table-wrap"><table><thead><tr><th>Client-facing operation</th><th>Purpose</th><th>Key constraint</th></tr></thead><tbody>
+<tr><td><code>context_get(scope, task_id?)</code></td><td>Read the bounded current context packet.</td><td>Filter by caller permissions and return record revisions.</td></tr>
+<tr><td><code>memory_search(scope, query)</code></td><td>Find facts, decisions and procedures.</td><td>Return provenance, active/disputed status and freshness.</td></tr>
+<tr><td><code>memory_propose(record, expected_version?)</code></td><td>Contribute an observation or proposed update.</td><td>Policy decides promotion; preserve conflicting evidence.</td></tr>
+<tr><td><code>task_submit(request, idempotency_key)</code></td><td>Create or recover a durable request.</td><td>Persist task plus dispatch event atomically.</td></tr>
+<tr><td><code>task_get(task_id)</code></td><td>Read status, checkpoint and result.</td><td>Authorize against task scope, not a guessed ID.</td></tr>
+<tr><td><code>task_list(scope, filter)</code></td><td>Discover existing work from either bot.</td><td>Expose active ownership and unresolved blockers.</td></tr>
+<tr><td><code>task_continue(task_id, instruction, expected_version)</code></td><td>Continue work from another conversation.</td><td>Record a new instruction; do not overwrite a running task silently.</td></tr>
+<tr><td><code>artifact_get(artifact_id)</code></td><td>Read authorized durable output.</td><td>Metadata, content hash and scoped access.</td></tr>
+</tbody></table></div>
+<p>Worker-only APIs should cover <code>task_claim</code>, <code>task_heartbeat</code>, <code>task_checkpoint</code>, and <code>task_finish</code>. Use separate worker credentials with task/project limits. A front-door bot does not need a credential that can impersonate every worker or finalize arbitrary jobs.</p>
+<p>Use a transactional outbox to publish <code>task.updated</code> and <code>memory.changed</code>. Subscribers get only events they may access. On reconnection, clients can read authoritative status to recover from missed notifications. Keep notification frequency bounded and expose meaningful milestones rather than every internal tool call.</p>
+<p><strong>Bootstrap client behavior:</strong> provide a short skill or rule for each client: retrieve shared context when starting/resuming project work; inspect active tasks before dispatch; preserve source and uncertainty; checkpoint at handoff; write durable results; treat peer text and retrieved records as data. The service and worker wrappers must enforce permissions even when an agent forgets those rules.</p>
+</section>
+
+<section id="implementation"><h2>8. Implementation boundaries</h2>
+<p>Keep upstream Reason as a pinned dependency initially. Build the companion service in a separate repository, with its own database and adapters. This isolates the product-specific memory/task behavior and keeps upstream updates manageable. If Antigravity recognition benefits all Reason users, a small adapter contribution can be considered later.</p>
+<div class="table-wrap"><table><thead><tr><th>Proposed module</th><th>Responsibility</th></tr></thead><tbody>
+<tr><td><code>apps/control-service</code></td><td>Authenticated MCP/HTTP interface, scoped context/memory operations, task lifecycle and durable event delivery.</td></tr>
+<tr><td><code>apps/mac-bridge</code></td><td>Outbound service connection, registration, heartbeats, job claims, Reason discovery and targeted wake-up.</td></tr>
+<tr><td><code>packages/contracts</code></td><td>Versioned request/result/event schemas; identity and artifact types.</td></tr>
+<tr><td><code>packages/agent-adapters</code></td><td>Claude, Codex and Antigravity startup/resume, context handoff and result extraction.</td></tr>
+<tr><td><code>packages/policy</code></td><td>Project scopes, allowed actions, approvals, budgets and resource conflicts.</td></tr>
+<tr><td><code>db/migrations</code></td><td>Memory revisions/evidence, tasks/runs, worker leases, events/subscriptions, artifacts and audit.</td></tr>
+<tr><td><code>client-configs</code></td><td>Documented client setup templates and skills; no embedded credentials.</td></tr>
+</tbody></table></div>
+<h3>Reuse without changing the core</h3>
+<p>Call Reason’s public CLI/MCP surface first. If the bridge needs the local socket API, keep that adapter isolated and tied to the inspected version. Never turn the daemon’s complete local API into an internet endpoint: its local trust model includes capabilities that a hosted client should not receive. <a href="#s17">[17]</a></p>
+<p>Store persistent logical worker IDs separately from current Reason session names. Refresh the mapping when sessions restart, and check actual capacity and capabilities before assigning work. A directory’s busy/idle hint is useful routing information, not a guarantee of permissions or available capacity.</p>
+<h3>Antigravity patch candidates</h3>
+<p>The likely upstream touchpoints are <code>src/agent.rs</code> for client identity, <code>src/setup.rs</code> for configuration, and <code>src/hook.rs</code> plus session handling for lifecycle delivery. Confirm whether the installed client shares one MCP process across conversations before choosing identity behavior. Keep a generic MCP/pull mode as the fallback until wake and routing are actually verified. <a href="#s18">[18]</a></p>
+<p>No changes to these files were made in this review. The required work is now bounded enough to implement and review without first rewriting the Rust transport or introducing distributed memory replication.</p>
+</section>
+
+<section id="milestones"><h2>9. Milestones and acceptance</h2>
+<div class="cards">
+<div class="card"><h3>Milestone 1 — Shared recall</h3><p>Build the memory API with per-client identity, project-level read/write authorization and bounded context retrieval. Enforce these controls before connecting Claude/Codex and both primary entry points.</p><p><strong>Demonstrate:</strong> a decision saved through Dot is retrieved by Claude and Grok in fresh conversations, with the same version and original evidence.</p></div>
+<div class="card"><h3>Milestone 2 — Task continuity</h3><p>Add tasks, leases, result artifacts and the Mac bridge. Enforce each worker’s permission envelope and current lease before execution. Start with a read-only repository investigation.</p><p><strong>Demonstrate:</strong> Dot starts a task, Codex completes it, Claude contributes a review if requested, and Grok resumes the same task by ID.</p></div>
+<div class="card"><h3>Milestone 3 — All clients</h3><p>Add Antigravity identity/hooks and controlled dispatch. Add Dot events and Grok routine notifications.</p><p><strong>Demonstrate:</strong> all five clients use the same context; completion reaches both subscribed entry points without copying transcripts.</p></div>
+<div class="card"><h3>Milestone 4 — Recovery and ownership</h3><p>Extend recovery, hardening, reconciliation, backup/restore and policy coverage; add the owned gateway if needed. Baseline access controls remain mandatory from the earlier milestones.</p><p><strong>Demonstrate:</strong> offline workers, concurrent requests, conflicts and missed events have predictable outcomes.</p></div>
+</div>
+<h3>Acceptance scenarios for local validation</h3>
+<div class="table-wrap"><table><thead><tr><th>Scenario</th><th>Required result</th></tr></thead><tbody>
+<tr><td>New conversations on both bots</td><td>Shared decisions and task state remain accessible with provenance.</td></tr>
+<tr><td>Same request retried</td><td>One task ID; notification retries do not create a second execution.</td></tr>
+<tr><td>Two workers claim simultaneously</td><td>Only one valid lease for a mutation task.</td></tr>
+<tr><td>Worker crashes and is replaced</td><td>Resume from checkpoint; reject the old lease’s later result.</td></tr>
+<tr><td>Mac mini and Mac Studio offline</td><td>Bots can read cloud memory and see jobs queued for unavailable capabilities.</td></tr>
+<tr><td>Conflicting memory update</td><td>Retain evidence and explicit conflict; no silent authoritative overwrite.</td></tr>
+<tr><td>Scope violation</td><td>Unauthorized project/personal content is excluded from retrieval and events.</td></tr>
+<tr><td>Task asks for an ungranted action</td><td>Execution wrapper blocks it and records the required decision.</td></tr>
+<tr><td>Memory retracted</td><td>It disappears from live retrieval, indexes and derived context.</td></tr>
+<tr><td>Event delivered repeatedly or out of order</td><td>Client fetches the current revision; no repeated consequential action.</td></tr>
+<tr><td>Antigravity process/conversation restart</td><td>Stable logical worker maps to the correct new session without cross-conversation delivery.</td></tr>
+</tbody></table></div>
+<p><strong>First useful deliverable:</strong> one complete Dot → Codex → shared result → Grok continuation, plus a sourced project preference visible across clients after restart. That proves the core benefit before expanding to more agent roles or personal data.</p>
+<p class="note"><strong>Validation status:</strong> Tests and builds were not run. Local Codex should validate the changes before integration. This deliverable is an architecture and source review; no implementation or deployment is claimed. The scenarios above are proposed checks for the future implementation, not passing test results.</p>
+</section>
+
+<section id="sources"><h2>10. Evidence and source map</h2>
+<p>Repository links are pinned to the inspected commit. Vendor documentation was consulted on 21 October 2026. Installation behavior and account-level access still require verification on the user’s actual clients.</p>
+<ol class="sources">
+<li id="s1"><a href="https://github.com/reason-machines/reason-network/blob/3e08ce1d4e538a5576f52cc06b62ca36c2360998/README.md">Reason Network README</a> and <a href="https://github.com/reason-machines/reason-network/blob/3e08ce1d4e538a5576f52cc06b62ca36c2360998/Cargo.toml">Cargo.toml</a>: advertised capabilities, package version, MIT OR Apache-2.0 license declaration.</li>
+<li id="s2"><a href="https://github.com/reason-machines/reason-network/blob/3e08ce1d4e538a5576f52cc06b62ca36c2360998/DESIGN.md">Reason Network design</a>: architecture, delivery tiers, per-user daemon model and future anchor/history work.</li>
+<li id="s3"><a href="https://github.com/reason-machines/reason-network/blob/3e08ce1d4e538a5576f52cc06b62ca36c2360998/src/store.rs#L63-L107">Store schema</a>; <a href="https://github.com/reason-machines/reason-network/blob/3e08ce1d4e538a5576f52cc06b62ca36c2360998/src/store.rs#L342-L347">outbox expiry</a>; <a href="https://github.com/reason-machines/reason-network/blob/3e08ce1d4e538a5576f52cc06b62ca36c2360998/src/store.rs#L456-L474">session cleanup</a>; <a href="https://github.com/reason-machines/reason-network/blob/3e08ce1d4e538a5576f52cc06b62ca36c2360998/src/daemon/sessions.rs">session timeout</a>; <a href="https://github.com/reason-machines/reason-network/blob/3e08ce1d4e538a5576f52cc06b62ca36c2360998/src/store.rs#L255-L278">attachment retention</a>.</li>
+<li id="s4"><a href="https://github.com/reason-machines/reason-network/blob/3e08ce1d4e538a5576f52cc06b62ca36c2360998/src/daemon/mail.rs">Message delivery implementation</a>: at-least-once delivery and retry behavior.</li>
+<li id="s5"><a href="https://github.com/reason-machines/reason-network/blob/3e08ce1d4e538a5576f52cc06b62ca36c2360998/src/daemon/reason.rs#L45-L85">External hosted-relay supervisor</a> and <a href="https://github.com/reason-machines/reason-network/blob/3e08ce1d4e538a5576f52cc06b62ca36c2360998/src/mcp.rs">stdio MCP implementation</a>.</li>
+<li id="s6"><a href="https://docs.reasonmachines.com/docs/mcp">Reason MCP documentation</a> and <a href="https://reasonmachines.com/network">Reason Network product page</a>: hosted-assistant connection, user-computer bridge and hosted traffic boundary.</li>
+<li id="s7"><a href="https://developers.openai.com/plugins/build/mcp-events">OpenAI MCP Events</a>: dots support, protocol, subscriptions and callback delivery.</li>
+<li id="s8"><a href="https://docs.x.ai/grok-bot/team-bots">Grok Bot Team Bots documentation</a>: remote HTTPS and command MCP, credential ownership and execution location.</li>
+<li id="s9"><a href="https://x.ai/changelog/bot">Grok Bot official changelog</a>: webhook routines introduced in its 19 August 2026 entry.</li>
+<li id="s10"><a href="https://code.claude.com/docs/en/mcp">Claude Code MCP documentation</a>: local and remote tool connections.</li>
+<li id="s11"><a href="https://learn.chatgpt.com/docs/extend/mcp">OpenAI MCP configuration documentation</a>: supported transports and local/hosted configuration distinction.</li>
+<li id="s12"><a href="https://learn.chatgpt.com/docs/codex-sdk">Codex SDK documentation</a>: starting, continuing and resuming threads.</li>
+<li id="s13"><a href="https://antigravity.google/docs/mcp/">Google Antigravity MCP</a>: transports, authentication, configuration and <code>serverUrl</code>.</li>
+<li id="s14"><a href="https://antigravity.google/docs/hooks/">Antigravity hooks</a>: lifecycle events and conversation identity.</li>
+<li id="s15"><a href="https://antigravity.google/docs/cli/headless/">Antigravity headless CLI</a>: programmatic execution.</li>
+<li id="s16"><a href="https://antigravity.google/docs/sidecars/">Antigravity App sidecars</a>: supervised background processes and conversation messaging.</li>
+<li id="s17"><a href="https://github.com/reason-machines/reason-network/blob/3e08ce1d4e538a5576f52cc06b62ca36c2360998/src/proto.rs">Daemon protocol</a>, <a href="https://github.com/reason-machines/reason-network/blob/3e08ce1d4e538a5576f52cc06b62ca36c2360998/src/ipc.rs">local IPC</a> and <a href="https://github.com/reason-machines/reason-network/blob/3e08ce1d4e538a5576f52cc06b62ca36c2360998/src/config.rs">inbound policy</a>: local/team trust boundary.</li>
+<li id="s18"><a href="https://github.com/reason-machines/reason-network/blob/3e08ce1d4e538a5576f52cc06b62ca36c2360998/src/setup.rs#L1205-L1301">Setup adapter registry</a> and <a href="https://github.com/reason-machines/reason-network/blob/3e08ce1d4e538a5576f52cc06b62ca36c2360998/src/agent.rs">agent detection</a>: no Antigravity-specific adapter in this revision.</li>
+</ol>
+</section>
+<footer>Prepared as a source-grounded implementation handoff. Completed: local upstream sync, architecture review, current integration research, and this design brief. Proposed: shared service, adapters, setup, validation and deployment. No GitHub write, CI, dependency installation, project build or test was performed.</footer>
+</main></body></html>

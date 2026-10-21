@@ -1,0 +1,2 @@
+# The one-time rustfmt pass. git blame skips it with: git config blame.ignoreRevsFile .git-blame-ignore-revs
+bf9cc13f6fa12abde6ebf6b2f3f4dd739f137a6f

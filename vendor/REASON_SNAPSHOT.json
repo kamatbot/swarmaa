@@ -1,0 +1,13 @@
+{
+  "repository": "https://github.com/reason-machines/reason-network",
+  "commit": "3e08ce1d4e538a5576f52cc06b62ca36c2360998",
+  "upstream_package_version": "0.12.3",
+  "snapshot_date": "2026-10-21",
+  "included_tracked_files": 63,
+  "omitted": [
+    ".git metadata and history",
+    ".github automation"
+  ],
+  "upstream_source_modified": false,
+  "upstream_installers_executed": false
+}

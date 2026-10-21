@@ -1,0 +1,12 @@
+# Merge this table into your Codex configuration; do not overwrite other settings.
+[mcp_servers.collective_network]
+command = "/opt/homebrew/bin/node"
+args = ["/ABSOLUTE/PATH/collective-network/dist/src/stdio-proxy.js", "--url", "https://collective.example.com", "--token-env", "COLLECTIVE_CODEX_TOKEN"]
+env_vars = ["COLLECTIVE_CODEX_TOKEN"]
+startup_timeout_sec = 20
+tool_timeout_sec = 40
+
+# Alternatively use native Streamable HTTP instead of the stdio table above:
+# [mcp_servers.collective_network]
+# url = "https://collective.example.com/mcp"
+# bearer_token_env_var = "COLLECTIVE_CODEX_TOKEN"

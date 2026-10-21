@@ -1,0 +1,16 @@
+COLLECTIVE AGENT NETWORK — SOURCE HANDOFF
+
+1. Unzip this archive into a normal local folder.
+2. For Claude Code, open a terminal in the collective-network folder and start Claude.
+3. Ask Claude to read CLAUDE_HANDOFF.md, CLAUDE.md, README.md and docs/STATUS.md.
+4. Follow the staged setup in the handoff. It creates local credentials only on your machine.
+5. Connect Claude, Codex, Antigravity, Dot and Grok with separate scoped credentials.
+
+This archive contains authored source and instructions. It is not an installed
+server, a Claude skill package, or a prevalidated executable. Uploading it to a
+chat does not start services or connect accounts. If your Claude chat cannot
+read ZIP files, extract it and upload CLAUDE_HANDOFF.md and the relevant source
+files. Claude Code with filesystem access is the recommended setup path.
+
+Read docs/STATUS.md for the exact implementation and validation state.
+No real credentials are included. Do not upload your later .env or .local files.

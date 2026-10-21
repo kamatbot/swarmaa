@@ -1,0 +1,745 @@
+{
+  "name": "Collective Agent Network",
+  "version": "0.1.0",
+  "prepared_date": "2026-10-21",
+  "delivery": "source handoff",
+  "authoring_verification": "source inspection only",
+  "executed": {
+    "dependency_install": false,
+    "typecheck": false,
+    "tests": false,
+    "build": false,
+    "migrations": false,
+    "services": false,
+    "provider_connections": false
+  },
+  "upstream_commit": "3e08ce1d4e538a5576f52cc06b62ca36c2360998",
+  "note": "File hashes are an inventory of the bundled source bytes, not runtime validation results. This manifest excludes its own hash.",
+  "files": [
+    {
+      "path": ".dockerignore",
+      "bytes": 89,
+      "sha256": "762e069c1de56e93cb6b634f6682bd2db59e52a766f6782518fe9311a0663917"
+    },
+    {
+      "path": ".env.example",
+      "bytes": 806,
+      "sha256": "4f87887e1e0f9f28806c7cb47b72522c858347198205b39c27e13f3470e0053d"
+    },
+    {
+      "path": ".gitignore",
+      "bytes": 106,
+      "sha256": "08b9c436473055b3d3b17231e28f5b7ce3532d8df76fa1b50d469191e91d7783"
+    },
+    {
+      "path": "CLAUDE.md",
+      "bytes": 3830,
+      "sha256": "a36db279acccbcac488b3d259dd64a3048f36aa1155d67f06369d39949f1dc87"
+    },
+    {
+      "path": "CLAUDE_HANDOFF.md",
+      "bytes": 6117,
+      "sha256": "bdeaa2ffa961565d52d3e290308cbca448135a41057a81a0f62a10a0da64a89b"
+    },
+    {
+      "path": "Dockerfile",
+      "bytes": 677,
+      "sha256": "a89a1f2c330a490298f529db3e76c5df8f19e15622fedc6ecfdc7108dcfd4b8b"
+    },
+    {
+      "path": "LICENSE",
+      "bytes": 1088,
+      "sha256": "22645aa3f8dcb564e8d5dac600da3c65d8cd5c5343b984b02660d94be89ad32a"
+    },
+    {
+      "path": "README.md",
+      "bytes": 8977,
+      "sha256": "22d16a2cfb3e99d22039fa61bab47edc3580994ee4e2299c87a32cb4d312b1b3"
+    },
+    {
+      "path": "START_HERE.txt",
+      "bytes": 987,
+      "sha256": "5b9639303090e541003bcb20c2e0707a7c969277d1d58814d5c0c86b80f1ca05"
+    },
+    {
+      "path": "THIRD_PARTY_NOTICES.md",
+      "bytes": 818,
+      "sha256": "b5d990a331dd083bb6a47c83b1801a2473876cc01de33643a212440da89a7718"
+    },
+    {
+      "path": "clients/NETWORK_RULES.md",
+      "bytes": 3592,
+      "sha256": "2ad5cab7198daeba2054335a45106735cc50993cc489474a9319ef014994f8d7"
+    },
+    {
+      "path": "clients/antigravity/mcp_config.example.json",
+      "bytes": 301,
+      "sha256": "34b935ef5177c6c63b8de481ad21308fe049bfa54d4c792cb277133f50874ce5"
+    },
+    {
+      "path": "clients/claude/claude_desktop_config.example.json",
+      "bytes": 296,
+      "sha256": "aaf71cab609fb3209da57df7f9ba7ea07d5c87b673f7048eb52594f1a8aa721e"
+    },
+    {
+      "path": "clients/claude/mcp.example.json",
+      "bytes": 319,
+      "sha256": "0fa08d50e7094e2030a2b7cac5e069dfa1527761b0e3e1595d3ff1689a9baf4f"
+    },
+    {
+      "path": "clients/codex/config.example.toml",
+      "bytes": 597,
+      "sha256": "e2b02f97981e62db45be88ef748f836a2abf5b29102142851fe213162be928bd"
+    },
+    {
+      "path": "clients/dot/README.md",
+      "bytes": 1362,
+      "sha256": "63d7196f84aa6250c3a2fe34abf98f4623a7f863f93fa882c766078ab0627e73"
+    },
+    {
+      "path": "clients/grok/README.md",
+      "bytes": 3582,
+      "sha256": "8711cb86fc3f1e06b685c136f5adeeeb05d50cac4355a3ab5bfd2ebc4325c27d"
+    },
+    {
+      "path": "clients/grok/rest-client.mjs",
+      "bytes": 1718,
+      "sha256": "b5dd2b1e9828535d7f393c28257d48f4ff4cab35faa70af59c088bfa6909875c"
+    },
+    {
+      "path": "clients/macos/bridge-keychain-launcher.sh",
+      "bytes": 366,
+      "sha256": "d9dc55b6d882569172df16b13422764b3670c57608c4b5afa4159cc073c27041"
+    },
+    {
+      "path": "clients/macos/com.collective.bridge.example.plist",
+      "bytes": 765,
+      "sha256": "0f45ef1373550d690f9efbe3fc04aeb809212fe46a59ee29e809596fac8baa8d"
+    },
+    {
+      "path": "clients/macos/mcp-keychain-launcher.sh",
+      "bytes": 920,
+      "sha256": "53a737b3b92d87ecf01457437c636d775ffa89c2064cdcda24abf2b1dc70dc33"
+    },
+    {
+      "path": "compose.yaml",
+      "bytes": 1201,
+      "sha256": "3606e3fad4416e81276584525d36512ec17a71f6fec8be5627c90e876e37851d"
+    },
+    {
+      "path": "config/bridge.example.json",
+      "bytes": 779,
+      "sha256": "4f241f29c2942fcc076d54e966ae2d66519f44c1efed55c4896f5604d97f568d"
+    },
+    {
+      "path": "db/migrations/001_identity.sql",
+      "bytes": 1362,
+      "sha256": "e34f3244625907dbe3c40e8b0b79787c17686e6b82aae4865687803b5f9e230f"
+    },
+    {
+      "path": "db/migrations/002_core.sql",
+      "bytes": 6012,
+      "sha256": "0134d06d3ce070698072c0a41985ab4d36ae35f9f867313562ada6970cc91829"
+    },
+    {
+      "path": "db/migrations/003_oauth.sql",
+      "bytes": 2503,
+      "sha256": "2c28bf7d923977e218ed137dd3650fbe81780643018b9768a186accded31f82f"
+    },
+    {
+      "path": "db/migrations/004_events.sql",
+      "bytes": 1683,
+      "sha256": "656831fa88b22cd416b258739d91e1d0a19eed730b75435b9caac512af8eaaaa"
+    },
+    {
+      "path": "docs/AGENT_SETUP.md",
+      "bytes": 16500,
+      "sha256": "fd4a3b8f28bc2d62f0f28768aa7279a76d5fe0d867fc705802bd437828645b0e"
+    },
+    {
+      "path": "docs/API.md",
+      "bytes": 28848,
+      "sha256": "d89b868b8a3be943d1ad702c1d12e211ba34d8c714a6c5350620f316ea23a4da"
+    },
+    {
+      "path": "docs/OPERATIONS.md",
+      "bytes": 11576,
+      "sha256": "b6bc14bd6004f651b7b6941698c8cbb71e6e72078b60a95ca20c4326fd3b42ad"
+    },
+    {
+      "path": "docs/Original_Architecture.html",
+      "bytes": 43753,
+      "sha256": "d42a0eee2d8966c01a321fb37f085f715a02ad3e736968e6c13d6d257ee82592"
+    },
+    {
+      "path": "docs/SECURITY.md",
+      "bytes": 5645,
+      "sha256": "f6f5c9f3c5f7a86f5074040122c896e6e7aa6639b788fb8a6c4ad870fc983180"
+    },
+    {
+      "path": "docs/SOURCES.md",
+      "bytes": 3790,
+      "sha256": "4831aa5eede6cab6e045920999d57ddeaca0f7e4b0761b1deb6389575a1fd0a0"
+    },
+    {
+      "path": "docs/STATUS.md",
+      "bytes": 5463,
+      "sha256": "46a94c4846bc5f43f43900a0bfab1000917a7f99a2bde69f26b8558308683423"
+    },
+    {
+      "path": "docs/TRANSPORT.md",
+      "bytes": 16764,
+      "sha256": "79c5434cfba9a9fce1900e29aab150109e1ef3aa587f7c76f7ef97eaa58fac59"
+    },
+    {
+      "path": "docs/VALIDATION.md",
+      "bytes": 8798,
+      "sha256": "7693c2a1c9289019eabf3ef935c957e785d5746efafd8c3e386ef930cd2edf18"
+    },
+    {
+      "path": "package.json",
+      "bytes": 1175,
+      "sha256": "704f7b435b17e2e92c6aa5571f9b1a7fa647f33b04b4e143e22809391c768ef5"
+    },
+    {
+      "path": "scripts/admin.ts",
+      "bytes": 7596,
+      "sha256": "4f744a529c2213a832e82ba3e108e9f5cce25d1461c24ec823b68b6649115a49"
+    },
+    {
+      "path": "scripts/demo.ts",
+      "bytes": 3891,
+      "sha256": "19793b109e5ffedbdadcd4ce7dba91a0517eef534c47e25def75e9db6bfdba76"
+    },
+    {
+      "path": "scripts/init-local.ts",
+      "bytes": 996,
+      "sha256": "bd0e23872558bd3e78fd34fa956901599dae4e9ec9779629f79c47374d3f8bfc"
+    },
+    {
+      "path": "scripts/migrate.ts",
+      "bytes": 2036,
+      "sha256": "81e9f88328892a34f4ba1ccbfdb51fece60408791dc6f85b6337b1c51c00fdd6"
+    },
+    {
+      "path": "src/auth.ts",
+      "bytes": 1406,
+      "sha256": "5042568b2355c44aad8c8bb8a87df9c428305f289771147bab8238174ce163c2"
+    },
+    {
+      "path": "src/bridge/adapters.ts",
+      "bytes": 5557,
+      "sha256": "077dd78b8cf33846708e1feda4b795cb777f45fa880e4af59abd88c02f12b26f"
+    },
+    {
+      "path": "src/bridge/client.ts",
+      "bytes": 2681,
+      "sha256": "31a2e1ad6497c3b283ac9be841a4d3fceafa9a703320b60b4ce25b6697b3e52d"
+    },
+    {
+      "path": "src/bridge/config.ts",
+      "bytes": 7259,
+      "sha256": "8c5fd449e54e1222863a5e2a95608ae160d37a4b82239c6d270831b82be8eddf"
+    },
+    {
+      "path": "src/bridge/process.ts",
+      "bytes": 3410,
+      "sha256": "d2eb08f1bd0a73759edbbddf6f4681e9623040a0479cb97c4e1713c79ec2c67b"
+    },
+    {
+      "path": "src/bridge/reason.ts",
+      "bytes": 1326,
+      "sha256": "a0f9334821eec813b2236cf465fa930f0a444d22d8b722fb42e35d56adb224ea"
+    },
+    {
+      "path": "src/bridge/types.ts",
+      "bytes": 2104,
+      "sha256": "bea69555224e772ff8830baf871281bc61dd2f69dee9adfef43294d98f26ba26"
+    },
+    {
+      "path": "src/bridge/worker.ts",
+      "bytes": 11727,
+      "sha256": "8a7e9a61566db20cdfcb7a592ab9b96a0bca69a9becebb1dc430ccc728202025"
+    },
+    {
+      "path": "src/bridge/workspace-lock.ts",
+      "bytes": 1571,
+      "sha256": "1dd56e7d7c565c48225006b5b39f28fcea69fd640696748844047fc3ddc5fde6"
+    },
+    {
+      "path": "src/bridge.ts",
+      "bytes": 1645,
+      "sha256": "5f415ec7adc8c27483d2606a1fa4457e0a50abe985d12a1b9e88dc3bd78c8681"
+    },
+    {
+      "path": "src/config.ts",
+      "bytes": 2891,
+      "sha256": "2022ed1266e1eedfa636277c7b4d1acd3ea123c2352c9ce3a83834eff764a7ca"
+    },
+    {
+      "path": "src/core/index.ts",
+      "bytes": 7861,
+      "sha256": "25d187195106eb3a28214ae65a3a2291aee5c10d06bab2aff5cb0609a39747c0"
+    },
+    {
+      "path": "src/core/memory.ts",
+      "bytes": 18069,
+      "sha256": "0af6c4d6ecde78b0dc1b9c793d4aec3056d2f66862f26636466511164e60f3bb"
+    },
+    {
+      "path": "src/core/shared.ts",
+      "bytes": 5439,
+      "sha256": "01ccc3b62d25d46ca53e0fb474af19e13c185eb3cc0bea90dbde9a28b3d1bb17"
+    },
+    {
+      "path": "src/core/tasks.ts",
+      "bytes": 31130,
+      "sha256": "3f621c4e2a547e7bff52f71133cfb085ad47cb57f69f24947fcfc5e461128b04"
+    },
+    {
+      "path": "src/core/tools.ts",
+      "bytes": 7362,
+      "sha256": "d6be820b05ef6339d099635b6ac02a3fcfd5987001161856f245ce23e95f4465"
+    },
+    {
+      "path": "src/db.ts",
+      "bytes": 946,
+      "sha256": "fc7c687dc32ae7b9cec03fea5ff8c5d6c39973f0eeb32b630818d3effaa73bcb"
+    },
+    {
+      "path": "src/errors.ts",
+      "bytes": 787,
+      "sha256": "74eca20000cc115f1fafc6f8d129504c8b777e99c0e3b9f78f698d2786630f7b"
+    },
+    {
+      "path": "src/events.ts",
+      "bytes": 21757,
+      "sha256": "5fa4d044e3f2104c06c56a7109046306c2d639e1a79663f0390a28f9123d089b"
+    },
+    {
+      "path": "src/http.ts",
+      "bytes": 16957,
+      "sha256": "c5cd63f3d545d9b68f99c4fd8e7c716e8e8e5cad529e1ef1e3f22e8830c671e2"
+    },
+    {
+      "path": "src/mcp.ts",
+      "bytes": 9386,
+      "sha256": "3ed6af7ab8d4a6ad759044980030d32bba56d717444446df9f22628a0cf979ee"
+    },
+    {
+      "path": "src/oauth.ts",
+      "bytes": 24689,
+      "sha256": "a300f162db74a59866f52a2ec16105d753cb9235aa1683bf432a0ebb243d3f3f"
+    },
+    {
+      "path": "src/policy.ts",
+      "bytes": 1257,
+      "sha256": "37df1aeb8d7b41aafbe579ba70ce104c6ccf7a963d3e907f50999c7051cc5766"
+    },
+    {
+      "path": "src/server.ts",
+      "bytes": 1899,
+      "sha256": "00d2c297247b4d98ca0dee2969bc76cd4d888eb8348c9c5c244f4b1762dabd96"
+    },
+    {
+      "path": "src/stdio-proxy.ts",
+      "bytes": 6869,
+      "sha256": "68b212ce54b7bd332c211bc3e18ca8f156b712b911aa21d50147f0cea8ea098a"
+    },
+    {
+      "path": "src/types.ts",
+      "bytes": 1878,
+      "sha256": "180d25c4afe3c10307696c5a15566eac029acef8466067e23b38676b3dcb0659"
+    },
+    {
+      "path": "src/validation.ts",
+      "bytes": 2548,
+      "sha256": "9b5b6de1d92b5f314c641bc220b373a3e94fc3d5027ace42501b0d382e6f3dc8"
+    },
+    {
+      "path": "src/webhook.ts",
+      "bytes": 6418,
+      "sha256": "5475da3c8291efcf80a92e9229a9cb5b4665ff7d613941d6587272ddc988a132"
+    },
+    {
+      "path": "tests/bridge-config.test.ts",
+      "bytes": 4666,
+      "sha256": "f417090bcb4f660e4e28849291cff14956d9a16ca6aab500ba6914fb7442f9a2"
+    },
+    {
+      "path": "tests/bridge-process.test.ts",
+      "bytes": 1117,
+      "sha256": "28c3c5d997fa4b4e7c7653c85227419db4fbe7001443819e61c43cdfe24e3c7f"
+    },
+    {
+      "path": "tests/bridge-proxy.test.ts",
+      "bytes": 3110,
+      "sha256": "d7358807bcb3fc93729d45117642311d15a8c57a0efca0d9dead3e07a46456ac"
+    },
+    {
+      "path": "tests/bridge-worker.test.ts",
+      "bytes": 5213,
+      "sha256": "573cfab3611c0d7b44fb4f7d22f992a31f4cb859df8fc4b58faa94b99dcf0d39"
+    },
+    {
+      "path": "tests/bridge-workspace-lock.test.ts",
+      "bytes": 777,
+      "sha256": "abfbc42841c0a6889eae90c46205251ff304ea5b31141bc0fa22823dd5e48c3b"
+    },
+    {
+      "path": "tests/core.integration.test.ts",
+      "bytes": 28582,
+      "sha256": "95595b6095549f4d230c7dfcbd35124f8106472d8774016c505c6d6a06d37c00"
+    },
+    {
+      "path": "tests/events.integration.test.ts",
+      "bytes": 9351,
+      "sha256": "5f795be76928b1e8f9638af0178e5f9667679fc418747b38b693ec4f5d725dbb"
+    },
+    {
+      "path": "tests/oauth.integration.test.ts",
+      "bytes": 8846,
+      "sha256": "9ab12eede089e56c5ae6f2fa44f43571c1307cc2440daa0c55f9746397f47340"
+    },
+    {
+      "path": "tests/oauth.test.ts",
+      "bytes": 3104,
+      "sha256": "b58f3b2033ef32bba323c38616d0bbd41a6c43a323039b1bfe578f3df2a87776"
+    },
+    {
+      "path": "tests/transport.test.ts",
+      "bytes": 10313,
+      "sha256": "9a64522e96df8919fb239270eda41b0ec9198d90db5797ecf1567e68d84462a3"
+    },
+    {
+      "path": "tests/webhook.test.ts",
+      "bytes": 2795,
+      "sha256": "2cd4408d56806e460ead2d2234edbc29ae6b7f5c07db7f23027a3034ac3305dd"
+    },
+    {
+      "path": "tsconfig.json",
+      "bytes": 465,
+      "sha256": "9ee618bca5a65c488f644680609f5bb6db4102225e4de8c0a6d690845db6f9ef"
+    },
+    {
+      "path": "vendor/REASON_SNAPSHOT.json",
+      "bytes": 389,
+      "sha256": "1135dcbed15b9a5493ff15855b39ef7b65fbb616932712a0337965f66465a0a2"
+    },
+    {
+      "path": "vendor/reason-network/.git-blame-ignore-revs",
+      "bytes": 150,
+      "sha256": "ae8ad355caa5a32d16b13983b670870c5f623281fe64cf9538999547ade2b5a3"
+    },
+    {
+      "path": "vendor/reason-network/.gitignore",
+      "bytes": 8,
+      "sha256": "44c92e3a70ad3307b7056871c2bdb096d8bfa9373f5bf06a79bb6324a20ff2fb"
+    },
+    {
+      "path": "vendor/reason-network/CONTRIBUTING.md",
+      "bytes": 892,
+      "sha256": "db5ef1134e54ee76635de6fcf172f7464fbf7167d52f0c28e7418d795c23aa4e"
+    },
+    {
+      "path": "vendor/reason-network/Cargo.lock",
+      "bytes": 113055,
+      "sha256": "e2f5d8b9b96be9e68348fbdc58b2493c686e4ff669cc95f5b5571171ae828928"
+    },
+    {
+      "path": "vendor/reason-network/Cargo.toml",
+      "bytes": 1874,
+      "sha256": "5fe4a13813af288999f61ca4d7cb45c389d14716acf862c4ac2e52d1edbd6fd6"
+    },
+    {
+      "path": "vendor/reason-network/DESIGN.md",
+      "bytes": 32692,
+      "sha256": "95c16747d77d233c3098271cfd3ee3cbd05c118fd03c219a54bf47f9ddfaf1de"
+    },
+    {
+      "path": "vendor/reason-network/LICENSE-APACHE",
+      "bytes": 11358,
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    },
+    {
+      "path": "vendor/reason-network/LICENSE-MIT",
+      "bytes": 1080,
+      "sha256": "0c0f2e36352216ffb048903b26375f2d2a2c2cca5efed60d821090e884b48198"
+    },
+    {
+      "path": "vendor/reason-network/NOTICE",
+      "bytes": 462,
+      "sha256": "5da1765ea1af12a1649cb26e28c2620a706b15a99fbd148eccf3709e98ecb418"
+    },
+    {
+      "path": "vendor/reason-network/README.md",
+      "bytes": 7364,
+      "sha256": "801268f3b7b14161a412e916a61ab3ed5e936d49dfc89021a2f474171f352b1e"
+    },
+    {
+      "path": "vendor/reason-network/SECURITY.md",
+      "bytes": 635,
+      "sha256": "c610f820e7a4e29298873194b2496c889d61633ae2e58186121e2e55a7f620ee"
+    },
+    {
+      "path": "vendor/reason-network/assets/reason-network-banner.png",
+      "bytes": 661933,
+      "sha256": "338848f742d79ce791d9275e3b71de315e4fd8a9c985f85811efc6513fd356e5"
+    },
+    {
+      "path": "vendor/reason-network/assets/reason.icns",
+      "bytes": 25646,
+      "sha256": "5e341fa65687ecec46d65d04f06a47f8cb3d3fe07c89dba6962ab971e02cb695"
+    },
+    {
+      "path": "vendor/reason-network/install.ps1",
+      "bytes": 4839,
+      "sha256": "417b0adc839b8e2174e8f1fb65e1cc07c890831e25426871d13dd7c953c25d58"
+    },
+    {
+      "path": "vendor/reason-network/install.sh",
+      "bytes": 5684,
+      "sha256": "a34a69961222b5b0e1ba6a537edc15161b9f100cab48be33d8c96580253f54c4"
+    },
+    {
+      "path": "vendor/reason-network/rustfmt.toml",
+      "bytes": 45,
+      "sha256": "93ed1668bb2ca659e88711456b72320bf2f53369ecf278c4a61af0cb63cc3a1e"
+    },
+    {
+      "path": "vendor/reason-network/src/agent.rs",
+      "bytes": 9795,
+      "sha256": "89807e13ecfc44c78e8f27a75b2ed55eb4fa9c809c7f580e117d479d187da61b"
+    },
+    {
+      "path": "vendor/reason-network/src/claude.rs",
+      "bytes": 7615,
+      "sha256": "30d4f7e64f4c022b2240fd8a1cbe3b4c1c31b5cefc4717542076014ab96c2bf7"
+    },
+    {
+      "path": "vendor/reason-network/src/client.rs",
+      "bytes": 10894,
+      "sha256": "00105115d5c8c1e16fe0801c640f42f147b865b02f686f260c4b1baf564ac57b"
+    },
+    {
+      "path": "vendor/reason-network/src/config.rs",
+      "bytes": 13964,
+      "sha256": "49abd7efc72e33c4fa50b28ac40cdb83d22733e035b3deb7498b2de397fcda1b"
+    },
+    {
+      "path": "vendor/reason-network/src/daemon/ask.rs",
+      "bytes": 28258,
+      "sha256": "566f3da4bddabaa58a7afa4ca080440a57710c59bc9a2c43904e23ebef9a458b"
+    },
+    {
+      "path": "vendor/reason-network/src/daemon/directory.rs",
+      "bytes": 20590,
+      "sha256": "2ed6a21203e542870daeeeeb8bfd676e0dd1647ec72e23c3ecff7183cef9befa"
+    },
+    {
+      "path": "vendor/reason-network/src/daemon/mail.rs",
+      "bytes": 39570,
+      "sha256": "13649e2b7384ebd8e68fa438ea4a6ce0537aa2a8550e1466388e26e9d2dd0c0f"
+    },
+    {
+      "path": "vendor/reason-network/src/daemon/mod.rs",
+      "bytes": 15289,
+      "sha256": "62dca33e3f291542ba29efa93d1b44f30598e3ef623e2059260642ea715a2530"
+    },
+    {
+      "path": "vendor/reason-network/src/daemon/notify.rs",
+      "bytes": 10255,
+      "sha256": "ddb719f292148f272cb6799f6008024ad99427e0c9bcf23bb6945be61ebc5be7"
+    },
+    {
+      "path": "vendor/reason-network/src/daemon/reason.rs",
+      "bytes": 12222,
+      "sha256": "a28dedf78f69ebc3ea9442c98da4c858d71011c27151df0b53d30df7b6bde034"
+    },
+    {
+      "path": "vendor/reason-network/src/daemon/sessions.rs",
+      "bytes": 19244,
+      "sha256": "7ca6f8f09dd86d28b7182c2a38b3384525ea4cc69893f25125a5fc2027492f38"
+    },
+    {
+      "path": "vendor/reason-network/src/daemon/teamops.rs",
+      "bytes": 29500,
+      "sha256": "05cef077a50c81a63bb15e3e8c7d3aadcba43dd85f152ae2cbdd48d63d18b8ea"
+    },
+    {
+      "path": "vendor/reason-network/src/daemon/update.rs",
+      "bytes": 5039,
+      "sha256": "bb94e7ccebbe1e704705f76bb245313732d0be9da398f28bb8a6f6699731273f"
+    },
+    {
+      "path": "vendor/reason-network/src/doing.rs",
+      "bytes": 11217,
+      "sha256": "b5e0ad33e8404153967433a46bc4d7a39dcacf770b9bb61a8e1e4e29512feced"
+    },
+    {
+      "path": "vendor/reason-network/src/files.rs",
+      "bytes": 39500,
+      "sha256": "a142e602978fed488cde68214875ac617981edf6e07f80975831109ed84e964b"
+    },
+    {
+      "path": "vendor/reason-network/src/git.rs",
+      "bytes": 2139,
+      "sha256": "1f217b3d7bac0ca5e71c48fb080e073abb827d7ea92ff060beef75e58721d38e"
+    },
+    {
+      "path": "vendor/reason-network/src/hook.rs",
+      "bytes": 8817,
+      "sha256": "b62998e808c95e403cf3f75b1996e74d8b97a95602fa6d704f1413c0788fafee"
+    },
+    {
+      "path": "vendor/reason-network/src/invite.rs",
+      "bytes": 2609,
+      "sha256": "b2d700c40c55240d86651f050b2bfddfafcbfb1ed188a95666f3b37abb338900"
+    },
+    {
+      "path": "vendor/reason-network/src/ipc.rs",
+      "bytes": 3339,
+      "sha256": "924afd0d080f2d7a9a2cd8b08df38f6906874cab6deb9dffbb0b5bcfd33097f7"
+    },
+    {
+      "path": "vendor/reason-network/src/main.rs",
+      "bytes": 38906,
+      "sha256": "7f25ee0ece4c30cf4d42b72e29bc99f9323d346825a2a9da8e98d32bf07ddffe"
+    },
+    {
+      "path": "vendor/reason-network/src/mcp.rs",
+      "bytes": 17330,
+      "sha256": "8fa0050d7aec339593fcc4d23710b865bb4c8339d1c856d552e2d019f2787518"
+    },
+    {
+      "path": "vendor/reason-network/src/migrate.rs",
+      "bytes": 4851,
+      "sha256": "c3c407cf0442937634ad055fd5ac14fdf2e0b29b6961723a824e2e557286f8d8"
+    },
+    {
+      "path": "vendor/reason-network/src/net.rs",
+      "bytes": 41447,
+      "sha256": "6c3365a702791b5a2643b90474dfbaf5f54eeea3ba4a378d61c1504fae8c1ca5"
+    },
+    {
+      "path": "vendor/reason-network/src/opencode-plugin.ts",
+      "bytes": 5732,
+      "sha256": "1ff89e02b8175549c7bcc1ba7cfb130c428605f8f179b797963dc73fd09c6548"
+    },
+    {
+      "path": "vendor/reason-network/src/paths.rs",
+      "bytes": 10155,
+      "sha256": "e9b54b62fcc77646b98d600fce84b1c0f4141a8ccfe9fbc6eb210f0496a3062f"
+    },
+    {
+      "path": "vendor/reason-network/src/pi-extension.ts",
+      "bytes": 2511,
+      "sha256": "0594e9f27d0aff7d064f149e603927440feda4f85564eedf25d6d7bd29f3896e"
+    },
+    {
+      "path": "vendor/reason-network/src/proof.rs",
+      "bytes": 20906,
+      "sha256": "0e3751e1c116bb9c828b9051c177a61d8c1b24105448d22072ae695ee729cb72"
+    },
+    {
+      "path": "vendor/reason-network/src/proto.rs",
+      "bytes": 18150,
+      "sha256": "c80ee0ed3c0729fe3bb77826a71fb420d944cf92e9d4057fdbb7f218817dd587"
+    },
+    {
+      "path": "vendor/reason-network/src/relays.rs",
+      "bytes": 20347,
+      "sha256": "f530bc4d574b2b1fcb8772bce99b89cddba9b6c577167ab8353127da0de6776a"
+    },
+    {
+      "path": "vendor/reason-network/src/render.rs",
+      "bytes": 26342,
+      "sha256": "03e6800094724a1418180657bd15c4ea58ebc509db45e5b7245386d63750b171"
+    },
+    {
+      "path": "vendor/reason-network/src/setup.rs",
+      "bytes": 68552,
+      "sha256": "989bfc2df99451b3cdde8d6ca471d1a3c6771f234d9d73693d5384771cc95041"
+    },
+    {
+      "path": "vendor/reason-network/src/skill.md",
+      "bytes": 2958,
+      "sha256": "7cac41d0493f5cc81d5cac36d40692f8458843375f79fc5c55745dc4eea4bc0b"
+    },
+    {
+      "path": "vendor/reason-network/src/store.rs",
+      "bytes": 40647,
+      "sha256": "17463e124f194cc5b4f145584dd1c85368ae32ce76eb102e1fff70ba2ff45da4"
+    },
+    {
+      "path": "vendor/reason-network/src/team.rs",
+      "bytes": 57740,
+      "sha256": "a71ca6c08019d1638f901ab10c24825aeb5eaa0b2a75e4a5de95c5e41ef2f8d7"
+    },
+    {
+      "path": "vendor/reason-network/src/testdata/proof-forger.pk8",
+      "bytes": 1217,
+      "sha256": "028a4c633bc9c47f4267982f83f85cac41f85f421f5e673a3f6b98756141caff"
+    },
+    {
+      "path": "vendor/reason-network/src/testdata/proof-signer.pk8",
+      "bytes": 1218,
+      "sha256": "694406bbeedc466498bc9338497bf31c57b55c66a0c74b196dce3ce853a12749"
+    },
+    {
+      "path": "vendor/reason-network/src/tray.rs",
+      "bytes": 11030,
+      "sha256": "c771ec22d50d0ed33d2abf59d6676ee631bc5a3651440edb426adaf9b166ddbe"
+    },
+    {
+      "path": "vendor/reason-network/src/util.rs",
+      "bytes": 15197,
+      "sha256": "05539e909f50ba00209378fe1e45bc3ed0c37265833441ea39f9230211bc9784"
+    },
+    {
+      "path": "vendor/reason-network/src/wizard.rs",
+      "bytes": 13156,
+      "sha256": "a73093fd6bf9b9a17b358670ef3e234a28cfe37b948941eb9f451d5e242470c2"
+    },
+    {
+      "path": "vendor/reason-network/src/words.txt",
+      "bytes": 7174,
+      "sha256": "baa6dcee905fb968891ff3e7b55143ed048fac42c144ddf2a2de601f51568cf1"
+    },
+    {
+      "path": "vendor/reason-network/tests/e2e/guided.py",
+      "bytes": 7342,
+      "sha256": "ce43cb4fefd6fa6a0399c93f69177dc4bda628eb76677a046d8d5a8b9103b689"
+    },
+    {
+      "path": "vendor/reason-network/tests/e2e/hooks.py",
+      "bytes": 16499,
+      "sha256": "a9ffb4432e110d5a72e13ee215c098ff9b5eac49e145af818d78ac6192c75480"
+    },
+    {
+      "path": "vendor/reason-network/tests/e2e/mixed_versions.py",
+      "bytes": 8981,
+      "sha256": "a9c46e9d132838143454ff44dfadabcae1736c66c6f1c356177bcbd5f9e820c5"
+    },
+    {
+      "path": "vendor/reason-network/tests/e2e/proofs.py",
+      "bytes": 4280,
+      "sha256": "b1bf215ec7142fcfe44a0dd1be7169b39f0d5d9605ac859f38a0b8c884f1e341"
+    },
+    {
+      "path": "vendor/reason-network/tests/e2e/regional_relays.py",
+      "bytes": 6143,
+      "sha256": "6aced0ae18d38b6c5e1d6cfb42e2ccb8e29379d1f8b130c90da6cc411e83bfb6"
+    },
+    {
+      "path": "vendor/reason-network/tests/e2e/two_machines.py",
+      "bytes": 39868,
+      "sha256": "c7a6d085962c8ff964f5f01773bb2cdcf40c99e233f054fe5534be92e76b5ae1"
+    },
+    {
+      "path": "vendor/reason-network/tests/install_script.rs",
+      "bytes": 3403,
+      "sha256": "dab792cd3c551f0cd174b5bc254a463afd0ad5a2a077f80e9d2d33ebc5f4e5cd"
+    }
+  ]
+}

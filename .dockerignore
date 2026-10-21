@@ -1,0 +1,11 @@
+.git
+.github
+.env
+.env.*
+.local
+node_modules
+dist
+vendor
+config/bridge.json
+*.zip
+*.dump
