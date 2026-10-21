@@ -1,6 +1,6 @@
-# Swarma
+# Swarmaa
 
-Swarma connects your agent CLIs and chat agents to one shared memory and task queue. Claude Code,
+Swarmaa connects your agent CLIs and chat agents to one shared memory and task queue. Claude Code,
 Codex and Antigravity read and write the same project memory over MCP. Claude and Codex can also
 run as background workers that pick up read-only review/research tasks. Dot and Grok use the same
 service over HTTPS. NotchTrader shows the agents and swarms in the notch.
@@ -13,7 +13,7 @@ npm run setup
 ```
 
 The wizard asks which project folders the swarm may read, which installed CLIs to connect, which
-ones to run as background workers, whether to show Swarma in NotchTrader, and whether to start
+ones to run as background workers, whether to show Swarmaa in NotchTrader, and whether to start
 everything at login. It is safe to re-run; answers are remembered in `.local/setup.json`.
 `npm run setup -- --dry-run` prints every action without changing anything.
 
@@ -56,11 +56,11 @@ recent tasks. `npm run usage` prints the local readings.
 
 ## NotchTrader
 
-With the Swarma view enabled, NotchTrader shows one cell per worker (quota ring, current task or
+With the Swarmaa view enabled, NotchTrader shows one cell per worker (quota ring, current task or
 idle/offline) and one per swarm (running, queued, done today) in place of the stock tickers. It uses
 the `notchtrader` identity from `.local/notchtrader.json` and `http://127.0.0.1:8787`.
 
-## Reaching Swarma from other devices and hosted agents
+## Reaching Swarmaa from other devices and hosted agents
 
 No custom server module is needed. The service stays on this Mac (fast local path, data stays local)
 and is published through an existing tunnel:

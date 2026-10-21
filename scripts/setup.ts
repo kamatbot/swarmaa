@@ -38,8 +38,8 @@ function put(file: string, data: string, mode = 0o600): void {
 }
 const mkdirp = (dir: string, mode = 0o700) => { if (dry) plan(`mkdir -p ${dir}`); else mkdirSync(dir, { recursive: true, mode }); };
 
-if (Number(process.versions.node.split('.')[0]) < 22) die('Swarma needs Node >= 22.');
-say(dry ? 'Swarma setup (dry run: nothing will be changed)\n' : 'Swarma setup\n');
+if (Number(process.versions.node.split('.')[0]) < 22) die('Swarmaa needs Node >= 22.');
+say(dry ? 'Swarmaa setup (dry run: nothing will be changed)\n' : 'Swarmaa setup\n');
 
 const rl = createInterface({ input: process.stdin });
 const lines = rl[Symbol.asyncIterator]();
@@ -128,7 +128,7 @@ async function main(): Promise<void> {
     say(`  skipped ${raw}: not an existing directory`);
   }
   const demo = join(ROOT, '.local/demo-project');
-  if (!existsSync(demo)) { mkdirp(demo); put(join(demo, 'README.md'), '# Swarma demo project\n\nA scratch folder for trying the swarm without touching real code.\n', 0o644); }
+  if (!existsSync(demo)) { mkdirp(demo); put(join(demo, 'README.md'), '# Swarmaa demo project\n\nA scratch folder for trying the swarm without touching real code.\n', 0o644); }
   const projects = [{ scope: 'project:demo', root: demo }, ...slugScopes(valid, ['demo'])];
   const scopes = projects.map(p => p.scope).join(',');
 
@@ -157,7 +157,7 @@ async function main(): Promise<void> {
   for (const a of AGENTS) {
     const bin = detect(a.key);
     if (!bin) { say(`${a.label} not found; skipping.`); continue; }
-    if (!(await askYes(`Connect ${a.label} to Swarma shared memory?`, state.agents ? state.agents.includes(a.key) : true))) continue;
+    if (!(await askYes(`Connect ${a.label} to Swarmaa shared memory?`, state.agents ? state.agents.includes(a.key) : true))) continue;
     if (!existsSync(join(ROOT, 'dist/src/stdio-proxy.js'))) build();
     if (!ensureIdentity(a.ident, 'frontend', join(ROOT, `.local/${a.stem}.json`))) continue;
     if (a.key === 'claude') { run(bin, ['mcp', 'remove', '-s', 'user', 'swarma']); run(bin, ['mcp', 'add', '-s', 'user', 'swarma', '--', '/bin/sh', LAUNCHER, a.stem]); }
@@ -180,13 +180,13 @@ async function main(): Promise<void> {
     put(join(ROOT, `.local/bridge-${a.key}.json`), `${JSON.stringify(cfg, null, 2)}\n`);
     workers.push(a.key);
   }
-  // NotchTrader's Swarma view reads swarm_status with its own frontend identity from this token file.
-  if (existsSync('/Applications/NotchTrader.app') && await askYes('Show Swarma agents and swarms in NotchTrader?', true)) {
+  // NotchTrader's Swarmaa view reads swarm_status with its own frontend identity from this token file.
+  if (existsSync('/Applications/NotchTrader.app') && await askYes('Show Swarmaa agents and swarms in NotchTrader?', true)) {
     if (ensureIdentity('notchtrader', 'frontend', join(ROOT, '.local/notchtrader.json'))) agents.push('notchtrader');
   }
 
   // 7. autostart
-  const autostart = await askYes('Start Swarma automatically at login?', state.autostart ?? true);
+  const autostart = await askYes('Start Swarmaa automatically at login?', state.autostart ?? true);
   const uid = process.getuid?.() ?? 501, label = (s: string) => `com.swarma.${s}`;
   const bridgeArgs = (k: string) => [NODE, join(ROOT, 'dist/src/bridge.js'), '--config', join(ROOT, `.local/bridge-${k}.json`)];
   if (autostart) {

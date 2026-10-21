@@ -1,4 +1,4 @@
-# Swarma
+# Swarmaa
 
 Shared memory, task routing and MCP access for Claude Code, Codex, Antigravity, Dot and Grok. Start with `npm run setup` and [docs/SWARMA.md](docs/SWARMA.md); the sections below describe the underlying companion service.
 

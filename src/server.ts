@@ -22,7 +22,7 @@ server.on('clientError', (_error, socket) => {
 });
 server.on('error', () => { process.stderr.write('HTTP server error. Check address and port configuration.\n'); void shutdown(1); });
 server.listen(config.port, config.host, () => {
-  process.stderr.write(`Swarma listening on ${config.host}:${config.port}; public origin ${config.publicUrl}\n`);
+  process.stderr.write(`Swarmaa listening on ${config.host}:${config.port}; public origin ${config.publicUrl}\n`);
   events?.start();
 });
 
