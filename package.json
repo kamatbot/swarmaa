@@ -8,6 +8,7 @@
   "engines": { "node": ">=22.0.0" },
   "scripts": {
     "init:local": "node --import tsx scripts/init-local.ts",
+    "setup": "node --import tsx scripts/setup.ts",
     "dev": "node --env-file=.env --import tsx src/server.ts",
     "start": "node --env-file=.env dist/src/server.js",
     "migrate": "node --env-file=.env --import tsx scripts/migrate.ts",
