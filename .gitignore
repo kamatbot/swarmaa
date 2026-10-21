@@ -9,3 +9,6 @@ config/bridge.json
 *.dump
 coverage/
 .DS_Store
+.wrangler/
+.impeccable/direction-round.json
+.serena/

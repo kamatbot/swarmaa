@@ -1,0 +1,12 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "swarmaa-site",
+  "main": "src/worker.js",
+  "compatibility_date": "2026-10-01",
+  "assets": { "directory": "./public", "binding": "ASSETS", "run_worker_first": ["/api/*"] },
+  "kv_namespaces": [{ "binding": "WAITLIST", "id": "0f30534fedda47baad7d6fc45d1408df" }],
+  "routes": [
+    { "pattern": "swarmaa.com", "custom_domain": true },
+    { "pattern": "www.swarmaa.com", "custom_domain": true }
+  ]
+}

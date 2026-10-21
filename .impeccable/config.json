@@ -1,0 +1,26 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "gradient-text",
+        "value": "*",
+        "files": [
+          "site/public/index.html"
+        ],
+        "createdAt": "2026-10-21T18:16:36.998Z",
+        "reason": "user supplied this template and pinned it as the landing design"
+      },
+      {
+        "rule": "dark-glow",
+        "value": "*",
+        "files": [
+          "site/public/index.html"
+        ],
+        "createdAt": "2026-10-21T18:16:37.021Z",
+        "reason": "user supplied this template and pinned it as the landing design"
+      }
+    ]
+  }
+}
