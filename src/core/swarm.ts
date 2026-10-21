@@ -84,7 +84,7 @@ export class SwarmService {
       [all, scopes] = [false, [scope]];
     }
     const [workers, usage, counts, recent] = await Promise.all([
-      this.pool.query(`SELECT w.name,w.last_seen_at,w.last_seen_at>clock_timestamp()-interval '60 seconds' AS live,
+      this.pool.query(`SELECT w.name,w.last_seen_at,coalesce(w.last_seen_at>clock_timestamp()-interval '60 seconds',false) AS live,
           (SELECT coalesce(json_agg(json_build_object('task_id',t.id,'scope',t.scope)),'[]') FROM tasks t
             WHERE t.lease_owner=w.id AND t.status='running' AND ($2::boolean OR t.scope=ANY($3::text[]))) AS running,
           (SELECT coalesce(json_agg(u.provider ORDER BY u.provider),'[]') FROM provider_usage u WHERE u.reporter_id=w.id) AS providers
