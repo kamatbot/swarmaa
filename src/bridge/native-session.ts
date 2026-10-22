@@ -38,12 +38,7 @@ export function prepareNative(agent: AgentConfig, task: Task, worktreeDir?: stri
     mkdirSync(claudeWorkerDir(worktreeDir, home), { recursive: true, mode: 0o700 });
     return plan;
   }
-  if (agent.provider === 'codex') {
-    const codexHome = mkdtempSync(join(real(tmp), 'swarma-codex-')); // 0700
-    const auth = join(home, '.codex', 'auth.json');
-    if (existsSync(auth)) symlinkSync(auth, join(codexHome, 'auth.json'));
-    return { harness: 'codex', home, codexHome, ...(worktreeDir ? { worktreeReal: real(worktreeDir) } : {}) };
-  }
+  // Codex and agy run with the user's own home and save their sessions natively; nothing to prepare.
   return undefined;
 }
 

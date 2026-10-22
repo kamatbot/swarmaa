@@ -3,13 +3,10 @@ import { claudeWorkerDir, type NativePlan } from './native-session.js';
 import { wrapCommand } from './sandbox.js';
 import type { AgentConfig, BridgeConfig, ProcessRequest, ProcessResult, ProjectConfig, Task } from './types.js';
 
-/** The service token is deliberately absent, even when the provider inherits account auth. */
-export function providerEnvironment(provider: string, parent: NodeJS.ProcessEnv, tokenEnv: string): NodeJS.ProcessEnv {
-  const allowed = ['PATH', 'HOME', 'USER', 'LOGNAME', 'LANG', 'LC_ALL', 'TMPDIR', 'TEMP', 'TMP', 'SSL_CERT_FILE', 'SSL_CERT_DIR'];
-  if (provider === 'claude') allowed.push('ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN');
-  if (provider === 'codex') allowed.push('OPENAI_API_KEY');
+/** The user's own environment, as the CLI would see it in their shell, minus every Swarmaa service token (COLLECTIVE_*). */
+export function providerEnvironment(_provider: string, parent: NodeJS.ProcessEnv, tokenEnv: string): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { NO_COLOR: '1', TERM: 'dumb' };
-  for (const key of allowed) if (key !== tokenEnv && parent[key] !== undefined) env[key] = parent[key];
+  for (const [key, value] of Object.entries(parent)) if (key !== tokenEnv && !key.startsWith('COLLECTIVE_')) env[key] = value;
   return env;
 }
 
@@ -50,45 +47,28 @@ export function buildInvocation(agent: AgentConfig, project: ProjectConfig, task
   if (patch && (!project.allow_patch || !agent.enable_patch)) throw new Error('Patch execution is not enabled for this project/provider');
   let args: string[];
   if (agent.provider === 'claude') {
+    // The real CLIs as the user runs them (their config, MCP servers, skills, models, login), headless with
+    // permissions auto-approved because nobody is there to answer prompts. The light Seatbelt profile keeps
+    // credential folders out of reach; patch work stays on its own worktree branch.
     args = [
-      '--restricted', '--print', '--output-format', 'json',
-      // Patch runs persist under a known id so the bridge can copy the transcript to the project; read runs run in the user's own project and stay unpersisted.
-      ...(native?.harness === 'claude' ? ['--session-id', native.id!] : ['--no-session-persistence']),
-      // The same tools as an interactive Claude Code session: web search/fetch always, edits for patch, and Bash
-      // only inside the Seatbelt (read tasks get a read-only profile). Pre-approved via --allowedTools, since
-      // --restricted refuses bypassPermissions.
-      '--tools', `Read,Glob,Grep,WebSearch,WebFetch${patch ? ',Edit,Write' : ''}${agent.sandbox ? ',Bash' : ''}`,
-      '--allowedTools', `WebSearch,WebFetch${agent.sandbox ? ',Bash' : ''}`,
-      '--disallowedTools', 'mcp__*', '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}',
-      '--disable-slash-commands', '--no-chrome', '--permission-prompts', 'none',
-      '--permission-mode', patch ? 'acceptEdits' : 'default', '--max-turns', '80'
+      '--print', '--output-format', 'json', '--permission-mode', 'bypassPermissions', '--max-turns', '200',
+      ...(native?.harness === 'claude' ? ['--session-id', native.id!] : []),
     ];
   } else if (agent.provider === 'codex') {
-    args = [
-      // --search is a top-level flag: it must come before `exec`.
-      '--search', 'exec', '--ignore-user-config', '--disable', 'apps', '--disable', 'plugins',
-      '--sandbox', patch ? 'workspace-write' : 'read-only', '-c', 'approval_policy="never"', ...(native?.codexHome ? [] : ['--ephemeral']), '--color', 'never', '--json'
-    ];
+    // --search is a top-level flag and must come before `exec`. Codex's own sandbox can't nest inside Seatbelt.
+    args = ['--search', 'exec', '--json', '--skip-git-repo-check', '--dangerously-bypass-approvals-and-sandbox', '--color', 'never'];
   } else {
-    // agy takes the prompt only as the value of -p (no stdin), attached with '=' so it is never parsed as a flag.
-    // spawn() has shell:false, so the text is one argv element. Unsandboxed (read only): plan mode refuses mutating
-    // tools and needs no permission skip. Sandboxed: default mode (`--mode auto` is unavailable on some accounts) + skip-permissions so commands run headless; the outer
-    // Seatbelt profile is the read/write boundary (read tasks get a read-only profile).
-    // MCP servers cannot be disabled per invocation; the profile hides ~/.gemini/config (their definitions) instead.
-    args = [...(agent.sandbox ? [] : ['--mode', 'plan']), '--output-format', 'json', '--print-timeout', `${config.task_timeout_seconds}s`, ...(agent.sandbox ? ['--dangerously-skip-permissions'] : [])];
+    // agy takes the prompt only as the value of -p (no stdin), attached with '=' so it is never parsed as a flag;
+    // spawn() has shell:false, so the text is one argv element.
+    args = ['--output-format', 'json', '--print-timeout', `${config.task_timeout_seconds}s`, '--dangerously-skip-permissions'];
   }
   if (agent.model) args.push('--model', agent.model);
   if (agent.provider === 'codex') args.push('-');
   const input = buildPrompt(task, context, config.max_prompt_bytes);
   if (agent.provider === 'antigravity') args.push(`-p=${input}`);
   const env = providerEnvironment(agent.provider, parentEnv, config.token_env);
-  if (native?.codexHome) env.CODEX_HOME = native.codexHome; // holds only a link to auth.json
   let command = agent.binary;
   if (agent.sandbox) {
-    // Seatbelt is the read/write boundary. Codex applies its own sandbox_init per command, which fails
-    // (EPERM) when nested inside ours, so its own read-only mode would make every shell command fail.
-    // Only because the outer profile is active do we turn Codex's inner sandbox off.
-    if (agent.provider === 'codex') args[args.indexOf(patch ? 'workspace-write' : 'read-only')] = 'danger-full-access';
     const tmp = env.TMPDIR ?? tmpdir();
     env.TMPDIR = tmp;
     if (agent.provider === 'claude') env.CLAUDE_CODE_TMPDIR = tmp; // default /tmp/claude-<uid> is shared across projects

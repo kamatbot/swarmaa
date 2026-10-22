@@ -47,7 +47,8 @@ export class SwarmService {
 
   /** Worker-reported quota readings for the providers it runs. Readings are data, never authority. */
   async report(p: Principal, input: Record<string, unknown>): Promise<unknown> {
-    noExtraKeys(input, ['reports']);
+    noExtraKeys(input, ['reports', 'slots']);
+    requireCondition(input.slots === undefined || (Number.isInteger(input.slots) && (input.slots as number) >= 1 && (input.slots as number) <= 16), 400, 'invalid_arguments', 'slots must be an integer from 1 to 16.');
     requireCondition(p.role === 'worker', 403, 'forbidden', 'Only worker connections report provider usage.');
     requireCondition(Array.isArray(input.reports) && input.reports.length >= 1 && input.reports.length <= 10, 400, 'invalid_arguments', 'reports needs 1–10 entries.');
     const rows = input.reports.map(value => {
@@ -78,6 +79,7 @@ export class SwarmService {
           windows=EXCLUDED.windows,fetched_at=EXCLUDED.fetched_at,updated_at=clock_timestamp()`,
         [p.tenantId, r.provider, p.id, r.ok, headroom(r.windows, r.ok), JSON.stringify({ windows: r.windows, plan: r.plan, error: r.error }), r.fetched]);
     }
+    if (input.slots !== undefined) await this.pool.query('UPDATE principals SET worker_slots=$2 WHERE id=$1', [p.id, input.slots]);
     await touchWorker(this.pool, p);
     return { accepted: rows.length };
   }
@@ -92,7 +94,7 @@ export class SwarmService {
       [all, scopes] = [false, [scope]];
     }
     const [workers, usage, counts, recent, sessions, lessonsPending, policy] = await Promise.all([
-      this.pool.query(`SELECT w.name,w.last_seen_at,coalesce(w.last_seen_at>clock_timestamp()-interval '60 seconds',false) AS live,
+      this.pool.query(`SELECT w.name,w.last_seen_at,coalesce(w.last_seen_at>clock_timestamp()-interval '60 seconds',false) AS live,coalesce(w.worker_slots,1) AS slots,
           (SELECT coalesce(json_agg(json_build_object('task_id',t.id,'scope',t.scope,'kind',t.kind,'objective',left(t.objective,140),'required_capability',t.required_capability,'started_at',t.updated_at)),'[]') FROM tasks t
             WHERE t.lease_owner=w.id AND t.status='running' AND ($2::boolean OR t.scope=ANY($3::text[]))) AS running,
           (SELECT coalesce(json_agg(u.provider ORDER BY u.provider),'[]') FROM provider_usage u WHERE u.reporter_id=w.id) AS providers
@@ -120,7 +122,7 @@ export class SwarmService {
     const byScope = new Map<string, Record<string, unknown>>(counts.rows.map(r => [r.scope as string, r]));
     if (!all) for (const scope of scopes) if (!byScope.has(scope)) byScope.set(scope, { scope, ...zero });
     return {
-      workers: workers.rows, usage: usageView, routing: routing(usageView, live, policy.policy, policy.is_default), sessions,
+      workers: workers.rows.map(w => ({ ...w, free_slots: w.live ? Math.max(0, w.slots - (w.running as unknown[]).length) : 0 })), usage: usageView, routing: routing(usageView, live, policy.policy, policy.is_default), sessions,
       scopes: [...byScope.values()].sort((a, b) => String(a.scope).localeCompare(String(b.scope))),
       recent: recent.rows, lessons_pending: lessonsPending, generated_at: new Date().toISOString(),
     };

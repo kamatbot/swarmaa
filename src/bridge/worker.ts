@@ -58,7 +58,7 @@ export class BridgeWorker {
       const snapshots = await this.usage(providers);
       for (const s of snapshots) this.headroom.set(s.provider, headroom(s));
       await this.client.call('usage_report', { reports: snapshots.map(s => ({ provider: s.provider, ok: s.ok, windows: s.windows, fetched_at: s.fetched_at,
-        ...(s.plan ? { plan: s.plan.slice(0, 80) } : {}), ...(s.error ? { error: s.error.slice(0, 200) } : {}) })) }, signal);
+        ...(s.plan ? { plan: s.plan.slice(0, 80) } : {}), ...(s.error ? { error: s.error.slice(0, 200) } : {}) })), slots: this.config.max_concurrent }, signal);
     } catch (error) {
       this.logger('usage_report_failed', { code: errorCode(error) });
     }

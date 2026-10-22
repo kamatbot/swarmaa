@@ -19,28 +19,7 @@ test('config rejects insecure remote origins, credentials and ambiguous local ma
   assert.equal(serviceUrl('https://example.com/'), 'https://example.com');
 });
 
-test('no service token, inherited command hooks, or arbitrary provider overrides in child env', () => {
-  const env = providerEnvironment('claude', { HOME: '/users/worker', COLLECTIVE_WORKER_TOKEN: 'network-secret', NODE_OPTIONS: '--require evil.js', ANTHROPIC_API_KEY: 'provider-secret', AWS_SECRET_ACCESS_KEY: 'unrelated-secret', ANTHROPIC_BASE_URL: 'https://evil.example' }, 'COLLECTIVE_WORKER_TOKEN');
-  assert.equal(env.ANTHROPIC_API_KEY, 'provider-secret');
-  assert.equal(env.HOME, '/users/worker');
-  assert.equal(env.COLLECTIVE_WORKER_TOKEN, undefined);
-  assert.equal(env.NODE_OPTIONS, undefined);
-  assert.equal(env.AWS_SECRET_ACCESS_KEY, undefined);
-  assert.equal(env.ANTHROPIC_BASE_URL, undefined);
-});
 
-test('task text remains stdin data and cannot select executable, args, or cwd', () => {
-  const config = parseBridgeConfig(input());
-  const request = buildInvocation(config.agents[0]!, config.projects[0]!, task, {}, config, new AbortController().signal, {});
-  assert.equal(request.command, '/bin/claude');
-  assert.equal(request.cwd, '/projects/demo');
-  assert.ok(request.input.includes('$(touch /tmp/injected)'));
-  assert.ok(!request.args.some(arg => arg.includes('$(touch')));
-  assert.ok(request.args.includes('--restricted'));
-  assert.equal(request.args[request.args.indexOf('--tools') + 1], 'Read,Glob,Grep,WebSearch,WebFetch');
-  assert.ok(request.args.includes('mcp__*'));
-  assert.throws(() => buildInvocation(config.agents[0]!, config.projects[0]!, {...task, scope:'project:other'}, {}, config, new AbortController().signal));
-});
 
 test('patch requires explicit project and provider opt-ins; unsupported modes fail closed', () => {
   const config = parseBridgeConfig(input());
@@ -73,13 +52,6 @@ test('token_file must be absolute and owner-only', async () => {
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
-test('auto.read runs as a read-only invocation and never as a patch', () => {
-  const config = { ...parseBridgeConfig(input()), token_env: 'COLLECTIVE_WORKER_TOKEN' };
-  const signal = new AbortController().signal;
-  const auto = buildInvocation(config.agents[0]!, config.projects[0]!, { ...task, required_capability: 'auto.read' }, null, config, signal, {});
-  assert.ok(auto.args.some((a: string) => a.startsWith('Read,Glob,Grep,WebSearch,WebFetch') && !a.includes('Edit')));
-  assert.throws(() => buildInvocation(config.agents[0]!, config.projects[0]!, { ...task, kind: 'patch', required_capability: 'auto.read' }, null, config, signal, {}));
-});
 
 test('finalAnswer extracts the agent answer from Codex events and Claude results', async () => {
   const { finalAnswer } = await import('../src/bridge/adapters.js');
@@ -92,27 +64,6 @@ test('finalAnswer extracts the agent answer from Codex events and Claude results
   assert.equal(finalAnswer('claude', 'not json'), '');
 });
 
-test('sandbox defaults on: argv is wrapped in sandbox-exec; codex inner sandbox is replaced; opt-out leaves argv bare', { skip: process.platform !== 'darwin' }, () => {
-  const signal = new AbortController().signal;
-  const on = input(); delete (on.agents[0] as { sandbox?: boolean }).sandbox;
-  const cfg = parseBridgeConfig(on);
-  assert.equal(cfg.agents[0]!.sandbox, true);
-  const req = buildInvocation(cfg.agents[0]!, cfg.projects[0]!, task, {}, cfg, signal, { TMPDIR: '/tmp' });
-  assert.equal(req.command, '/usr/bin/sandbox-exec');
-  assert.equal(req.args[0], '-p');
-  assert.match(req.args[1]!, /\(deny file-read\* file-write\*\)/u);
-  assert.equal(req.args[2], '/bin/claude');
-  assert.ok(req.args.includes('--restricted'));
-  const codex = parseBridgeConfig({ ...input(), agents: [{ id: 'codex', provider: 'codex', binary: '/bin/codex' }], projects: [{ scope: 'project:demo', root: '/projects/demo', agents: ['codex'] }] });
-  const c = buildInvocation(codex.agents[0]!, codex.projects[0]!, { ...task, required_capability: 'codex.read' }, {}, codex, signal, {});
-  assert.deepEqual(c.args.slice(2, 5), ['/bin/codex', '--search', 'exec']);
-  assert.equal(c.args[c.args.indexOf('--sandbox') + 1], 'danger-full-access');
-  const off = parseBridgeConfig({ ...input(), agents: [{ id: 'codex', provider: 'codex', binary: '/bin/codex', sandbox: false }], projects: [{ scope: 'project:demo', root: '/projects/demo', agents: ['codex'] }] });
-  const o = buildInvocation(off.agents[0]!, off.projects[0]!, { ...task, required_capability: 'codex.read' }, {}, off, signal, {});
-  assert.equal(o.command, '/bin/codex');
-  assert.equal(o.args[o.args.indexOf('--sandbox') + 1], 'read-only');
-  assert.throws(() => parseBridgeConfig({ ...input(), agents: [{ id: 'x', provider: 'claude', binary: '/b', sandbox: 'no' }] }));
-});
 
 const agy = (extra: Record<string, unknown> = {}) => ({ ...input(), agents: [{ id: 'antigravity', provider: 'antigravity', binary: '/bin/agy', ...extra }], projects: [{ scope: 'project:demo', root: '/projects/demo', agents: ['antigravity'] }] });
 
@@ -159,25 +110,6 @@ test('patch is advertised and built for every provider, plus auto.patch', () => 
   assert.ok(!noPatch.includes('auto.patch') && !noPatch.some(c => c.endsWith('.patch')));
 });
 
-test('patch argv per provider: cwd is the worktree; Bash/commands only when sandboxed', { skip: process.platform !== 'darwin' }, () => {
-  const off = all(false);
-  const c0 = patchReq(off, 'claude');
-  assert.equal(c0.r.cwd, '/wt/x');
-  assert.equal(c0.args[c0.args.indexOf('--tools') + 1], 'Read,Glob,Grep,WebSearch,WebFetch,Edit,Write');
-  assert.ok(c0.args[c0.args.indexOf('--allowedTools') + 1] === 'WebSearch,WebFetch' && c0.args[c0.args.indexOf('--permission-mode') + 1] === 'acceptEdits');
-  const x0 = patchReq(off, 'codex');
-  assert.equal(x0.args[x0.args.indexOf('--sandbox') + 1], 'workspace-write');
-  const on = all(true);
-  const c1 = patchReq(on, 'claude', 'auto.patch');
-  assert.equal(c1.args[c1.args.indexOf('--tools') + 1], 'Read,Glob,Grep,WebSearch,WebFetch,Edit,Write,Bash');
-  assert.equal(c1.args[c1.args.indexOf('--allowedTools') + 1], 'WebSearch,WebFetch,Bash');
-  assert.equal(patchReq(on, 'codex').args[patchReq(on, 'codex').args.indexOf('--sandbox') + 1], 'danger-full-access');
-  const a = patchReq(on, 'antigravity');
-  assert.ok(!a.args.includes('--mode'));
-  assert.ok(a.args.includes('--dangerously-skip-permissions'));
-  assert.match(a.r.args[1]!, /\(subpath "\/wt\/x"\)/u);
-  assert.throws(() => buildInvocation(on.agents[0]!, on.projects[0]!, { ...task, kind: 'patch', required_capability: 'auto.read' }, {}, on, new AbortController().signal, {}));
-});
 
 test('antigravity result parsing', () => {
   const ok = { exit_code: 0, signal: null, stderr: '', duration_ms: 1, stop_reason: null, stdout: JSON.stringify({ status: 'SUCCESS', response: 'done\n' }) } as const;
@@ -196,4 +128,30 @@ test('deniedActions reads Antigravity denials and ignores other providers', asyn
   assert.deepEqual(deniedActions('antigravity', JSON.stringify({ status: 'SUCCESS', response: 'done' })), []);
   assert.deepEqual(deniedActions('codex', out), []);
   assert.deepEqual(deniedActions('antigravity', 'not json'), []);
+});
+
+test('workers run the real CLIs headless with auto-approved permissions, wrapped in the light sandbox', () => {
+  const cfg = (provider: string, sandbox: boolean, patch = false) => parseBridgeConfig({ service_url: 'http://127.0.0.1:8080',
+    agents: [{ id: provider, provider, binary: `/bin/${provider}`, enable_patch: patch, sandbox }], projects: [{ scope: 'project:demo', root: '/projects/demo', agents: [provider], allow_patch: patch }] });
+  const run = (provider: string, sandbox: boolean, kind: 'review' | 'patch' = 'review') => {
+    const c = cfg(provider, sandbox, kind === 'patch');
+    return buildInvocation(c.agents[0]!, c.projects[0]!, { ...task, kind, required_capability: `${provider}.${kind === 'patch' ? 'patch' : 'read'}` }, {}, c, new AbortController().signal, { PATH: '/bin', COLLECTIVE_MCP_TOKEN: 'secret', MY_MCP_KEY: 'k' });
+  };
+  const claude = run('claude', false);
+  assert.deepEqual(claude.args, ['--print', '--output-format', 'json', '--permission-mode', 'bypassPermissions', '--max-turns', '200']);
+  assert.ok(!claude.args.some(a => ['--restricted', '--tools', '--strict-mcp-config', '--no-session-persistence'].includes(a)));
+  assert.equal(claude.cwd, '/projects/demo');
+  assert.ok(claude.input.includes('Review; $(touch /tmp/injected)'), 'task text stays stdin data');
+  assert.deepEqual(run('codex', false).args, ['--search', 'exec', '--json', '--skip-git-repo-check', '--dangerously-bypass-approvals-and-sandbox', '--color', 'never', '-']);
+  const agy = run('antigravity', true); // agy always runs inside the sandbox
+  assert.deepEqual(agy.args.slice(2, 8), ['/bin/antigravity', '--output-format', 'json', '--print-timeout', '3600s', '--dangerously-skip-permissions']);
+  assert.ok(agy.args.at(-1)!.startsWith('-p=') && agy.input === '');
+  const wrapped = run('codex', true, 'patch');
+  assert.equal(wrapped.command, '/usr/bin/sandbox-exec');
+  assert.match(wrapped.args[1]!, /\(allow default\)/u);
+  assert.deepEqual(wrapped.args.slice(2, 5), ['/bin/codex', '--search', 'exec']);
+  // The user's own environment reaches the CLI (MCP keys, config), minus the bridge's service token.
+  assert.equal(claude.env.MY_MCP_KEY, 'k');
+  assert.equal(claude.env.COLLECTIVE_MCP_TOKEN, undefined);
+  assert.equal(providerEnvironment('codex', { A: '1', T: 'x' }, 'T').T, undefined);
 });
