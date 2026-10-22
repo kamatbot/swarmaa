@@ -2,7 +2,8 @@
 // Idempotent, never clobbers foreign config, writes nothing when dry. Detection is by the script's path suffix.
 import { copyFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 export type Harness = 'claude' | 'codex' | 'agy' | 'kiro' | 'windsurf' | 'qwen';
 export interface HookResult { harness: Harness; changed: string[]; skipped?: string }
@@ -254,4 +255,38 @@ export async function installJournalHooks(harness: Harness, opts: { root: string
 /** Removes the hook installJournalHooks added, leaving every other hook untouched. */
 export async function removeJournalHooks(harness: Harness, opts: { root: string; dry: boolean; log: (line: string) => void; home?: string }): Promise<HookResult> {
   return impl[harness](false, opts, opts.home ?? homedir());
+}
+
+// ---- /swarm command: clients/commands/swarm.md wrapped per harness; only a file carrying COMMAND_MARKER is ever overwritten or removed ----
+// Claude Code: ~/.claude/commands/swarm.md. Codex 0.160 and Antigravity use skills (custom prompts / workflows are deprecated):
+// ~/.codex/skills/swarm/SKILL.md (`$swarm`), ~/.gemini/config/skills/swarm/SKILL.md (Antigravity global config, `/swarm`).
+const COMMAND_MARKER = '<!-- swarma:swarm-command -->';
+const DESC = 'Show Swarmaa swarm runs (status, details, continue, run) via the swarma MCP tools';
+const skillHead = `---\nname: swarm\ndescription: ${DESC}. Use when the user types /swarm or $swarm or asks to see swarm runs.\n---\n`;
+const commandFiles = (home: string, body: string): [Harness, string, string][] => [
+  ['claude', join(home, '.claude', 'commands', 'swarm.md'), `---\ndescription: ${DESC}\nargument-hint: [task id | continue <id> <instruction> | run <instruction>]\n---\n${COMMAND_MARKER}\nARGS: $ARGUMENTS\n\n${body}`],
+  ['codex', join(home, '.codex', 'skills', 'swarm', 'SKILL.md'), `${skillHead}${COMMAND_MARKER}\nARGS: the text the user typed after $swarm (may be empty).\n\n${body}`],
+  ['agy', join(home, '.gemini', 'config', 'skills', 'swarm', 'SKILL.md'), `${skillHead}${COMMAND_MARKER}\nARGS: the text the user typed after /swarm (may be empty).\n\n${body}`],
+];
+
+/** Installs (or removes) the /swarm command for Claude Code, Codex and Antigravity. A swarm file without our marker is left alone. */
+export async function installSwarmCommand(install: boolean, opts: { root: string; dry: boolean; log: (line: string) => void; home?: string }): Promise<HookResult[]> {
+  const body = await readFile(join(opts.root, 'clients', 'commands', 'swarm.md'), 'utf8');
+  const out: HookResult[] = [];
+  for (const [harness, path, text] of commandFiles(opts.home ?? homedir(), body)) {
+    const cur = await readText(path);
+    if (cur !== null && !cur.includes(COMMAND_MARKER)) { out.push({ harness, changed: [], skipped: `${path} exists and is not ours; not overwriting` }); continue; }
+    if (install ? cur === text : cur === null) { out.push({ harness, changed: [] }); continue; }
+    if (install) await write(path, text, opts, 'write /swarm command');
+    else if (opts.dry) opts.log(`[dry-run] would remove /swarm command: ${path}`);
+    else { await rm(path); opts.log(`remove /swarm command: ${path}`); }
+    out.push({ harness, changed: [path] });
+  }
+  return out;
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  const flags = process.argv.slice(2);
+  const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+  for (const r of await installSwarmCommand(!flags.includes('--remove'), { root, dry: flags.includes('--dry-run'), log: console.log })) if (r.skipped) console.log(`${r.harness}: ${r.skipped}`);
 }

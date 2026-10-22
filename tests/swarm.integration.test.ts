@@ -102,6 +102,16 @@ describe('swarm usage routing and status', {skip:!connectionString,concurrency:f
     const listed = await call(front,'session_list',{});
     assert.deepEqual(listed.sessions.map((s:any) => [s.session_id,s.task_id]).sort(),[['plain',null],[`swarm:${task.id}`,task.id]].sort());
     assert.equal((await call(front,'session_get',{id:listed.sessions.find((s:any) => s.task_id).id})).session.task_id,task.id);
+    // swarm_only / task_id filters and session_get by task_id
+    assert.deepEqual((await call(front,'session_list',{swarm_only:true})).sessions.map((s:any) => s.task_id),[task.id]);
+    assert.deepEqual((await call(front,'session_list',{task_id:task.id})).sessions.map((s:any) => s.session_id),[`swarm:${task.id}`]);
+    assert.deepEqual((await call(front,'session_list',{task_id:randomUUID()})).sessions,[]);
+    assert.equal((await call(front,'session_get',{task_id:task.id})).session.session_id,`swarm:${task.id}`);
+    assert.equal((await call(front,'session_get',{task_id:task.id,harness:'claude-code'})).session.task_id,task.id);
+    for (const bad of [{}, {id:listed.sessions[0].id,task_id:task.id}, {id:listed.sessions[0].id,harness:'codex'}])
+      await assert.rejects(() => call(front,'session_get',bad),(e:unknown) => e instanceof AppError && e.code === 'invalid_arguments');
+    for (const miss of [{task_id:task.id,harness:'codex'},{task_id:randomUUID()}])
+      await assert.rejects(() => call(front,'session_get',miss),(e:unknown) => e instanceof AppError && e.code === 'not_found');
   });
 
   it('records chats per harness, lists them across harnesses and keeps other identities out', async () => {

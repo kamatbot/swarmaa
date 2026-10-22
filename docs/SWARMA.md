@@ -95,6 +95,22 @@ nothing is pushed.
 `swarm_status` returns live workers, provider headroom with reset times, `routing` (`recommended`/`reason` for review, plus `policy`, `is_default`, `by_kind`), task counts per scope and
 recent tasks. `npm run usage` prints the local readings.
 
+## /swarm
+
+`/swarm` shows swarm runs from inside Claude Code, Codex and Antigravity through the `swarma` MCP tools (worker chats are
+recorded as `swarm:<task id>` chats, so `session_list {swarm_only:true}` finds them; `session_get {task_id}` reads one).
+
+| Input | Does |
+|---|---|
+| `/swarm` | live workers, queued/running, and a table of the last 15 runs here (when, service, project, title, status, branch) |
+| `/swarm <task id or prefix>` | request, answers, branch, diff summary, how to continue and review (`git log`/`git diff` on the branch) |
+| `/swarm continue <id> <instruction>` | `task_continue` on the latest version with a fresh idempotency key |
+| `/swarm run <instruction>` | `task_submit` here (`auto.read` for review/research, `auto.patch` for edits; asks if unclear) |
+
+Installed by `npx tsx scripts/hooks-install.ts` (`--dry-run`, `--remove`): `~/.claude/commands/swarm.md`,
+`~/.codex/skills/swarm/SKILL.md` (type `$swarm`), `~/.gemini/config/skills/swarm/SKILL.md`. Files without the
+`swarma:swarm-command` marker are never overwritten. Source: `clients/commands/swarm.md`.
+
 ## Lessons
 
 Finished chats become reviewed, reusable guidance: distill, review, reuse.

@@ -5,7 +5,7 @@ import { createServer, type IncomingMessage } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import test from 'node:test';
-import { installJournalHooks, removeJournalHooks, type Harness } from '../scripts/hooks-install.js';
+import { installJournalHooks, installSwarmCommand, removeJournalHooks, type Harness } from '../scripts/hooks-install.js';
 
 const SCRIPT = resolve(process.cwd(), 'clients/hooks/swarmaa-journal.mjs');
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -399,4 +399,23 @@ test('e2e codex chaining: records the turn and starts the replaced notify progra
     for (let i = 0; i < 50 && !readdirSync(root).includes('chained.txt'); i++) await new Promise(res => setTimeout(res, 20));
     assert.equal(read(out), payload);
   });
+});
+
+test('installSwarmCommand writes our files, is idempotent, leaves foreign swarm files alone, removes only ours', async () => {
+  const home = tmp('swc');
+  const lines: string[] = [];
+  const o = { root: process.cwd(), dry: false, home, log: (l: string) => lines.push(l) };
+  const paths = [join(home, '.claude/commands/swarm.md'), join(home, '.codex/skills/swarm/SKILL.md'), join(home, '.gemini/config/skills/swarm/SKILL.md')];
+  assert.equal((await installSwarmCommand(true, o)).filter(r => r.changed.length).length, 3);
+  assert.match(readFileSync(paths[0]!, 'utf8'), /argument-hint:[\s\S]*ARGS: \$ARGUMENTS/);
+  assert.match(readFileSync(paths[1]!, 'utf8'), /^---\nname: swarm\n/);
+  assert.ok((await installSwarmCommand(true, o)).every(r => r.changed.length === 0));
+  writeFileSync(paths[0]!, 'mine'); // foreign: no marker
+  const r = await installSwarmCommand(true, o);
+  assert.match(r[0]!.skipped!, /not ours/);
+  assert.equal(readFileSync(paths[0]!, 'utf8'), 'mine');
+  await installSwarmCommand(false, o);
+  assert.equal(readFileSync(paths[0]!, 'utf8'), 'mine');
+  assert.equal(statSync(paths[1]!, { throwIfNoEntry: false }), undefined);
+  rmSync(home, { recursive: true });
 });
