@@ -248,8 +248,10 @@ export function createHttpHandler(dependencies: HttpDependencies): (request: Inc
       localNames.some(name => host === `${name}:${config.port}` || (config.port === 80 && host === name));
     if (host !== publicUrl.host.toLowerCase() && !loopback) throw new AppError(403, 'invalid_host', 'Host is not allowed.');
     const origin = oneHeader(request, 'origin');
-    if (origin !== undefined && !allowedOrigins.has(origin)) {
-      // Log the rejected origin so the owner can add a legitimate client to ALLOWED_ORIGINS.
+    // Cookie pages (consent, account) accept only their own origins. Bearer/PKCE endpoints carry no ambient
+    // credentials (CORS never allows credentials here), so browser-based clients may call them cross-origin.
+    const cookieRoute = (request.url ?? '').startsWith('/oauth/authorize') || (request.url ?? '').startsWith('/account');
+    if (origin !== undefined && !allowedOrigins.has(origin) && cookieRoute) {
       console.error(JSON.stringify({ event: 'origin_rejected', origin: origin.slice(0, 200), path: (request.url ?? '').split('?', 1)[0]!.slice(0, 100) }));
       throw new AppError(403, 'invalid_origin', 'Origin is not allowed.');
     }

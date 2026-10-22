@@ -124,10 +124,18 @@ const rpcHeaders = { authorization: 'Bearer test-connection-token', 'content-typ
 
 test('HTTP rejects hostile origins, absent auth, and unsupported GET streams', async t => {
   const { url } = await listeningServer(t);
-  const hostile = await fetch(`${url}/api/tools/context_get`, {
-    method: 'POST', headers: { ...rpcHeaders, origin: 'https://attacker.example' }, body: '{}',
-  });
+  // Cookie pages refuse foreign origins; bearer routes accept them but never allow credentials cross-origin.
+  const hostile = await fetch(`${url}/account`, { headers: { origin: 'https://attacker.example' } });
   assert.equal(hostile.status, 403);
+  const crossOrigin = await fetch(`${url}/api/tools/context_get`, {
+    method: 'POST', headers: { ...rpcHeaders, origin: 'https://client.example' }, body: '{}',
+  });
+  assert.equal(crossOrigin.status, 200);
+  assert.equal(crossOrigin.headers.get('access-control-allow-credentials'), null);
+  const crossNoAuth = await fetch(`${url}/api/tools/context_get`, {
+    method: 'POST', headers: { 'content-type': 'application/json', origin: 'https://client.example' }, body: '{}',
+  });
+  assert.equal(crossNoAuth.status, 401);
   const unauthenticated = await fetch(`${url}/mcp`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
   assert.equal(unauthenticated.status, 401);
   assert.ok(unauthenticated.headers.has('www-authenticate'));

@@ -130,12 +130,15 @@ export function validateRedirectUri(value: unknown, config: ServerConfig): strin
   let url: URL;
   try { url = new URL(raw); } catch { throw new OAuthError('invalid_redirect_uri', 'Redirect URI must be an absolute URL.'); }
   const loopback = ['127.0.0.1', '[::1]', 'localhost'].includes(url.hostname.toLowerCase());
-  const safeScheme = url.protocol === 'https:' || (config.allowInsecureLocalhost && loopback && url.protocol === 'http:');
-  const allowed = config.oauthRedirectHosts.map(host => host.toLowerCase()).includes(url.hostname.toLowerCase());
+  // Standard dynamic registration, as MCP clients expect: any HTTPS redirect, or http on loopback for
+  // native apps (RFC 8252). The owner's passkey consent (which shows the redirect host) and PKCE are the
+  // gate. A non-empty OAUTH_REDIRECT_HOSTS still restricts registration to those hosts.
+  const safeScheme = url.protocol === 'https:' || (loopback && url.protocol === 'http:');
+  const allowed = config.oauthRedirectHosts.length === 0
+    || config.oauthRedirectHosts.map(host => host.toLowerCase()).includes(url.hostname.toLowerCase());
   if (!safeScheme || !allowed || url.username || url.password || raw.includes('#') || raw !== url.href) {
-    // The owner adds a client's callback host to OAUTH_REDIRECT_HOSTS; log only the hostname so it can be found.
     if (!allowed) console.error(JSON.stringify({ event: 'oauth_redirect_host_rejected', host: url.hostname.toLowerCase().slice(0, 253) }));
-    throw new OAuthError('invalid_redirect_uri', 'Redirect URI must be canonical, use an allowed host, and have no credentials or fragment.');
+    throw new OAuthError('invalid_redirect_uri', 'Redirect URI must be https (or http on localhost), canonical, and have no credentials or fragment.');
   }
   // Exact URI matching is enforced again on authorization and code exchange.
   return raw;
