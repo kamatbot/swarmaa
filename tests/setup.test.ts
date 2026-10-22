@@ -239,3 +239,9 @@ test('onboarding page contains no secrets and no inline token', () => {
   assert.match(html, /Set up your swarm/);
   assert.match(html, /api\.swarmaa\.com|defaultHostname/);
 });
+
+test('folder entries can name their scope', async () => {
+  const { slugScopes, splitFolder } = await import('../scripts/setup-lib.js');
+  assert.deepEqual(splitFolder('fametc=/x/Planner'), { name: 'fametc', path: '/x/Planner' });
+  assert.deepEqual(slugScopes(['fametc=/x/Planner', '/y/Futuremap']).map(s => s.scope), ['project:fametc', 'project:futuremap']);
+});

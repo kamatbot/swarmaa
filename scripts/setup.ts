@@ -12,7 +12,7 @@ import pg from 'pg';
 import { installJournalHooks, removeJournalHooks, type Harness } from './hooks-install.js';
 import {
   AGY_TOOLS, DEFAULT_HOSTNAME, HARNESS_KEYS, PlanError, SHARING_HARNESSES, WORKER_HARNESSES, bridgeConfig, identityScopes, mergeAgyPermissions,
-  parseEnv, plist, slugScopes, stateFile, validHostname, validatePlan, yes,
+  parseEnv, plist, slugScopes, splitFolder, stateFile, validHostname, validatePlan, yes,
   type HarnessKey, type ScopeRoot, type SetupPlan, type State,
 } from './setup-lib.js';
 import { setupTunnel } from './tunnel.js';
@@ -273,6 +273,8 @@ export async function runSetup(plan: SetupPlan, opts: RunOpts): Promise<SetupSum
         return `${summary.mcpUrl}`;
       } catch (e) { throw new Error(`tunnel setup: ${errText(e)}`); }
     });
+    // An earlier run may already have published the service; reuse its public URL.
+    if (!summary.mcpUrl && /^https:\/\//.test(env.PUBLIC_URL ?? '')) summary.mcpUrl = `${env.PUBLIC_URL!.replace(/\/$/, '')}/mcp`;
     for (const k of hosted) summary.nextSteps.push(`${META[k].label}: add ${summary.mcpUrl ?? 'https://<your-hostname>/mcp'} as a remote MCP server (see clients/${k}/README.md).${summary.mcpUrl ? '' : ' Remote access is not set up yet; re-run setup and enable it.'}`);
 
     // Autostart.
@@ -486,12 +488,13 @@ async function cliMain(dry: boolean): Promise<number> {
   const askYes = async (q: string, d: boolean) => yes(await ask(`${q} [${d ? 'Y/n' : 'y/N'}]`), d);
   try {
     const def = state.folders ?? [];
-    const ans = await ask(`Project folders the swarm may work on (comma-separated absolute paths, blank = demo only${def.length ? `; Enter keeps ${def.join(',')}, - clears` : ''}):`);
+    const ans = await ask(`Project folders the swarm may work on (comma-separated absolute paths, optionally name=path, blank = demo only${def.length ? `; Enter keeps ${def.join(',')}, - clears` : ''}):`);
     const folders: string[] = [];
     for (const raw of (ans === '-' ? '' : ans || def.join(',')).split(',').map(s => s.trim()).filter(Boolean)) {
-      const p = raw.startsWith('~/') ? join(HOME, raw.slice(2)) : raw;
+      const { name, path } = splitFolder(raw.replace(/^([a-z][a-z0-9-]*=)?~\//, (_m, n: string | undefined) => `${n ?? ''}${HOME}/`));
+      const p = path;
       if (!isAbsolute(p)) { say(`  skipped ${raw}: not an absolute path`); continue; }
-      try { if (statSync(p).isDirectory()) { folders.push(resolve(p)); continue; } } catch { /* fallthrough */ }
+      try { if (statSync(p).isDirectory()) { folders.push(name ? `${name}=${resolve(p)}` : resolve(p)); continue; } } catch { /* fallthrough */ }
       say(`  skipped ${raw}: not an existing directory`);
     }
     const harnesses: Record<string, { connect: boolean; worker: boolean; share: boolean }> = {};

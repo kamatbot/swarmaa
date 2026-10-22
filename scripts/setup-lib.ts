@@ -29,14 +29,21 @@ export function yes(answer: string, defaultYes: boolean): boolean {
 }
 
 /** project:<slug> per path. Slug = lowercase basename, non [a-z0-9-] -> '-', trimmed of '-'; collisions get -2, -3. `taken` pre-reserves slugs (e.g. 'demo'). */
+/** A folder entry is "/abs/path" or "name=/abs/path"; the name becomes the scope (project:<name>). */
+export function splitFolder(entry: string): { name?: string; path: string } {
+  const m = /^([a-z][a-z0-9-]{0,40})=(\/.*)$/.exec(entry);
+  return m ? { name: m[1], path: m[2]! } : { path: entry };
+}
+
 export function slugScopes(paths: string[], taken: string[] = []): ScopeRoot[] {
   const used = new Set(taken);
   const seenRoots = new Set<string>();
   const out: ScopeRoot[] = [];
-  for (const root of paths) {
+  for (const entry of paths) {
+    const { name, path: root } = splitFolder(entry);
     if (seenRoots.has(root)) continue;
     seenRoots.add(root);
-    const base = basename(root).toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/^-+|-+$/g, '') || 'project';
+    const base = (name ?? basename(root).toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/^-+|-+$/g, '')) || 'project';
     let slug = base;
     for (let n = 2; used.has(slug); n++) slug = `${base}-${n}`;
     used.add(slug);
@@ -155,11 +162,12 @@ export function validatePlan(input: unknown): SetupPlan {
   }
   const folders: string[] = [];
   if (!Array.isArray(input.folders) || input.folders.length > 64) errors.push('folders must be a list of at most 64 paths');
-  else for (const f of input.folders) {
-    if (typeof f !== 'string' || !f || f.length > 4096 || f.includes('\0')) { errors.push('folder must be a path string'); continue; }
+  else for (const entry of input.folders) {
+    if (typeof entry !== 'string' || !entry || entry.length > 4096 || entry.includes('\0')) { errors.push('folder must be a path string'); continue; }
+    const { name, path: f } = splitFolder(entry);
     if (!isAbsolute(f)) { errors.push(`folder is not an absolute path: ${f}`); continue; }
     try { if (!statSync(f).isDirectory()) throw new Error('not a directory'); } catch { errors.push(`folder is not an existing directory: ${f}`); continue; }
-    const r = resolve(f);
+    const r = name ? `${name}=${resolve(f)}` : resolve(f);
     if (!folders.includes(r)) folders.push(r);
   }
   let remote: SetupPlan['remote'];
