@@ -50,7 +50,7 @@ export class SwarmService {
     noExtraKeys(input, ['reports', 'slots']);
     requireCondition(input.slots === undefined || (Number.isInteger(input.slots) && (input.slots as number) >= 1 && (input.slots as number) <= 16), 400, 'invalid_arguments', 'slots must be an integer from 1 to 16.');
     requireCondition(p.role === 'worker', 403, 'forbidden', 'Only worker connections report provider usage.');
-    requireCondition(Array.isArray(input.reports) && input.reports.length >= 1 && input.reports.length <= 10, 400, 'invalid_arguments', 'reports needs 1–10 entries.');
+    requireCondition(Array.isArray(input.reports) && input.reports.length <= 10 && (input.reports.length >= 1 || input.slots !== undefined), 400, 'invalid_arguments', 'reports needs 1–10 entries (or none with slots).');
     const rows = input.reports.map(value => {
       const r = object(value);
       noExtraKeys(r, ['provider', 'ok', 'windows', 'fetched_at', 'plan', 'error']);
