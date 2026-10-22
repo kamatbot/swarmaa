@@ -25,6 +25,11 @@ test('profile: read default-deny, credential denies come last, patch vs read wri
   assert.ok(!writeRule.includes('/proj/a'));
   assert.ok(writeRule.includes('/Users/tester/.claude'));
   assert.ok(buildProfile({ ...base, patch: true, projectRoot: '/proj/a' }).split('\n').find(l => l.startsWith('(allow file-write*'))!.includes('(subpath "/proj/a")'));
+  const patch = buildProfile({ ...base, patch: true, projectRoot: '/wt/a', gitDir: '/proj/.git' }).split('\n').find(l => l.startsWith('(allow file-write*'))!;
+  for (const w of ['/wt/a', '/proj/.git', '/Users/tester/go', '/Users/tester/Library/Caches/go-build', '/Users/tester/.npm', '/Users/tester/.cache', '/Users/tester/Library/pnpm']) assert.ok(patch.includes(`(subpath "${w}")`), w);
+  const ro = buildProfile({ ...base, patch: false, projectRoot: '/proj/a', gitDir: '/proj/.git' });
+  assert.ok(!ro.includes('/proj/.git') && !ro.includes('go-build'));
+  assert.ok(ro.includes('(subpath "/opt/homebrew")') && ro.includes('(subpath "/Users/tester/.nvm")'));
   const codex = buildProfile({ ...base, provider: 'codex', patch: false });
   assert.ok(codex.includes('/Users/tester/.codex') && !codex.includes('(subpath "/Users/tester/.claude")'));
 });

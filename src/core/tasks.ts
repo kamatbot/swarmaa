@@ -7,7 +7,7 @@ import type { Principal } from '../types.js';
 import { enumValue, integer, optionalString, scopeName, string, strings, uuid } from '../validation.js';
 import { assertKnownScope, audit, canonicalJson, event, jsonObject, newId, noExtraKeys, requireFound, scopeLock, scopeSql, sha256, uuidArray, type Db } from './shared.js';
 import { decideAll, getPolicy, policyAllows, scopeUsage, type RoutingKind } from './routing.js';
-import { AUTO_READ, touchWorker, workerProviders } from './swarm.js';
+import { AUTO_PATCH, AUTO_READ, touchWorker, workerProviders } from './swarm.js';
 
 export const TASK_KINDS = ['research','review','patch'] as const;
 export const TASK_STATUSES = ['queued','running','blocked','completed','failed','cancelled'] as const;
@@ -15,7 +15,7 @@ type TaskKind = typeof TASK_KINDS[number];
 export interface TaskRow {
   id:string; tenant_id:string; scope:string; kind:TaskKind; objective:string;
   constraints:string[]; acceptance_criteria:string[]; permission_envelope:Record<string,unknown>;
-  required_capability:string; resource_key:string|null; context_refs:string[]; context_versions:Record<string,number>;
+  required_capability:string; resource_key:string|null; base_ref:string|null; context_refs:string[]; context_versions:Record<string,number>;
   status:typeof TASK_STATUSES[number]; version:number; created_by:string; idempotency_key:string; request_hash:string;
   attempt_count:number; max_attempts:number; continuation_count:number; lease_generation:number;
   lease_owner:string|null; lease_hash:string|null; lease_expires_at:Date|null;
@@ -32,9 +32,9 @@ interface ArtifactRow {
   created_by:string; name:string; media_type:string; content:string; byte_length:number;
   sha256:string; created_at:Date;
 }
-/** Capabilities some worker can advertise; anything else would sit queued forever. Patch is Claude-only. */
+/** Capabilities some worker can advertise; anything else would sit queued forever. */
 // demo.read is reserved for scripts/demo.ts: no real worker advertises it.
-export const VALID_CAPABILITIES = [AUTO_READ,'claude.read','claude.patch','codex.read','antigravity.read','demo.read'] as const;
+export const VALID_CAPABILITIES = [AUTO_READ,AUTO_PATCH,'claude.read','claude.patch','codex.read','codex.patch','antigravity.read','antigravity.patch','demo.read'] as const;
 const date = (value:Date|null):string|null => value?.toISOString() ?? null;
 const expectedVersion = (value:unknown):number => integer(value, 'expected_version', 1, 2147483647);
 const leaseSeconds = (value:unknown):number => value === undefined ? 120 : integer(value, 'lease_seconds', 30, 300);
@@ -56,7 +56,7 @@ function worker(p:Principal):void {
 export function taskView(row:TaskRow):Record<string,unknown> {
   return { id:row.id, scope:row.scope, kind:row.kind, objective:row.objective, constraints:row.constraints,
     acceptance_criteria:row.acceptance_criteria, permission_envelope:row.permission_envelope,
-    required_capability:row.required_capability, resource_key:row.resource_key,
+    required_capability:row.required_capability, resource_key:row.resource_key, base_ref:row.base_ref,
     context_refs:row.context_refs, context_versions:row.context_versions, status:row.status, version:row.version,
     created_by:row.created_by, attempt_count:row.attempt_count, max_attempts:row.max_attempts,
     continuation_count:row.continuation_count, lease_generation:row.lease_generation,
@@ -120,11 +120,22 @@ async function requireLease(db:PoolClient,p:Principal,row:TaskRow,lease:LeaseInp
   requireCondition(time.rows[0]?.live,409,'lease_lost','Task lease expired; claim again instead of reviving it.');
   if (row.kind === 'patch') {
     requireCondition(hasPermission(p,'task:patch'),403,'forbidden','This worker no longer has task:patch permission.');
+    if (row.resource_key === null) return;
     const resource = await db.query(`SELECT 1 FROM task_resource_leases WHERE tenant_id=$1 AND scope=$2
       AND resource_key=$3 AND task_id=$4 AND generation=$5 AND expires_at>clock_timestamp() FOR UPDATE`,
     [row.tenant_id,row.scope,row.resource_key,row.id,lease.generation]);
     requireCondition(resource.rowCount === 1,409,'lease_lost','Resource lease is no longer current.');
   }
+}
+
+/** Patch results from the bridge: a local branch, commits and a diffstat. Typed when present; other keys stay free-form. */
+function patchResult(r:Record<string,unknown>):void {
+  const bad = (k:string,why:string):never => requireCondition(false,400,'invalid_arguments',`result.${k} ${why}.`) as never;
+  for (const k of ['branch','base_ref'] as const) if (r[k] !== undefined && (typeof r[k] !== 'string' || (r[k] as string).length>200)) bad(k,'must be a string of at most 200 characters');
+  for (const k of ['base_commit','head_commit'] as const) if (r[k] !== undefined && r[k] !== null && (typeof r[k] !== 'string' || (r[k] as string).length>200)) bad(k,'must be a string or null');
+  if (r.changed_files !== undefined && (!Number.isInteger(r.changed_files) || (r.changed_files as number)<0)) bad('changed_files','must be a non-negative integer');
+  if (r.diffstat !== undefined && (typeof r.diffstat !== 'string' || Buffer.byteLength(r.diffstat)>4096)) bad('diffstat','must be a string of at most 4 KiB');
+  if (r.commands_allowed !== undefined && typeof r.commands_allowed !== 'boolean') bad('commands_allowed','must be a boolean');
 }
 
 function artifactView(row:ArtifactRow):Record<string,unknown> {
@@ -136,7 +147,7 @@ export class TaskService {
   constructor(private readonly pool:Pool) {}
 
   async submit(p:Principal,input:Record<string,unknown>):Promise<unknown> {
-    noExtraKeys(input,['scope','kind','objective','idempotency_key','required_capability','resource_key','constraints','acceptance_criteria','context_refs','max_attempts']);
+    noExtraKeys(input,['scope','kind','objective','idempotency_key','required_capability','resource_key','base_ref','constraints','acceptance_criteria','context_refs','max_attempts']);
     const scope = scopeName(input.scope);
     assertKnownScope(p,scope);
     const kind = enumValue(input.kind,'kind',TASK_KINDS);
@@ -146,15 +157,20 @@ export class TaskService {
     const capability = string(input.required_capability,'required_capability',128);
     requireCondition((VALID_CAPABILITIES as readonly string[]).includes(capability),400,'unknown_capability',`Unknown required_capability. Valid: ${VALID_CAPABILITIES.join(', ')}.`);
     const resource = optionalString(input.resource_key,'resource_key',240) ?? null;
-    requireCondition(capability !== AUTO_READ || kind !== 'patch',400,'invalid_arguments','auto.read routes read-only work; patch tasks name an explicit capability.');
-    requireCondition(kind !== 'patch' || resource !== null,400,'resource_required','Patch work requires a resource_key.');
+    requireCondition(capability !== AUTO_READ || kind !== 'patch',400,'invalid_arguments','auto.read routes review and research work; use auto.patch or <provider>.patch for patch tasks.');
+    requireCondition(capability !== AUTO_PATCH || kind === 'patch',400,'invalid_arguments','auto.patch routes patch work; use auto.read for review and research tasks.');
+    requireCondition(!capability.endsWith('.patch') || kind === 'patch',400,'invalid_arguments',`${capability} takes patch tasks only; use a .read capability for ${kind}.`);
+    requireCondition(!capability.endsWith('.read') || kind !== 'patch',400,'invalid_arguments',`${capability} is read-only; use auto.patch or <provider>.patch for patch tasks.`);
+    const baseRef = optionalString(input.base_ref,'base_ref',200) ?? null;
+    requireCondition(baseRef === null || kind === 'patch',400,'invalid_arguments','base_ref applies to patch tasks only.');
+    requireCondition(baseRef === null || (/^[A-Za-z0-9._\/-]+$/u.test(baseRef) && !baseRef.startsWith('-') && !baseRef.includes('..')),400,'invalid_arguments','base_ref must be a git ref using letters, digits, . _ / - with no leading - and no "..".');
     const constraints = input.constraints === undefined ? [] : strings(input.constraints,'constraints',30,1000);
     const acceptance = input.acceptance_criteria === undefined ? [] : strings(input.acceptance_criteria,'acceptance_criteria',30,1000);
     const refs = uuidArray(input.context_refs,'context_refs');
     const attempts = input.max_attempts === undefined ? 3 : integer(input.max_attempts,'max_attempts',1,10);
     const envelope = { read_project:true, local_patch:kind === 'patch', external_side_effects:false,
       deploy:false, publish:false, send_messages:false, purchase:false, permission_changes:false };
-    const requestHash = sha256(canonicalJson({scope,kind,objective,capability,resource,constraints,acceptance,refs,max_attempts:attempts}));
+    const requestHash = sha256(canonicalJson({scope,kind,objective,capability,resource,constraints,base_ref:baseRef,acceptance,refs,max_attempts:attempts}));
     return transaction(this.pool,async db => {
       // The idempotency namespace spans scopes so moving a retry cannot duplicate work.
       await scopeLock(db,'submission',p,'',`${p.id}:${idempotency}`);
@@ -163,14 +179,14 @@ export class TaskService {
         requireCondition(existing.rows[0].request_hash === requestHash,409,'idempotency_conflict','This idempotency key was used for different task inputs.');
         return {task:await taskWithInstructions(db,existing.rows[0]),replayed:true};
       }
-      if (capability.endsWith('.read') && capability !== AUTO_READ && kind !== 'patch') {
+      if ((capability.endsWith('.read') && capability !== AUTO_READ) || (capability.endsWith('.patch') && capability !== AUTO_PATCH)) {
         const {policy} = await getPolicy(db,p.tenantId);
-        const provider = capability.slice(0,-5);
+        const provider = capability.slice(0,capability.lastIndexOf('.'));
         const entry = policy.providers.find(x => x.provider === provider);
-        requireCondition(!entry || entry.enabled,400,'provider_disabled',`${capability} is disabled by the owner's routing policy. Use auto.read or another provider.`);
+        requireCondition(!entry || entry.enabled,400,'provider_disabled',`${capability} is disabled by the owner's routing policy. Use ${kind === 'patch' ? 'auto.patch' : 'auto.read'} or another provider.`);
         requireCondition(policyAllows(policy,provider,kind),400,'kind_not_allowed',provider === 'antigravity'
-          ? 'Antigravity takes review tasks only (it cannot run commands or reach outside the project). Use auto.read or codex.read.'
-          : `${provider} does not take ${kind} tasks under the owner's routing policy. Use auto.read or another provider.`);
+          ? 'Antigravity takes review and in-project edit tasks, not research (it cannot reach outside the project). Use auto.read or codex.read for research.'
+          : `${provider} does not take ${kind} tasks under the owner's routing policy. Use ${kind === 'patch' ? 'auto.patch' : 'auto.read'} or another provider.`);
       }
       await scopeLock(db,'tasks',p,scope);
       const count = await db.query<{count:string}>(`SELECT count(*)::text AS count FROM tasks
@@ -183,10 +199,10 @@ export class TaskService {
       const versions = Object.fromEntries(memories.rows.map(m => [m.id,m.version]));
       const result = await db.query<TaskRow>(`INSERT INTO tasks
         (id,tenant_id,scope,kind,objective,constraints,acceptance_criteria,permission_envelope,required_capability,
-         resource_key,context_refs,context_versions,status,created_by,idempotency_key,request_hash,max_attempts)
-        VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb,$8::jsonb,$9,$10,$11::uuid[],$12::jsonb,'queued',$13,$14,$15,$16) RETURNING *`,
+         resource_key,base_ref,context_refs,context_versions,status,created_by,idempotency_key,request_hash,max_attempts)
+        VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb,$8::jsonb,$9,$10,$17,$11::uuid[],$12::jsonb,'queued',$13,$14,$15,$16) RETURNING *`,
       [newId(),p.tenantId,scope,kind,objective,JSON.stringify(constraints),JSON.stringify(acceptance),JSON.stringify(envelope),
-        capability,resource,refs,JSON.stringify(versions),p.id,idempotency,requestHash,attempts]);
+        capability,resource,refs,JSON.stringify(versions),p.id,idempotency,requestHash,attempts,baseRef]);
       const row = result.rows[0]!;
       await taskChanged(db,p,row,'submitted');
       return {task:await taskWithInstructions(db,row),replayed:false};
@@ -282,9 +298,17 @@ export class TaskService {
       // The owner's routing policy decides, per kind, which provider takes auto.read work; explicit
       // capabilities still obey the policy's enabled flag and allowed kinds.
       const served = workerProviders(capabilities);
+      const servedPatch = capabilities.filter(c => c.endsWith('.patch') && c !== AUTO_PATCH).map(c => c.slice(0,-6));
       const {policy} = await getPolicy(db,p.tenantId);
-      const decisions = capabilities.includes(AUTO_READ) ? decideAll(policy,await scopeUsage(db,p.tenantId,scope)) : null;
+      const decisions = capabilities.includes(AUTO_READ) || capabilities.includes(AUTO_PATCH) ? decideAll(policy,await scopeUsage(db,p.tenantId,scope)) : null;
       const eligible = (row:TaskRow):boolean => {
+        if (row.required_capability === AUTO_PATCH) {
+          const d = decisions?.patch;
+          if (!d) return false;
+          if (d.anyone) return servedPatch.some(s => policyAllows(policy,s,'patch'));
+          return d.provider !== null && servedPatch.includes(d.provider);
+        }
+        if (row.required_capability.endsWith('.patch')) return policyAllows(policy,row.required_capability.slice(0,-6),'patch');
         if (row.kind === 'patch') return true;
         if (row.required_capability === AUTO_READ) {
           const d = decisions?.[row.kind as RoutingKind];
@@ -318,7 +342,7 @@ export class TaskService {
       for (const row of candidates.rows) {
         if (!eligible(row)) continue;
         const generation = row.lease_generation+1;
-        if (row.kind === 'patch') {
+        if (row.kind === 'patch' && row.resource_key !== null) {
           const resource = await db.query(`INSERT INTO task_resource_leases
             (tenant_id,scope,resource_key,task_id,generation,expires_at)
             VALUES ($1,$2,$3,$4,$5,clock_timestamp()+$6::integer*interval '1 second')
@@ -390,6 +414,7 @@ export class TaskService {
     const outcome = enumValue(input.outcome,'outcome',['completed','failed','blocked'] as const);
     const result = jsonObject(input.result,'result',65536);
     const artifactIds = uuidArray(input.artifact_ids,'artifact_ids');
+    patchResult(result);
     const completionHash = sha256(canonicalJson({outcome,result_json:canonicalJson(result),artifact_ids:[...artifactIds].sort()}));
     return transaction(this.pool,async db => {
       const row = await lockedTask(db,p,lease.taskId);

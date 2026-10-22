@@ -23,7 +23,7 @@ describe('routing policy', {skip:!connectionString,concurrency:false}, () => {
     control = new pg.Pool({connectionString,max:2});
     await control.query(`CREATE SCHEMA "${schema}"`);
     pool = new pg.Pool({connectionString,max:8,options:`-c search_path=${schema},public`});
-    for (const file of ['001_identity.sql','002_core.sql','005_swarm.sql','006_sessions.sql','008_lessons.sql','010_routing_policy.sql']) {
+    for (const file of ['001_identity.sql','002_core.sql','005_swarm.sql','006_sessions.sql','008_lessons.sql','010_routing_policy.sql','011_patch_routing.sql']) {
       await pool.query(await readFile(new URL(`../db/migrations/${file}`,import.meta.url),'utf8'));
     }
     core = new CoreService(pool);
@@ -56,7 +56,7 @@ describe('routing policy', {skip:!connectionString,concurrency:false}, () => {
     const {front,claude} = await fixture();
     const got = await call(claude,'routing_get',{});
     assert.deepEqual(got,{policy:DEFAULT_POLICY,is_default:true,updated_at:null,default_policy:DEFAULT_POLICY});
-    assert.deepEqual(DEFAULT_POLICY.providers.map(p => [p.provider,p.kinds]),[['claude',['review','research']],['codex',['review','research']],['antigravity',['review']]]);
+    assert.deepEqual(DEFAULT_POLICY.providers.map(p => [p.provider,p.kinds]),[['claude',['review','research','patch']],['codex',['review','research','patch']],['antigravity',['review','patch']]]);
     assert.equal((await call(front,'swarm_status',{})).routing.is_default,true);
   });
 
@@ -190,7 +190,7 @@ describe('routing policy', {skip:!connectionString,concurrency:false}, () => {
   it('rejects explicit capabilities the policy does not allow and refuses to claim them', async () => {
     const {front,owner,agy} = await fixture();
     await assert.rejects(() => call(front,'task_submit',submit('x1','research','antigravity.read')),(e:unknown) => code('kind_not_allowed')(e)
-      && (e as AppError).message === 'Antigravity takes review tasks only (it cannot run commands or reach outside the project). Use auto.read or codex.read.');
+      && (e as AppError).message === 'Antigravity takes review and in-project edit tasks, not research (it cannot reach outside the project). Use auto.read or codex.read for research.');
     const ok = (await call(front,'task_submit',submit('x2','review','antigravity.read'))).task;
     assert.equal((await claim(agy,['antigravity.read'])).task.id,ok.id);
     await call(owner,'routing_set',{policy:policy(p => { entry(p,'codex').kinds = ['review']; })});
@@ -204,5 +204,53 @@ describe('routing policy', {skip:!connectionString,concurrency:false}, () => {
     assert.equal((await claim(codex,['codex.read'])).task,null);
     await call(owner,'routing_set',{policy:policy(() => {})});
     assert.equal((await claim(codex,['codex.read'])).task.id,queued.id);
+  });
+  it('routes auto.patch to the decided provider and accepts <provider>.patch', async () => {
+    const {front,claude,codex,agy} = await fixture();
+    await call(claude,'usage_report',report('claude',95,10));
+    await call(codex,'usage_report',report('codex',10,10));
+    const task = (await call(front,'task_submit',{...submit('p1','patch','auto.patch'),objective:'Edit it.'})).task;
+    assert.equal(task.resource_key,null);
+    const args = (w:Principal,caps:string[]) => call(w,'task_claim',{scope:'project:a',capabilities:caps,kinds:['patch']});
+    for (const w of [claude,codex,agy]) w.permissions.push('task:patch');
+    assert.equal((await args(claude,['claude.read','claude.patch','auto.read','auto.patch'])).task,null);
+    const got = await args(codex,['codex.read','codex.patch','auto.read','auto.patch']);
+    assert.equal(got.task.id,task.id);
+    assert.equal((await call(front,'swarm_status',{})).routing.by_kind.patch.provider,'codex');
+    const fin = {branch:'swarma/codex/x',base_ref:'main',base_commit:'a'.repeat(40),head_commit:null,changed_files:2,diffstat:' a | 1 +',commands_allowed:true};
+    const done = await call(codex,'task_finish',{task_id:task.id,lease_token:got.lease_token,lease_generation:got.lease_generation,outcome:'completed',result:fin});
+    assert.deepEqual(done.task.result,fin);
+    await call(front,'task_submit',{...submit('p2','patch','antigravity.patch'),objective:'Edit it.'});
+    await assert.rejects(() => call(front,'task_submit',submit('p3','research','antigravity.patch')),code('invalid_arguments'));
+    await assert.rejects(() => call(front,'task_submit',submit('p4','research','antigravity.read')),code('kind_not_allowed'));
+    await assert.rejects(() => call(front,'task_submit',submit('p5','patch','auto.read')),code('invalid_arguments'));
+    await assert.rejects(() => call(front,'task_submit',submit('p6','review','auto.patch')),code('invalid_arguments'));
+    await assert.rejects(() => call(codex,'task_finish',{task_id:task.id,lease_token:'x',lease_generation:1,outcome:'completed',result:{changed_files:'2'}}),code('invalid_arguments'));
+  });
+
+  it('stores and returns base_ref and rejects malformed or non-patch values', async () => {
+    const {front,codex} = await fixture();
+    const sub = (key:string,extra:Record<string,unknown>) => ({...submit(key,'patch','codex.patch'),...extra});
+    const t = (await call(front,'task_submit',sub('b1',{base_ref:'feature/x-1.0',resource_key:'repo:a'}))).task;
+    assert.equal(t.base_ref,'feature/x-1.0');
+    codex.permissions.push('task:patch');
+    const got = await call(codex,'task_claim',{scope:'project:a',capabilities:['codex.patch'],kinds:['patch']});
+    assert.equal(got.task.base_ref,'feature/x-1.0');
+    assert.equal((await call(front,'task_get',{task_id:t.id})).task.base_ref,'feature/x-1.0');
+    for (const [i,bad] of ['-rf','a..b','a b','x'.repeat(201)].entries()) await assert.rejects(() => call(front,'task_submit',sub(`b-bad${i}`,{base_ref:bad})),code('invalid_arguments'));
+    await assert.rejects(() => call(front,'task_submit',{...submit('b2','review'),base_ref:'main'}),code('invalid_arguments'));
+  });
+
+  it('adds patch to a saved policy that predates it', async () => {
+    const {owner,front} = await fixture();
+    const old = structuredClone(DEFAULT_POLICY);
+    for (const p of old.providers) p.kinds = p.kinds.filter(k => k !== 'patch');
+    await pool.query('INSERT INTO routing_policies(tenant_id,policy,updated_by) VALUES($1,$2::jsonb,$3)',[owner.tenantId,JSON.stringify(old),owner.id]);
+    const got = await call(front,'routing_get',{});
+    assert.deepEqual(got.policy.providers.map((p:any) => p.kinds),DEFAULT_POLICY.providers.map(p => p.kinds));
+    // The SQL migration does the same to existing rows.
+    await pool.query(await readFile(new URL('../db/migrations/011_patch_routing.sql',import.meta.url),'utf8').then(sql => sql.split('UPDATE routing_policies').slice(1).map(x => 'UPDATE routing_policies'+x).join('\n')));
+    const row = await pool.query('SELECT policy FROM routing_policies WHERE tenant_id=$1',[owner.tenantId]);
+    assert.deepEqual(row.rows[0].policy.providers.map((p:any) => p.kinds),DEFAULT_POLICY.providers.map(p => p.kinds));
   });
 });

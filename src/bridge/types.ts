@@ -41,6 +41,8 @@ export interface Task {
   acceptance_criteria: string[];
   resource_key: string | null;
   required_capability: string;
+  /** Patch only: ref/commit to branch the worktree from; empty or absent means HEAD. */
+  base_ref?: string | null;
   checkpoint: Record<string, unknown> | null;
   context_refs: string[];
   instructions?: unknown[];

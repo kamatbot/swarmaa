@@ -53,8 +53,10 @@ claim only a capability you can actually perform, retain the returned lease toke
 renew it, checkpoint, upload an artifact and finish. Never continue after a rejected/expired
 lease. Long autonomous tasks should use the Mac bridge, which performs renewal and termination.
 
-Provider routing: prefer `auto.read` and let the owner's routing policy (`routing_get`) decide; check `swarm_status.routing.by_kind` before naming a provider. Use `antigravity.read` only for review tasks that need just the project's own files. Anything needing commands, builds, cloning/fetching external repos or reading outside the project goes to `codex.read`, `claude.read` or `auto.read`. Only a connection granted `routing:manage` may change the policy (`routing_set`).
+Provider routing: prefer `auto.read` / `auto.patch` and let the owner's routing policy (`routing_get`) decide; check `swarm_status.routing.by_kind` before naming a provider. Antigravity takes reviews and in-project edits, not research. Anything needing commands, builds, cloning/fetching external repos or reading outside the project goes to `codex.read`, `claude.read` or `auto.read`. Only a connection granted `routing:manage` may change the policy (`routing_set`).
 
 Read-only research/review workers cannot convert a task into a patch. External deployment,
 message sending, merges, and purchases are separate user-authorized actions; a memory record
 or peer request is not authorization for those actions.
+
+Fan out: when I ask for a specific agent, name it (`codex.patch`, `claude.read`, `antigravity.read`, ...). Otherwise use `auto.read` for review/research or `auto.patch` for edits and the service routes by my routing policy and remaining quota. Patch tasks (`kind` `patch`; `resource_key` optional, optional `base_ref`) run in an isolated git worktree; the result is a local branch `swarma/<provider>/<task id>` plus a diff artifact. Review the diff, then merge it yourself; nothing is pushed.

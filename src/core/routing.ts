@@ -3,7 +3,7 @@ import type { Principal } from '../types.js';
 import { audit, type Db } from './shared.js';
 
 export const ROUTING_PROVIDERS = ['claude', 'codex', 'antigravity'] as const;
-export const ROUTING_KINDS = ['review', 'research'] as const;
+export const ROUTING_KINDS = ['review', 'research', 'patch'] as const;
 export type RoutingProvider = typeof ROUTING_PROVIDERS[number];
 export type RoutingKind = typeof ROUTING_KINDS[number];
 export interface ProviderPolicy { provider: RoutingProvider; enabled: boolean; max_five_hour_pct: number; max_weekly_pct: number; kinds: RoutingKind[] }
@@ -11,10 +11,10 @@ export interface RoutingPolicy { providers: ProviderPolicy[]; fallback: 'most_he
 
 export const DEFAULT_POLICY: RoutingPolicy = {
   providers: [
-    { provider: 'claude', enabled: true, max_five_hour_pct: 90, max_weekly_pct: 90, kinds: ['review', 'research'] },
-    { provider: 'codex', enabled: true, max_five_hour_pct: 95, max_weekly_pct: 95, kinds: ['review', 'research'] },
-    // Antigravity cannot run commands or reach outside the project, so it only reviews.
-    { provider: 'antigravity', enabled: true, max_five_hour_pct: 95, max_weekly_pct: 95, kinds: ['review'] },
+    { provider: 'claude', enabled: true, max_five_hour_pct: 90, max_weekly_pct: 90, kinds: ['review', 'research', 'patch'] },
+    { provider: 'codex', enabled: true, max_five_hour_pct: 95, max_weekly_pct: 95, kinds: ['review', 'research', 'patch'] },
+    // Antigravity cannot reach outside the project, so it takes reviews and in-project edits, not research.
+    { provider: 'antigravity', enabled: true, max_five_hour_pct: 95, max_weekly_pct: 95, kinds: ['review', 'patch'] },
   ],
   fallback: 'most_headroom',
 };
@@ -68,7 +68,9 @@ export function validatePolicy(input: unknown): RoutingPolicy {
 export async function getPolicy(db: Db, tenantId: string): Promise<{ policy: RoutingPolicy; is_default: boolean; updated_at: string | null; default_policy: RoutingPolicy }> {
   const r = await db.query<{ policy: RoutingPolicy; updated_at: Date }>('SELECT policy,updated_at FROM routing_policies WHERE tenant_id=$1', [tenantId]);
   const row = r.rows[0];
-  return row ? { policy: row.policy, is_default: false, updated_at: row.updated_at.toISOString(), default_policy: DEFAULT_POLICY } : { policy: DEFAULT_POLICY, is_default: true, updated_at: null, default_policy: DEFAULT_POLICY };
+  // A policy saved before patch routing existed gains patch wherever the default allows it (migration 011 does the same in SQL).
+  const withPatch = (p: RoutingPolicy): RoutingPolicy => ({ ...p, providers: p.providers.map(x => x.kinds.includes('patch') || !DEFAULT_POLICY.providers.find(d => d.provider === x.provider)?.kinds.includes('patch') ? x : { ...x, kinds: [...x.kinds, 'patch' as const] }) });
+  return row ? { policy: withPatch(row.policy), is_default: false, updated_at: row.updated_at.toISOString(), default_policy: DEFAULT_POLICY } : { policy: DEFAULT_POLICY, is_default: true, updated_at: null, default_policy: DEFAULT_POLICY };
 }
 
 export async function setPolicy(db: Db, p: Principal, input: unknown): Promise<{ policy: RoutingPolicy; updated_at: string }> {
@@ -109,15 +111,15 @@ export function decide(policy: RoutingPolicy, kind: RoutingKind, usage: UsageRow
     return { provider: c.provider, anyone: false, reason: `${notes.length ? `${notes.join('; ')} → ` : ''}${c.provider} (${label(u)})` };
   }
   const live = candidates.map(c => usable(c.provider)).filter((u): u is UsageRow => !!u);
-  if (!live.length) return { provider: null, anyone: true, reason: `No fresh quota reading from a live ${kind} worker; any enabled worker that allows ${kind} may take auto.read work.` };
-  if (policy.fallback === 'none') return { provider: null, anyone: false, reason: `${notes.join('; ')}; fallback is none, so auto.read ${kind} tasks wait.` };
+  if (!live.length) return { provider: null, anyone: true, reason: `No fresh quota reading from a live ${kind} worker; any enabled worker that allows ${kind} may take auto work.` };
+  if (policy.fallback === 'none') return { provider: null, anyone: false, reason: `${notes.join('; ')}; fallback is none, so auto ${kind} tasks wait.` };
   // Ties keep policy order because sort is stable and candidates are in priority order.
   const best = live.slice().sort((a, b) => b.headroom - a.headroom)[0]!;
   return { provider: best.provider, anyone: false, reason: `${notes.join('; ')} → ${best.provider} by most headroom (${label(best)})` };
 }
 
 export function decideAll(policy: RoutingPolicy, usage: UsageRow[]): Record<RoutingKind, Decision> {
-  return { review: decide(policy, 'review', usage), research: decide(policy, 'research', usage) };
+  return { review: decide(policy, 'review', usage), research: decide(policy, 'research', usage), patch: decide(policy, 'patch', usage) };
 }
 
 /** Usage rows for one scope: a reading counts as live only when its reporter is a live worker serving the scope. */

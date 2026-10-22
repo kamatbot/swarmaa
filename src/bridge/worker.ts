@@ -1,10 +1,10 @@
 import { setTimeout as delay } from 'node:timers/promises';
-import { AUTO_READ, buildInvocation, capability, deniedActions, finalAnswer, projectCapabilities, providerSucceeded } from './adapters.js';
+import { AUTO_PATCH, AUTO_READ, buildInvocation, capability, deniedActions, finalAnswer, projectCapabilities, providerSucceeded } from './adapters.js';
 import { collectUsage, headroom } from '../usage/index.js';
 import type { UsageProviderId, UsageSnapshot } from '../usage/types.js';
 import { runBoundedProcess } from './process.js';
 import { reasonNotify } from './reason.js';
-import { acquirePatchWorkspaceLock } from './workspace-lock.js';
+import { createWorktree, finishWorktree, type PatchOutcome, type Worktree } from './worktree.js';
 import type { AgentConfig, BridgeConfig, BridgeLogger, Claim, Lease, ProcessResult, ProcessRunner, ProjectConfig, Task, ToolClient } from './types.js';
 
 function cleanText(value: string, maxBytes: number): string {
@@ -20,11 +20,12 @@ function validateClaim(claim: Claim, project: ProjectConfig, agents: AgentConfig
   if (!claim.task) return null;
   const task = claim.task;
   if (task.scope !== project.scope || !['research', 'review', 'patch'].includes(task.kind) || typeof task.id !== 'string' || !claim.lease_token || !Number.isInteger(claim.lease_generation)) throw new Error('Invalid or misrouted task claim');
-  const auto = task.required_capability === AUTO_READ && task.kind !== 'patch';
-  const agent = auto
-    ? agents.filter(a => project.agents.includes(a.id)).sort((a, b) => (headroom.get(b.provider) ?? 50) - (headroom.get(a.provider) ?? 50))[0]
-    : agents.find(a => project.agents.includes(a.id) && task.required_capability === capability(a, task.kind === 'patch'));
-  if (!agent || (task.kind === 'patch' && (!project.allow_patch || !agent.enable_patch || agent.provider !== 'claude'))) throw new Error('Service returned a capability this worker did not advertise');
+  const patch = task.kind === 'patch';
+  const candidates = agents.filter(a => project.agents.includes(a.id) && (!patch || (project.allow_patch && a.enable_patch)));
+  const agent = task.required_capability === (patch ? AUTO_PATCH : AUTO_READ)
+    ? candidates.sort((a, b) => (headroom.get(b.provider) ?? 50) - (headroom.get(a.provider) ?? 50))[0]
+    : candidates.find(a => task.required_capability === capability(a, patch));
+  if (!agent) throw new Error('Service returned a capability this worker did not advertise');
   return { task, agent, lease: { task_id: task.id, lease_token: claim.lease_token, lease_generation: claim.lease_generation as number } };
 }
 
@@ -99,7 +100,8 @@ export class BridgeWorker {
     let leaseLost = false;
     let finished = false;
     let completionAttempted = false;
-    let releaseWorkspace: (() => Promise<void>) | undefined;
+    let worktree: Worktree | undefined;
+    let patchResult: PatchOutcome | undefined;
     let expiryTimer: ReturnType<typeof setTimeout> | undefined;
     let progress = { output_bytes: 0, stdout_tail: '' };
     const startedAt = new Date().toISOString();
@@ -155,14 +157,20 @@ export class BridgeWorker {
       if (leaseLost) return;
       await this.client.call('task_checkpoint', { ...lease, checkpoint: checkpoint('starting') }, execution.signal);
       const context = await this.client.call('context_get', { scope: task.scope, task_id: task.id, limit: 12 }, execution.signal);
-      const request = buildInvocation(agent, project, task, context, this.config, execution.signal);
-      request.on_progress = value => { progress = value; };
-      if (task.kind === 'patch') releaseWorkspace = await acquirePatchWorkspaceLock(project.root, task.id);
-      if (leaseLost || execution.signal.aborted) throw new Error('Provider start was aborted');
-      const result = await this.runner(request);
-      if (releaseWorkspace) {
-        await releaseWorkspace();
-        releaseWorkspace = undefined;
+      // Patch work gets its own worktree+branch, so parallel patch tasks on one project never share files.
+      if (task.kind === 'patch') worktree = await createWorktree(project.root, agent.provider, task);
+      let result: ProcessResult;
+      try {
+        const request = buildInvocation(agent, project, task, context, this.config, execution.signal, process.env, worktree);
+        request.on_progress = value => { progress = value; };
+        if (leaseLost || execution.signal.aborted) throw new Error('Provider start was aborted');
+        result = await this.runner(request);
+      } finally {
+        // Whatever the provider did (even if aborted), commit it to the branch and drop the worktree.
+        if (worktree) {
+          try { patchResult = await finishWorktree(project.root, agent.provider, task, worktree, this.config.max_output_bytes); }
+          catch { this.logger('worktree_requires_review', { task_id: task.id, dir: worktree.dir }); }
+        }
       }
       if (leaseLost) return;
       // A provider that stopped because the sandbox denied actions it needed did not finish the task.
@@ -173,6 +181,9 @@ export class BridgeWorker {
         ...lease, name: `${agent.id}-transcript.txt`, media_type: 'text/plain',
         content: this.resultArtifact(agent, result)
       });
+      const diffArtifact = patchResult?.diff
+        ? await this.client.call<{ artifact: { id: string } }>('artifact_put', { ...lease, name: `${agent.id}-patch.diff`, media_type: 'text/x-diff', content: patchResult.diff })
+        : undefined;
       if (leaseLost) return;
       // Stop concurrent heartbeats before the terminal update to avoid a harmless
       // post-completion heartbeat being mistaken for a lost lease. Renew once more
@@ -183,7 +194,7 @@ export class BridgeWorker {
       await renew();
       if (leaseLost) return;
       const completion = {
-        ...lease, outcome, artifact_ids: [artifact.artifact.id], result: {
+        ...lease, outcome, artifact_ids: [artifact.artifact.id, ...(diffArtifact ? [diffArtifact.artifact.id] : [])], result: {
           agent: agent.id, provider: agent.provider, execution_completed: outcome === 'completed',
           acceptance_criteria_verified: false, review_required: true,
           exit_code: result.exit_code, stop_reason: result.stop_reason,
@@ -192,7 +203,7 @@ export class BridgeWorker {
           answer: cleanText(finalAnswer(agent.provider, result.stdout), 8 * 1024),
           ...(denied.length ? { denied_actions: denied, next_step: 'This worker cannot run those actions (read-only sandbox). Resubmit with a capability whose worker can, e.g. codex.read, or narrow the task.' } : {}),
           summary: outcome === 'completed' ? 'Provider completed. Review the transcript and acceptance criteria before integrating changes.' : 'Provider did not complete successfully. Review the transcript before continuing the task.',
-          source_only_patch: task.kind === 'patch',
+          ...(task.kind === 'patch' ? { commands_allowed: true, ...(patchResult ? { branch: patchResult.branch, base_ref: patchResult.base_ref, base_commit: patchResult.base_commit, head_commit: patchResult.head_commit, changed_files: patchResult.changed_files, diffstat: patchResult.diffstat } : {}) } : {}),
           tests_run_by_bridge: false
         }
       };
@@ -228,10 +239,6 @@ export class BridgeWorker {
       shutdown.removeEventListener('abort', onShutdown);
       await heartbeat;
       if (expiryTimer) clearTimeout(expiryTimer);
-      if (releaseWorkspace) {
-        try { await releaseWorkspace(); }
-        catch { this.logger('workspace_lock_requires_review', { task_id: task.id }); }
-      }
     }
   }
 

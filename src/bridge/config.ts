@@ -48,7 +48,6 @@ export function parseBridgeConfig(value: unknown): BridgeConfig {
     const provider = text(a.provider, 'agent.provider') as Provider;
     if (!['claude', 'codex', 'antigravity'].includes(provider)) throw new Error(`Unsupported provider for ${id}`);
     const enable_patch = bool(a.enable_patch, 'agent.enable_patch');
-    if (enable_patch && provider !== 'claude') throw new Error('Only the restricted Claude file-tool adapter supports patch tasks in this release');
     if (a.sandbox !== undefined && typeof a.sandbox !== 'boolean') throw new Error('agent.sandbox must be a boolean');
     const sandbox = a.sandbox !== false;
     // agy has no read-only enforcement of its own: the outer Seatbelt profile is its only file boundary.
@@ -82,7 +81,7 @@ export function parseBridgeConfig(value: unknown): BridgeConfig {
     poll_seconds: integer(raw.poll_seconds, 5, 'poll_seconds', 1, 300),
     usage_seconds: integer(raw.usage_seconds, 300, 'usage_seconds', 0, 3600),
     lease_seconds, heartbeat_seconds, request_timeout_ms,
-    task_timeout_seconds: integer(raw.task_timeout_seconds, 900, 'task_timeout_seconds', 10, 7200),
+    task_timeout_seconds: integer(raw.task_timeout_seconds, 3600, 'task_timeout_seconds', 10, 7200),
     max_output_bytes: integer(raw.max_output_bytes, 4 * 1024 * 1024, 'max_output_bytes', 4096, 8 * 1024 * 1024),
     max_prompt_bytes: integer(raw.max_prompt_bytes, 128 * 1024, 'max_prompt_bytes', 4096, 512 * 1024)
   };

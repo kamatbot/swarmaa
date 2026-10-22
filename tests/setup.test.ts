@@ -40,11 +40,11 @@ test('bridgeConfig matches the example shape with token_file', () => {
   assert.equal(c.service_url, 'http://127.0.0.1:8787');
   assert.equal(c.token_file, '/r/.local/worker-claude.json');
   assert.equal(c.token_env, undefined);
-  assert.deepEqual(c.agents, [{ id: 'claude', provider: 'claude', binary: '/b/claude', model: 'sonnet', enable_patch: false }]);
-  assert.deepEqual(c.projects, [{ scope: 'project:demo', root: '/r/demo', agents: ['claude'], allow_patch: false }]);
+  assert.deepEqual(c.agents, [{ id: 'claude', provider: 'claude', binary: '/b/claude', model: 'sonnet', enable_patch: true }]);
+  assert.deepEqual(c.projects, [{ scope: 'project:demo', root: '/r/demo', agents: ['claude'], allow_patch: true }]);
   assert.equal(c.reason, null);
   const agy = bridgeConfig({ port: 1, tokenFile: '/t', agent: { id: 'antigravity', provider: 'antigravity', binary: '/b/agy' }, projects: [{ scope: 'project:demo', root: '/r/demo' }] }) as any;
-  assert.deepEqual(agy.agents, [{ id: 'antigravity', provider: 'antigravity', binary: '/b/agy', enable_patch: false, sandbox: true }]);
+  assert.deepEqual(agy.agents, [{ id: 'antigravity', provider: 'antigravity', binary: '/b/agy', enable_patch: true, sandbox: true }]);
   assert.deepEqual(agy.projects[0].agents, ['antigravity']);
   assert.ok(WORKER_HARNESSES.includes('agy'));
   const codex = bridgeConfig({ port: 1, tokenFile: '/t', agent: { id: 'codex', binary: '/b/codex' }, projects: [] }) as any;

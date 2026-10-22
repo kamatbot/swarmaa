@@ -48,8 +48,7 @@ test('patch requires explicit project and provider opt-ins; unsupported modes fa
   assert.throws(() => buildInvocation(config.agents[0]!, config.projects[0]!, {...task, kind:'patch', required_capability:'claude.patch'}, {}, config, new AbortController().signal));
   const enabled = input(); enabled.agents[0]!.enable_patch = true; enabled.projects[0]!.allow_patch = true;
   const patchConfig = parseBridgeConfig(enabled);
-  assert.deepEqual(projectCapabilities(patchConfig.projects[0]!, patchConfig.agents), ['claude.read','claude.patch','auto.read']);
-  assert.throws(() => parseBridgeConfig({...input(), agents:[{id:'codex',provider:'codex',binary:'/bin/codex',enable_patch:true}]}));
+  assert.deepEqual(projectCapabilities(patchConfig.projects[0]!, patchConfig.agents), ['claude.read','claude.patch','auto.read','auto.patch']);
 });
 
 test('exit zero without provider completion is not reported successful', () => {
@@ -117,29 +116,67 @@ test('sandbox defaults on: argv is wrapped in sandbox-exec; codex inner sandbox 
 
 const agy = (extra: Record<string, unknown> = {}) => ({ ...input(), agents: [{ id: 'antigravity', provider: 'antigravity', binary: '/bin/agy', ...extra }], projects: [{ scope: 'project:demo', root: '/projects/demo', agents: ['antigravity'] }] });
 
-test('antigravity: sandbox-only, read-only, advertises antigravity.read + auto.read', () => {
+test('antigravity: sandbox-only, advertises antigravity.read + auto.read', () => {
   const cfg = parseBridgeConfig(agy());
   assert.equal(cfg.agents[0]!.sandbox, true);
   assert.deepEqual(projectCapabilities(cfg.projects[0]!, cfg.agents), ['antigravity.read', 'auto.read']);
   assert.throws(() => parseBridgeConfig(agy({ sandbox: false })), /sandbox:true/u);
-  assert.throws(() => parseBridgeConfig(agy({ enable_patch: true })));
 });
 
-test('antigravity argv: plan mode, json, prompt attached to -p=, no permission bypass, no token, no stdin', { skip: process.platform !== 'darwin' }, () => {
+test('antigravity argv: sandboxed auto mode + skip-permissions, json, prompt attached to -p=, no token, no stdin', { skip: process.platform !== 'darwin' }, () => {
   const cfg = parseBridgeConfig(agy());
   const t = { ...task, required_capability: 'antigravity.read', objective: '$(touch /tmp/x); --mode auto' };
   const req = buildInvocation(cfg.agents[0]!, cfg.projects[0]!, t, {}, cfg, new AbortController().signal, { COLLECTIVE_WORKER_TOKEN: 'secret', HOME: '/h', GEMINI_API_KEY: 'k' });
   assert.equal(req.command, '/usr/bin/sandbox-exec');
   const [, , bin, ...args] = req.args;
   assert.equal(bin, '/bin/agy');
-  assert.deepEqual(args.slice(0, 6), ['--mode', 'plan', '--output-format', 'json', '--print-timeout', '900s']);
-  assert.ok(!args.includes('--dangerously-skip-permissions') && !args.includes('--sandbox'));
+  assert.deepEqual(args.slice(0, 7), ['--mode', 'auto', '--output-format', 'json', '--print-timeout', '3600s', '--dangerously-skip-permissions']);
+  assert.ok(!args.includes('--sandbox'));
   const prompts = args.filter(a => a.startsWith('-p='));
   assert.equal(prompts.length, 1);
   assert.ok(prompts[0]!.includes('$(touch /tmp/x); --mode auto'));
   assert.equal(req.input, '');
   assert.ok(!JSON.stringify(req.env).includes('secret'));
   assert.throws(() => buildInvocation(cfg.agents[0]!, cfg.projects[0]!, { ...t, kind: 'patch', required_capability: 'antigravity.patch' }, {}, cfg, new AbortController().signal));
+});
+
+const all = (sandbox: boolean) => parseBridgeConfig({ service_url: 'http://127.0.0.1:8080', agents: [
+  { id: 'claude', provider: 'claude', binary: '/bin/claude', enable_patch: true, sandbox }, { id: 'codex', provider: 'codex', binary: '/bin/codex', enable_patch: true, sandbox },
+  { id: 'antigravity', provider: 'antigravity', binary: '/bin/agy', enable_patch: true }],
+  projects: [{ scope: 'project:demo', root: '/projects/demo', agents: ['claude', 'codex', 'antigravity'], allow_patch: true }] });
+const patchReq = (cfg: ReturnType<typeof all>, id: string, cap = `${id}.patch`) => {
+  const a = cfg.agents.find(x => x.id === id)!;
+  const r = buildInvocation(a, cfg.projects[0]!, { ...task, kind: 'patch', required_capability: cap }, {}, cfg, new AbortController().signal, {}, { dir: '/wt/x', gitDir: '/projects/demo/.git' });
+  const i = r.args.indexOf(a.binary);
+  return { r, args: i >= 0 ? r.args.slice(i + 1) : r.args };
+};
+
+test('patch is advertised and built for every provider, plus auto.patch', () => {
+  const cfg = all(false);
+  assert.deepEqual(projectCapabilities(cfg.projects[0]!, cfg.agents), ['claude.read', 'claude.patch', 'codex.read', 'codex.patch', 'antigravity.read', 'antigravity.patch', 'auto.read', 'auto.patch']);
+  assert.equal(cfg.task_timeout_seconds, 3600);
+  const noPatch = projectCapabilities({ ...cfg.projects[0]!, allow_patch: false }, cfg.agents);
+  assert.ok(!noPatch.includes('auto.patch') && !noPatch.some(c => c.endsWith('.patch')));
+});
+
+test('patch argv per provider: cwd is the worktree; Bash/commands only when sandboxed', { skip: process.platform !== 'darwin' }, () => {
+  const off = all(false);
+  const c0 = patchReq(off, 'claude');
+  assert.equal(c0.r.cwd, '/wt/x');
+  assert.equal(c0.args[c0.args.indexOf('--tools') + 1], 'Read,Glob,Grep,Edit,Write');
+  assert.ok(!c0.args.includes('--allowedTools') && c0.args[c0.args.indexOf('--permission-mode') + 1] === 'acceptEdits');
+  const x0 = patchReq(off, 'codex');
+  assert.equal(x0.args[x0.args.indexOf('--sandbox') + 1], 'workspace-write');
+  const on = all(true);
+  const c1 = patchReq(on, 'claude', 'auto.patch');
+  assert.equal(c1.args[c1.args.indexOf('--tools') + 1], 'Read,Glob,Grep,Edit,Write,Bash');
+  assert.equal(c1.args[c1.args.indexOf('--allowedTools') + 1], 'Bash');
+  assert.equal(patchReq(on, 'codex').args[patchReq(on, 'codex').args.indexOf('--sandbox') + 1], 'danger-full-access');
+  const a = patchReq(on, 'antigravity');
+  assert.deepEqual(a.args.slice(0, 2), ['--mode', 'auto']);
+  assert.ok(a.args.includes('--dangerously-skip-permissions'));
+  assert.match(a.r.args[1]!, /\(subpath "\/wt\/x"\)/u);
+  assert.throws(() => buildInvocation(on.agents[0]!, on.projects[0]!, { ...task, kind: 'patch', required_capability: 'auto.read' }, {}, on, new AbortController().signal, {}));
 });
 
 test('antigravity result parsing', () => {

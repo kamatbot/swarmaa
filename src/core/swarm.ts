@@ -9,6 +9,8 @@ import { assertKnownScope, noExtraKeys, scopeSql, type Db } from './shared.js';
 
 /** Capability a submitter uses to let the service route read work to the provider with most quota left. */
 export const AUTO_READ = 'auto.read';
+/** Same for edit work: the worker runs it in an isolated git worktree and returns a local branch. */
+export const AUTO_PATCH = 'auto.patch';
 const PROVIDER = /^[a-z][a-z0-9_-]{0,49}$/u;
 
 /** Providers a worker serves, from its advertised `<agent>.read` capabilities. */

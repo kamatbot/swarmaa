@@ -23,7 +23,10 @@ function real(path: string): string { try { return realpathSync(path); } catch {
 export interface SandboxOptions {
   provider: Provider;
   binary: string;
+  /** Provider working directory: the project root for read, the task's git worktree for patch. */
   projectRoot: string;
+  /** Patch only: the repo's .git dir (shared object store, refs, worktree metadata) that git must write. */
+  gitDir?: string;
   patch?: boolean;
   home?: string;
   tmp?: string;
@@ -44,13 +47,17 @@ export function buildProfile(o: SandboxOptions): string {
   const agy = o.provider === 'antigravity';
   const stateDirs = o.provider === 'claude' ? [join(home, '.claude')] : agy ? [join(home, '.gemini/antigravity-cli'), join(home, '.gemini/antigravity'), join(home, '.gemini/config/projects')] : [join(home, '.codex')];
   const stateFiles = o.provider === 'claude' ? [join(home, '.claude.json')] : [];
+  const git = o.patch && o.gitDir ? [real(o.gitDir)] : [];
+  // Build caches (go, npm, pnpm, golangci-lint), writable for patch so builds and tests run.
+  const caches = ['go', 'Library/Caches/go-build', 'Library/Caches/golangci-lint', '.npm', '.cache', 'Library/Caches/pnpm', 'Library/pnpm'].map(d => join(home, d));
+  const toolchains = ['/opt/homebrew', '/usr/local', '/Library/Developer', '/Applications/Xcode.app', join(home, 'go'), join(home, '.npm'), join(home, '.nvm'), join(home, '.local/bin')];
   const readTrees = [
-    root, ...binDirs, tmp, ...stateDirs,
+    root, ...binDirs, tmp, ...stateDirs, ...toolchains, ...git, ...(o.patch ? [...caches, join(home, '.config/git')] : []),
     '/System', '/usr/lib', '/usr/share', '/usr/libexec', '/Library/Apple', '/Library/Preferences', '/private/var/db/timezone', '/private/etc/ssl',
     '/private/etc/resolv.conf', '/private/var/db/mds', '/private/var/db/DetachedSignatures', '/Library/Keychains', join(home, 'Library/Keychains'), '/usr/bin', '/bin', '/usr/sbin', '/sbin',
   ];
-  const writeTrees = [tmp, ...stateDirs, ...(o.patch ? [root] : [])];
-  const readLiterals = ['/', '/tmp', '/var', '/etc', '/dev/null', '/dev/urandom', '/dev/random', '/dev/zero', '/dev/tty', '/private/etc/hosts', '/private/etc/passwd', '/private/etc/localtime', '/private/etc/resolv.conf', ...stateFiles];
+  const writeTrees = [tmp, ...stateDirs, ...(o.patch ? [root, ...git, ...caches] : [])];
+  const readLiterals = ['/', '/tmp', '/var', '/etc', '/dev/null', '/dev/urandom', '/dev/random', '/dev/zero', '/dev/tty', '/private/etc/hosts', '/private/etc/passwd', '/private/etc/localtime', '/private/etc/resolv.conf', ...stateFiles, ...(o.patch ? [join(home, '.gitconfig')] : [])]; // git fails hard (EPERM) if ~/.gitconfig is unreadable
   const deniedHomeSubdirs = ['.ssh', '.aws', '.config/gh', '.gnupg', '.kube', '.docker', '.azure', '.config/gcloud', '.npmrc', '.pypirc', '.netrc', '.git-credentials', 'Library/Cookies', 'Library/Application Support/Google', 'Library/Safari', 'Library/Messages', 'Library/Mail'];
   // Cross-project and conversation history under the provider's own state dir.
   const deniedState = agy
