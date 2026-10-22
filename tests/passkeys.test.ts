@@ -32,12 +32,15 @@ test('owner cookie is HttpOnly, SameSite=Lax, Path=/ and Secure on https; bindin
   assert.match(newBinding('bad value'), /^[A-Za-z0-9_-]{43}$/u);
 });
 
-test('default connection identity comes from the client name, else the first', () => {
+test('default connection identity: client name match, else routing-capable, else broadest', () => {
   const ids = [{ id: '1', name: 'dot' }, { id: '2', name: 'grok' }, { id: '3', name: 'grok-pro' }];
   assert.equal(defaultIdentity('Grok Bot', ids), '2');
   assert.equal(defaultIdentity('GROK-PRO app', ids), '3');
   assert.equal(defaultIdentity('Something else', ids), '1');
   assert.equal(defaultIdentity('x', []), '');
+  const owned = [{ id: 'a', name: 'antigravity-interactive', scopes: ['p:1', 'p:2'] }, { id: 'm', name: 'macbook', scopes: ['p:1', 'p:2'], permissions: ['routing:manage'] }, { id: 'o', name: 'other', scopes: ['p:other'] }, { id: 'g', name: 'grok', scopes: ['p:1', 'p:2', 'p:3'] }];
+  assert.equal(defaultIdentity('Swarmaa for Mac', owned), 'm');
+  assert.equal(defaultIdentity('Swarmaa for Mac', owned.filter(i => i.id !== 'm')), 'g');
 });
 
 const base: AuthorizationForm = { kind: 'form', requestId: '11111111-1111-4111-8111-111111111111', csrf: 'csrf', browserCookie: 'b', clientName: 'Grok <b>', redirectUri: 'https://grok.example/cb' };

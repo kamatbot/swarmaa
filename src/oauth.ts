@@ -27,7 +27,7 @@ export interface AuthorizationForm {
   redirectUri: string;
   principal?: Principal;
   /** Signed-in owner: connection identities that may be chosen, and the default pick. */
-  owner?: { identities: { id: string; name: string }[]; defaultId: string };
+  owner?: { identities: Identity[]; defaultId: string };
   /** Passkey sign-in state for a browser without an owner session. */
   passkey?: 'ready' | 'none' | 'unavailable';
   /** CSP nonce for the inline passkey script. */
@@ -118,11 +118,19 @@ function connectable(principal: Principal): boolean {
   return principal.role !== 'admin' && !principal.permissions.includes('admin') && !principal.scopes.includes('*');
 }
 
-/** Default identity: the one whose name appears in the client name (longest match), else the first. */
-export function defaultIdentity(clientName: string, identities: { id: string; name: string }[]): string {
+export interface Identity { id: string; name: string; scopes?: string[]; permissions?: string[] }
+
+/**
+ * Default identity: the one whose name appears in the client name (longest match); else one that can
+ * manage routing (the owner's own app identities), then the one with the most projects. A narrow
+ * identity such as a single-project one is never the silent default over a broader one.
+ */
+export function defaultIdentity(clientName: string, identities: Identity[]): string {
   const lower = clientName.toLowerCase();
   const hit = identities.filter(i => lower.includes(i.name.toLowerCase())).sort((a, b) => b.name.length - a.name.length)[0];
-  return (hit ?? identities[0])?.id ?? '';
+  if (hit) return hit.id;
+  const rank = (i: Identity) => (i.permissions?.includes('routing:manage') ? 1000 : 0) + (i.scopes?.length ?? 0);
+  return identities.slice().sort((a, b) => rank(b) - rank(a))[0]?.id ?? '';
 }
 
 export function validateRedirectUri(value: unknown, config: ServerConfig): string {
@@ -263,8 +271,8 @@ export class OAuthService {
     );
     const form: AuthorizationForm = { kind: 'form', requestId, csrf, browserCookie: browser, clientName: registered.client_name, redirectUri };
     if (ownerTenant) {
-      const rows = await this.pool.query<{ id: string; name: string }>(
-        "SELECT id,name FROM principals WHERE tenant_id=$1 AND role='frontend' AND disabled=false AND NOT ('admin'=ANY(permissions)) AND NOT ('*'=ANY(scopes)) ORDER BY name",
+      const rows = await this.pool.query<Identity>(
+        "SELECT id,name,scopes,permissions FROM principals WHERE tenant_id=$1 AND role='frontend' AND disabled=false AND NOT ('admin'=ANY(permissions)) AND NOT ('*'=ANY(scopes)) ORDER BY name",
         [ownerTenant],
       );
       form.owner = { identities: rows.rows, defaultId: defaultIdentity(registered.client_name, rows.rows) };
@@ -471,7 +479,7 @@ export function authorizationHtml(form: AuthorizationForm): string {
   if (grant) {
     fields = `<div class="card"><p>Identity: <strong>${escapeHtml(grant.name)}</strong> (${escapeHtml(grant.role)})</p><p>Projects: ${grant.scopes.map(escapeHtml).join(', ')}</p><p>Permissions: ${grant.permissions.map(escapeHtml).join(', ')}</p></div><p>This client will receive only these grants. Authorization expires in at most 30 days. Disabling the connection identity revokes its access.</p><button class="primary" name="action" value="approve">Approve connection</button>`;
   } else if (form.owner) {
-    const options = form.owner.identities.map(i => `<option value="${escapeHtml(i.id)}"${i.id === form.owner!.defaultId ? ' selected' : ''}>${escapeHtml(i.name)}</option>`).join('');
+    const options = form.owner.identities.map(i => `<option value="${escapeHtml(i.id)}"${i.id === form.owner!.defaultId ? ' selected' : ''}>${escapeHtml(i.name)}${i.scopes ? ` · ${i.scopes.length} project${i.scopes.length === 1 ? '' : 's'}` : ''}</option>`).join('');
     fields = form.owner.identities.length
       ? `<p>Choose which connection identity this client gets. The next screen shows its exact projects and permissions.</p><label>Connection identity <select name="principal_id">${options}</select></label><button class="primary" name="action" value="identify_owner">Review permissions</button>`
       : '<p>No enabled connection identity exists yet. Create one with <code>npm run admin -- create</code>.</p>';

@@ -269,7 +269,7 @@ test('passkey registration, login, sessions and the OAuth owner consent flow', {
   // Signed in: identity select, default from the client name, only enabled non-admin frontend principals of this tenant.
   const signedIn = await start(ownerCookie);
   assert.ok(!signedIn.html.includes('connection_token'));
-  assert.match(signedIn.html, new RegExp(`<option value="${grok}" selected>grok</option>`, 'u'));
+  assert.match(signedIn.html, new RegExp(`<option value="${grok}" selected>grok · \\d+ projects?</option>`, 'u'));
   for (const hidden of [rootAdmin, worker, disabled, foreign]) assert.ok(!signedIn.html.includes(hidden), 'ineligible principal listed');
   const jar = `${ownerCookie}; collective_oauth_browser=${signedIn.browser}`;
   const pick = (id: string, over: Record<string, string> = {}) => ({ ...signedIn.form, action: 'identify_owner', principal_id: id, ...over });
