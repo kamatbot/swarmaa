@@ -240,6 +240,8 @@ export class BridgeWorker {
       }
       finished = true;
       this.logger('task_finished', { task_id: task.id, outcome });
+      const branchLine = patchResult ? `Branch: ${patchResult.branch} @ ${patchResult.head_commit?.slice(0, 7) ?? 'none'} (${patchResult.changed_files} files)` : finalizeFailure?.recovery;
+      await this.recordSession(task, agent, project, context, completion.result.answer, branchLine);
       try { await this.notifyReason(task.id, outcome); }
       catch { this.logger('reason_notification_failed', { task_id: task.id }); }
     } catch (error) {
@@ -265,6 +267,30 @@ export class BridgeWorker {
       shutdown.removeEventListener('abort', onShutdown);
       await heartbeat;
       if (expiryTimer) clearTimeout(expiryTimer);
+    }
+  }
+
+  /** Show the run as a shared chat (`swarm:<task id>`). Best effort: a failure never changes the task outcome. */
+  private async recordSession(task: Task, agent: AgentConfig, project: ProjectConfig, context: unknown, answer: string, branchLine?: string): Promise<void> {
+    try {
+      const harness = { claude: 'claude-code', codex: 'codex', antigravity: 'antigravity' }[agent.provider];
+      const key = `swarm:${task.id}`;
+      let turns: { role: string; text: string; at?: string | null }[] = [];
+      // session_list has no key filter; the 50 newest chats of this harness+scope are enough to find a live run.
+      const listed = await this.client.call<{ sessions: { id: string; session_id: string }[] }>('session_list', { scope: task.scope, harness, limit: 50 });
+      const existing = listed.sessions.find(x => x.session_id === key);
+      if (existing) turns = (await this.client.call<{ session: { turns: typeof turns } }>('session_get', { id: existing.id })).session.turns;
+      // Newest continuation instruction (or the objective on the first attempt), unless that text is already recorded.
+      const instructions = (context as { task?: { instructions?: { instruction?: unknown }[] } } | null)?.task?.instructions ?? [];
+      const latest = [...instructions].reverse().map(i => i.instruction).find((i): i is string => typeof i === 'string');
+      const prompt = cleanText(latest ?? task.objective, 8000).slice(0, 8000);
+      const now = new Date().toISOString();
+      const next = [...turns, ...(turns.some(t => t.role === 'user' && t.text === prompt) ? [] : [{ role: 'user', text: prompt, at: now }]),
+        { role: 'assistant', text: (answer.trim() ? answer : '(no answer)').slice(0, 8000 - (branchLine ? branchLine.length + 1 : 0)) + (branchLine ? `\n${branchLine}` : ''), at: now }].slice(-40);
+      await this.client.call('session_record', { harness, session_id: key, scope: task.scope, cwd: project.root, task_id: task.id,
+        title: `[swarm] ${task.objective.split('\n')[0]!.trim()}`.slice(0, 200), turns: next, ended: true });
+    } catch (error) {
+      this.logger('session_record_failed', { task_id: task.id, code: errorCode(error) });
     }
   }
 

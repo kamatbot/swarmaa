@@ -66,10 +66,10 @@ export function buildInvocation(agent: AgentConfig, project: ProjectConfig, task
   } else {
     // agy takes the prompt only as the value of -p (no stdin), attached with '=' so it is never parsed as a flag.
     // spawn() has shell:false, so the text is one argv element. Unsandboxed (read only): plan mode refuses mutating
-    // tools and needs no permission skip. Sandboxed: auto mode + skip-permissions so commands run headless; the outer
+    // tools and needs no permission skip. Sandboxed: default mode (`--mode auto` is unavailable on some accounts) + skip-permissions so commands run headless; the outer
     // Seatbelt profile is the read/write boundary (read tasks get a read-only profile).
     // MCP servers cannot be disabled per invocation; the profile hides ~/.gemini/config (their definitions) instead.
-    args = ['--mode', agent.sandbox ? 'auto' : 'plan', '--output-format', 'json', '--print-timeout', `${config.task_timeout_seconds}s`, ...(agent.sandbox ? ['--dangerously-skip-permissions'] : [])];
+    args = [...(agent.sandbox ? [] : ['--mode', 'plan']), '--output-format', 'json', '--print-timeout', `${config.task_timeout_seconds}s`, ...(agent.sandbox ? ['--dangerously-skip-permissions'] : [])];
   }
   if (agent.model) args.push('--model', agent.model);
   if (agent.provider === 'codex') args.push('-');

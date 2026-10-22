@@ -123,15 +123,15 @@ test('antigravity: sandbox-only, advertises antigravity.read + auto.read', () =>
   assert.throws(() => parseBridgeConfig(agy({ sandbox: false })), /sandbox:true/u);
 });
 
-test('antigravity argv: sandboxed auto mode + skip-permissions, json, prompt attached to -p=, no token, no stdin', { skip: process.platform !== 'darwin' }, () => {
+test('antigravity argv: sandboxed default mode + skip-permissions, json, prompt attached to -p=, no token, no stdin', { skip: process.platform !== 'darwin' }, () => {
   const cfg = parseBridgeConfig(agy());
   const t = { ...task, required_capability: 'antigravity.read', objective: '$(touch /tmp/x); --mode auto' };
   const req = buildInvocation(cfg.agents[0]!, cfg.projects[0]!, t, {}, cfg, new AbortController().signal, { COLLECTIVE_WORKER_TOKEN: 'secret', HOME: '/h', GEMINI_API_KEY: 'k' });
   assert.equal(req.command, '/usr/bin/sandbox-exec');
   const [, , bin, ...args] = req.args;
   assert.equal(bin, '/bin/agy');
-  assert.deepEqual(args.slice(0, 7), ['--mode', 'auto', '--output-format', 'json', '--print-timeout', '3600s', '--dangerously-skip-permissions']);
-  assert.ok(!args.includes('--sandbox'));
+  assert.deepEqual(args.slice(0, 5), ['--output-format', 'json', '--print-timeout', '3600s', '--dangerously-skip-permissions']);
+  assert.ok(!args.includes('--sandbox') && !args.includes('--mode'));
   const prompts = args.filter(a => a.startsWith('-p='));
   assert.equal(prompts.length, 1);
   assert.ok(prompts[0]!.includes('$(touch /tmp/x); --mode auto'));
@@ -173,7 +173,7 @@ test('patch argv per provider: cwd is the worktree; Bash/commands only when sand
   assert.equal(c1.args[c1.args.indexOf('--allowedTools') + 1], 'Bash');
   assert.equal(patchReq(on, 'codex').args[patchReq(on, 'codex').args.indexOf('--sandbox') + 1], 'danger-full-access');
   const a = patchReq(on, 'antigravity');
-  assert.deepEqual(a.args.slice(0, 2), ['--mode', 'auto']);
+  assert.ok(!a.args.includes('--mode'));
   assert.ok(a.args.includes('--dangerously-skip-permissions'));
   assert.match(a.r.args[1]!, /\(subpath "\/wt\/x"\)/u);
   assert.throws(() => buildInvocation(on.agents[0]!, on.projects[0]!, { ...task, kind: 'patch', required_capability: 'auto.read' }, {}, on, new AbortController().signal, {}));

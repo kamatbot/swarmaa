@@ -38,6 +38,7 @@ async function scenario(opts: { repo: boolean; baseRef?: string }) {
       if (name === 'task_claim') return { task, lease_token: 'l', lease_generation: 1, route: { provider: null, allowed: ['codex'] } } as T;
       if (name === 'context_get') return { scope: task.scope, task, memories: [], conflicts: [] } as T;
       if (name === 'artifact_put') return { artifact: { id: `${calls.length}`.padStart(8, '0') + '-2222-4222-8222-222222222222' } } as T;
+      if (name === 'session_list') return { sessions: [] } as T;
       return { task } as T;
     } };
     let seen: { cwd: string; args: string[] } | undefined;
@@ -75,6 +76,10 @@ test('patch task: own branch + commit, worktree removed, user checkout untouched
     assert.equal(diff.args.media_type, 'text/x-diff');
     assert.match(String(diff.args.content), /\+new/u);
     assert.deepEqual(s.calls.find(c => c.name === 'task_claim')!.args.capabilities, ['codex.read', 'codex.patch', 'auto.read', 'auto.patch']);
+    const rec = s.calls.find(c => c.name === 'session_record')!.args as { harness: string; cwd: string; turns: { text: string }[] };
+    assert.equal(rec.harness, 'codex');
+    assert.equal(rec.cwd, s.root);
+    assert.equal(rec.turns.at(-1)!.text.split('\n').at(-1), `Branch: swarma/codex/12345678 @ ${String(r.head_commit).slice(0, 7)} (1 files)`);
   } finally { rmSync(s.dir, { recursive: true, force: true }); }
 });
 

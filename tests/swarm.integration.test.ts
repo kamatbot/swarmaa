@@ -20,7 +20,7 @@ describe('swarm usage routing and status', {skip:!connectionString,concurrency:f
     control = new pg.Pool({connectionString,max:2});
     await control.query(`CREATE SCHEMA "${schema}"`);
     pool = new pg.Pool({connectionString,max:8,options:`-c search_path=${schema},public`});
-    for (const file of ['001_identity.sql','002_core.sql','005_swarm.sql','006_sessions.sql','008_lessons.sql','010_routing_policy.sql','011_patch_routing.sql']) {
+    for (const file of ['001_identity.sql','002_core.sql','005_swarm.sql','006_sessions.sql','008_lessons.sql','010_routing_policy.sql','011_patch_routing.sql','012_session_task.sql']) {
       await pool.query(await readFile(new URL(`../db/migrations/${file}`,import.meta.url),'utf8'));
     }
     core = new CoreService(pool);
@@ -85,6 +85,23 @@ describe('swarm usage routing and status', {skip:!connectionString,concurrency:f
     assert.deepEqual([hidden.workers,hidden.recent],[[],[]]);
     assert.deepEqual(hidden.scopes,[{scope:'project:b',queued:0,running:0,blocked:0,completed_24h:0,failed_24h:0}]);
     await assert.rejects(() => call(outsider,'swarm_status',{scope:'project:a'}),(e:unknown) => e instanceof AppError && e.code === 'scope_forbidden');
+  });
+
+  it('lets workers tag a chat with a task in its scope; frontends and cross-scope tasks are refused', async () => {
+    const {front,claude} = await fixture();
+    const task = (await call(front,'task_submit',submit('k-sess'))).task;
+    const turns = [{role:'user',text:'Review the project.'}];
+    const rec = {harness:'claude-code',session_id:`swarm:${task.id}`,scope:'project:a',turns,task_id:task.id};
+    await assert.rejects(() => call(front,'session_record',rec),(e:unknown) => e instanceof AppError && e.code === 'worker_required');
+    await assert.rejects(() => call(claude,'session_record',{...rec,task_id:randomUUID()}),(e:unknown) => e instanceof AppError && e.code === 'invalid_arguments');
+    await pool.query(`UPDATE tasks SET scope='project:b' WHERE id=$1`,[task.id]);
+    await assert.rejects(() => call(claude,'session_record',rec),(e:unknown) => e instanceof AppError && e.code === 'invalid_arguments');
+    await pool.query(`UPDATE tasks SET scope='project:a' WHERE id=$1`,[task.id]);
+    assert.equal((await call(claude,'session_record',rec)).session.task_id,task.id);
+    await call(front,'session_record',{harness:'codex',session_id:'plain',scope:'project:a',turns});
+    const listed = await call(front,'session_list',{});
+    assert.deepEqual(listed.sessions.map((s:any) => [s.session_id,s.task_id]).sort(),[['plain',null],[`swarm:${task.id}`,task.id]].sort());
+    assert.equal((await call(front,'session_get',{id:listed.sessions.find((s:any) => s.task_id).id})).session.task_id,task.id);
   });
 
   it('records chats per harness, lists them across harnesses and keeps other identities out', async () => {

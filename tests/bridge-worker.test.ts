@@ -162,3 +162,33 @@ test('auto task without a route, or with a provider this bridge lacks, is finish
     assert.equal(finishOf(x).outcome,'blocked');
   }
 });
+
+function sessionHarness(instructions: unknown[] = [], stored?: unknown[], fail = false) {
+  const calls: {name:string;args:Record<string,unknown>}[] = [];
+  const client: ToolClient = { async call<T>(name:string,args:Record<string,unknown>):Promise<T> {
+    calls.push({name,args});
+    if(name==='task_claim') return {task,lease_token:'lease-secret',lease_generation:1} as T;
+    if(name==='context_get') return {scope:task.scope,task:{...task,instructions},memories:[],conflicts:[]} as T;
+    if(name==='artifact_put') return {artifact:{id:'22222222-2222-4222-8222-222222222222'}} as T;
+    if(name==='session_list') return {sessions:stored?[{id:'s-id',session_id:`swarm:${task.id}`}]:[]} as T;
+    if(name==='session_get') return {session:{turns:stored}} as T;
+    if(name==='session_record' && fail) throw new Error('boom');
+    return {task} as T;
+  } };
+  return {calls,client};
+}
+const answered: ProcessResult = {...result,stdout:JSON.stringify({type:'result',subtype:'success',is_error:false,result:'All good'})};
+
+test('a run is recorded as a swarm chat; a continuation appends; failure is harmless', async () => {
+  const cfg = config();
+  const run = async (h: ReturnType<typeof sessionHarness>) => { await new BridgeWorker(cfg,h.client,()=>{},async()=>answered).claimAndRun(cfg.projects[0]!,new AbortController().signal); };
+  const first = sessionHarness(); await run(first);
+  const rec = first.calls.find(c=>c.name==='session_record')!.args as any;
+  assert.deepEqual([rec.harness,rec.session_id,rec.task_id,rec.scope,rec.cwd,rec.title,rec.ended],['claude-code',`swarm:${task.id}`,task.id,'project:demo','/projects/demo','[swarm] Review source',true]);
+  assert.deepEqual(rec.turns.map((t:any)=>[t.role,t.text]),[['user','Review source'],['assistant','All good']]);
+  const again = sessionHarness([{instruction:'Now check tests'}], rec.turns); await run(again);
+  const rec2 = again.calls.find(c=>c.name==='session_record')!.args as any;
+  assert.deepEqual(rec2.turns.map((t:any)=>[t.role,t.text]),[['user','Review source'],['assistant','All good'],['user','Now check tests'],['assistant','All good']]);
+  const bad = sessionHarness([],undefined,true); await run(bad);
+  assert.equal((bad.calls.find(c=>c.name==='task_finish')!.args as any).outcome,'completed');
+});
