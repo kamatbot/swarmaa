@@ -1,6 +1,27 @@
 // Pure helpers for scripts/setup.ts. No side effects at import.
-import { statSync } from 'node:fs';
-import { basename, isAbsolute, resolve } from 'node:path';
+import { existsSync, statSync } from 'node:fs';
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
+
+/** Package root: the nearest ancestor of `from` that has a package.json (works from scripts/ in a checkout and dist/scripts/ in a compiled runtime). */
+export function packageRoot(from: string): string {
+  for (let d = resolve(from); ; d = dirname(d)) {
+    if (existsSync(join(d, 'package.json'))) return d;
+    if (dirname(d) === d) throw new Error(`no package.json above ${from}`);
+  }
+}
+
+/** Compiled layout (the app's bundled runtime): dist/ exists and tsx (a devDependency) does not. */
+export const isCompiled = (root: string): boolean => existsSync(join(root, 'dist')) && !existsSync(join(root, 'node_modules/tsx'));
+
+/**
+ * Arguments to pass to node to run a script, e.g. scriptCommand(root, 'scripts/admin', { envFile: true }).
+ * `name` is the path without extension: compiled -> <root>/dist/<name>.js, dev checkout -> --import tsx <root>/<name>.ts.
+ * The script path is always the last element.
+ */
+export function scriptCommand(root: string, name: string, o: { envFile?: boolean } = {}): string[] {
+  const env = o.envFile ? [`--env-file=${join(root, '.env')}`] : [];
+  return isCompiled(root) ? [...env, join(root, 'dist', `${name}.js`)] : [...env, '--import', 'tsx', join(root, `${name}.ts`)];
+}
 
 export interface ScopeRoot { scope: string; root: string }
 
