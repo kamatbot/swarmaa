@@ -769,7 +769,7 @@ details p { color: var(--muted); padding: 0 50px 26px 0; line-height: 1.7; anima
     Swarmaa
   </a>
   <div class="nav-links">
-    <a href="#how">How it works</a><a href="#platform">Platform</a><a href="#stack">Stack</a><a href="#use-cases">Use cases</a><a href="#agents">Agents</a><a href="#faq">FAQ</a>
+    <a href="#how">How it works</a><a href="#stack">What it takes over</a><a href="#finale">Waitlist</a>
   </div>
   <div class="nav-cta">
     <a href="#finale" class="btn btn-light">Join the waitlist
@@ -849,17 +849,6 @@ details p { color: var(--muted); padding: 0 50px 26px 0; line-height: 1.7; anima
     </div>
   </section>
 
-  <section class="logos" aria-label="Works with">
-    <p>Works with the agents you already pay for</p>
-    <div class="marquee">
-      <div class="marquee-track" id="marquee">
-        <span><i></i>Claude Code</span><span class="serif">Codex</span><span><i></i>Antigravity</span>
-        <span>DOT</span><span class="serif">Grok</span><span><i></i>Model Context Protocol</span>
-        <span>NotchTrader</span>
-      </div>
-    </div>
-  </section>
-
   <!-- HOW IT WORKS -->
   <section class="block" id="how">
     <div class="wrap">
@@ -932,110 +921,6 @@ details p { color: var(--muted); padding: 0 50px 26px 0; line-height: 1.7; anima
           <h3>Route by quota</h3>
           <p>Workers report each provider's usage and reset time. Submit a task as <code>auto.read</code> and it goes to the live agent with the most headroom.</p>
         </div>
-      </div>
-    </div>
-  </section>
-
-  <!-- PLATFORM -->
-  <section class="block" id="platform">
-    <div class="wrap">
-      <div class="sec-head">
-        <div>
-          <div class="kicker reveal">The platform</div>
-          <h2 class="reveal" style="--d:.1s">Everything your agents need to <span class="serif gradient-text">work as one.</span></h2>
-        </div>
-        <div class="reveal" style="--d:.2s">
-          <p style="margin-bottom:22px">Memory, durable tasks, routing and guardrails, in one small service that starts with your Mac.</p>
-          <div class="controls">
-            <button type="button" class="ctrl" id="prev" aria-label="Previous"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 6l-6 6 6 6"/></svg></button>
-            <button type="button" class="ctrl" id="next" aria-label="Next"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6l6 6-6 6"/></svg></button>
-          </div>
-        </div>
-      </div>
-
-      <div class="slider-shell reveal" style="--d:.15s">
-        <div class="slider" id="slider">
-          <article class="card" data-tilt>
-            <div class="card-inner">
-              <div class="visual v-chat">
-                <div class="bubble u">Pick up the review Dot started on the demo project</div>
-                <div class="bubble a">Found the task and 3 notes from Grok. Continuing from its last checkpoint <span class="typing"><i></i><i></i><i></i></span></div>
-              </div>
-              <div class="num">01 — Memory</div>
-              <h3>Shared, sourced memory</h3>
-              <p>Every note keeps its source and revision history. Conflicting edits are kept side by side, and shared decisions need your approval.</p>
-            </div>
-          </article>
-
-          <article class="card" data-tilt>
-            <div class="card-inner">
-              <div class="visual v-nodes">
-                <svg aria-hidden="true" viewBox="0 0 300 190" fill="none">
-                  <g stroke="rgba(255,255,255,.14)" stroke-width="1"><path d="M60 95 150 45M60 95 150 95M60 95 150 145M150 45 240 95M150 95 240 95M150 145 240 95"/></g>
-                  <path d="M60 95 150 45 240 95" stroke="url(#wire)" stroke-width="2" stroke-dasharray="6 6"><animate attributeName="stroke-dashoffset" from="24" to="0" dur="1s" repeatCount="indefinite"/></path>
-                  <g fill="#0d0d15" stroke="rgba(255,255,255,.3)"><circle cx="60" cy="95" r="14"/><circle cx="150" cy="45" r="12"/><circle cx="150" cy="95" r="12"/><circle cx="150" cy="145" r="12"/><circle cx="240" cy="95" r="14"/></g>
-                  <circle cx="60" cy="95" r="5" fill="#9be15d"/><circle cx="240" cy="95" r="5" fill="#a78bfa"/><circle cx="150" cy="45" r="4" fill="#4cc4e8"/>
-                </svg>
-              </div>
-              <div class="num">02 — Tasks</div>
-              <h3>Durable handoffs</h3>
-              <p>Tasks carry leases, checkpoints and retries. A worker that stalls loses its lease, and another picks up from the last checkpoint.</p>
-            </div>
-          </article>
-
-          <article class="card" data-tilt>
-            <div class="card-inner">
-              <div class="visual v-bars">
-                <i style="height:45%;animation-delay:-.2s"></i><i style="height:62%;animation-delay:-.8s"></i><i style="height:38%;animation-delay:-1.1s"></i><i style="height:78%;animation-delay:-.4s"></i><i style="height:55%;animation-delay:-1.6s"></i><i style="height:92%;animation-delay:-.6s"></i><i style="height:70%;animation-delay:-1.3s"></i>
-              </div>
-              <div class="num">03 — Routing</div>
-              <h3>Quota-aware dispatch</h3>
-              <p>Each provider's 5-hour and weekly windows, read from the CLIs' own logins, decide who takes the next task.</p>
-            </div>
-          </article>
-
-          <article class="card" data-tilt>
-            <div class="card-inner">
-              <div class="visual v-shield">
-                <span class="ring"></span><span class="ring" style="animation-delay:1s"></span><span class="ring" style="animation-delay:2s"></span>
-                <svg aria-hidden="true" viewBox="0 0 24 24" width="54" height="54" fill="none" stroke="#9be15d" stroke-width="1.5" style="position:relative"><path d="M12 3 4 6v6c0 5 3.5 8 8 9 4.5-1 8-4 8-9V6z"/><path d="m9 12 2 2 4-4"/></svg>
-              </div>
-              <div class="num">04 — Safety</div>
-              <h3>Read-only by default</h3>
-              <p>Background workers can read, not write. File edits are a separate opt-in, and no task can choose which program, folder or command runs.</p>
-            </div>
-          </article>
-
-          <article class="card" data-tilt>
-            <div class="card-inner">
-              <div class="visual v-code"><span class="k">$</span> npm run setup
-<span class="s">✔</span> claude   connected · worker
-<span class="s">✔</span> codex    connected · worker
-<span class="s">✔</span> agy      connected
-<span class="f">→</span> 2 workers live<span class="caret"></span></div>
-              <div class="num">05 — Setup</div>
-              <h3>One setup wizard</h3>
-              <p>Local database, scoped keys, MCP registration and launch at login, in one command. Run it again any time to add a project.</p>
-            </div>
-          </article>
-
-          <article class="card" data-tilt>
-            <div class="card-inner">
-              <div class="visual v-graph">
-                <svg aria-hidden="true" viewBox="0 0 300 190" preserveAspectRatio="none" fill="none">
-                  <defs><linearGradient id="area" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#7f9cff" stop-opacity=".4"/><stop offset="1" stop-color="#7f9cff" stop-opacity="0"/></linearGradient></defs>
-                  <path d="M0 160 C40 150 60 120 100 125 S160 70 200 80 S260 30 300 25 V190 H0Z" fill="url(#area)"/>
-                  <path d="M0 160 C40 150 60 120 100 125 S160 70 200 80 S260 30 300 25" stroke="url(#wire)" stroke-width="2.5"/>
-                  <circle cx="300" cy="25" r="5" fill="#a78bfa"/>
-                </svg>
-              </div>
-              <div class="num">06 — Visibility</div>
-              <h3>Your swarm in the notch</h3>
-              <p>NotchTrader shows each agent's quota ring and current task, and each swarm's queue, just under your menu bar.</p>
-            </div>
-          </article>
-        </div>
-        <div class="progress"><i id="bar"></i></div>
       </div>
     </div>
   </section>
@@ -1168,183 +1053,6 @@ details p { color: var(--muted); padding: 0 50px 26px 0; line-height: 1.7; anima
     </div>
   </section>
 
-  <!-- NUMBERS -->
-  <section class="block" id="performance">
-    <div class="wrap">
-      <div class="sec-head">
-        <div>
-          <div class="kicker sun reveal">By the numbers</div>
-          <h2 class="reveal" style="--d:.1s">Light on context. <span class="serif">Strict</span> on trust.</h2>
-        </div>
-      </div>
-      <div class="bento">
-        <div class="b s4 reveal">
-          <svg aria-hidden="true" class="b-gem" viewBox="0 0 100 110"><use href="#cube"/></svg>
-          <span class="chip">Quota used · sample reading</span>
-          <div class="big gradient-text">auto.read</div>
-          <div class="label">One task, routed to the agent with the most quota left. Here, Codex.</div>
-          <div class="latency">
-            <div class="lat-row"><span>Claude · 5-hour</span><div class="track"><div class="fill" style="--w:18%;background:var(--grad)"></div></div><span class="ms">18%</span></div>
-            <div class="lat-row"><span>Claude · weekly</span><div class="track"><div class="fill" style="--w:15%;background:var(--grad)"></div></div><span class="ms">15%</span></div>
-            <div class="lat-row"><span>Codex · weekly</span><div class="track"><div class="fill" style="--w:2%;background:var(--grad)"></div></div><span class="ms">2%</span></div>
-          </div>
-        </div>
-        <div class="b s2 reveal" style="--d:.1s">
-          <span class="chip">Context cost</span>
-          <div class="big">~<span data-count="2" data-dec="0">0</span>k</div>
-          <div class="label">Tokens for the full Swarmaa tool list in an agent's context.</div>
-        </div>
-        <div class="b s2 half reveal" style="--d:.15s">
-          <span class="chip">Agents</span>
-          <div class="big"><span data-count="5" data-dec="0">0</span></div>
-          <div class="label">Claude Code, Codex, Antigravity, Dot and Grok, on one memory.</div>
-        </div>
-        <div class="b s2 half reveal" style="--d:.2s">
-          <span class="chip">Keys in configs</span>
-          <div class="big">0</div>
-          <div class="label">Each agent's key lives in an owner-only file, never in a config or a command line.</div>
-        </div>
-        <div class="b s2 reveal" style="--d:.25s">
-          <svg aria-hidden="true" class="b-gem" viewBox="0 0 100 100"><use href="#orb"/></svg>
-          <span class="chip">Freshness window</span>
-          <div class="big"><span data-count="15" data-dec="0">0</span>m</div>
-          <div class="label">Older quota readings never steer routing; work falls back to any live worker.</div>
-        </div>
-      </div>
-    </div>
-  </section>
-
-  <!-- USE CASES -->
-  <section class="block" id="use-cases">
-    <div class="wrap">
-      <div class="sec-head">
-        <div>
-          <div class="kicker rose reveal">Use cases</div>
-          <h2 class="reveal" style="--d:.1s">Five agents. <span class="serif gradient-text">One workflow.</span></h2>
-        </div>
-        <p class="reveal" style="--d:.2s">Start where switching between agents costs you the most.</p>
-      </div>
-      <div class="uc-tabs reveal" id="ucTabs" role="group" aria-label="Use cases">
-        <button type="button" class="active" aria-pressed="true" data-uc="0">Code review</button>
-        <button type="button" aria-pressed="false" data-uc="1">Research</button>
-        <button type="button" aria-pressed="false" data-uc="2">Handoffs</button>
-        <button type="button" aria-pressed="false" data-uc="3">Rate limits</button>
-      </div>
-      <div class="uc-panel reveal" style="--d:.1s">
-        <div class="uc-copy" id="ucCopy">
-          <h3 id="ucTitle">A second and third opinion on every change.</h3>
-          <p id="ucDesc">Submit a review and let Claude and Codex workers read the project in parallel. Results land as artifacts any agent can read.</p>
-          <ul class="uc-metrics" id="ucMetrics"></ul>
-        </div>
-        <div class="uc-art">
-          <svg aria-hidden="true" viewBox="0 0 600 420" fill="none">
-            <ellipse cx="300" cy="350" rx="150" ry="14" fill="#4cc4e8" opacity=".16"/>
-            <circle id="ucGlow" cx="300" cy="200" r="170" fill="url(#glowC)"/>
-            <g stroke="rgba(255,255,255,.1)" stroke-width=".6">
-              <path d="M150 345 210 322 190 362Z" fill="url(#f4)"/><path d="M210 322 270 336 240 364Z" fill="url(#f3)"/>
-              <path d="M270 336 340 330 320 366Z" fill="url(#f4)"/><path d="M340 330 400 340 380 362Z" fill="url(#f3)"/>
-              <path d="M400 340 450 346 420 360Z" fill="url(#f6)"/>
-            </g>
-            <use id="ucShape" class="bob" href="#gem" x="220" y="100" width="160" height="192"/>
-            <use class="bob d2" href="#cube" x="404" y="236" width="36" height="40"/>
-            <use class="bob d1" href="#orb" x="452" y="58" width="30" height="30"/>
-            <g stroke="#f6ffff" stroke-opacity=".85">
-              <path d="M252 156 L212 116 H30"/>
-              <path d="M361 196 L401 156 H570"/>
-              <path d="M270 246 L230 286 H30"/>
-            </g>
-            <use href="#cdot" x="244" y="148" width="16" height="16"/>
-            <use href="#cdot" x="353" y="188" width="16" height="16"/>
-            <use href="#cdot" x="262" y="238" width="16" height="16"/>
-            <g class="lbl-t">
-              <text class="callout-text" id="ucL1" x="30" y="104" style="font-size:15px">SUBMIT</text>
-              <text class="callout-text" id="ucL2" x="570" y="144" text-anchor="end" style="font-size:15px">REVIEW</text>
-              <text class="callout-text" id="ucL3" x="30" y="274" style="font-size:15px">COMPARE</text>
-            </g>
-          </svg>
-        </div>
-      </div>
-    </div>
-  </section>
-
-  <!-- AGENTS -->
-  <section class="block" id="agents">
-    <div class="wrap orbit-grid">
-      <div>
-        <div class="kicker mint reveal">Agents</div>
-        <h2 class="reveal" style="--d:.1s">Plugs into the agents <span class="serif gradient-text">you already pay for.</span></h2>
-        <p class="lead reveal" style="--d:.2s">Command-line agents connect over MCP, each with its own scoped key. Hosted agents reach the same memory over HTTPS through a tunnel you control. Agents share only what they publish.</p>
-        <div class="chips reveal" style="--d:.3s">
-          <span>Claude Code</span><span>Codex</span><span>Antigravity</span><span>Dot</span><span>Grok</span><span>MCP</span><span>REST</span><span>OAuth</span><span>PostgreSQL</span><span>NotchTrader</span>
-        </div>
-      </div>
-      <div class="orbit reveal" style="--d:.15s">
-        <svg aria-hidden="true" viewBox="0 0 520 520" fill="none">
-          <circle cx="260" cy="260" r="190" fill="url(#glowC)" opacity=".7"/>
-          <g class="spin-slow" stroke="rgba(255,255,255,.12)">
-            <circle cx="260" cy="260" r="110" stroke-dasharray="2 6"/>
-            <circle cx="260" cy="260" r="230" stroke-dasharray="1 9"/>
-          </g>
-          <g class="spin-rev"><circle cx="260" cy="260" r="170" stroke="url(#wire)" stroke-opacity=".35" stroke-dasharray="60 420"/></g>
-          <g stroke="url(#wire)" stroke-opacity=".55" class="flow">
-            <path d="M260 260 430 260"/><path d="M260 260 260 430"/><path d="M260 260 90 260"/><path d="M260 260 260 90"/>
-            <path d="M260 260 422 98"/><path d="M260 260 422 422"/><path d="M260 260 98 422"/><path d="M260 260 98 98"/>
-          </g>
-          <g class="spin-slow"><use href="#orb" x="359" y="249" width="22" height="22"/><use href="#cube" x="140" y="249" width="20" height="22"/></g>
-          <g id="nodes"></g>
-          <use class="bob" href="#gem" x="215" y="200" width="90" height="108"/>
-        </svg>
-      </div>
-    </div>
-  </section>
-
-  <!-- FAQ -->
-  <section class="block" id="faq">
-    <div class="wrap faq-grid">
-      <div class="sticky">
-        <div class="kicker rose reveal">FAQ</div>
-        <h2 class="reveal" style="--d:.1s">Questions, <span class="serif gradient-text">answered.</span></h2>
-        <p class="reveal" style="--d:.2s">Swarmaa is in private beta. Join the waitlist and we'll tell you when the portal opens.</p>
-        <svg aria-hidden="true" class="reveal" style="--d:.3s" viewBox="0 0 180 200" fill="none">
-          <ellipse cx="90" cy="186" rx="50" ry="6" fill="#4cc4e8" opacity=".18"/>
-          <g class="bob">
-            <g transform="rotate(-14 90 88)"><path d="M24 88 A66 15 0 0 1 156 88" stroke="url(#ringG)" stroke-width="2.2" opacity=".5"/></g>
-            <use href="#orb" x="50" y="48" width="80" height="80"/>
-            <g transform="rotate(-14 90 88)"><path d="M24 88 A66 15 0 0 0 156 88" stroke="url(#ringG)" stroke-width="2.2"/></g>
-          </g>
-          <use class="bob d2" href="#cube" x="136" y="134" width="24" height="26"/>
-          <use class="bob d1" href="#gem" x="20" y="138" width="18" height="22"/>
-        </svg>
-      </div>
-      <div class="faq-list reveal" style="--d:.15s">
-        <details open>
-          <summary>Is Swarmaa another AI agent?<span class="pm"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg></span></summary>
-          <p>No. It's the memory and dispatch layer underneath the agents you already use. Swarmaa never calls a model itself; your agents do the work on your existing subscriptions.</p>
-        </details>
-        <details>
-          <summary>Where does my data live?<span class="pm"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg></span></summary>
-          <p>On your Mac, in a local PostgreSQL database. Each agent has its own scoped key in an owner-only file. Hosted agents like Dot and Grok reach it only through a tunnel you set up.</p>
-        </details>
-        <details>
-          <summary>Does it merge my agents' private memories?<span class="pm"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg></span></summary>
-          <p>No. Shared memory holds what agents publish through Swarmaa, with sources attached. It doesn't import chat histories or any vendor's built-in memory.</p>
-        </details>
-        <details>
-          <summary>Can agents change my code on their own?<span class="pm"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg></span></summary>
-          <p>Background workers are read-only by default. Claude's file-edit mode is a separate opt-in per project, and no task can choose which program, folder or command runs.</p>
-        </details>
-        <details>
-          <summary>How does quota routing work?<span class="pm"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg></span></summary>
-          <p>Workers read each provider's usage windows from the CLI's own login every few minutes and report them. A task submitted as <code>auto.read</code> goes to the live worker with the most headroom. If no fresh reading exists, any live worker can take it, so work never stalls.</p>
-        </details>
-        <details>
-          <summary>What is the web portal?<span class="pm"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg></span></summary>
-          <p>A place on swarmaa.com to see and manage your swarms from any device. It's being built now; join the waitlist to hear when it opens.</p>
-        </details>
-      </div>
-    </div>
-  </section>
-
 </main>
 
 <!-- ═════════ FINALE: CTA + FOOTER ═════════ -->
@@ -1409,7 +1117,7 @@ details p { color: var(--muted); padding: 0 50px 26px 0; line-height: 1.7; anima
         </div>
         <div class="foot-col">
           <h4>Product</h4>
-          <ul><li><a href="#how">How it works</a></li><li><a href="#platform">Platform</a></li><li><a href="#stack">Stack</a></li><li><a href="#use-cases">Use cases</a></li><li><a href="#agents">Agents</a></li><li><a href="#faq">FAQ</a></li></ul>
+          <ul><li><a href="#how">How it works</a></li><li><a href="#stack">What it takes over</a></li><li><a href="#finale">Waitlist</a></li></ul>
         </div>
         <div class="foot-col">
           <h4>Waitlist privacy</h4>
@@ -1432,10 +1140,6 @@ const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
 // Nav state
 const nav = document.getElementById("nav");
 addEventListener("scroll", () => nav.classList.toggle("scrolled", scrollY > 20), { passive: true });
-
-// Marquee duplicate for seamless loop
-const mq = document.getElementById("marquee");
-mq.innerHTML += mq.innerHTML;
 
 // Reveal on scroll + counters
 const counted = new WeakSet();
@@ -1508,70 +1212,6 @@ function typeLoop() {
 }
 if (reduceMotion) emailId.setAttribute("placeholder", phrases[0]); else setTimeout(typeLoop, 1400);
 
-// Slider: buttons, drag, progress
-const slider = document.getElementById("slider");
-const prev = document.getElementById("prev"), next = document.getElementById("next"), bar = document.getElementById("bar");
-const stepSize = () => slider.querySelector(".card").offsetWidth + 22;
-prev.onclick = () => slider.scrollBy({ left: -stepSize(), behavior: "smooth" });
-next.onclick = () => slider.scrollBy({ left: stepSize(), behavior: "smooth" });
-function updateSlider() {
-  const max = slider.scrollWidth - slider.clientWidth;
-  const p = max > 0 ? slider.scrollLeft / max : 1;
-  const vis = slider.clientWidth / slider.scrollWidth * 100;
-  bar.style.width = (vis + p * (100 - vis)) + "%";
-  prev.disabled = slider.scrollLeft < 4;
-  next.disabled = slider.scrollLeft > max - 4;
-}
-slider.addEventListener("scroll", updateSlider, { passive: true });
-addEventListener("resize", updateSlider);
-updateSlider();
-
-let down = false, startX = 0, startScroll = 0, moved = false;
-slider.addEventListener("pointerdown", (e) => {
-  if (e.pointerType !== "mouse") return;
-  down = true; moved = false; startX = e.clientX; startScroll = slider.scrollLeft;
-});
-addEventListener("pointermove", (e) => {
-  if (!down) return;
-  const dx = e.clientX - startX;
-  if (Math.abs(dx) > 4) { moved = true; slider.classList.add("dragging"); }
-  slider.scrollLeft = startScroll - dx;
-});
-addEventListener("pointerup", () => {
-  if (!down) return; down = false;
-  slider.classList.remove("dragging");
-  if (moved) {
-    const s = stepSize();
-    slider.scrollTo({ left: Math.round(slider.scrollLeft / s) * s, behavior: "smooth" });
-  }
-});
-
-// Tilt + spotlight
-const fine = matchMedia("(pointer: fine)").matches;
-document.querySelectorAll("[data-tilt]").forEach((card) => {
-  const inner = card.querySelector(".card-inner");
-  card.addEventListener("pointermove", (e) => {
-    if (!fine || down) return;
-    const r = card.getBoundingClientRect();
-    const x = (e.clientX - r.left) / r.width, y = (e.clientY - r.top) / r.height;
-    card.style.transition = "transform .1s linear";
-    card.style.transform = `perspective(1000px) rotateX(${(0.5 - y) * 10}deg) rotateY(${(x - 0.5) * 10}deg) translateY(-6px)`;
-    inner.style.setProperty("--mx", x * 100 + "%");
-    inner.style.setProperty("--my", y * 100 + "%");
-  });
-  card.addEventListener("pointerleave", () => {
-    card.style.transition = "transform .6s cubic-bezier(.2,.8,.2,1)";
-    card.style.transform = "";
-  });
-});
-document.querySelectorAll(".b").forEach((b) => {
-  b.addEventListener("pointermove", (e) => {
-    const r = b.getBoundingClientRect();
-    b.style.setProperty("--mx", e.clientX - r.left + "px");
-    b.style.setProperty("--my", e.clientY - r.top + "px");
-  });
-});
-
 // Iceberg: waterline per stage
 const stages = [
   { t: "ONE CHAT",     w: 770 },
@@ -1615,68 +1255,6 @@ stageBtns.forEach((b) => b.addEventListener("click", () => { bergAuto = false; s
 new IntersectionObserver(([e]) => (e.isIntersecting ? startBerg() : stopBerg()), { threshold: 0.35 })
   .observe(document.getElementById("berg"));
 setStage(0);
-
-// Use cases
-const useCases = [
-  { title: "A second and third opinion on every change.", desc: "Submit a review and let Claude and Codex workers read the project in parallel. Results land as artifacts any agent can read.",
-    metrics: ["Read-only workers; file edits are opt-in", "A transcript saved with every result", "Acceptance stays unverified until you review"], labels: ["SUBMIT", "REVIEW", "COMPARE"], shape: "#gem", glow: "glowC", ucg: "76,196,232" },
-  { title: "Ask once, from anywhere.", desc: "Start a research task from Dot, check on it from Grok and finish it in Claude Code. It's the same task everywhere.",
-    metrics: ["One task, five entry points", "Continuations keep the original scope", "Retries never create duplicates"], labels: ["ASK", "RESEARCH", "CONTINUE"], shape: "#orb", glow: "glowSun", ucg: "255,138,101" },
-  { title: "Context that survives the tab.", desc: "Agents publish what they learn as sourced notes. The next agent reads the project's context instead of asking you to paste it again.",
-    metrics: ["Notes keep their source and uncertainty", "Shared decisions need your approval", "Revision history on every record"], labels: ["PUBLISH", "RECALL", "APPROVE"], shape: "#cube", glow: "glowRose", ucg: "232,121,249" },
-  { title: "Hit a limit? The swarm keeps going.", desc: "When Claude's 5-hour window runs low, auto.read tasks move to Codex until it resets, then come back.",
-    metrics: ["Reads 5-hour and weekly windows", "Shows exact reset times", "Falls back safely when readings go stale"], labels: ["WATCH", "REROUTE", "RESET"], shape: "#gem-g", glow: "glowMint", ucg: "63,209,168" },
-];
-const SHAPES = {
-  "#gem":   { vb: "0 0 100 120", x: 220, y: 100, w: 160, h: 192 },
-  "#gem-g": { vb: "0 0 100 120", x: 220, y: 100, w: 160, h: 192 },
-  "#orb":   { vb: "0 0 100 100", x: 210, y: 110, w: 180, h: 180 },
-  "#cube":  { vb: "0 0 100 110", x: 220, y: 100, w: 160, h: 176 },
-};
-const ucShape = document.getElementById("ucShape"), ucGlow = document.getElementById("ucGlow"), ucPanel = document.querySelector(".uc-panel");
-const ucBtns = document.querySelectorAll("#ucTabs button");
-const ucCopy = document.getElementById("ucCopy"), ucLbls = document.querySelector(".uc-art .lbl-t");
-function renderUC(i, animate = true) {
-  const u = useCases[i];
-  ucBtns.forEach((b, k) => { b.classList.toggle("active", k === i); b.setAttribute("aria-pressed", k === i); });
-  const apply = () => {
-    document.getElementById("ucTitle").textContent = u.title;
-    document.getElementById("ucDesc").textContent = u.desc;
-    document.getElementById("ucMetrics").innerHTML = u.metrics
-      .map((m) => `<li><svg aria-hidden="true" viewBox="${SHAPES[u.shape].vb}"><use href="${u.shape}"/></svg>${m}</li>`).join("");
-    const sh = SHAPES[u.shape];
-    ucShape.setAttribute("href", u.shape);
-    ["x", "y", "width", "height"].forEach((k, j) => ucShape.setAttribute(k, [sh.x, sh.y, sh.w, sh.h][j]));
-    ucGlow.setAttribute("fill", `url(#${u.glow})`);
-    ucPanel.style.setProperty("--ucg", u.ucg);
-    ucShape.style.opacity = 1; ucGlow.style.opacity = 1;
-    ["ucL1", "ucL2", "ucL3"].forEach((id, k) => (document.getElementById(id).textContent = u.labels[k]));
-    ucCopy.classList.remove("swap"); ucLbls.style.opacity = 1;
-  };
-  if (!animate) return apply();
-  ucCopy.classList.add("swap"); ucLbls.style.opacity = 0; ucShape.style.opacity = 0; ucGlow.style.opacity = 0;
-  setTimeout(apply, 280);
-}
-ucBtns.forEach((b) => b.addEventListener("click", () => renderUC(+b.dataset.uc)));
-renderUC(0, false);
-
-// Agent orbit nodes
-const nodeG = document.getElementById("nodes");
-const nodes = [
-  ["CLAUDE", 430, 260], ["CODEX", 260, 430], ["ANTIGRAVITY", 90, 260], ["DOT", 260, 90],
-  ["GROK", 422, 98], ["NOTCH", 422, 422], ["MCP", 98, 422], ["POSTGRES", 98, 98],
-];
-const NODE_SHAPE = { CLAUDE: "gem", CODEX: "gem-g", ANTIGRAVITY: "orb", DOT: "orb", GROK: "cube", NOTCH: "cube", MCP: "gem", POSTGRES: "cube" };
-const NODE_DIM = { cube: [20, 22], orb: [22, 22], gem: [18, 22], "gem-g": [18, 22] };
-nodes.forEach(([label, x, y], k) => {
-  const shp = NODE_SHAPE[label], [nw, nh] = NODE_DIM[shp];
-  const g = document.createElementNS(SVGNS, "g");
-  g.innerHTML = `
-    <circle cx="${x}" cy="${y}" r="24" fill="#0b0b14" stroke="rgba(255,255,255,.18)"/>
-    <use class="bob d${k % 4}" href="#${shp}" x="${x - nw / 2}" y="${y - nh / 2}" width="${nw}" height="${nh}"/>
-    <text class="node-lbl" x="${x}" y="${y + 44}" text-anchor="middle">${label}</text>`;
-  nodeG.appendChild(g);
-});
 
 // Low-poly bands (faceted terrain)
 function rng(seed) { return () => { seed |= 0; seed = (seed + 0x6D2B79F5) | 0; let t = Math.imul(seed ^ (seed >>> 15), 1 | seed); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }

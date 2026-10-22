@@ -5,7 +5,9 @@
   "type": "module",
   "description": "Scoped collective memory, durable tasks and MCP access for Dot, Grok, Claude, Codex and Antigravity.",
   "license": "MIT",
-  "engines": { "node": ">=22.0.0" },
+  "engines": {
+    "node": ">=22.0.0"
+  },
   "scripts": {
     "init:local": "node --import tsx scripts/init-local.ts",
     "setup": "node --import tsx scripts/setup.ts",
@@ -19,7 +21,8 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "node --import tsx --test tests/*.test.ts",
-    "test:integration": "node --import tsx --test tests/*.integration.test.ts"
+    "test:integration": "node --import tsx --test tests/*.integration.test.ts",
+    "tunnel": "node --import tsx scripts/tunnel.ts"
   },
   "dependencies": {
     "ipaddr.js": "2.5.0",
