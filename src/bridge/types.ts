@@ -7,6 +7,8 @@ export interface AgentConfig {
   binary: string;
   model?: string;
   enable_patch: boolean;
+  /** macOS Seatbelt confinement of the provider process (default true). */
+  sandbox: boolean;
 }
 export interface ProjectConfig {
   scope: string;

@@ -52,7 +52,9 @@ export function parseBridgeConfig(value: unknown): BridgeConfig {
     if (provider === 'antigravity') throw new Error('Antigravity autonomous execution is not enabled. Use the interactive MCP client configuration in clients/antigravity.');
     const enable_patch = bool(a.enable_patch, 'agent.enable_patch');
     if (enable_patch && provider !== 'claude') throw new Error('Only the restricted Claude file-tool adapter supports patch tasks in this release');
-    return { id, provider, binary: absolute(a.binary, 'agent.binary'), model: a.model === undefined ? undefined : text(a.model, 'agent.model', 200), enable_patch };
+    if (a.sandbox !== undefined && typeof a.sandbox !== 'boolean') throw new Error('agent.sandbox must be a boolean');
+    const sandbox = a.sandbox !== false;
+    return { id, provider, sandbox, binary: absolute(a.binary, 'agent.binary'), model: a.model === undefined ? undefined : text(a.model, 'agent.model', 200), enable_patch };
   });
   if (new Set(agents.map(a => a.id)).size !== agents.length) throw new Error('Agent IDs must be unique');
   if (!Array.isArray(raw.projects) || raw.projects.length < 1 || raw.projects.length > 50) throw new Error('projects requires 1–50 entries');

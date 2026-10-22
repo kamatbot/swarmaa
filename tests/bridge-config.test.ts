@@ -7,7 +7,7 @@ import { parseBridgeConfig, readTokenFile, serviceUrl } from '../src/bridge/conf
 import { buildInvocation, projectCapabilities, providerEnvironment, providerSucceeded } from '../src/bridge/adapters.js';
 import type { ProcessResult, Task } from '../src/bridge/types.js';
 
-const input = () => ({ service_url: 'http://127.0.0.1:8080', agents: [{ id: 'claude', provider: 'claude', binary: '/bin/claude', enable_patch: false }], projects: [{scope: 'project:demo', root: '/projects/demo', agents: ['claude'], allow_patch: false}] });
+const input = () => ({ service_url: 'http://127.0.0.1:8080', agents: [{ id: 'claude', provider: 'claude', binary: '/bin/claude', enable_patch: false, sandbox: false }], projects: [{scope: 'project:demo', root: '/projects/demo', agents: ['claude'], allow_patch: false}] });
 const task: Task = { id: '11111111-1111-4111-8111-111111111111', scope: 'project:demo', kind: 'review', objective: 'Review; $(touch /tmp/injected)', constraints: ['read only'], acceptance_criteria: [], resource_key: null, required_capability: 'claude.read', checkpoint: null, context_refs: [], version: 1 };
 
 test('config rejects insecure remote origins, credentials and ambiguous local mapping', () => {
@@ -92,4 +92,26 @@ test('finalAnswer extracts the agent answer from Codex events and Claude results
   assert.equal(finalAnswer('codex', '{"msg":{"type":"agent_message","message":"legacy"}}'), 'legacy');
   assert.equal(finalAnswer('claude', '{"type":"result","subtype":"success","result":"done"}'), 'done');
   assert.equal(finalAnswer('claude', 'not json'), '');
+});
+
+test('sandbox defaults on: argv is wrapped in sandbox-exec; codex inner sandbox is replaced; opt-out leaves argv bare', { skip: process.platform !== 'darwin' }, () => {
+  const signal = new AbortController().signal;
+  const on = input(); delete (on.agents[0] as { sandbox?: boolean }).sandbox;
+  const cfg = parseBridgeConfig(on);
+  assert.equal(cfg.agents[0]!.sandbox, true);
+  const req = buildInvocation(cfg.agents[0]!, cfg.projects[0]!, task, {}, cfg, signal, { TMPDIR: '/tmp' });
+  assert.equal(req.command, '/usr/bin/sandbox-exec');
+  assert.equal(req.args[0], '-p');
+  assert.match(req.args[1]!, /\(deny file-read\* file-write\*\)/u);
+  assert.equal(req.args[2], '/bin/claude');
+  assert.ok(req.args.includes('--restricted'));
+  const codex = parseBridgeConfig({ ...input(), agents: [{ id: 'codex', provider: 'codex', binary: '/bin/codex' }], projects: [{ scope: 'project:demo', root: '/projects/demo', agents: ['codex'] }] });
+  const c = buildInvocation(codex.agents[0]!, codex.projects[0]!, { ...task, required_capability: 'codex.read' }, {}, codex, signal, {});
+  assert.deepEqual(c.args.slice(2, 4), ['/bin/codex', 'exec']);
+  assert.equal(c.args[c.args.indexOf('--sandbox') + 1], 'danger-full-access');
+  const off = parseBridgeConfig({ ...input(), agents: [{ id: 'codex', provider: 'codex', binary: '/bin/codex', sandbox: false }], projects: [{ scope: 'project:demo', root: '/projects/demo', agents: ['codex'] }] });
+  const o = buildInvocation(off.agents[0]!, off.projects[0]!, { ...task, required_capability: 'codex.read' }, {}, off, signal, {});
+  assert.equal(o.command, '/bin/codex');
+  assert.equal(o.args[o.args.indexOf('--sandbox') + 1], 'read-only');
+  assert.throws(() => parseBridgeConfig({ ...input(), agents: [{ id: 'x', provider: 'claude', binary: '/b', sandbox: 'no' }] }));
 });

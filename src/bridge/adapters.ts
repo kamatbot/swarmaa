@@ -1,3 +1,5 @@
+import { tmpdir } from 'node:os';
+import { wrapCommand } from './sandbox.js';
 import type { AgentConfig, BridgeConfig, ProcessRequest, ProcessResult, ProjectConfig, Task } from './types.js';
 
 /** The service token is deliberately absent, even when the provider inherits account auth. */
@@ -60,9 +62,20 @@ export function buildInvocation(agent: AgentConfig, project: ProjectConfig, task
   }
   if (agent.model) args.push('--model', agent.model);
   if (agent.provider === 'codex') args.push('-');
+  const env = providerEnvironment(agent.provider, parentEnv, config.token_env);
+  let command = agent.binary;
+  if (agent.sandbox) {
+    // Seatbelt is the read/write boundary. Codex applies its own sandbox_init per command, which fails
+    // (EPERM) when nested inside ours, so its own read-only mode would make every shell command fail.
+    // Only because the outer profile is active do we turn Codex's inner sandbox off.
+    if (agent.provider === 'codex') args[args.indexOf('read-only')] = 'danger-full-access';
+    const tmp = env.TMPDIR ?? tmpdir();
+    env.TMPDIR = tmp;
+    if (agent.provider === 'claude') env.CLAUDE_CODE_TMPDIR = tmp; // default /tmp/claude-<uid> is shared across projects
+    ({ command, args } = wrapCommand(agent.binary, args, { provider: agent.provider, binary: agent.binary, projectRoot: project.root, patch, tmp }));
+  }
   return {
-    command: agent.binary, args, cwd: project.root,
-    env: providerEnvironment(agent.provider, parentEnv, config.token_env),
+    command, args, cwd: project.root, env,
     input: buildPrompt(task, context, config.max_prompt_bytes),
     timeout_ms: config.task_timeout_seconds * 1000, max_output_bytes: config.max_output_bytes, signal
   };

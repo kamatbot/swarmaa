@@ -4,7 +4,7 @@ import { BridgeWorker } from '../src/bridge/worker.js';
 import { parseBridgeConfig } from '../src/bridge/config.js';
 import type { ProcessResult, Task, ToolClient } from '../src/bridge/types.js';
 
-const config = () => parseBridgeConfig({ service_url:'http://localhost:8080', agents:[{id:'claude',provider:'claude',binary:'/bin/claude'}], projects:[{scope:'project:demo',root:'/projects/demo',agents:['claude']}] });
+const config = () => parseBridgeConfig({ service_url:'http://localhost:8080', agents:[{id:'claude',provider:'claude',binary:'/bin/claude',sandbox:false}], projects:[{scope:'project:demo',root:'/projects/demo',agents:['claude']}] });
 const task: Task = { id:'11111111-1111-4111-8111-111111111111',scope:'project:demo',kind:'review',objective:'Review source',constraints:[],acceptance_criteria:[],resource_key:null,required_capability:'claude.read',checkpoint:null,context_refs:[],version:1 };
 const result: ProcessResult = {exit_code:0,signal:null,stdout:'{"type":"result","subtype":"success","is_error":false}',stderr:'',duration_ms:10,stop_reason:null};
 
@@ -98,7 +98,7 @@ test('usage readings are reported and steer auto.read to the agent with most hea
     return {task:autoTask,accepted:2} as T;
   } };
   const cfg = parseBridgeConfig({ service_url:'http://localhost:8080',
-    agents:[{id:'claude',provider:'claude',binary:'/bin/claude'},{id:'codex',provider:'codex',binary:'/bin/codex'}],
+    agents:[{id:'claude',provider:'claude',binary:'/bin/claude',sandbox:false},{id:'codex',provider:'codex',binary:'/bin/codex',sandbox:false}],
     projects:[{scope:'project:demo',root:'/projects/demo',agents:['claude','codex']}] });
   const at = new Date().toISOString();
   const usage = async () => [

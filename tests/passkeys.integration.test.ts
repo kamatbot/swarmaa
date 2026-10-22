@@ -81,7 +81,7 @@ test('passkey registration, login, sessions and the OAuth owner consent flow', {
     await admin.query(`DROP SCHEMA ${schema} CASCADE`);
     await admin.end();
   });
-  for (const migration of ['001_identity.sql', '003_oauth.sql', '007_passkeys.sql']) {
+  for (const migration of ['001_identity.sql', '003_oauth.sql', '007_passkeys.sql', '009_oauth_client_cleanup.sql']) {
     await pool.query(await readFile(new URL(`../db/migrations/${migration}`, import.meta.url), 'utf8'));
   }
 

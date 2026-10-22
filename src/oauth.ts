@@ -178,7 +178,7 @@ export class OAuthService {
     return { resource: this.resource, authorization_servers: [this.issuer], scopes_supported: ['mcp'], bearer_methods_supported: ['header'] };
   }
 
-  async registerClient(input: unknown): Promise<Record<string, unknown>> {
+  async registerClient(input: unknown, ipHash?: string): Promise<Record<string, unknown>> {
     const data = record(input);
     if (!Array.isArray(data.redirect_uris) || data.redirect_uris.length < 1 || data.redirect_uris.length > 8) {
       throw new OAuthError('invalid_client_metadata', 'Provide between one and eight redirect URIs.');
@@ -201,11 +201,33 @@ export class OAuthService {
     const name = data.client_name === undefined ? 'MCP client' : field(data.client_name, 'client_name', 160);
     const id = opaque('cn_client');
     await transaction(this.pool, async client => {
-      // Serialize registration to enforce a durable ceiling across API replicas.
+      // Serialize registration so the ceilings hold across API replicas.
       await client.query("SELECT pg_advisory_xact_lock(420315903)");
-      const count = await client.query<{ count: string }>('SELECT count(*)::text AS count FROM oauth_clients');
-      if (Number(count.rows[0]?.count ?? 0) >= 1000) throw new OAuthError('temporarily_unavailable', 'Client registration capacity reached. Contact the service owner.', 503);
-      await client.query('INSERT INTO oauth_clients(client_id, client_name, redirect_uris) VALUES ($1,$2,$3)', [id, name, redirects]);
+      // Opportunistic expiry, bounded per call; cascades remove codes/pending/grants. No background timer.
+      await client.query(
+        `DELETE FROM oauth_clients WHERE client_id IN (
+           SELECT c.client_id FROM oauth_clients c
+           WHERE (c.created_at < now() - interval '24 hours'
+                  AND NOT EXISTS (SELECT 1 FROM oauth_grants g WHERE g.client_id = c.client_id)
+                  AND NOT EXISTS (SELECT 1 FROM oauth_pending p WHERE p.client_id = c.client_id))
+              OR (EXISTS (SELECT 1 FROM oauth_grants g WHERE g.client_id = c.client_id)
+                  AND NOT EXISTS (SELECT 1 FROM oauth_grants g WHERE g.client_id = c.client_id
+                                  AND LEAST(COALESCE(g.revoked_at, 'infinity'::timestamptz), g.expires_at) >= now() - interval '30 days'))
+           LIMIT 500)`,
+      );
+      if (ipHash) {
+        const mine = await client.query<{ count: string }>(
+          `SELECT count(*)::text AS count FROM oauth_clients c WHERE c.created_ip_hash=$1 AND c.created_at > now() - interval '24 hours'
+             AND NOT EXISTS (SELECT 1 FROM oauth_grants g WHERE g.client_id = c.client_id)`, [ipHash],
+        );
+        if (Number(mine.rows[0]?.count ?? 0) >= 20) throw new OAuthError('temporarily_unavailable', 'Too many unused registrations from this address. Try again later.', 429);
+      }
+      const total = await client.query<{ count: string }>(
+        `SELECT count(*)::text AS count FROM oauth_clients c WHERE c.created_at > now() - interval '24 hours'
+           OR EXISTS (SELECT 1 FROM oauth_grants g WHERE g.client_id = c.client_id)`,
+      );
+      if (Number(total.rows[0]?.count ?? 0) >= 5000) throw new OAuthError('temporarily_unavailable', 'Client registration capacity reached. Try again later.', 503);
+      await client.query('INSERT INTO oauth_clients(client_id, client_name, redirect_uris, created_ip_hash) VALUES ($1,$2,$3,$4)', [id, name, redirects, ipHash ?? null]);
     });
     return {
       client_id: id, client_name: name, redirect_uris: redirects,
@@ -230,6 +252,7 @@ export class OAuthService {
     const registered = client.rows[0];
     if (!registered || !registered.redirect_uris.includes(redirectUri)) throw new OAuthError('invalid_request', 'Client and redirect URI do not match a registration.');
     validateRedirectUri(redirectUri, this.config); // Allowlist changes take effect immediately.
+    await this.pool.query('UPDATE oauth_clients SET last_used_at=now() WHERE client_id=$1', [clientId]);
     const browser = browserCookie && /^[A-Za-z0-9_-]{43}$/u.test(browserCookie) ? browserCookie : randomBytes(32).toString('base64url');
     const csrf = randomBytes(32).toString('base64url');
     const requestId = randomUUID();
@@ -362,6 +385,7 @@ export class OAuthService {
         const principal = narrowGrant(row.grant_snapshot, await this.auth.getPrincipal(row.principal_id));
         if (!principal) throw new OAuthError('invalid_grant', 'The connection identity is no longer authorized.');
         await client.query('UPDATE oauth_codes SET used_at=now() WHERE code_hash=$1', [tokenHash(code)]);
+        await client.query('UPDATE oauth_clients SET last_used_at=now() WHERE client_id=$1', [clientId]);
         const grantId = randomUUID();
         await client.query(
           'INSERT INTO oauth_grants(id,principal_id,client_id,resource,grant_snapshot,expires_at) VALUES ($1,$2,$3,$4,$5::jsonb,now()+make_interval(secs=>$6))',

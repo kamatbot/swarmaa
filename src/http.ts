@@ -1,5 +1,5 @@
 import { isIP } from 'node:net';
-import { randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { AppError, publicError } from './errors.js';
 import { handleMcp } from './mcp.js';
@@ -301,7 +301,7 @@ export function createHttpHandler(dependencies: HttpDependencies): (request: Inc
       onlyMethod(request, response, ['POST']);
       limiter.accept(`registration:${remote}`, 30);
       requireType(request, 'application/json');
-      json(response, 201, await oauth.registerClient(parseJson(await readBody(request, Math.min(config.maxBodyBytes, 16_384)))));
+      json(response, 201, await oauth.registerClient(parseJson(await readBody(request, Math.min(config.maxBodyBytes, 16_384))), createHash('sha256').update(remote).digest('hex')));
       return;
     }
     if (path === '/account' || path.startsWith('/account/')) {
