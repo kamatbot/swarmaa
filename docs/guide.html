@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Swarmaa Guide</title>
+<style>
+  :root {
+    --bg: #fbfaf7; --card: #ffffff; --ink: #1d1d1f; --muted: #5f6368; --line: #e6e2da;
+    --accent: #3d5afe; --accent-soft: #eef0ff; --code: #f3f1ec; --warn: #9a5b00; --warn-soft: #fff4e0;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #141416; --card: #1c1c1f; --ink: #ececef; --muted: #a0a0a8; --line: #2c2c31;
+      --accent: #8c9bff; --accent-soft: #23264a; --code: #26262b; --warn: #ffb347; --warn-soft: #3a2a12;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+    font: 16px/1.6 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 48px 16px 80px; }
+  header { margin-bottom: 36px; }
+  h1 { font-size: 34px; line-height: 1.15; margin: 0 0 8px; letter-spacing: -0.02em; }
+  .lede { color: var(--muted); font-size: 18px; margin: 0; }
+  nav { display: flex; flex-wrap: wrap; gap: 8px; margin: 24px 0 0; }
+  nav a { font-size: 14px; padding: 4px 10px; border: 1px solid var(--line); border-radius: 999px;
+    color: var(--ink); text-decoration: none; background: var(--card); }
+  nav a:hover { border-color: var(--accent); color: var(--accent); }
+  section { background: var(--card); border: 1px solid var(--line); border-radius: 14px;
+    padding: 22px 24px; margin: 18px 0; }
+  h2 { font-size: 21px; margin: 0 0 10px; letter-spacing: -0.01em; }
+  h2 .n { display: inline-grid; place-items: center; width: 26px; height: 26px; margin-right: 8px;
+    border-radius: 50%; background: var(--accent-soft); color: var(--accent); font-size: 14px; vertical-align: 2px; }
+  h3 { font-size: 16px; margin: 18px 0 6px; }
+  p { margin: 8px 0; }
+  ul { margin: 8px 0; padding-left: 20px; }
+  li { margin: 4px 0; }
+  code { font: 13.5px/1.5 "SF Mono", ui-monospace, Menlo, monospace; background: var(--code);
+    padding: 1px 6px; border-radius: 5px; }
+  pre { background: var(--code); border-radius: 10px; padding: 12px 14px; overflow-x: auto; margin: 10px 0; }
+  pre code { background: none; padding: 0; }
+  .say { border-left: 3px solid var(--accent); background: var(--accent-soft); border-radius: 0 10px 10px 0;
+    padding: 10px 14px; margin: 10px 0; }
+  .say p { margin: 4px 0; }
+  .note { border-left: 3px solid var(--warn); background: var(--warn-soft); border-radius: 0 10px 10px 0;
+    padding: 10px 14px; margin: 12px 0; }
+  table { width: 100%; border-collapse: collapse; font-size: 14.5px; margin: 10px 0; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; font-size: 13px; text-transform: uppercase; letter-spacing: 0.04em; }
+  .table-wrap { overflow-x: auto; }
+  footer { color: var(--muted); font-size: 13px; text-align: center; margin-top: 32px; }
+</style>
+</head>
+<body>
+<main>
+<header>
+  <h1>Swarmaa guide</h1>
+  <p class="lede">One swarm for Claude Code, Codex, Antigravity and Grok: they share memory and chats, and any of them can hand work to the others.</p>
+  <nav>
+    <a href="#idea">The idea</a><a href="#ask">Ask for work</a><a href="#edits">Edits &amp; branches</a>
+    <a href="#routing">Routing</a><a href="#memory">Shared memory</a><a href="#chats">Chats &amp; /swarm</a>
+    <a href="#grok">Grok</a><a href="#limits">Limits</a><a href="#fix">Troubleshooting</a>
+  </nav>
+</header>
+
+<section id="idea">
+  <h2><span class="n">1</span>The idea</h2>
+  <p>Swarmaa runs on your Mac. It keeps a task queue, shared memory and a log of every chat. Three background workers — Claude, Codex and Antigravity — pick up tasks and run them in a sandbox. The notch shows who is live, what is running and how much quota each service has left.</p>
+  <p>You never talk to Swarmaa directly. You talk to whichever agent you are already using, and it uses Swarmaa’s tools for you.</p>
+</section>
+
+<section id="ask">
+  <h2><span class="n">2</span>Ask for work</h2>
+  <p>In any harness, just say what you want. Name a service only if you care which one does it.</p>
+  <div class="say">
+    <p>“Have the swarm review the auth changes in pathodds.”</p>
+    <p>“Ask Codex to add tests for the grader, starting from feat/math-path.”</p>
+    <p>“Get Antigravity to review this PR’s diff.”</p>
+    <p>“Fan this out: Claude fixes the bug, Codex writes the tests.”</p>
+  </div>
+  <div class="table-wrap"><table>
+    <tr><th>You want</th><th>Agent sends</th><th>Who does it</th></tr>
+    <tr><td>Review or research</td><td><code>auto.read</code></td><td>Picked by your routing rules and quota</td></tr>
+    <tr><td>Code changes</td><td><code>auto.patch</code></td><td>Picked by your routing rules and quota</td></tr>
+    <tr><td>A specific service</td><td><code>codex.patch</code>, <code>claude.read</code>, …</td><td>Exactly that service</td></tr>
+  </table></div>
+  <p>The agent tells you the task ID. Ask “how is task 3511 going?” to check, or “continue 3511: also handle empty input” to add an instruction. Tasks stop after 60 minutes.</p>
+</section>
+
+<section id="edits">
+  <h2><span class="n">3</span>Edits come back as branches</h2>
+  <p>Every code task runs in its own copy of the repo (a git worktree), so several agents can work on one project at once without touching your checkout. The worker can edit files and run commands, builds and tests inside that copy. When it finishes, Swarmaa commits the result to a local branch:</p>
+  <pre><code>swarma/&lt;service&gt;/&lt;task id&gt;     e.g. swarma/codex/8855687b</code></pre>
+  <p>Nothing is pushed, merged or deployed. Review and merge it yourself, or ask your agent to:</p>
+  <pre><code>git log --oneline main..swarma/codex/8855687b
+git diff main...swarma/codex/8855687b
+git merge swarma/codex/8855687b</code></pre>
+  <p>Continuing a task adds commits to the same branch. If a run crashes, the next attempt picks up its unfinished edits.</p>
+</section>
+
+<section id="routing">
+  <h2><span class="n">4</span>Routing rules</h2>
+  <p>Open the menu bar icon → <b>Settings</b> → <b>Swarmaa</b> → <b>Routing</b>.</p>
+  <ul>
+    <li><b>Order</b> — drag rows; the top service is tried first.</li>
+    <li><b>Sliders</b> — switch away from a service once its 5-hour or weekly use passes this level.</li>
+    <li><b>Review / Research / Edit</b> — which kinds of task each service may take.</li>
+    <li><b>If no service qualifies</b> — use whichever has the most quota left, or wait.</li>
+  </ul>
+  <p>The line at the top shows who gets the next task of each kind, and why. Defaults: Claude until 90%, then Codex until 95%, then Antigravity until 95% (reviews and edits only — it can’t reach outside the project, so no research).</p>
+</section>
+
+<section id="memory">
+  <h2><span class="n">5</span>Shared memory</h2>
+  <p>Anything one agent saves, every other agent can find — per project.</p>
+  <div class="say">
+    <p>“Remember for pathodds: grading tolerances live in grader/config.ts.”</p>
+    <p>“What do we know about the math-path rollout?”</p>
+  </div>
+  <p>Notes and observations are shared right away. Decisions and preferences wait for your approval before agents treat them as settled. Approved lessons show in the notch for review.</p>
+</section>
+
+<section id="chats">
+  <h2><span class="n">6</span>Shared chats and <code>/swarm</code></h2>
+  <p>Chats from Claude Code, Codex and Antigravity are logged automatically, and every swarm run is logged as a chat titled <b>[swarm] …</b>. Any agent can list them, read them, or pick one up.</p>
+  <div class="table-wrap"><table>
+    <tr><th>Harness</th><th>Type</th></tr>
+    <tr><td>Claude Code</td><td><code>/swarm</code></td></tr>
+    <tr><td>Codex</td><td><code>$swarm</code></td></tr>
+    <tr><td>Antigravity</td><td><code>/swarm</code> (run <code>/skills reload</code> once if it’s missing)</td></tr>
+  </table></div>
+  <ul>
+    <li><code>/swarm</code> — live workers, queue, and recent swarm runs with their branches.</li>
+    <li><code>/swarm 3511a624</code> — one run: what was asked, the answer, the branch and diff.</li>
+    <li><code>/swarm continue 3511a624 also add tests</code> — continue it.</li>
+    <li><code>/swarm run review the payment flow</code> — start a new task in this project.</li>
+  </ul>
+  <div class="note">Swarm runs don’t appear in the Claude or Codex app sidebars — those apps only list chats they started themselves. Use <code>/swarm</code> instead.</div>
+</section>
+
+<section id="grok">
+  <h2><span class="n">7</span>Grok</h2>
+  <p>Grok connects over the internet to <code>https://api.swarmaa.com/mcp</code>. The first time, it opens a Swarmaa sign-in page: sign in with your passkey and approve. After that, Grok can check status, hand out tasks, read results and continue chats from any harness — it’s a good “front desk” from your phone.</p>
+  <p>Grok doesn’t run code itself through the swarm; it sends work to Claude, Codex or Antigravity. The instructions to paste into Grok are in <code>clients/grok/INSTRUCTIONS.md</code>.</p>
+</section>
+
+<section id="limits">
+  <h2><span class="n">8</span>What it won’t do</h2>
+  <ul>
+    <li>No pushing, merging, deploying, messaging or payments by swarm workers — you (or your interactive agent) do that.</li>
+    <li>Workers can’t read your other chats, SSH keys, cloud credentials or files outside the project.</li>
+    <li>No direct agent-to-agent messages — they coordinate through tasks, continuations and shared memory.</li>
+    <li>Results are marked unverified until you review them.</li>
+  </ul>
+</section>
+
+<section id="fix">
+  <h2><span class="n">9</span>Troubleshooting</h2>
+  <h3>Is it running?</h3>
+  <pre><code>curl -s http://127.0.0.1:8787/healthz
+launchctl list | grep swarma</code></pre>
+  <h3>Restart the service or a worker</h3>
+  <pre><code>launchctl kickstart -k gui/$(id -u)/com.swarma.service
+launchctl kickstart -k gui/$(id -u)/com.swarma.bridge.codex</code></pre>
+  <h3>Logs</h3>
+  <p><code>~/Projects/swarma/.local/logs/</code> — <code>service.log</code>, <code>bridge.claude.log</code>, <code>bridge.codex.log</code>, <code>bridge.agy.log</code>.</p>
+  <h3>A task is blocked</h3>
+  <p>Ask your agent to read the task: blocked tasks say why (no git repo, bad branch name, provider disabled by routing, or a command the sandbox refused). Fix it and continue the task.</p>
+</section>
+
+<footer>Swarmaa · updated 22 October 2026</footer>
+</main>
+</body>
+</html>
