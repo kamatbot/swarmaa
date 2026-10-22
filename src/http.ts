@@ -248,7 +248,11 @@ export function createHttpHandler(dependencies: HttpDependencies): (request: Inc
       localNames.some(name => host === `${name}:${config.port}` || (config.port === 80 && host === name));
     if (host !== publicUrl.host.toLowerCase() && !loopback) throw new AppError(403, 'invalid_host', 'Host is not allowed.');
     const origin = oneHeader(request, 'origin');
-    if (origin !== undefined && !allowedOrigins.has(origin)) throw new AppError(403, 'invalid_origin', 'Origin is not allowed.');
+    if (origin !== undefined && !allowedOrigins.has(origin)) {
+      // Log the rejected origin so the owner can add a legitimate client to ALLOWED_ORIGINS.
+      console.error(JSON.stringify({ event: 'origin_rejected', origin: origin.slice(0, 200), path: (request.url ?? '').split('?', 1)[0]!.slice(0, 100) }));
+      throw new AppError(403, 'invalid_origin', 'Origin is not allowed.');
+    }
     if (origin) {
       response.setHeader('Access-Control-Allow-Origin', origin);
       response.setHeader('Vary', 'Origin');
