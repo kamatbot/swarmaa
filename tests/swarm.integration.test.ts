@@ -87,6 +87,16 @@ describe('swarm usage routing and status', {skip:!connectionString,concurrency:f
     await assert.rejects(() => call(outsider,'swarm_status',{scope:'project:a'}),(e:unknown) => e instanceof AppError && e.code === 'scope_forbidden');
   });
 
+  it('task_submit warns when no live worker serves the project, and not once one does', async () => {
+    const {front,claude} = await fixture();
+    await pool.query(`UPDATE principals SET last_seen_at=NULL WHERE role='worker'`);
+    const lonely = await call(front,'task_submit',submit('k-warn-1'));
+    assert.match(lonely.warning,/No live worker serves project:a/);
+    await call(claude,'usage_report',report('claude',10));
+    const served = await call(front,'task_submit',submit('k-warn-2'));
+    assert.equal(served.warning,undefined);
+  });
+
   it('swarm_status describes running tasks and the branch a finished task landed on', async () => {
     const {front,claude} = await fixture();
     const task = (await call(front,'task_submit',submit('k-act'))).task;

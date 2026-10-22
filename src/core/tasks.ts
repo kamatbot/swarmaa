@@ -205,7 +205,11 @@ export class TaskService {
         capability,resource,refs,JSON.stringify(versions),p.id,idempotency,requestHash,attempts,baseRef]);
       const row = result.rows[0]!;
       await taskChanged(db,p,row,'submitted');
-      return {task:await taskWithInstructions(db,row),replayed:false};
+      // Say so now rather than let the task sit unclaimed: no live worker serves this project.
+      const served = await db.query(`SELECT 1 FROM principals WHERE tenant_id=$1 AND role='worker' AND NOT disabled
+        AND $2=ANY(scopes) AND last_seen_at>clock_timestamp()-interval '60 seconds' LIMIT 1`,[p.tenantId,scope]);
+      const warning = served.rows.length ? {} : {warning:`No live worker serves ${scope}, so this task will wait in the queue. Start a worker for this project or submit it to a project a worker serves.`};
+      return {task:await taskWithInstructions(db,row),replayed:false,...warning};
     });
   }
 
