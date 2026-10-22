@@ -1,7 +1,7 @@
 # Swarmaa
 
 Swarmaa connects your agent CLIs and chat agents to one shared memory and task queue. Claude Code,
-Codex and Antigravity read and write the same project memory over MCP. Claude and Codex can also
+Codex and Antigravity read and write the same project memory over MCP. Claude, Codex and Antigravity can also
 run as background workers that pick up read-only review/research tasks. Dot and Grok use the same
 service over HTTPS. NotchTrader shows the agents and swarms in the notch.
 
@@ -24,7 +24,7 @@ What it does:
 | Database | Local PostgreSQL 17 cluster in `.local/pg` on `127.0.0.1:54329` (needs `brew install postgresql@17`) |
 | Identities | One scoped identity per client, token in an owner-only `.local/<name>.json` |
 | Clients | `swarma` MCP server registered in Claude Code (user scope), Codex and Antigravity (with per-tool allow rules) |
-| Workers | `.local/bridge-<agent>.json` per worker, read-only, Claude on Sonnet |
+| Workers | `.local/bridge-<agent>.json` per worker (`claude`, `codex`, `agy`), read-only and Seatbelt-sandboxed, Claude on Sonnet; Antigravity serves `antigravity.read` |
 | Autostart | LaunchAgents `com.swarma.postgres`, `com.swarma.service`, `com.swarma.bridge.<agent>`; logs in `.local/logs/` |
 
 Tokens never appear in client configs or process arguments: `clients/macos/swarma-mcp.sh` reads

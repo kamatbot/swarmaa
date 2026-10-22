@@ -47,13 +47,12 @@ export function parseBridgeConfig(value: unknown): BridgeConfig {
     if (!/^[a-z][a-z0-9_-]*$/u.test(id)) throw new Error('agent.id must be lowercase letters, digits, _ or -');
     const provider = text(a.provider, 'agent.provider') as Provider;
     if (!['claude', 'codex', 'antigravity'].includes(provider)) throw new Error(`Unsupported provider for ${id}`);
-    // Antigravity supports shared MCP access, but this release cannot enforce an isolated
-    // headless read-only policy across its local configuration layers. Never silently use it.
-    if (provider === 'antigravity') throw new Error('Antigravity autonomous execution is not enabled. Use the interactive MCP client configuration in clients/antigravity.');
     const enable_patch = bool(a.enable_patch, 'agent.enable_patch');
     if (enable_patch && provider !== 'claude') throw new Error('Only the restricted Claude file-tool adapter supports patch tasks in this release');
     if (a.sandbox !== undefined && typeof a.sandbox !== 'boolean') throw new Error('agent.sandbox must be a boolean');
     const sandbox = a.sandbox !== false;
+    // agy has no read-only enforcement of its own: the outer Seatbelt profile is its only file boundary.
+    if (provider === 'antigravity' && !sandbox) throw new Error('Antigravity workers require sandbox:true (the Seatbelt profile is their read boundary)');
     return { id, provider, sandbox, binary: absolute(a.binary, 'agent.binary'), model: a.model === undefined ? undefined : text(a.model, 'agent.model', 200), enable_patch };
   });
   if (new Set(agents.map(a => a.id)).size !== agents.length) throw new Error('Agent IDs must be unique');

@@ -58,10 +58,16 @@ export function buildInvocation(agent: AgentConfig, project: ProjectConfig, task
       '--sandbox', 'read-only', '-c', 'approval_policy="never"', '--ephemeral', '--color', 'never', '--json'
     ];
   } else {
-    throw new Error('Antigravity autonomous mode is unsupported; use the interactive MCP integration');
+    // agy takes the prompt only as the value of -p (no stdin), attached with '=' so it is never parsed as a flag.
+    // spawn() has shell:false, so the text is one argv element. Plan mode refuses mutating tools and runs read tools
+    // without a prompt, so no permission-skipping flag is used. The outer Seatbelt profile is the read/write boundary.
+    // MCP servers cannot be disabled per invocation; the profile hides ~/.gemini/config (their definitions) instead.
+    args = ['--mode', 'plan', '--output-format', 'json', '--print-timeout', `${config.task_timeout_seconds}s`];
   }
   if (agent.model) args.push('--model', agent.model);
   if (agent.provider === 'codex') args.push('-');
+  const input = buildPrompt(task, context, config.max_prompt_bytes);
+  if (agent.provider === 'antigravity') args.push(`-p=${input}`);
   const env = providerEnvironment(agent.provider, parentEnv, config.token_env);
   let command = agent.binary;
   if (agent.sandbox) {
@@ -76,7 +82,7 @@ export function buildInvocation(agent: AgentConfig, project: ProjectConfig, task
   }
   return {
     command, args, cwd: project.root, env,
-    input: buildPrompt(task, context, config.max_prompt_bytes),
+    input: agent.provider === 'antigravity' ? '' : input,
     timeout_ms: config.task_timeout_seconds * 1000, max_output_bytes: config.max_output_bytes, signal
   };
 }
@@ -88,6 +94,11 @@ export function providerSucceeded(provider: string, result: ProcessResult): bool
     if (provider === 'claude') {
       const payload = JSON.parse(result.stdout) as Record<string, unknown>;
       return payload.type === 'result' && payload.subtype === 'success' && payload.is_error !== true;
+    }
+    if (provider === 'antigravity') {
+      const payload = JSON.parse(result.stdout) as Record<string, unknown>;
+      // A permission-denied headless tool call still reports SUCCESS with an empty response (plus denied_actions).
+      return payload.status === 'SUCCESS' && typeof payload.response === 'string' && payload.response.trim() !== '';
     }
     if (provider === 'codex') {
       const events = result.stdout.trim().split('\n').filter(Boolean).map(line => JSON.parse(line) as Record<string, unknown>);
@@ -101,6 +112,9 @@ export function providerSucceeded(provider: string, result: ProcessResult): bool
 export function finalAnswer(provider: string, stdout: string): string {
   if (provider === 'claude') {
     try { const r = (JSON.parse(stdout) as { result?: unknown }).result; return typeof r === 'string' ? r : ''; } catch { return ''; }
+  }
+  if (provider === 'antigravity') {
+    try { const r = (JSON.parse(stdout) as { response?: unknown }).response; return typeof r === 'string' ? r : ''; } catch { return ''; }
   }
   let answer = '';
   for (const line of stdout.split('\n')) {

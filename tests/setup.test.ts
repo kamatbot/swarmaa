@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { createOnboarding, runSetup, type Detected, type SetupSummary } from '../scripts/setup.js';
-import { AGY_TOOLS, GENERAL_SCOPE, PlanError, bridgeConfig, identityScopes, mergeAgyPermissions, parseEnv, plist, slugScopes, stateFile, validHostname, validatePlan, yes } from '../scripts/setup-lib.js';
+import { AGY_TOOLS, GENERAL_SCOPE, PlanError, WORKER_HARNESSES, bridgeConfig, identityScopes, mergeAgyPermissions, parseEnv, plist, slugScopes, stateFile, validHostname, validatePlan, yes } from '../scripts/setup-lib.js';
 
 test('slugScopes normalizes basenames and suffixes collisions', () => {
   assert.deepEqual(slugScopes(['/a/My App!', '/b/my-app', '/c/My App!', '/a/My App!', '/d/Demo']).map(s => s.scope),
@@ -43,6 +43,10 @@ test('bridgeConfig matches the example shape with token_file', () => {
   assert.deepEqual(c.agents, [{ id: 'claude', provider: 'claude', binary: '/b/claude', model: 'sonnet', enable_patch: false }]);
   assert.deepEqual(c.projects, [{ scope: 'project:demo', root: '/r/demo', agents: ['claude'], allow_patch: false }]);
   assert.equal(c.reason, null);
+  const agy = bridgeConfig({ port: 1, tokenFile: '/t', agent: { id: 'antigravity', provider: 'antigravity', binary: '/b/agy' }, projects: [{ scope: 'project:demo', root: '/r/demo' }] }) as any;
+  assert.deepEqual(agy.agents, [{ id: 'antigravity', provider: 'antigravity', binary: '/b/agy', enable_patch: false, sandbox: true }]);
+  assert.deepEqual(agy.projects[0].agents, ['antigravity']);
+  assert.ok(WORKER_HARNESSES.includes('agy'));
   const codex = bridgeConfig({ port: 1, tokenFile: '/t', agent: { id: 'codex', binary: '/b/codex' }, projects: [] }) as any;
   assert.equal('model' in codex.agents[0], false);
 });
@@ -79,7 +83,7 @@ test('validatePlan accepts a good plan and fills defaults', () => {
 test('validatePlan rejects unknown harnesses, bad folders, bad hostnames and junk', () => {
   rejects({ ...okPlan(), harnesses: { evil: { connect: true } } }, /unknown harness/);
   rejects({ ...okPlan(), harnesses: { claude: { connect: true, exec: 'rm -rf /' } } }, /unknown field/);
-  rejects({ ...okPlan(), harnesses: { agy: { connect: true, worker: true } } }, /cannot run as a background worker/);
+  rejects({ ...okPlan(), harnesses: { grok: { connect: true, worker: true } } }, /cannot run as a background worker/);
   rejects({ ...okPlan(), harnesses: { grok: { connect: true, share: true } } }, /does not support chat sharing/);
   rejects({ ...okPlan(), folders: ['relative/dir'] }, /not an absolute path/);
   rejects({ ...okPlan(), folders: [join(dir, 'missing')] }, /not an existing directory/);

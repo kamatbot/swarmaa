@@ -168,7 +168,7 @@ automatic stale-lock deletion that could overlap a still-active local process.
 |---|---|---|
 | Claude Code | Research/review; opt-in file-only patch | `--restricted`, explicit built-in tool list, MCP tools denied, empty strict MCP config, permission prompts denied. |
 | Codex CLI | Research/review | `exec --sandbox read-only`, never approvals, user config ignored, apps/plugins disabled. |
-| Antigravity | Interactive shared MCP; autonomous runner disabled | Unsupported autonomous configuration fails at startup. |
+| Antigravity (`agy`) | Research/review, read-only | `--mode plan --output-format json --print-timeout`, prompt as one argv element (`-p=<text>`), no `--dangerously-skip-permissions`. Requires `sandbox:true`: the Seatbelt profile is the file boundary. |
 
 Claude requires a release supporting `--restricted` and `--permission-prompts none` (at least
 v2.1.259 for the latter). Read-only mode exposes `Read`, `Glob` and `Grep`. File-only patch mode
@@ -181,11 +181,14 @@ does not mean that every readable file is limited to the project directory. Keep
 account and project data appropriate for the tasks it is authorized to analyze. Codex patch
 mode is rejected in this release; use an interactive reviewed workflow for Codex edits.
 
-Antigravity's documented headless defaults permit workspace writes, while its terminal sandbox
-is a separate control. This package does not equate headless mode with read-only execution.
-Antigravity can read/write authorized shared memories and dispatch/retrieve tasks using the MCP
-client, and you can perform supervised work there. An autonomous adapter requires a separately
-validated configuration that enforces its complete tool policy.
+Antigravity workers run `agy` in plan mode: headless, it auto-denies shell commands and reads outside the
+workspace (reported as `denied_actions`; the bridge treats an empty answer as failure), and the outer
+Seatbelt profile independently blocks project writes, credential directories and other chats. Its MCP
+servers are defined in `~/.gemini/config/mcp_config.json` (which can hold tokens); the profile hides that
+file, so the worker has no MCP tools and cannot call Swarmaa. `agy` still needs its own state writable
+(`~/.gemini/antigravity-cli`, `~/.gemini/antigravity`, `~/.gemini/config/projects`), and other
+conversations' `brain/` and `conversations/` are unreadable. Not confined: network access, and the
+read-only guarantee for patch work (Antigravity has no patch mode here). Interactive MCP use of Antigravity is unchanged.
 
 To activate Claude patch work, explicitly do all three:
 

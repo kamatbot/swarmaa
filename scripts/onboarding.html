@@ -172,7 +172,7 @@ async function api(path, body) {
 const SERVICES = [
   { key: 'claude', label: 'Claude Code', kind: 'cli', cmd: 'claude', worker: true, share: true },
   { key: 'codex', label: 'Codex', kind: 'cli', cmd: 'codex', worker: true, share: true },
-  { key: 'agy', label: 'Antigravity', kind: 'cli', cmd: 'agy', share: true },
+  { key: 'agy', label: 'Antigravity', kind: 'cli', cmd: 'agy', worker: true, share: true },
   { key: 'grok', label: 'Grok', kind: 'hosted' },
   { key: 'dot', label: 'Dot', kind: 'hosted' },
   { key: 'notchtrader', label: 'NotchTrader', kind: 'app' },

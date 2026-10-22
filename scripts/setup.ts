@@ -28,10 +28,10 @@ const NODE = (() => { try { return realpathSync('/opt/homebrew/bin/node') === re
 const LA = join(HOME, 'Library/LaunchAgents');
 const PGENV = { LC_ALL: 'en_US.UTF-8' };
 
-const META: Record<HarnessKey, { label: string; ident: string; stem: string; model?: string }> = {
+const META: Record<HarnessKey, { label: string; ident: string; stem: string; model?: string; /** worker agent id (default: the harness key) */ agent?: string }> = {
   claude: { label: 'Claude Code', ident: 'claude-interactive', stem: 'claude', model: 'sonnet' },
   codex: { label: 'Codex', ident: 'codex-interactive', stem: 'codex' },
-  agy: { label: 'Antigravity', ident: 'antigravity-interactive', stem: 'antigravity' },
+  agy: { label: 'Antigravity', ident: 'antigravity-interactive', stem: 'antigravity', agent: 'antigravity' },
   grok: { label: 'Grok', ident: 'grok', stem: 'grok' },
   dot: { label: 'Dot', ident: 'dot', stem: 'dot' },
   notchtrader: { label: 'NotchTrader', ident: 'notchtrader', stem: 'notchtrader' },
@@ -262,7 +262,7 @@ export async function runSetup(plan: SetupPlan, opts: RunOpts): Promise<SetupSum
         if (hp.worker && WORKER_HARNESSES.includes(key)) {
           const tokenFile = join(root, `.local/worker-${key}.json`);
           if (!ensureIdentity(`worker-${key}`, 'worker', tokenFile, workerScopes)) throw new Error(`could not create or update worker-${key}`);
-          put(join(root, `.local/bridge-${key}.json`), `${JSON.stringify(bridgeConfig({ port, tokenFile, agent: { id: key, binary: cli!, model: m.model }, projects }), null, 2)}\n`);
+          put(join(root, `.local/bridge-${key}.json`), `${JSON.stringify(bridgeConfig({ port, tokenFile, agent: { id: m.agent ?? key, provider: m.agent ?? key, binary: cli!, model: m.model }, projects }), null, 2)}\n`);
           summary.workers.push(key);
         }
       });
@@ -368,7 +368,7 @@ export async function runSetup(plan: SetupPlan, opts: RunOpts): Promise<SetupSum
         if (r.status !== 0 && !dry) { spawnSync('sleep', ['1']); r = run('launchctl', ['bootstrap', `gui/${uid}`, file]); }
         if (r.status === 0) say(`  loaded ${label(j.id)}`); else { say(`  launchctl bootstrap ${label(j.id)} failed:\n${tail(r)}`); summary.warnings.push(`launchctl bootstrap ${label(j.id)} failed`); }
       }
-      for (const [id, keep] of [['bridge.claude', summary.workers.includes('claude')], ['bridge.codex', summary.workers.includes('codex')], ['capture', captureOn]] as const) {
+      for (const [id, keep] of [['bridge.claude', summary.workers.includes('claude')], ['bridge.codex', summary.workers.includes('codex')], ['bridge.agy', summary.workers.includes('agy')], ['capture', captureOn]] as const) {
         const file = join(LA, `${label(id)}.plist`);
         if (keep || !existsSync(file)) continue;
         run('launchctl', ['bootout', `gui/${uid}/${label(id)}`]);
@@ -581,7 +581,7 @@ async function cliMain(dry: boolean): Promise<number> {
       if (k === 'notchtrader') { if (!det.notchtrader) continue; }
       const q = k === 'notchtrader' ? 'Show Swarmaa agents and swarms in NotchTrader?' : (HOSTED as readonly string[]).includes(k) ? `Connect ${m.label} (hosted; needs remote access)?` : `Connect ${m.label} to Swarmaa shared memory?`;
       if (!await askYes(q, k === 'notchtrader' ? true : was)) continue;
-      const worker = WORKER_HARNESSES.includes(k) && await askYes(`Run ${k} as a background worker (read-only tasks)?`, state.workers?.includes(k) ?? false);
+      const worker = WORKER_HARNESSES.includes(k) && await askYes(`Run ${k} as a background worker (read-only tasks${k === 'agy' ? ', sandboxed' : ''})?`, state.workers?.includes(k) ?? false);
       const share = SHARING_HARNESSES.includes(k) && await askYes(`Share ${m.label} chats across harnesses?`, state.sharing ? state.sharing.includes(k) : true);
       harnesses[k] = { connect: true, worker, share };
     }

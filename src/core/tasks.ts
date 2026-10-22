@@ -31,6 +31,9 @@ interface ArtifactRow {
   created_by:string; name:string; media_type:string; content:string; byte_length:number;
   sha256:string; created_at:Date;
 }
+/** Capabilities some worker can advertise; anything else would sit queued forever. Patch is Claude-only. */
+// demo.read is reserved for scripts/demo.ts: no real worker advertises it.
+export const VALID_CAPABILITIES = [AUTO_READ,'claude.read','claude.patch','codex.read','antigravity.read','demo.read'] as const;
 const date = (value:Date|null):string|null => value?.toISOString() ?? null;
 const expectedVersion = (value:unknown):number => integer(value, 'expected_version', 1, 2147483647);
 const leaseSeconds = (value:unknown):number => value === undefined ? 120 : integer(value, 'lease_seconds', 30, 300);
@@ -140,6 +143,7 @@ export class TaskService {
     requireCondition(Buffer.byteLength(objective)<=32768,400,'invalid_arguments','objective exceeds 32 KiB in UTF-8.');
     const idempotency = string(input.idempotency_key,'idempotency_key',200);
     const capability = string(input.required_capability,'required_capability',128);
+    requireCondition((VALID_CAPABILITIES as readonly string[]).includes(capability),400,'unknown_capability',`Unknown required_capability. Valid: ${VALID_CAPABILITIES.join(', ')}.`);
     const resource = optionalString(input.resource_key,'resource_key',240) ?? null;
     requireCondition(capability !== AUTO_READ || kind !== 'patch',400,'invalid_arguments','auto.read routes read-only work; patch tasks name an explicit capability.');
     requireCondition(kind !== 'patch' || resource !== null,400,'resource_required','Patch work requires a resource_key.');

@@ -41,7 +41,8 @@ export function buildProfile(o: SandboxOptions): string {
   const binary = real(o.binary);
   const tmp = real(o.tmp ?? tmpdir());
   const binDirs = [dirname(binary)];
-  const stateDirs = o.provider === 'claude' ? [join(home, '.claude')] : [join(home, '.codex')];
+  const agy = o.provider === 'antigravity';
+  const stateDirs = o.provider === 'claude' ? [join(home, '.claude')] : agy ? [join(home, '.gemini/antigravity-cli'), join(home, '.gemini/antigravity'), join(home, '.gemini/config/projects')] : [join(home, '.codex')];
   const stateFiles = o.provider === 'claude' ? [join(home, '.claude.json')] : [];
   const readTrees = [
     root, ...binDirs, tmp, ...stateDirs,
@@ -52,7 +53,9 @@ export function buildProfile(o: SandboxOptions): string {
   const readLiterals = ['/', '/tmp', '/var', '/etc', '/dev/null', '/dev/urandom', '/dev/random', '/dev/zero', '/dev/tty', '/private/etc/hosts', '/private/etc/passwd', '/private/etc/localtime', '/private/etc/resolv.conf', ...stateFiles];
   const deniedHomeSubdirs = ['.ssh', '.aws', '.config/gh', '.gnupg', '.kube', '.docker', '.azure', '.config/gcloud', '.npmrc', '.pypirc', '.netrc', '.git-credentials', 'Library/Cookies', 'Library/Application Support/Google', 'Library/Safari', 'Library/Messages', 'Library/Mail'];
   // Cross-project and conversation history under the provider's own state dir.
-  const deniedState = o.provider === 'claude'
+  const deniedState = agy
+    ? ['conversations', 'conversation_summaries.db', 'annotations', 'implicit', 'mcp', 'settings.json'].map(n => join(home, '.gemini/antigravity-cli', n))
+    : o.provider === 'claude'
     ? ['projects', 'history.jsonl', 'file-history', 'todos', 'shell-snapshots', 'sessions', 'transcripts'].map(n => join(home, '.claude', n))
     : ['sessions', 'archived_sessions', 'history.jsonl', 'log', 'logs_1.sqlite', 'state_5.sqlite'].map(n => join(home, '.codex', n));
   const lines = [
@@ -63,6 +66,8 @@ export function buildProfile(o: SandboxOptions): string {
     `(allow file-read* ${[...readTrees.map(sub), ...readLiterals.map(lit)].join(' ')})`,
     `(allow file-write* ${[...writeTrees.map(sub), '(literal "/dev/null")', '(literal "/dev/tty")', '(regex #"^/dev/ttys[0-9]+$")', ...stateFiles.flatMap(f => [lit(f), fileSiblings(f)])].join(' ')})`,
     // Credential-like paths, denied last. The project root is exempt only when it is not itself inside one.
+    // agy writes its plan artifact under brain/<conversation>/ but never needs other conversations' content back.
+    ...(agy ? [`(deny file-read* ${sub(join(home, '.gemini/antigravity-cli/brain'))} ${sub(join(home, '.gemini/antigravity/brain'))} ${sub(join(home, '.gemini/antigravity/conversations'))} ${sub(join(home, '.gemini/antigravity/knowledge'))})`] : []),
     `(deny file-read* file-write* ${[...deniedHomeSubdirs.map(d => sub(join(home, d))), ...deniedState.map(sub)].join(' ')})`,
   ];
   return lines.join('\n') + '\n';

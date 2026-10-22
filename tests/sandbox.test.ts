@@ -42,3 +42,16 @@ test('profile actually confines a real process', { skip: process.platform !== 'd
     assert.notEqual(run('/bin/sh', '-c', `echo x > ${join(project, 'w.txt')}`).status, 0);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('antigravity profile: agy state writable, config dir (MCP definitions) and other chats unreadable', () => {
+  const p = buildProfile({ ...base, provider: 'antigravity', binary: '/Users/tester/.local/bin/agy' });
+  const lines = p.trim().split('\n');
+  const write = lines.find(l => l.startsWith('(allow file-write*'))!;
+  for (const d of ['.gemini/antigravity-cli', '.gemini/antigravity', '.gemini/config/projects']) assert.ok(write.includes(`/Users/tester/${d}"`), d);
+  assert.ok(!write.includes('(subpath "/tmp")'), 'project root is not writable');
+  const reads = lines.find(l => l.startsWith('(allow file-read*'))!;
+  assert.ok(!reads.includes('/Users/tester/.gemini/config"'), 'whole config dir (mcp_config.json holds tokens) is never readable');
+  assert.ok(lines.some(l => l.startsWith('(deny file-read* (subpath') && l.includes('antigravity-cli/brain') && l.includes('antigravity/conversations')));
+  assert.ok(lines.at(-1)!.includes('antigravity-cli/conversations') && lines.at(-1)!.includes('.ssh'));
+  assert.ok(!p.includes('/.claude') && !p.includes('/.codex'));
+});

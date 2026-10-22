@@ -68,6 +68,13 @@ describe('core transactional invariants', {skip:!connectionString,concurrency:fa
   const lease = (claim:Record<string,any>) => ({task_id:claim.task.id,lease_token:claim.lease_token,lease_generation:claim.lease_generation});
   const expire = (id:string) => pool.query("UPDATE tasks SET lease_expires_at=clock_timestamp()-interval '1 second' WHERE id=$1",[id]);
 
+  it('rejects a required_capability no worker can advertise',async () => {
+    const f = await fixture();
+    await rejects(f.front,'task_submit',{...submission(),required_capability:'gemini.read'},'unknown_capability');
+    await rejects(f.front,'task_submit',{...submission(),kind:'patch',resource_key:'repo:x',required_capability:'antigravity.patch'},'unknown_capability');
+    await call(f.front,'task_submit',{...submission(),required_capability:'antigravity.read'});
+  });
+
   it('enforces permissions, roles, tenant and exact scope inside CoreService',async () => {
     const f = await fixture();
     assert.ok(!core.listTools(f.front).some(t => t.name === 'task_claim' || t.name === 'memory_promote'));

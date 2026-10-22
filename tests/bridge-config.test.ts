@@ -4,7 +4,7 @@ import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseBridgeConfig, readTokenFile, serviceUrl } from '../src/bridge/config.js';
-import { buildInvocation, projectCapabilities, providerEnvironment, providerSucceeded } from '../src/bridge/adapters.js';
+import { buildInvocation, finalAnswer, projectCapabilities, providerEnvironment, providerSucceeded } from '../src/bridge/adapters.js';
 import type { ProcessResult, Task } from '../src/bridge/types.js';
 
 const input = () => ({ service_url: 'http://127.0.0.1:8080', agents: [{ id: 'claude', provider: 'claude', binary: '/bin/claude', enable_patch: false, sandbox: false }], projects: [{scope: 'project:demo', root: '/projects/demo', agents: ['claude'], allow_patch: false}] });
@@ -49,7 +49,6 @@ test('patch requires explicit project and provider opt-ins; unsupported modes fa
   const enabled = input(); enabled.agents[0]!.enable_patch = true; enabled.projects[0]!.allow_patch = true;
   const patchConfig = parseBridgeConfig(enabled);
   assert.deepEqual(projectCapabilities(patchConfig.projects[0]!, patchConfig.agents), ['claude.read','claude.patch','auto.read']);
-  assert.throws(() => parseBridgeConfig({...input(), agents:[{id:'agy',provider:'antigravity',binary:'/bin/agy'}]}));
   assert.throws(() => parseBridgeConfig({...input(), agents:[{id:'codex',provider:'codex',binary:'/bin/codex',enable_patch:true}]}));
 });
 
@@ -114,4 +113,41 @@ test('sandbox defaults on: argv is wrapped in sandbox-exec; codex inner sandbox 
   assert.equal(o.command, '/bin/codex');
   assert.equal(o.args[o.args.indexOf('--sandbox') + 1], 'read-only');
   assert.throws(() => parseBridgeConfig({ ...input(), agents: [{ id: 'x', provider: 'claude', binary: '/b', sandbox: 'no' }] }));
+});
+
+const agy = (extra: Record<string, unknown> = {}) => ({ ...input(), agents: [{ id: 'antigravity', provider: 'antigravity', binary: '/bin/agy', ...extra }], projects: [{ scope: 'project:demo', root: '/projects/demo', agents: ['antigravity'] }] });
+
+test('antigravity: sandbox-only, read-only, advertises antigravity.read + auto.read', () => {
+  const cfg = parseBridgeConfig(agy());
+  assert.equal(cfg.agents[0]!.sandbox, true);
+  assert.deepEqual(projectCapabilities(cfg.projects[0]!, cfg.agents), ['antigravity.read', 'auto.read']);
+  assert.throws(() => parseBridgeConfig(agy({ sandbox: false })), /sandbox:true/u);
+  assert.throws(() => parseBridgeConfig(agy({ enable_patch: true })));
+});
+
+test('antigravity argv: plan mode, json, prompt attached to -p=, no permission bypass, no token, no stdin', { skip: process.platform !== 'darwin' }, () => {
+  const cfg = parseBridgeConfig(agy());
+  const t = { ...task, required_capability: 'antigravity.read', objective: '$(touch /tmp/x); --mode auto' };
+  const req = buildInvocation(cfg.agents[0]!, cfg.projects[0]!, t, {}, cfg, new AbortController().signal, { COLLECTIVE_WORKER_TOKEN: 'secret', HOME: '/h', GEMINI_API_KEY: 'k' });
+  assert.equal(req.command, '/usr/bin/sandbox-exec');
+  const [, , bin, ...args] = req.args;
+  assert.equal(bin, '/bin/agy');
+  assert.deepEqual(args.slice(0, 6), ['--mode', 'plan', '--output-format', 'json', '--print-timeout', '900s']);
+  assert.ok(!args.includes('--dangerously-skip-permissions') && !args.includes('--sandbox'));
+  const prompts = args.filter(a => a.startsWith('-p='));
+  assert.equal(prompts.length, 1);
+  assert.ok(prompts[0]!.includes('$(touch /tmp/x); --mode auto'));
+  assert.equal(req.input, '');
+  assert.ok(!JSON.stringify(req.env).includes('secret'));
+  assert.throws(() => buildInvocation(cfg.agents[0]!, cfg.projects[0]!, { ...t, kind: 'patch', required_capability: 'antigravity.patch' }, {}, cfg, new AbortController().signal));
+});
+
+test('antigravity result parsing', () => {
+  const ok = { exit_code: 0, signal: null, stderr: '', duration_ms: 1, stop_reason: null, stdout: JSON.stringify({ status: 'SUCCESS', response: 'done\n' }) } as const;
+  assert.equal(providerSucceeded('antigravity', ok), true);
+  assert.equal(finalAnswer('antigravity', ok.stdout), 'done\n');
+  assert.equal(providerSucceeded('antigravity', { ...ok, stdout: JSON.stringify({ status: 'ERROR', response: '' }) }), false);
+  assert.equal(providerSucceeded('antigravity', { ...ok, stdout: JSON.stringify({ status: 'SUCCESS', response: '', denied_actions: [{ action: 'command' }] }) }), false);
+  assert.equal(providerSucceeded('antigravity', { ...ok, stdout: 'not json' }), false);
+  assert.equal(providerSucceeded('antigravity', { ...ok, exit_code: 1 }), false);
 });

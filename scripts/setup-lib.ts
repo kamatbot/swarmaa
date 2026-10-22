@@ -118,7 +118,7 @@ export function mergeAgyPermissions(settings: unknown, tools: string[], server =
 export interface BridgeConfigInput {
   port: string | number;
   tokenFile: string;
-  agent: { id: string; binary: string; model?: string };
+  agent: { id: string; binary: string; model?: string; provider?: string };
   projects: ScopeRoot[];
 }
 
@@ -128,7 +128,7 @@ export function bridgeConfig({ port, tokenFile, agent, projects }: BridgeConfigI
     token_file: tokenFile,
     poll_seconds: 3, lease_seconds: 120, heartbeat_seconds: 20, request_timeout_ms: 10000,
     task_timeout_seconds: 900, max_output_bytes: 4194304, max_prompt_bytes: 131072,
-    agents: [{ id: agent.id, provider: agent.id, binary: agent.binary, ...(agent.model ? { model: agent.model } : {}), enable_patch: false }],
+    agents: [{ id: agent.id, provider: agent.provider ?? agent.id, binary: agent.binary, ...(agent.model ? { model: agent.model } : {}), enable_patch: false, ...(agent.provider === 'antigravity' ? { sandbox: true } : {}) }],
     projects: projects.map(p => ({ scope: p.scope, root: p.root, agents: [agent.id], allow_patch: false })),
     reason: null,
   };
@@ -137,7 +137,7 @@ export function bridgeConfig({ port, tokenFile, agent, projects }: BridgeConfigI
 // ---- Setup plan: shared by the terminal wizard and the browser onboarding ----
 export const HARNESS_KEYS = ['claude', 'codex', 'agy', 'grok', 'dot', 'notchtrader'] as const;
 export type HarnessKey = typeof HARNESS_KEYS[number];
-export const WORKER_HARNESSES: readonly HarnessKey[] = ['claude', 'codex'];
+export const WORKER_HARNESSES: readonly HarnessKey[] = ['claude', 'codex', 'agy'];
 /** Apps that share chats through their own hooks (no MCP connection): Kiro, Windsurf (also Devin Desktop), Qwen Code. */
 export const HOOK_APP_KEYS = ['kiro', 'windsurf', 'qwen'] as const;
 export type HookAppKey = typeof HOOK_APP_KEYS[number];
