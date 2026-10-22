@@ -127,3 +127,12 @@ export function finalAnswer(provider: string, stdout: string): string {
   }
   return answer;
 }
+
+/** Actions the provider reports it was denied (Antigravity's denied_actions). A run that needed them is not complete. */
+export function deniedActions(provider: string, stdout: string): string[] {
+  if (provider !== 'antigravity') return [];
+  try {
+    const d = (JSON.parse(stdout) as { denied_actions?: { display_name?: unknown; action?: unknown }[] }).denied_actions;
+    return Array.isArray(d) ? d.map(a => String(a.display_name ?? a.action ?? 'unknown')).slice(0, 10) : [];
+  } catch { return []; }
+}

@@ -151,3 +151,12 @@ test('antigravity result parsing', () => {
   assert.equal(providerSucceeded('antigravity', { ...ok, stdout: 'not json' }), false);
   assert.equal(providerSucceeded('antigravity', { ...ok, exit_code: 1 }), false);
 });
+
+test('deniedActions reads Antigravity denials and ignores other providers', async () => {
+  const { deniedActions } = await import('../src/bridge/adapters.js');
+  const out = JSON.stringify({ status: 'SUCCESS', response: 'I will clone it first.', denied_actions: [{ action: 'command', display_name: 'RunCommand' }] });
+  assert.deepEqual(deniedActions('antigravity', out), ['RunCommand']);
+  assert.deepEqual(deniedActions('antigravity', JSON.stringify({ status: 'SUCCESS', response: 'done' })), []);
+  assert.deepEqual(deniedActions('codex', out), []);
+  assert.deepEqual(deniedActions('antigravity', 'not json'), []);
+});

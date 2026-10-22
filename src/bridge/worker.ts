@@ -1,5 +1,5 @@
 import { setTimeout as delay } from 'node:timers/promises';
-import { AUTO_READ, buildInvocation, capability, finalAnswer, projectCapabilities, providerSucceeded } from './adapters.js';
+import { AUTO_READ, buildInvocation, capability, deniedActions, finalAnswer, projectCapabilities, providerSucceeded } from './adapters.js';
 import { collectUsage, headroom } from '../usage/index.js';
 import type { UsageProviderId, UsageSnapshot } from '../usage/types.js';
 import { runBoundedProcess } from './process.js';
@@ -165,7 +165,9 @@ export class BridgeWorker {
         releaseWorkspace = undefined;
       }
       if (leaseLost) return;
-      const outcome = shutdown.aborted ? 'blocked' : providerSucceeded(agent.provider, result) ? 'completed' : 'failed';
+      // A provider that stopped because the sandbox denied actions it needed did not finish the task.
+      const denied = deniedActions(agent.provider, result.stdout);
+      const outcome = shutdown.aborted || denied.length ? 'blocked' : providerSucceeded(agent.provider, result) ? 'completed' : 'failed';
       await this.client.call('task_checkpoint', { ...lease, checkpoint: checkpoint('provider_finished') });
       const artifact = await this.client.call<{ artifact: { id: string } }>('artifact_put', {
         ...lease, name: `${agent.id}-transcript.txt`, media_type: 'text/plain',
@@ -188,6 +190,7 @@ export class BridgeWorker {
           duration_ms: result.duration_ms,
           // The agent's own answer, so callers can read it with task_get; untrusted provider output.
           answer: cleanText(finalAnswer(agent.provider, result.stdout), 8 * 1024),
+          ...(denied.length ? { denied_actions: denied, next_step: 'This worker cannot run those actions (read-only sandbox). Resubmit with a capability whose worker can, e.g. codex.read, or narrow the task.' } : {}),
           summary: outcome === 'completed' ? 'Provider completed. Review the transcript and acceptance criteria before integrating changes.' : 'Provider did not complete successfully. Review the transcript before continuing the task.',
           source_only_patch: task.kind === 'patch',
           tests_run_by_bridge: false
