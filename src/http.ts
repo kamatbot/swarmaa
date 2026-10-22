@@ -372,7 +372,9 @@ export function createHttpHandler(dependencies: HttpDependencies): (request: Inc
     response.setHeader('Cache-Control', 'no-store');
     response.setHeader('Pragma', 'no-cache');
     response.setHeader('X-Content-Type-Options', 'nosniff');
-    response.setHeader('Referrer-Policy', 'no-referrer');
+    // same-origin, not no-referrer: with no-referrer browsers send `Origin: null` on form POSTs, which the
+    // consent page's own origin check then rejects. Cross-site requests still get no referrer.
+    response.setHeader('Referrer-Policy', 'same-origin');
     response.setHeader('X-Frame-Options', 'DENY');
     response.setHeader('Content-Security-Policy', "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
     if (inFlight >= 64) {
