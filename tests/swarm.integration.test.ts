@@ -87,6 +87,17 @@ describe('swarm usage routing and status', {skip:!connectionString,concurrency:f
     await assert.rejects(() => call(outsider,'swarm_status',{scope:'project:a'}),(e:unknown) => e instanceof AppError && e.code === 'scope_forbidden');
   });
 
+  it('swarm_status describes running tasks and the branch a finished task landed on', async () => {
+    const {front,claude} = await fixture();
+    const task = (await call(front,'task_submit',submit('k-act'))).task;
+    const claim = await call(claude,'task_claim',{scope:'project:a',capabilities:['claude.read','auto.read']});
+    const running = (await call(front,'swarm_status',{})).workers.find((w:any) => w.name === 'worker-claude').running[0];
+    assert.deepEqual([running.task_id,running.kind,running.objective,running.required_capability,typeof running.started_at],[task.id,task.kind,task.objective.slice(0,140),task.required_capability,'string']);
+    await call(claude,'task_finish',{task_id:task.id,lease_token:claim.lease_token,lease_generation:claim.lease_generation,outcome:'completed',result:{provider:'claude',branch:'swarma/claude/abc12345',changed_files:2}});
+    const recent = (await call(front,'swarm_status',{})).recent.find((r:any) => r.id === task.id);
+    assert.deepEqual([recent.provider,recent.branch,recent.changed_files],['claude','swarma/claude/abc12345',2]);
+  });
+
   it('lets workers tag a chat with a task in its scope; frontends and cross-scope tasks are refused', async () => {
     const {front,claude} = await fixture();
     const task = (await call(front,'task_submit',submit('k-sess'))).task;

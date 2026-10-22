@@ -93,7 +93,7 @@ export class SwarmService {
     }
     const [workers, usage, counts, recent, sessions, lessonsPending, policy] = await Promise.all([
       this.pool.query(`SELECT w.name,w.last_seen_at,coalesce(w.last_seen_at>clock_timestamp()-interval '60 seconds',false) AS live,
-          (SELECT coalesce(json_agg(json_build_object('task_id',t.id,'scope',t.scope)),'[]') FROM tasks t
+          (SELECT coalesce(json_agg(json_build_object('task_id',t.id,'scope',t.scope,'kind',t.kind,'objective',left(t.objective,140),'required_capability',t.required_capability,'started_at',t.updated_at)),'[]') FROM tasks t
             WHERE t.lease_owner=w.id AND t.status='running' AND ($2::boolean OR t.scope=ANY($3::text[]))) AS running,
           (SELECT coalesce(json_agg(u.provider ORDER BY u.provider),'[]') FROM provider_usage u WHERE u.reporter_id=w.id) AS providers
         FROM principals w WHERE w.tenant_id=$1 AND w.role='worker' AND NOT w.disabled AND ($2::boolean OR w.scopes && $3::text[])
@@ -105,7 +105,8 @@ export class SwarmService {
           count(*) FILTER (WHERE status='completed' AND updated_at>now()-interval '24 hours')::int AS completed_24h,
           count(*) FILTER (WHERE status='failed' AND updated_at>now()-interval '24 hours')::int AS failed_24h
         FROM tasks WHERE tenant_id=$1 AND ($2::boolean OR scope=ANY($3::text[])) GROUP BY scope ORDER BY scope`, [p.tenantId, all, scopes]),
-      this.pool.query(`SELECT t.id,t.scope,t.kind,t.status,t.version,left(t.objective,140) AS objective,t.required_capability,t.updated_at,w.name AS worker
+      this.pool.query(`SELECT t.id,t.scope,t.kind,t.status,t.version,left(t.objective,140) AS objective,t.required_capability,t.updated_at,w.name AS worker,
+          t.result->>'provider' AS provider,t.result->>'branch' AS branch,(CASE WHEN jsonb_typeof(t.result->'changed_files')='number' THEN (t.result->>'changed_files')::int END) AS changed_files
         FROM tasks t LEFT JOIN principals w ON w.id=t.lease_owner
         WHERE t.tenant_id=$1 AND ($2::boolean OR t.scope=ANY($3::text[])) ORDER BY t.updated_at DESC LIMIT 15`, [p.tenantId, all, scopes]),
       this.sessions.active(p, all, scopes),
