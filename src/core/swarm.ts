@@ -2,6 +2,7 @@ import type { Pool } from 'pg';
 import { requireCondition } from '../errors.js';
 import type { Principal } from '../types.js';
 import { object, optionalString, scopeName, string } from '../validation.js';
+import { LessonService } from './lessons.js';
 import { SessionService } from './sessions.js';
 import { assertKnownScope, noExtraKeys, scopeSql, type Db } from './shared.js';
 
@@ -56,7 +57,8 @@ function headroom(windows: { used_percent: number }[], ok: boolean): number {
 
 export class SwarmService {
   private readonly sessions: SessionService;
-  constructor(private readonly pool: Pool) { this.sessions = new SessionService(pool); }
+  private readonly lessons: LessonService;
+  constructor(private readonly pool: Pool) { this.sessions = new SessionService(pool); this.lessons = new LessonService(pool); }
 
   /** Worker-reported quota readings for the providers it runs. Readings are data, never authority. */
   async report(p: Principal, input: Record<string, unknown>): Promise<unknown> {
@@ -104,7 +106,7 @@ export class SwarmService {
       assertKnownScope(p, scope);
       [all, scopes] = [false, [scope]];
     }
-    const [workers, usage, counts, recent, sessions] = await Promise.all([
+    const [workers, usage, counts, recent, sessions, lessonsPending] = await Promise.all([
       this.pool.query(`SELECT w.name,w.last_seen_at,coalesce(w.last_seen_at>clock_timestamp()-interval '60 seconds',false) AS live,
           (SELECT coalesce(json_agg(json_build_object('task_id',t.id,'scope',t.scope)),'[]') FROM tasks t
             WHERE t.lease_owner=w.id AND t.status='running' AND ($2::boolean OR t.scope=ANY($3::text[]))) AS running,
@@ -122,12 +124,13 @@ export class SwarmService {
         FROM tasks t LEFT JOIN principals w ON w.id=t.lease_owner
         WHERE t.tenant_id=$1 AND ($2::boolean OR t.scope=ANY($3::text[])) ORDER BY t.updated_at DESC LIMIT 15`, [p.tenantId, all, scopes]),
       this.sessions.active(p, all, scopes),
+      this.lessons.pending(p, all, scopes),
     ]);
     const usageView: UsageView[] = usage.rows.map(r => ({ provider: r.provider, ok: r.ok, headroom: r.headroom, ...r.windows, fetched_at: r.fetched_at }));
     const live = new Set<string>(workers.rows.filter(w => w.live).flatMap(w => w.providers as string[]));
     return {
       workers: workers.rows, usage: usageView, routing: routing(usageView, live), sessions,
-      scopes: counts.rows, recent: recent.rows, generated_at: new Date().toISOString(),
+      scopes: counts.rows, recent: recent.rows, lessons_pending: lessonsPending, generated_at: new Date().toISOString(),
     };
   }
 }

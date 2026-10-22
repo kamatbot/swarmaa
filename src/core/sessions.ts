@@ -4,7 +4,7 @@ import type { Principal } from '../types.js';
 import { boundedJson, enumValue, integer, object, optionalString, scopeName, string, uuid } from '../validation.js';
 import { assertKnownScope, newId, noExtraKeys, requireFound, scopeSql } from './shared.js';
 
-export const HARNESSES = ['claude-code', 'codex', 'antigravity', 'dot', 'grok', 'other'] as const;
+export const HARNESSES = ['claude-code', 'codex', 'antigravity', 'dot', 'grok', 'cursor', 'opencode', 'copilot', 'cline', 'roo', 'devin', 'kiro', 'windsurf', 'gemini', 'hermes', 'factory', 'pi', 'other'] as const;
 /** A chat counts as active while it keeps recording turns and has not ended. */
 const ACTIVE = "NOT ended AND updated_at>clock_timestamp()-interval '15 minutes'";
 const LIST_COLUMNS = `id,harness,session_key AS session_id,scope,title,cwd,updated_at,ended,turn_count,last_text,${ACTIVE} AS active`;

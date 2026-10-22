@@ -7,7 +7,7 @@ import { createPool, transaction } from '../src/db.js';
 import { requireCondition } from '../src/errors.js';
 import { EventService } from '../src/events.js';
 import { PasskeyService } from '../src/passkeys.js';
-import { ROLE_PERMISSIONS } from '../src/policy.js';
+import { GRANTABLE_PERMISSIONS, ROLE_PERMISSIONS } from '../src/policy.js';
 import type { Permission, Role } from '../src/types.js';
 import { enumValue, scopeName, string } from '../src/validation.js';
 
@@ -17,11 +17,11 @@ const { values, positionals } = parseArgs({
     name: { type: 'string' }, role: { type: 'string' }, scopes: { type: 'string' },
     tenant: { type: 'string', default: 'personal' }, grant: { type: 'string', multiple: true },
     out: { type: 'string' }, scope: { type: 'string' }, event: { type: 'string', default: 'task.updated' },
-    id: { type: 'string' }, days: { type: 'string', default: '7' }, minutes: { type: 'string', default: '30' },
+    permission: { type: 'string' }, id: { type: 'string' }, days: { type: 'string', default: '7' }, minutes: { type: 'string', default: '30' },
   },
 });
 const command = positionals[0];
-const commands = ['create', 'list', 'set-scopes', 'rotate', 'revoke', 'subscriptions', 'add-sink', 'remove-sink', 'passkey-invite'];
+const commands = ['create', 'list', 'set-scopes', 'grant', 'revoke-grant', 'rotate', 'revoke', 'subscriptions', 'add-sink', 'remove-sink', 'passkey-invite'];
 requireCondition(positionals.length === 1 && commands.includes(command), 400, 'usage', `Usage: npm run admin -- ${commands.join('|')} [options]. See docs/OPERATIONS.md.`);
 const tenant = string(values.tenant, 'tenant', 100);
 requireCondition(/^[a-z0-9][a-z0-9_-]*$/.test(tenant), 400, 'invalid_tenant', 'Tenant must use lowercase letters, digits, underscore and hyphen.');
@@ -88,6 +88,20 @@ try {
       await client.query('INSERT INTO audit_log(id,tenant_id,actor_id,operation,subject_id,details) VALUES($1,$2,$3,$4,$5,$6::jsonb)', [randomUUID(), tenant, principal.id, 'principal.set-scopes', principal.id, JSON.stringify({ local_owner: true, scopes })]);
     });
     await emit({ id: principal.id, name: principal.name, scopes });
+  } else if (command === 'grant' || command === 'revoke-grant') {
+    // Reviewing lessons is never part of a role. The owner grants it to one named frontend identity.
+    const permission = enumValue<Permission>(values.permission, 'permission', GRANTABLE_PERMISSIONS);
+    const principal = await lookupPrincipal();
+    requireCondition(principal.role === 'frontend', 400, 'invalid_grant', `${permission} can only be granted to frontend identities.`);
+    requireCondition(command === 'revoke-grant' || !principal.disabled, 400, 'disabled', 'A revoked principal cannot be granted anything.');
+    const permissions = await transaction(pool, async client => {
+      const updated = await client.query<{ permissions: string[] }>(command === 'grant'
+        ? 'UPDATE principals SET permissions=CASE WHEN $2=ANY(permissions) THEN permissions ELSE array_append(permissions,$2) END WHERE id=$1 RETURNING permissions'
+        : 'UPDATE principals SET permissions=array_remove(permissions,$2) WHERE id=$1 RETURNING permissions', [principal.id, permission]);
+      await client.query('INSERT INTO audit_log(id,tenant_id,actor_id,operation,subject_id,details) VALUES($1,$2,$3,$4,$5,$6::jsonb)', [randomUUID(), tenant, principal.id, `principal.${command}`, principal.id, JSON.stringify({ local_owner: true, permission })]);
+      return updated.rows[0]!.permissions;
+    });
+    await emit({ id: principal.id, name: principal.name, permissions });
   } else if (command === 'rotate' || command === 'revoke') {
     const principal = await lookupPrincipal();
     const token = command === 'rotate' ? newToken() : undefined;

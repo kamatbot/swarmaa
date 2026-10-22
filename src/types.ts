@@ -1,7 +1,7 @@
 import type { Pool } from 'pg';
 
 export type Role = 'admin' | 'frontend' | 'worker';
-export type Permission = 'admin' | 'memory:read' | 'memory:write' | 'memory:moderate' | 'task:read' | 'task:submit' | 'task:claim' | 'task:work' | 'task:patch' | 'task:cancel' | 'artifact:read' | 'artifact:write' | 'events:read';
+export type Permission = 'admin' | 'memory:read' | 'memory:write' | 'memory:moderate' | 'task:read' | 'task:submit' | 'task:claim' | 'task:work' | 'task:patch' | 'task:cancel' | 'artifact:read' | 'artifact:write' | 'events:read' | 'lesson:review';
 
 export interface Principal {
   id: string;
