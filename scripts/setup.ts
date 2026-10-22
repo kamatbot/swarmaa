@@ -561,9 +561,29 @@ async function webMain(dry: boolean, open: boolean): Promise<number> {
   return 0;
 }
 
+/** --detect-json: one JSON object on stdout, for the native app's onboarding. */
+async function detectJson(): Promise<number> {
+  process.stdout.write(`${JSON.stringify(await detect())}\n`);
+  return 0;
+}
+
+/** --run-json: plan JSON on stdin; NDJSON step/log events and a final summary on stdout, for the native app. */
+async function runJson(dry: boolean): Promise<number> {
+  const emit = (event: unknown) => process.stdout.write(`${JSON.stringify(event)}\n`);
+  let input = '';
+  for await (const chunk of process.stdin) input += chunk;
+  let plan: SetupPlan;
+  try { plan = validatePlan(JSON.parse(input)); }
+  catch (e) { emit({ type: 'error', errors: e instanceof PlanError ? e.errors : [(e as Error).message] }); return 1; }
+  const summary = await runSetup(plan, { dry, log: line => emit({ type: 'log', line }), onStep: step => emit({ type: 'step', step }) });
+  emit({ type: 'summary', summary });
+  return summary.ok ? 0 : 1;
+}
+
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const args = process.argv.slice(2);
   const dry = args.includes('--dry-run');
-  const code = await (args.includes('--cli') ? cliMain(dry) : webMain(dry, !args.includes('--no-open'))).catch(e => { console.error(`\nSetup failed: ${(e as Error).message}`); return 1; });
+  const code = await (args.includes('--detect-json') ? detectJson() : args.includes('--run-json') ? runJson(dry)
+    : args.includes('--cli') ? cliMain(dry) : webMain(dry, !args.includes('--no-open'))).catch(e => { console.error(`\nSetup failed: ${(e as Error).message}`); return 1; });
   process.exitCode = code;
 }

@@ -180,6 +180,7 @@ h1.title {
   color: var(--text); font: 400 .98rem "Outfit", sans-serif;
 }
 #form input::placeholder { color: var(--dim); }
+#form input.invite, .finale-form input.invite { flex: 0 0 120px; border-left: 1px solid var(--line-2); padding-left: 14px; }
 .form-note { margin-top: 14px; font-size: .8rem; color: var(--dim); display: flex; gap: 18px; flex-wrap: wrap; }
 .form-note span { display: inline-flex; align-items: center; gap: 6px; }
 .form-note svg { width: 14px; height: 14px; color: var(--g2); }
@@ -642,6 +643,7 @@ details p { color: var(--muted); padding: 0 50px 26px 0; line-height: 1.7; anima
   .hero .gem-a { left: 0; top: 96px; width: 26px; }
   .hero .gem-c { right: 0; top: 100px; width: 22px; }
   .form-note { gap: 6px 14px; }
+  #form input.invite, .finale-form input.invite { flex-basis: auto; width: 100%; border-left: 0; border-top: 1px solid var(--line-2); padding: 12px; text-align: center; }
   .mosaic { gap: 9px; }
   .float-card, .hero-callout { display: none; }
   #form { flex-direction: column; border-radius: 22px; padding: 8px; gap: 8px; }
@@ -797,6 +799,7 @@ details p { color: var(--muted); padding: 0 50px 26px 0; line-height: 1.7; anima
       <div class="reveal" style="--d:.4s" id="form-slot">
         <form id="form" autocomplete="off" novalidate>
           <input type="email" id="email-id" aria-label="Email address" placeholder="" required />
+          <input type="text" name="invite" class="invite" aria-label="Invite code" placeholder="Invite code" autocomplete="off" spellcheck="false" required />
           <button type="submit" class="btn btn-grad">Join the waitlist
             <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
           </button>
@@ -1070,6 +1073,7 @@ details p { color: var(--muted); padding: 0 50px 26px 0; line-height: 1.7; anima
     <div class="reveal" style="--d:.3s" id="finale-slot">
       <form class="finale-form" id="finaleForm" autocomplete="off" novalidate>
         <input type="email" aria-label="Email address" placeholder="Enter your email" required />
+        <input type="text" name="invite" class="invite" aria-label="Invite code" placeholder="Invite code" autocomplete="off" spellcheck="false" required />
         <button type="submit" class="btn btn-grad">Join the waitlist <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M13 6l6 6-6 6"/></svg></button>
       </form>
       <div class="form-error" id="finale-error" role="alert"></div>
@@ -1171,7 +1175,7 @@ function countUp(el) {
 const mailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 const shake = (el) => el.animate([{ transform: "translateX(0)" }, { transform: "translateX(-6px)" }, { transform: "translateX(6px)" }, { transform: "translateX(0)" }], { duration: 300 });
 function waitlist(formEl, slotId, errId) {
-  const input = formEl.querySelector("input"), btn = formEl.querySelector("button"), err = document.getElementById(errId);
+  const input = formEl.querySelector('input[type="email"]'), invite = formEl.querySelector('input[name="invite"]'), btn = formEl.querySelector("button"), err = document.getElementById(errId);
   input.addEventListener("input", () => {
     formEl.classList.remove("valid", "invalid"); err.textContent = "";
     if (input.value && formEl.id === "form") formEl.classList.add(mailRegex.test(input.value) ? "valid" : "invalid");
@@ -1184,9 +1188,11 @@ function waitlist(formEl, slotId, errId) {
       err.textContent = "Enter a valid email address.";
       shake(formEl); input.focus(); return;
     }
+    if (!invite.value.trim()) { err.textContent = "Enter your invite code."; shake(formEl); invite.focus(); return; }
     btn.disabled = true; err.textContent = "";
     try {
-      const res = await fetch("/api/waitlist", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ email }) });
+      const res = await fetch("/api/waitlist", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ email, invite: invite.value.trim() }) });
+      if (res.status === 403) { btn.disabled = false; err.textContent = "That invite code isn't valid."; invite.focus(); return; }
       if (!res.ok) throw new Error(String(res.status));
       document.getElementById(slotId).innerHTML = `<div class="success" role="status"><span class="dot"></span>You're on the list. We'll email you when the portal opens.</div>`;
     } catch {
