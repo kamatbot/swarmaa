@@ -144,3 +144,45 @@ test('event lifecycle verifies signatures, refreshes deterministically and stops
   }), error => error instanceof AppError && error.code === 'callback_verification_failed');
   assert.equal((await pool.query('SELECT id FROM event_subscriptions WHERE callback_url=$1', ['https://receiver.example/invalid-challenge'])).rows.length, 0);
 });
+
+test('generic task sinks deliver only terminal states as a small signed summary with the owner headers', {
+  skip: !process.env.TEST_DATABASE_URL,
+}, async t => {
+  const connectionString = process.env.TEST_DATABASE_URL!;
+  const schema = `events_generic_${randomBytes(8).toString('hex')}`;
+  const admin = new pg.Pool({ connectionString, max: 1 });
+  await admin.query(`CREATE SCHEMA ${schema}`);
+  const pool = new pg.Pool({ connectionString, options: `-c search_path=${schema},public`, max: 8 });
+  let service: EventService | undefined;
+  t.after(async () => { await service?.stop(); await pool.end(); await admin.query(`DROP SCHEMA ${schema} CASCADE`); await admin.end(); });
+  for (const migration of ['001_identity.sql', '002_core.sql', '003_oauth.sql', '004_events.sql']) {
+    await pool.query(await readFile(new URL(`../db/migrations/${migration}`, import.meta.url), 'utf8'));
+  }
+  const principal: Principal = { id: randomUUID(), tenantId: 'events-generic', name: 'grok', role: 'frontend', credentialVersion: 1,
+    scopes: ['project:alpha'], permissions: ['events:read', 'task:read', 'memory:read'] };
+  await pool.query('INSERT INTO principals(id,tenant_id,name,role,scopes,permissions,token_hash) VALUES($1,$2,$3,$4,$5,$6,$7)',
+    [principal.id, principal.tenantId, principal.name, principal.role, principal.scopes, principal.permissions, randomBytes(32).toString('hex')]);
+  const config: ServerConfig = { host: '127.0.0.1', port: 8787, publicUrl: 'https://memory.example', allowedOrigins: [], allowInsecureLocalhost: false,
+    maxBodyBytes: 524_288, oauthEnabled: false, oauthRedirectHosts: [], eventCallbackHosts: ['receiver.example'], eventEncryptionKey: randomBytes(32).toString('hex') };
+  const sent: CapturedWebhook[] = [];
+  service = new EventService(pool, { authenticate: async () => principal, getPrincipal: async id => id === principal.id ? principal : null }, config,
+    async (url, body, headers) => { sent.push({ url, body, headers }); return { status: 202, body: '' }; });
+  await service.registerGeneric(principal, { scope: 'project:alpha', name: 'task.updated', url: 'https://receiver.example/hook', headers: { Authorization: 'Bearer test-token' } });
+  const taskId = randomUUID();
+  const emit = (status: string) => pool.query('INSERT INTO events(id,tenant_id,scope,name,subject_id,payload) VALUES($1,$2,$3,$4,$5,$6::jsonb)',
+    [randomUUID(), principal.tenantId, 'project:alpha', 'task.updated', taskId, JSON.stringify({ task_id: taskId, status, action: status })]);
+  await emit('queued'); await emit('running'); await emit('completed');
+  service.start();
+  await eventually(async () => (await pool.query("SELECT 1 FROM event_deliveries WHERE state IN ('pending','sending')")).rowCount === 0 && sent.length > 0, 'deliveries to settle');
+  assert.equal(sent.length, 1, 'queued and running are skipped');
+  const body = JSON.parse(sent[0]!.body) as Record<string, unknown>;
+  assert.deepEqual(Object.keys(body).sort(), ['completed_at', 'event', 'event_id', 'kind', 'provider', 'scope', 'status', 'task_id', 'title']);
+  assert.deepEqual([body.event, body.task_id, body.scope, body.status], ['task.completed', taskId, 'project:alpha', 'completed']);
+  const h = sent[0]!.headers;
+  assert.equal(h.Authorization, 'Bearer test-token', 'owner header sent as given');
+  assert.equal(h['X-Collective-Event-Id'], body.event_id);
+  assert.equal(h['webhook-id'], body.event_id);
+  assert.ok(h['webhook-signature'] && h['webhook-timestamp'], 'Swarmaa signature headers present');
+  const skipped = await pool.query("SELECT count(*)::int AS n FROM event_deliveries WHERE state='skipped' AND last_error_code='not_terminal'");
+  assert.equal(skipped.rows[0].n, 2);
+});

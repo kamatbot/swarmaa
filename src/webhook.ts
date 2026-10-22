@@ -92,6 +92,11 @@ export class SecretBox {
     requireCondition(/^[0-9a-f]{64}$/i.test(hexKey), 503, 'events_not_configured', 'Webhook encryption is not configured.');
     this.key = Buffer.from(hexKey, 'hex');
   }
+
+  /** A stable per-context signing secret (e.g. one per generic subscription), never stored. */
+  derive(context: string): string {
+    return `whsec_${createHmac('sha256', this.key).update(`swarmaa-signing:${context}`).digest('base64')}`;
+  }
   encrypt(value: string, context: string): string {
     const iv = randomBytes(12);
     const cipher = createCipheriv('aes-256-gcm', this.key, iv);

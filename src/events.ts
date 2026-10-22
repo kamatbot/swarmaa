@@ -13,6 +13,7 @@ type EventName = typeof EVENT_NAMES[number];
 const DEFAULT_TTL = 24 * 60 * 60 * 1000;
 const MAX_TTL = 7 * DEFAULT_TTL;
 const MAX_ATTEMPTS = 8;
+const TERMINAL_STATUSES = new Set(['completed', 'failed', 'blocked', 'cancelled']);
 
 interface SubscriptionRow {
   id: string; principal_id: string; oauth_grant_id: string | null; credential_version: number; revision: number; tenant_id: string; scope: string; name: EventName;
@@ -257,10 +258,23 @@ export class EventService implements EventBackend {
     let status: number | null = null;
     let errorCode: string | null = null;
     try {
-      const body = JSON.stringify({ eventId: delivery.event_id, name: sub.name, timestamp: sub.event_created_at.toISOString(), data: { scope: sub.scope, subject_id: sub.subject_id, change: sub.payload }, cursor: null });
+      let body = JSON.stringify({ eventId: delivery.event_id, name: sub.name, timestamp: sub.event_created_at.toISOString(), data: { scope: sub.scope, subject_id: sub.subject_id, change: sub.payload }, cursor: null });
+      if (sub.mode === 'generic' && sub.name === 'task.updated') {
+        // Generic task sinks (e.g. a chat bot's webhook) hear only about finished work, as a small summary
+        // without task output: the receiver looks the result up itself with task_get.
+        const status = String(sub.payload.status ?? '');
+        if (!TERMINAL_STATUSES.has(status)) { await this.complete(delivery, 'skipped', null, 'not_terminal'); return; }
+        const task = (await this.pool.query<{ kind: string; objective: string; provider: string | null; updated_at: Date }>(
+          "SELECT kind,objective,result->>'provider' AS provider,updated_at FROM tasks WHERE id=$1 AND tenant_id=$2", [sub.subject_id, sub.tenant_id])).rows[0];
+        body = JSON.stringify({ event: `task.${status}`, event_id: delivery.event_id, task_id: sub.subject_id, scope: sub.scope, kind: task?.kind ?? null,
+          status, provider: task?.provider ?? null, completed_at: (task?.updated_at ?? sub.event_created_at).toISOString(),
+          title: (task?.objective ?? '').replace(/\s+/gu, ' ').trim().slice(0, 120) });
+      }
       const secret = this.box.decrypt(sub.secret_ciphertext, sub.id);
       const old = sub.previous_secret_ciphertext && sub.previous_secret_until && sub.previous_secret_until.getTime() > Date.now() ? this.box.decrypt(sub.previous_secret_ciphertext, sub.id) : undefined;
-      const headers = sub.mode === 'mcp' ? signedHeaders(secret, sub.id, delivery.event_id, body, old) : { ...JSON.parse(secret) as Record<string, string>, 'X-Collective-Event-Id': delivery.event_id };
+      // Generic sinks send the owner's headers as given, plus Swarmaa's signature headers (keyed per subscription).
+      const headers = sub.mode === 'mcp' ? signedHeaders(secret, sub.id, delivery.event_id, body, old)
+        : { ...JSON.parse(secret) as Record<string, string>, ...signedHeaders(this.box.derive(sub.id), sub.id, delivery.event_id, body), 'X-Collective-Event-Id': delivery.event_id };
       status = (await this.send(sub.callback_url, body, headers)).status;
       if (status >= 200 && status < 300) { await this.complete(delivery, 'delivered', status, null); return; }
       errorCode = `http_${status}`;
