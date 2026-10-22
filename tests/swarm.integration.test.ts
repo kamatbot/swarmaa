@@ -82,7 +82,8 @@ describe('swarm usage routing and status', {skip:!connectionString,concurrency:f
     assert.equal(status.usage[0].windows[0].name,'5h');
     assert.deepEqual(status.scopes,[{scope:'project:a',queued:1,running:0,blocked:0,completed_24h:0,failed_24h:0}]);
     const hidden = await call(outsider,'swarm_status',{});
-    assert.deepEqual([hidden.workers,hidden.scopes,hidden.recent],[[],[],[]]);
+    assert.deepEqual([hidden.workers,hidden.recent],[[],[]]);
+    assert.deepEqual(hidden.scopes,[{scope:'project:b',queued:0,running:0,blocked:0,completed_24h:0,failed_24h:0}]);
     await assert.rejects(() => call(outsider,'swarm_status',{scope:'project:a'}),(e:unknown) => e instanceof AppError && e.code === 'scope_forbidden');
   });
 

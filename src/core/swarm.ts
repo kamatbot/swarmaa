@@ -128,9 +128,14 @@ export class SwarmService {
     ]);
     const usageView: UsageView[] = usage.rows.map(r => ({ provider: r.provider, ok: r.ok, headroom: r.headroom, ...r.windows, fetched_at: r.fetched_at }));
     const live = new Set<string>(workers.rows.filter(w => w.live).flatMap(w => w.providers as string[]));
+    // List every permitted project, not just those with tasks, so a client can see what it can work in.
+    const zero = { queued: 0, running: 0, blocked: 0, completed_24h: 0, failed_24h: 0 };
+    const byScope = new Map<string, Record<string, unknown>>(counts.rows.map(r => [r.scope as string, r]));
+    if (!all) for (const scope of scopes) if (!byScope.has(scope)) byScope.set(scope, { scope, ...zero });
     return {
       workers: workers.rows, usage: usageView, routing: routing(usageView, live), sessions,
-      scopes: counts.rows, recent: recent.rows, lessons_pending: lessonsPending, generated_at: new Date().toISOString(),
+      scopes: [...byScope.values()].sort((a, b) => String(a.scope).localeCompare(String(b.scope))),
+      recent: recent.rows, lessons_pending: lessonsPending, generated_at: new Date().toISOString(),
     };
   }
 }
