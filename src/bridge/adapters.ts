@@ -1,4 +1,5 @@
 import { tmpdir } from 'node:os';
+import { claudeWorkerDir, type NativePlan } from './native-session.js';
 import { wrapCommand } from './sandbox.js';
 import type { AgentConfig, BridgeConfig, ProcessRequest, ProcessResult, ProjectConfig, Task } from './types.js';
 
@@ -42,7 +43,7 @@ export function buildPrompt(task: Task, context: unknown, maxBytes: number): str
 }
 
 /** Patch tasks run in their own git worktree: `dir` is the provider cwd and sandbox root, `gitDir` the repo's .git. */
-export function buildInvocation(agent: AgentConfig, project: ProjectConfig, task: Task, context: unknown, config: BridgeConfig, signal: AbortSignal, parentEnv = process.env, workspace?: { dir: string; gitDir: string }): ProcessRequest {
+export function buildInvocation(agent: AgentConfig, project: ProjectConfig, task: Task, context: unknown, config: BridgeConfig, signal: AbortSignal, parentEnv = process.env, workspace?: { dir: string; gitDir: string }, native?: NativePlan): ProcessRequest {
   if (task.scope !== project.scope || !project.agents.includes(agent.id)) throw new Error('Task does not match this configured project');
   const patch = task.kind === 'patch';
   if (task.required_capability !== capability(agent, patch) && task.required_capability !== (patch ? AUTO_PATCH : AUTO_READ)) throw new Error('Task capability does not match this provider/mode');
@@ -50,7 +51,9 @@ export function buildInvocation(agent: AgentConfig, project: ProjectConfig, task
   let args: string[];
   if (agent.provider === 'claude') {
     args = [
-      '--restricted', '--print', '--output-format', 'json', '--no-session-persistence',
+      '--restricted', '--print', '--output-format', 'json',
+      // Patch runs persist under a known id so the bridge can copy the transcript to the project; read runs run in the user's own project and stay unpersisted.
+      ...(native?.harness === 'claude' ? ['--session-id', native.id!] : ['--no-session-persistence']),
       // Bash only inside the Seatbelt, pre-approved via --allowedTools (--restricted refuses bypassPermissions).
       '--tools', patch ? `Read,Glob,Grep,Edit,Write${agent.sandbox ? ',Bash' : ''}` : 'Read,Glob,Grep',
       ...(patch && agent.sandbox ? ['--allowedTools', 'Bash'] : []),
@@ -61,7 +64,7 @@ export function buildInvocation(agent: AgentConfig, project: ProjectConfig, task
   } else if (agent.provider === 'codex') {
     args = [
       'exec', '--ignore-user-config', '--disable', 'apps', '--disable', 'plugins',
-      '--sandbox', patch ? 'workspace-write' : 'read-only', '-c', 'approval_policy="never"', '--ephemeral', '--color', 'never', '--json'
+      '--sandbox', patch ? 'workspace-write' : 'read-only', '-c', 'approval_policy="never"', ...(native?.codexHome ? [] : ['--ephemeral']), '--color', 'never', '--json'
     ];
   } else {
     // agy takes the prompt only as the value of -p (no stdin), attached with '=' so it is never parsed as a flag.
@@ -76,6 +79,7 @@ export function buildInvocation(agent: AgentConfig, project: ProjectConfig, task
   const input = buildPrompt(task, context, config.max_prompt_bytes);
   if (agent.provider === 'antigravity') args.push(`-p=${input}`);
   const env = providerEnvironment(agent.provider, parentEnv, config.token_env);
+  if (native?.codexHome) env.CODEX_HOME = native.codexHome; // holds only a link to auth.json
   let command = agent.binary;
   if (agent.sandbox) {
     // Seatbelt is the read/write boundary. Codex applies its own sandbox_init per command, which fails
@@ -85,7 +89,7 @@ export function buildInvocation(agent: AgentConfig, project: ProjectConfig, task
     const tmp = env.TMPDIR ?? tmpdir();
     env.TMPDIR = tmp;
     if (agent.provider === 'claude') env.CLAUDE_CODE_TMPDIR = tmp; // default /tmp/claude-<uid> is shared across projects
-    ({ command, args } = wrapCommand(agent.binary, args, { provider: agent.provider, binary: agent.binary, projectRoot: workspace?.dir ?? project.root, gitDir: workspace?.gitDir, patch, tmp }));
+    ({ command, args } = wrapCommand(agent.binary, args, { provider: agent.provider, binary: agent.binary, projectRoot: workspace?.dir ?? project.root, gitDir: workspace?.gitDir, patch, tmp, ownHistoryDir: native?.harness === 'claude' && workspace ? claudeWorkerDir(workspace.dir, native.home) : undefined }));
   }
   return {
     command, args, cwd: workspace?.dir ?? project.root, env,

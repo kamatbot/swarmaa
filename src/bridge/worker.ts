@@ -4,6 +4,7 @@ import { collectUsage, headroom } from '../usage/index.js';
 import type { UsageProviderId, UsageSnapshot } from '../usage/types.js';
 import { runBoundedProcess } from './process.js';
 import { reasonNotify } from './reason.js';
+import { cleanupNative, finishNative, prepareNative, type NativeSession } from './native-session.js';
 import { createWorktree, finishWorktree, type PatchOutcome, type Worktree } from './worktree.js';
 import type { AgentConfig, BridgeConfig, BridgeLogger, Claim, Lease, ProcessResult, ProcessRunner, ProjectConfig, Task, ToolClient } from './types.js';
 
@@ -178,12 +179,20 @@ export class BridgeWorker {
       // Patch work gets its own worktree+branch, so parallel patch tasks on one project never share files.
       if (task.kind === 'patch') worktree = await createWorktree(project.root, agent.provider, task);
       let result: ProcessResult;
+      let nativeSession: NativeSession | undefined;
+      let nativePlan: ReturnType<typeof prepareNative>;
+      try { nativePlan = prepareNative(agent, task, worktree?.dir); }
+      catch { this.logger('native_session_failed', { task_id: task.id, phase: 'prepare' }); }
       try {
-        const request = buildInvocation(agent, project, task, context, this.config, execution.signal, process.env, worktree);
+        const request = buildInvocation(agent, project, task, context, this.config, execution.signal, process.env, worktree, nativePlan);
         request.on_progress = value => { progress = value; };
         if (leaseLost || execution.signal.aborted) throw new Error('Provider start was aborted');
         result = await this.runner(request);
       } finally {
+        if (nativePlan) {
+          try { nativeSession = finishNative(nativePlan, project.root, worktree?.dir); }
+          catch (error) { cleanupNative(nativePlan); this.logger('native_session_failed', { task_id: task.id, phase: 'copy', message: error instanceof Error ? error.message.slice(0, 200) : '' }); }
+        }
         // Whatever the provider did (even if aborted), commit it to the branch and drop the worktree.
         if (worktree) {
           try { patchResult = await finishWorktree(project.root, agent.provider, task, worktree, this.config.max_output_bytes); }
@@ -230,6 +239,7 @@ export class BridgeWorker {
           ...(denied.length ? { denied_actions: denied, next_step: 'This worker cannot run those actions (read-only sandbox). Resubmit with a capability whose worker can, e.g. codex.read, or narrow the task.' } : {}),
           summary: outcome === 'completed' ? 'Provider completed. Review the transcript and acceptance criteria before integrating changes.' : 'Provider did not complete successfully. Review the transcript before continuing the task.',
           ...(task.kind === 'patch' ? { commands_allowed: true, ...(patchResult ? { branch: patchResult.branch, base_ref: patchResult.base_ref, base_commit: patchResult.base_commit, head_commit: patchResult.head_commit, changed_files: patchResult.changed_files, diffstat: patchResult.diffstat, ...(patchResult.continued ? { continued: true } : {}) } : {}), ...(diffArtifactError ? { diff_artifact_error: diffArtifactError } : {}), ...(finalizeFailure ?? {}) } : {}),
+          ...(nativeSession ? { native_session: nativeSession } : {}),
           tests_run_by_bridge: false
         }
       };
@@ -240,7 +250,7 @@ export class BridgeWorker {
       }
       finished = true;
       this.logger('task_finished', { task_id: task.id, outcome });
-      const branchLine = patchResult ? `Branch: ${patchResult.branch} @ ${patchResult.head_commit?.slice(0, 7) ?? 'none'} (${patchResult.changed_files} files)` : finalizeFailure?.recovery;
+      const branchLine = [patchResult ? `Branch: ${patchResult.branch} @ ${patchResult.head_commit?.slice(0, 7) ?? 'none'} (${patchResult.changed_files} files)` : finalizeFailure?.recovery, nativeSession ? `Resume: ${nativeSession.resume}` : undefined].filter(Boolean).join('\n') || undefined;
       await this.recordSession(task, agent, project, context, completion.result.answer, branchLine);
       try { await this.notifyReason(task.id, outcome); }
       catch { this.logger('reason_notification_failed', { task_id: task.id }); }

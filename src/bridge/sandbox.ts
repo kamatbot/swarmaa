@@ -28,6 +28,8 @@ export interface SandboxOptions {
   /** Patch only: the repo's .git dir (shared object store, refs, worktree metadata) that git must write. */
   gitDir?: string;
   patch?: boolean;
+  /** Claude patch only: the worker's own ~/.claude/projects/<slug(worktree)> dir, opened read+write (nothing else under projects/). */
+  ownHistoryDir?: string;
   home?: string;
   tmp?: string;
 }
@@ -76,6 +78,8 @@ export function buildProfile(o: SandboxOptions): string {
     // agy writes its plan artifact under brain/<conversation>/ but never needs other conversations' content back.
     ...(agy ? [`(deny file-read* ${sub(join(home, '.gemini/antigravity-cli/brain'))} ${sub(join(home, '.gemini/antigravity/brain'))} ${sub(join(home, '.gemini/antigravity/conversations'))} ${sub(join(home, '.gemini/antigravity/knowledge'))})`] : []),
     `(deny file-read* file-write* ${[...deniedHomeSubdirs.map(d => sub(join(home, d))), ...deniedState.map(sub)].join(' ')})`,
+    // Exempt only the worker's own history dir (its transcript, which the bridge copies out afterwards).
+    ...(o.ownHistoryDir && o.provider === 'claude' ? [`(allow file-read* file-write* ${sub(real(o.ownHistoryDir))})`] : []),
   ];
   return lines.join('\n') + '\n';
 }

@@ -135,7 +135,13 @@ git merge swarma/codex/8855687b</code></pre>
     <li><code>/swarm continue 3511a624 also add tests</code> — continue it.</li>
     <li><code>/swarm run review the payment flow</code> — start a new task in this project.</li>
   </ul>
-  <div class="note">Swarm runs don’t appear in the Claude or Codex app sidebars — those apps only list chats they started themselves. Use <code>/swarm</code> instead.</div>
+  <p><b>Resume a run in the terminal.</b> Claude edit runs and Codex runs can be continued in the CLI. The run’s last line shows the command:</p>
+  <ul>
+    <li>Claude: <code>cd ~/Projects/app &amp;&amp; claude --resume &lt;id&gt;</code></li>
+    <li>Codex: <code>cd ~/Projects/app &amp;&amp; codex resume &lt;id&gt;</code></li>
+  </ul>
+  <p>Run it from the project folder. Claude read-only runs and Antigravity runs can’t be resumed this way.</p>
+  <div class="note">Swarm runs still don’t appear in the Claude or Codex desktop app sidebars — those apps only list chats they started themselves. Use <code>/swarm</code> or the resume command instead.</div>
 </section>
 
 <section id="grok">

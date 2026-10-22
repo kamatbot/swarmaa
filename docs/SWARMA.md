@@ -111,6 +111,15 @@ Installed by `npx tsx scripts/hooks-install.ts` (`--dry-run`, `--remove`): `~/.c
 `~/.codex/skills/swarm/SKILL.md` (type `$swarm`), `~/.gemini/config/skills/swarm/SKILL.md`. Files without the
 `swarma:swarm-command` marker are never overwritten. Source: `clients/commands/swarm.md`.
 
+**Resume from the CLI.** Claude patch runs and all Codex runs keep a native transcript, so a swarm run can be continued in
+the CLI: the result's `native_session` is `{harness, id, resume}` and the swarm chat ends with `Resume: <command>`
+(`cd <project root> && claude --resume <id>` or `codex resume <id>`). The bridge copies the transcript into
+`~/.claude/projects/<project slug>/` or `~/.codex/sessions/` after the run, changing only the worktree path to the project
+root. Workers stay confined: a Claude patch worker may read/write only its own `~/.claude/projects/<worktree slug>/`
+(removed after the copy), a Codex worker runs with a temporary `CODEX_HOME` whose only link into `~/.codex` is `auth.json`.
+Claude read runs are not persisted (their cwd is your real project). Antigravity is unchanged. The desktop apps still list
+only chats they started. A failed copy logs `native_session_failed` and never changes the task outcome.
+
 ## Lessons
 
 Finished chats become reviewed, reusable guidance: distill, review, reuse.
