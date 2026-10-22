@@ -82,7 +82,7 @@ export function parseBridgeConfig(value: unknown): BridgeConfig {
     usage_seconds: integer(raw.usage_seconds, 300, 'usage_seconds', 0, 3600),
     lease_seconds, heartbeat_seconds, request_timeout_ms,
     task_timeout_seconds: integer(raw.task_timeout_seconds, 900, 'task_timeout_seconds', 10, 7200),
-    max_output_bytes: integer(raw.max_output_bytes, 128 * 1024, 'max_output_bytes', 4096, 256 * 1024),
+    max_output_bytes: integer(raw.max_output_bytes, 4 * 1024 * 1024, 'max_output_bytes', 4096, 8 * 1024 * 1024),
     max_prompt_bytes: integer(raw.max_prompt_bytes, 128 * 1024, 'max_prompt_bytes', 4096, 512 * 1024)
   };
 }

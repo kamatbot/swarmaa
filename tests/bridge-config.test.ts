@@ -82,3 +82,14 @@ test('auto.read runs as a read-only invocation and never as a patch', () => {
   assert.ok(auto.args.includes('Read,Glob,Grep'));
   assert.throws(() => buildInvocation(config.agents[0]!, config.projects[0]!, { ...task, kind: 'patch', required_capability: 'auto.read' }, null, config, signal, {}));
 });
+
+test('finalAnswer extracts the agent answer from Codex events and Claude results', async () => {
+  const { finalAnswer } = await import('../src/bridge/adapters.js');
+  const codex = ['{"type":"thread.started"}', '{"type":"item.completed","item":{"type":"agent_message","text":"first"}}',
+    '{"type":"item.completed","item":{"type":"command_execution","aggregated_output":"x"}}',
+    '{"type":"item.completed","item":{"type":"agent_message","text":"final answer"}}', '{"type":"turn.completed"}', '{"partial'].join('\n');
+  assert.equal(finalAnswer('codex', codex), 'final answer');
+  assert.equal(finalAnswer('codex', '{"msg":{"type":"agent_message","message":"legacy"}}'), 'legacy');
+  assert.equal(finalAnswer('claude', '{"type":"result","subtype":"success","result":"done"}'), 'done');
+  assert.equal(finalAnswer('claude', 'not json'), '');
+});

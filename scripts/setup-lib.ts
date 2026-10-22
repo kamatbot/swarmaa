@@ -106,7 +106,7 @@ export function bridgeConfig({ port, tokenFile, agent, projects }: BridgeConfigI
     service_url: `http://127.0.0.1:${port}`,
     token_file: tokenFile,
     poll_seconds: 3, lease_seconds: 120, heartbeat_seconds: 20, request_timeout_ms: 10000,
-    task_timeout_seconds: 900, max_output_bytes: 131072, max_prompt_bytes: 131072,
+    task_timeout_seconds: 900, max_output_bytes: 4194304, max_prompt_bytes: 131072,
     agents: [{ id: agent.id, provider: agent.id, binary: agent.binary, ...(agent.model ? { model: agent.model } : {}), enable_patch: false }],
     projects: projects.map(p => ({ scope: p.scope, root: p.root, agents: [agent.id], allow_patch: false })),
     reason: null,

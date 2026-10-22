@@ -83,3 +83,20 @@ export function providerSucceeded(provider: string, result: ProcessResult): bool
   } catch { /* Malformed output fails closed. */ }
   return false;
 }
+
+/** The agent's final answer from provider output (Codex JSON events or Claude's JSON result), or '' when absent. */
+export function finalAnswer(provider: string, stdout: string): string {
+  if (provider === 'claude') {
+    try { const r = (JSON.parse(stdout) as { result?: unknown }).result; return typeof r === 'string' ? r : ''; } catch { return ''; }
+  }
+  let answer = '';
+  for (const line of stdout.split('\n')) {
+    if (!line.startsWith('{')) continue;
+    try {
+      const e = JSON.parse(line) as { item?: { type?: string; text?: string }; msg?: { type?: string; message?: string } };
+      if (e.item?.type === 'agent_message' && typeof e.item.text === 'string') answer = e.item.text;
+      else if (e.msg?.type === 'agent_message' && typeof e.msg.message === 'string') answer = e.msg.message;
+    } catch { /* partial or non-JSON line */ }
+  }
+  return answer;
+}

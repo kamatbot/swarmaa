@@ -1,5 +1,5 @@
 import { setTimeout as delay } from 'node:timers/promises';
-import { AUTO_READ, buildInvocation, capability, projectCapabilities, providerSucceeded } from './adapters.js';
+import { AUTO_READ, buildInvocation, capability, finalAnswer, projectCapabilities, providerSucceeded } from './adapters.js';
 import { collectUsage, headroom } from '../usage/index.js';
 import type { UsageProviderId, UsageSnapshot } from '../usage/types.js';
 import { runBoundedProcess } from './process.js';
@@ -186,6 +186,8 @@ export class BridgeWorker {
           acceptance_criteria_verified: false, review_required: true,
           exit_code: result.exit_code, stop_reason: result.stop_reason,
           duration_ms: result.duration_ms,
+          // The agent's own answer, so callers can read it with task_get; untrusted provider output.
+          answer: cleanText(finalAnswer(agent.provider, result.stdout), 8 * 1024),
           summary: outcome === 'completed' ? 'Provider completed. Review the transcript and acceptance criteria before integrating changes.' : 'Provider did not complete successfully. Review the transcript before continuing the task.',
           source_only_patch: task.kind === 'patch',
           tests_run_by_bridge: false
@@ -232,7 +234,9 @@ export class BridgeWorker {
 
   private resultArtifact(agent: AgentConfig, result: ProcessResult): string {
     const header = JSON.stringify({ provider: agent.provider, agent: agent.id, exit_code: result.exit_code, stop_reason: result.stop_reason, duration_ms: result.duration_ms, acceptance_criteria_verified: false });
-    return cleanText(`${header}\n\nSTDOUT (untrusted provider output)\n${result.stdout}\n\nSTDERR (untrusted provider diagnostics)\n${result.stderr}`, 240 * 1024);
+    // The final answer goes first: clipping keeps the start, and the answer is what readers need.
+    const answer = finalAnswer(agent.provider, result.stdout);
+    return cleanText(`${header}\n\nANSWER (untrusted provider output)\n${answer || '(none)'}\n\nSTDOUT (untrusted provider output)\n${result.stdout}\n\nSTDERR (untrusted provider diagnostics)\n${result.stderr}`, 240 * 1024);
   }
 
   private async notifyReason(taskId: string, outcome: string): Promise<void> {
