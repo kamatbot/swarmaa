@@ -602,7 +602,8 @@ test('runSetup: capture needs a detected app and an explicit yes; autostart off 
   const run = async (plan: unknown, det: Detected) => { const lines: string[] = []; const s = await runSetup(validatePlan(plan), { dry: true, log: l => lines.push(l), root, detected: det }); return { s, text: lines.join('\n') }; };
   const none = await run({ harnesses: {}, capture: { enabled: true }, folders: [], autostart: true }, detected());
   assert.deepEqual(none.s.captured, []);
-  assert.ok(!none.text.includes('com.swarma.capture.plist'));
+  // Never installs the capture job (removing one left on this machine by a real setup is fine).
+  assert.ok(!/write \S*com\.swarma\.capture\.plist/.test(none.text));
   const off = await run({ harnesses: {}, folders: [], autostart: true }, detected({ captureSources: ['cursor'] }));
   assert.deepEqual(off.s.captured, []);
   assert.ok(!off.text.includes('--name capture'));
