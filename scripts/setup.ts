@@ -306,7 +306,10 @@ export async function runSetup(plan: SetupPlan, opts: RunOpts): Promise<SetupSum
           if (r.status !== 0) say(`  could not stop the pg_ctl cluster:\n${tail(r)}`);
         }
         run('launchctl', ['bootout', `gui/${uid}/${label(j.id)}`]);
-        const r = run('launchctl', ['bootstrap', `gui/${uid}`, file]);
+        // bootout returns before launchd releases the job; bootstrapping too early fails with EIO.
+        for (let i = 0; !dry && i < 20 && spawnSync('launchctl', ['print', `gui/${uid}/${label(j.id)}`]).status === 0; i++) spawnSync('sleep', ['0.25']);
+        let r = run('launchctl', ['bootstrap', `gui/${uid}`, file]);
+        if (r.status !== 0 && !dry) { spawnSync('sleep', ['1']); r = run('launchctl', ['bootstrap', `gui/${uid}`, file]); }
         if (r.status === 0) say(`  loaded ${label(j.id)}`); else { say(`  launchctl bootstrap ${label(j.id)} failed:\n${tail(r)}`); summary.warnings.push(`launchctl bootstrap ${label(j.id)} failed`); }
       }
       for (const k of ['claude', 'codex']) {
