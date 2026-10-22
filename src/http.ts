@@ -1,3 +1,4 @@
+import { isIP } from 'node:net';
 import { randomBytes, randomUUID } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { AppError, publicError } from './errors.js';
@@ -236,7 +237,11 @@ export function createHttpHandler(dependencies: HttpDependencies): (request: Inc
     const url = new URL(target, publicUrl);
     const path = url.pathname;
     const host = oneHeader(request, 'host')?.toLowerCase();
-    const remote = request.socket.remoteAddress ?? 'unknown';
+    const socketAddress = request.socket.remoteAddress ?? 'unknown';
+    // Behind the local Cloudflare Tunnel every request arrives from loopback; key limits by the visitor's
+    // address instead. Only trusted from a loopback socket, and only used for rate limiting.
+    const forwarded = oneHeader(request, 'cf-connecting-ip')?.trim();
+    const remote = ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(socketAddress) && forwarded && isIP(forwarded) ? forwarded : socketAddress;
     // Same-machine clients (bridges, stdio proxies) keep the fast loopback path when PUBLIC_URL is a
     // tunnel origin. A literal loopback Host from a loopback socket cannot be a DNS-rebinding name.
     const loopback = ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(remote) &&
@@ -288,7 +293,7 @@ export function createHttpHandler(dependencies: HttpDependencies): (request: Inc
     }
     if (oauth && path === '/oauth/register') {
       onlyMethod(request, response, ['POST']);
-      limiter.accept(`registration:${remote}`, 6);
+      limiter.accept(`registration:${remote}`, 30);
       requireType(request, 'application/json');
       json(response, 201, await oauth.registerClient(parseJson(await readBody(request, Math.min(config.maxBodyBytes, 16_384)))));
       return;
@@ -379,7 +384,8 @@ export function createHttpHandler(dependencies: HttpDependencies): (request: Inc
       if (response.headersSent || response.destroyed) { response.destroy(); return; }
       response.setHeader('Connection', 'close');
       if (safe.status === 429) response.setHeader('Retry-After', '60');
-      if (error instanceof OAuthError) json(response, safe.status, { error: safe.code, error_description: safe.message });
+      // OAuth endpoints answer in the RFC 6749 flat shape, including rate-limit and body errors.
+      if (error instanceof OAuthError || request.url?.startsWith('/oauth/')) json(response, safe.status, { error: safe.code, error_description: safe.message });
       else if (request.url?.split('?', 1)[0] === '/mcp' && safe.code === 'invalid_json') {
         json(response, 400, { jsonrpc: '2.0', error: { code: -32700, message: safe.message } });
       } else json(response, safe.status, { error: { code: safe.code, message: safe.message, requestId } });

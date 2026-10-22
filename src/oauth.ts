@@ -180,6 +180,9 @@ export class OAuthService {
     if (!Array.isArray(data.redirect_uris) || data.redirect_uris.length < 1 || data.redirect_uris.length > 8) {
       throw new OAuthError('invalid_client_metadata', 'Provide between one and eight redirect URIs.');
     }
+    // Hostnames only (no paths or query), so the owner can allowlist a client's callback host.
+    const hosts = data.redirect_uris.map(uri => { try { return new URL(String(uri)).hostname.toLowerCase().slice(0, 253); } catch { return 'unparseable'; } });
+    console.error(JSON.stringify({ event: 'oauth_client_registering', client_name: String(data.client_name ?? '').slice(0, 80), redirect_hosts: hosts }));
     const redirects = [...new Set(data.redirect_uris.map(uri => validateRedirectUri(uri, this.config)))];
     if (data.token_endpoint_auth_method !== undefined && data.token_endpoint_auth_method !== 'none') {
       throw new OAuthError('invalid_client_metadata', 'Only public clients with token_endpoint_auth_method none are supported.');
