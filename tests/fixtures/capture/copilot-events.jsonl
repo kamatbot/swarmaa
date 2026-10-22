@@ -1,0 +1,6 @@
+{"id":"1","type":"session.start","timestamp":"2026-10-20T10:00:00Z","data":{"sessionId":"cp-1","context":{"cwd":"/w/app"}}}
+{"id":"2","type":"user.message","timestamp":"2026-10-20T10:00:01Z","data":{"content":"Add a retry to fetchUser","transformedContent":"<injected>context</injected> Add a retry to fetchUser"}}
+{"id":"3","type":"assistant.message","timestamp":"2026-10-20T10:00:02Z","data":{"content":"","toolRequests":[{"id":"t1","name":"view"}]}}
+{"id":"4","type":"assistant.message","timestamp":"2026-10-20T10:00:03Z","data":{"content":"subagent chatter","parentToolCallId":"t1"}}
+{"id":"5","type":"tool.execution_complete","timestamp":"2026-10-20T10:00:04Z","data":{"toolCallId":"t1"}}
+{"id":"6","type":"assistant.message","timestamp":"2026-10-20T10:00:05Z","data":{"content":"Added exponential backoff."}}

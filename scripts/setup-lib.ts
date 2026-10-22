@@ -4,7 +4,7 @@ import { basename, isAbsolute, resolve } from 'node:path';
 
 export interface ScopeRoot { scope: string; root: string }
 
-export const AGY_TOOLS = ['artifact_get', 'context_get', 'events_poll', 'memory_get', 'memory_propose', 'memory_search', 'task_cancel', 'task_continue', 'task_get', 'task_list', 'task_submit'];
+export const AGY_TOOLS = ['artifact_get', 'context_get', 'events_poll', 'lesson_list', 'lesson_propose', 'lesson_search', 'memory_get', 'memory_propose', 'memory_search', 'session_get', 'session_list', 'swarm_status', 'task_cancel', 'task_continue', 'task_get', 'task_list', 'task_submit'];
 
 export function parseEnv(text: string): Record<string, string> {
   const out: Record<string, string> = {};
@@ -54,19 +54,31 @@ export function slugScopes(paths: string[], taken: string[] = []): ScopeRoot[] {
 
 const xml = (s: string): string => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;');
 
-export interface PlistOptions { workingDirectory?: string; env?: Record<string, string>; stdout?: string; stderr?: string }
+export interface PlistOptions {
+  workingDirectory?: string; env?: Record<string, string>; stdout?: string; stderr?: string;
+  /** One-shot jobs: run every N seconds (StartInterval). Implies no KeepAlive. */
+  startInterval?: number;
+  /** One-shot jobs: run daily at this time (StartCalendarInterval). Implies no KeepAlive. */
+  calendar?: { hour: number; minute: number };
+  /** Default true for daemons, and also for interval jobs; pass false to wait for the first interval. */
+  runAtLoad?: boolean;
+}
 
 export function plist(label: string, programArguments: string[], opts: PlistOptions = {}): string {
   const str = (k: string, v: string) => `\t<key>${xml(k)}</key>\n\t<string>${xml(v)}</string>\n`;
   const flag = (k: string) => `\t<key>${k}</key>\n\t<true/>\n`;
+  const int = (k: string, v: number) => `\t<key>${k}</key>\n\t<integer>${Math.trunc(v)}</integer>\n`;
+  const oneShot = opts.startInterval !== undefined || opts.calendar !== undefined;
   const env = Object.entries(opts.env ?? {}).map(([k, v]) => `\t\t<key>${xml(k)}</key>\n\t\t<string>${xml(v)}</string>\n`).join('');
   return '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0">\n<dict>\n'
     + str('Label', label)
     + `\t<key>ProgramArguments</key>\n\t<array>\n${programArguments.map(a => `\t\t<string>${xml(a)}</string>\n`).join('')}\t</array>\n`
     + (opts.workingDirectory ? str('WorkingDirectory', opts.workingDirectory) : '')
     + (env ? `\t<key>EnvironmentVariables</key>\n\t<dict>\n${env}\t</dict>\n` : '')
-    + flag('RunAtLoad') + flag('KeepAlive')
-    + '\t<key>ThrottleInterval</key>\n\t<integer>10</integer>\n'
+    + (opts.runAtLoad === false ? '' : flag('RunAtLoad')) + (oneShot ? '' : flag('KeepAlive'))
+    + (opts.startInterval !== undefined ? int('StartInterval', opts.startInterval) : '')
+    + (opts.calendar ? `\t<key>StartCalendarInterval</key>\n\t<dict>\n\t\t<key>Hour</key>\n\t\t<integer>${Math.trunc(opts.calendar.hour)}</integer>\n\t\t<key>Minute</key>\n\t\t<integer>${Math.trunc(opts.calendar.minute)}</integer>\n\t</dict>\n` : '')
+    + (oneShot ? '' : '\t<key>ThrottleInterval</key>\n\t<integer>10</integer>\n')
     + str('ProcessType', 'Background')
     + (opts.stdout ? str('StandardOutPath', opts.stdout) : '')
     + (opts.stderr ? str('StandardErrorPath', opts.stderr) : '')
@@ -105,6 +117,9 @@ export function bridgeConfig({ port, tokenFile, agent, projects }: BridgeConfigI
 export const HARNESS_KEYS = ['claude', 'codex', 'agy', 'grok', 'dot', 'notchtrader'] as const;
 export type HarnessKey = typeof HARNESS_KEYS[number];
 export const WORKER_HARNESSES: readonly HarnessKey[] = ['claude', 'codex'];
+/** Apps that share chats through their own hooks (no MCP connection): Kiro, Windsurf (also Devin Desktop), Qwen Code. */
+export const HOOK_APP_KEYS = ['kiro', 'windsurf', 'qwen'] as const;
+export type HookAppKey = typeof HOOK_APP_KEYS[number];
 export const SHARING_HARNESSES: readonly HarnessKey[] = ['claude', 'codex', 'agy'];
 export const GENERAL_SCOPE = 'project:general';
 export const DEFAULT_HOSTNAME = 'api.swarmaa.com';
@@ -112,11 +127,14 @@ export const DEFAULT_HOSTNAME = 'api.swarmaa.com';
 export interface HarnessPlan { connect: boolean; worker: boolean; share: boolean }
 export interface SetupPlan {
   harnesses: Partial<Record<HarnessKey, HarnessPlan>>;
+  /** Poll chats of the other installed AI coding apps (Cursor, OpenCode, ...). Off unless the plan says so. */
+  capture: { enabled: boolean };
+  hookApps: Partial<Record<HookAppKey, { share: boolean }>>;
   folders: string[];
   remote?: { hostname: string };
   autostart: boolean;
 }
-export interface State { folders?: string[]; projects?: ScopeRoot[]; agents?: string[]; workers?: string[]; sharing?: string[]; autostart?: boolean; remote?: { hostname: string } }
+export interface State { folders?: string[]; projects?: ScopeRoot[]; agents?: string[]; workers?: string[]; sharing?: string[]; capture?: boolean; hookApps?: string[]; autostart?: boolean; remote?: { hostname: string } }
 
 /** Interactive identities see every project plus project:general; workers never get project:general (it has no folder). */
 export function identityScopes(kind: 'interactive' | 'worker', projects: ScopeRoot[]): string[] {
@@ -125,8 +143,8 @@ export function identityScopes(kind: 'interactive' | 'worker', projects: ScopeRo
 }
 
 /** Contents of .local/setup.json; the chat-journal hooks read `projects`. */
-export function stateFile(s: { folders: string[]; projects: ScopeRoot[]; agents: string[]; workers: string[]; sharing: string[]; autostart: boolean; remote?: { hostname: string } }): State {
-  return { folders: s.folders, projects: s.projects.map(p => ({ scope: p.scope, root: p.root })), agents: s.agents, workers: s.workers, sharing: s.sharing, autostart: s.autostart, ...(s.remote ? { remote: s.remote } : {}) };
+export function stateFile(s: { folders: string[]; projects: ScopeRoot[]; agents: string[]; workers: string[]; sharing: string[]; capture?: boolean; hookApps?: string[]; autostart: boolean; remote?: { hostname: string } }): State {
+  return { folders: s.folders, projects: s.projects.map(p => ({ scope: p.scope, root: p.root })), agents: s.agents, workers: s.workers, sharing: s.sharing, ...(s.capture !== undefined ? { capture: s.capture } : {}), ...(s.hookApps ? { hookApps: s.hookApps } : {}), autostart: s.autostart, ...(s.remote ? { remote: s.remote } : {}) };
 }
 
 /** Lowercased DNS name with at least two labels and an alphabetic (or punycode) TLD; undefined if invalid. */
@@ -146,7 +164,7 @@ const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object
 export function validatePlan(input: unknown): SetupPlan {
   const errors: string[] = [];
   if (!isObj(input)) throw new PlanError(['plan must be an object']);
-  for (const k of Object.keys(input)) if (!['harnesses', 'folders', 'remote', 'autostart'].includes(k)) errors.push(`unknown field "${k}"`);
+  for (const k of Object.keys(input)) if (!['harnesses', 'capture', 'hookApps', 'folders', 'remote', 'autostart'].includes(k)) errors.push(`unknown field "${k}"`);
   const harnesses: SetupPlan['harnesses'] = {};
   if (!isObj(input.harnesses)) errors.push('harnesses must be an object');
   else for (const [key, v] of Object.entries(input.harnesses)) {
@@ -159,6 +177,27 @@ export function validatePlan(input: unknown): SetupPlan {
     if (v.share === true && !SHARING_HARNESSES.includes(k)) errors.push(`harness ${k} does not support chat sharing`);
     const connect = v.connect === true;
     harnesses[k] = { connect, worker: connect && v.worker === true, share: connect && SHARING_HARNESSES.includes(k) && v.share !== false };
+  }
+  let capture = false;
+  if (input.capture !== undefined) {
+    const c = input.capture;
+    if (!isObj(c)) errors.push('capture must be an object');
+    else {
+      for (const f of Object.keys(c)) if (f !== 'enabled') errors.push(`capture: unknown field "${f.slice(0, 40)}"`);
+      if (c.enabled !== undefined && typeof c.enabled !== 'boolean') errors.push('capture: enabled must be true or false');
+      capture = c.enabled === true;
+    }
+  }
+  const hookApps: SetupPlan['hookApps'] = {};
+  if (input.hookApps !== undefined) {
+    if (!isObj(input.hookApps)) errors.push('hookApps must be an object');
+    else for (const [key, v] of Object.entries(input.hookApps)) {
+      if (!(HOOK_APP_KEYS as readonly string[]).includes(key)) { errors.push(`unknown hook app "${key.slice(0, 40)}"`); continue; }
+      if (!isObj(v)) { errors.push(`hook app ${key} must be an object`); continue; }
+      for (const f of Object.keys(v)) if (f !== 'share') errors.push(`hook app ${key}: unknown field "${f.slice(0, 40)}"`);
+      if (v.share !== undefined && typeof v.share !== 'boolean') errors.push(`hook app ${key}: share must be true or false`);
+      hookApps[key as HookAppKey] = { share: v.share !== false };
+    }
   }
   const folders: string[] = [];
   if (!Array.isArray(input.folders) || input.folders.length > 64) errors.push('folders must be a list of at most 64 paths');
@@ -178,5 +217,5 @@ export function validatePlan(input: unknown): SetupPlan {
   }
   if (typeof input.autostart !== 'boolean') errors.push('autostart must be true or false');
   if (errors.length) throw new PlanError(errors);
-  return { harnesses, folders, ...(remote ? { remote } : {}), autostart: input.autostart === true };
+  return { harnesses, capture: { enabled: capture }, hookApps, folders, ...(remote ? { remote } : {}), autostart: input.autostart === true };
 }

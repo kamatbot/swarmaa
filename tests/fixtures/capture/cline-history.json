@@ -1,0 +1,6 @@
+[
+  {"role":"user","content":[{"type":"text","text":"<task>\nBuild a todo app\n</task>"},{"type":"text","text":"<environment_details>\n# Current Working Directory (/w/app) Files\nREADME.md\n</environment_details>"}]},
+  {"role":"assistant","content":[{"type":"text","text":"<thinking>plan it</thinking>\nI will create the files."},{"type":"tool_use","id":"a","name":"write_to_file","input":{"path":"x"}}]},
+  {"role":"user","content":[{"type":"tool_result","tool_use_id":"a","content":"ok"},{"type":"text","text":"<environment_details>\nnoise\n</environment_details>"}]},
+  {"role":"assistant","content":[{"type":"text","text":"All done."}]}
+]

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// Chat journal hook: records the latest window of a Claude Code / Codex / Antigravity chat into the local Swarmaa service.
-// Usage: node swarmaa-journal.mjs <claude|codex|agy> [payload-json]
+// Chat journal hook: records the latest window of a Claude Code / Codex / Antigravity / Kiro / Windsurf / Qwen chat into the local Swarmaa service.
+// Usage: node swarmaa-journal.mjs <claude|codex|agy|kiro|windsurf|qwen> [payload-json]
 // Never breaks or slows the harness: swallows every error, exits 0, prints nothing (except `{}` for agy, whose hook contract wants JSON).
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -19,7 +19,12 @@ export const HARNESS = {
   claude: { service: 'claude-code', tokenFile: 'claude.json' },
   codex: { service: 'codex', tokenFile: 'codex.json' },
   agy: { service: 'antigravity', tokenFile: 'antigravity.json' },
+  kiro: { service: 'kiro', tokenFile: 'kiro.json' },
+  windsurf: { service: 'windsurf', tokenFile: 'windsurf.json' }, // also Devin Desktop (same hooks.json)
+  qwen: { service: 'other', tokenFile: 'qwen.json' }, // the session_record contract has no qwen value
 };
+/** Harnesses whose hooks fire once per event (prompt, reply) and so need the rolling per-session cache. */
+const EVENT_HARNESSES = ['kiro', 'windsurf', 'qwen'];
 
 // ---------- pure helpers ----------
 
@@ -82,6 +87,42 @@ export function parseAgyPayload(p) {
   if (!isObj(p) || !str(p.conversationId)) return null;
   const ws = Array.isArray(p.workspacePaths) ? p.workspacePaths.find(w => typeof w === 'string' && w) : '';
   return { session_id: p.conversationId, cwd: ws || '', transcriptPath: str(p.transcriptPath), ended: false };
+}
+
+/**
+ * Kiro hook stdin (UserPromptSubmit / Stop): session_id, cwd, hook_event_name, prompt, assistant_response (Stop).
+ * Adapted from Asymptote Labs agent-beacon (MIT). Kiro feeds hook stdout to the agent, so this hook never prints.
+ */
+export function parseKiroPayload(p) {
+  if (!isObj(p)) return null;
+  const get = (...keys) => { for (const k of keys) if (typeof p[k] === 'string' && p[k]) return p[k]; return ''; };
+  const cwd = get('cwd', 'workspace_root', 'workspaceRoot');
+  const session_id = get('session_id', 'sessionId', 'conversation_id') || (cwd ? `cwd-${createHash('sha256').update(cwd).digest('hex').slice(0, 16)}` : '');
+  if (!session_id) return null;
+  return { session_id, cwd, event: get('hook_event_name'), prompt: get('prompt', 'user_prompt'), reply: get('assistant_response') };
+}
+
+/**
+ * Windsurf / Devin Desktop hook stdin: agent_action_name pre_user_prompt (tool_info.user_prompt) or post_cascade_response
+ * (tool_info.response), trajectory_id as the session. The payload has no cwd, so these chats scope to project:general.
+ * Adapted from Asymptote Labs agent-beacon (MIT).
+ */
+export function parseWindsurfPayload(p) {
+  if (!isObj(p)) return null;
+  const session_id = str(p.trajectory_id) || str(p.session_id) || str(p.conversation_id);
+  if (!session_id) return null;
+  const info = isObj(p.tool_info) ? p.tool_info : isObj(p.toolInfo) ? p.toolInfo : {};
+  const action = str(p.agent_action_name);
+  return { session_id, cwd: '', event: action, prompt: action === 'pre_user_prompt' ? str(info.user_prompt) || str(info.userPrompt) : '', reply: action === 'post_cascade_response' ? str(info.response) : '' };
+}
+
+/**
+ * Qwen Code hook stdin (Claude-style): session_id, cwd, hook_event_name, prompt (UserPromptSubmit).
+ * The reply is read from last_assistant_message / assistant_response when Stop carries one (not documented upstream: unverified).
+ */
+export function parseQwenPayload(p) {
+  if (!isObj(p) || !str(p.session_id)) return null;
+  return { session_id: p.session_id, cwd: str(p.cwd), event: str(p.hook_event_name), prompt: str(p.prompt), reply: str(p.last_assistant_message) || str(p.assistant_response) };
 }
 
 const WRAPPED_USER = /^\s*<(?:command-name|command-message|local-command-|task-notification|bash-(?:input|stdout|stderr))/;
@@ -168,6 +209,25 @@ export function mergeCodexCache(cache, parsed, now = new Date().toISOString()) {
   return { session_id: parsed.session_id, title, turns };
 }
 
+/** Rolling cache for per-event hooks (Kiro, Windsurf, Qwen): one prompt or one reply per call. Identical consecutive turns are retries. */
+export function mergeEventCache(cache, parsed, now = new Date().toISOString()) {
+  const prev = isObj(cache) && Array.isArray(cache.turns) ? cache.turns.filter(t => isObj(t) && (t.role === 'user' || t.role === 'assistant') && typeof t.text === 'string') : [];
+  const turns = prev.slice();
+  const add = (role, text) => {
+    const t = text.trim();
+    if (!t) return;
+    const last = turns.at(-1);
+    if (last && last.role === role && last.text === t) return;
+    turns.push({ role, text: t, at: now });
+  };
+  add('user', parsed.prompt ?? '');
+  add('assistant', parsed.reply ?? '');
+  const kept = turns.slice(-MAX_TURNS);
+  const title = (isObj(cache) && typeof cache.title === 'string' && cache.title) || firstUserPrompt(kept);
+  const cwd = parsed.cwd || (isObj(cache) && typeof cache.cwd === 'string' ? cache.cwd : '');
+  return { session_id: parsed.session_id, title, cwd, turns: kept };
+}
+
 /** Builds the session_record body: redacted, clipped, <=40 turns, <=MAX_BODY bytes (drops oldest turns first). */
 export function buildBody({ harness, session_id, scope, title, cwd, turns, ended }) {
   const cleaned = turns.slice(-MAX_TURNS).map(t => ({
@@ -239,7 +299,17 @@ export async function run(harness, argvPayload, stdinText, root) {
   if (!payload) return 'no-payload';
   let session_id, cwd, turns, title = '', ended = false;
 
-  if (harness === 'codex') {
+  if (EVENT_HARNESSES.includes(harness)) {
+    const p = { kiro: parseKiroPayload, windsurf: parseWindsurfPayload, qwen: parseQwenPayload }[harness](payload);
+    if (!p) return 'ignored-payload';
+    if (!p.prompt && !p.reply) return 'no-turns';
+    const file = cacheFile(root, harness, p.session_id);
+    const merged = mergeEventCache(readJsonFile(file), p);
+    mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
+    writeFileSync(file, JSON.stringify(merged), { mode: 0o600 });
+    try { chmodSync(file, 0o600); } catch { /* ignore */ }
+    ({ session_id, turns, title, cwd } = merged);
+  } else if (harness === 'codex') {
     const p = parseCodexPayload(payload);
     if (!p) return 'ignored-payload';
     const file = cacheFile(root, harness, p.session_id);

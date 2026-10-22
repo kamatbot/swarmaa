@@ -1,0 +1,5 @@
+{"type":"session","id":"pi-77","cwd":"/w/app","timestamp":"2026-10-20T10:00:00Z"}
+{"type":"message","timestamp":"2026-10-20T10:00:01Z","message":{"role":"user","content":[{"type":"text","text":"Summarize the README"}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"thinking","thinking":"hmm"},{"type":"toolCall","name":"read"},{"type":"text","text":"It describes a swarm."}]}}
+{"type":"message","message":{"role":"toolResult","content":[{"type":"text","text":"README body"}]}}
+{"type":"message","message":{"role":"user","content":"Thanks"}}

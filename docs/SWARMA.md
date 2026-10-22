@@ -30,6 +30,24 @@ What it does:
 Tokens never appear in client configs or process arguments: `clients/macos/swarma-mcp.sh` reads
 the identity's token file and starts the stdio proxy; bridges read `token_file` directly.
 
+## Captured apps
+
+Besides the hook-based sharing for Claude Code, Codex and Antigravity, Swarmaa can record chats from other AI coding apps
+without running a service. Setup asks once ("Capture chats from other apps") and lists the ones it finds.
+
+| How | Apps |
+|---|---|
+| Polled by `npm run capture -- --once` (LaunchAgent `com.swarma.capture`, every 2 minutes, then exits) | Cursor, OpenCode, GitHub Copilot CLI, Cline, Roo Code, Devin CLI, Hermes, Factory, Pi |
+| Hooks installed by setup (own identity per app, one share toggle each) | Kiro (`~/.kiro/hooks/swarmaa-journal.json`), Windsurf / Devin Desktop (`~/.codeium/windsurf/hooks.json`), Qwen Code (`~/.qwen/settings.json`) |
+
+The poller reads each app's local history read-only, keeps only user/assistant text (no tool calls or results, thinking or injected
+context), redacts secrets, resolves the project scope from the working directory, and sends the latest 40 turns per changed
+session through the `capture` identity (`.local/capture.json`). Cursors live in `.local/capture/<app>.json`; the first run only
+looks at the last 14 days; a run stops after 60 seconds. Errors are logged as status words to `.local/logs/capture.log`.
+`npm run capture -- --dry-run [--only cursor,opencode]` prints per-app counts and sends nothing. Roo Code's storage layout is inferred
+from Cline's; Windsurf hooks carry no working directory, so those chats land in `project:general`. Qwen chats are recorded under the
+`other` harness. Not affiliated with Asymptote Labs; the readers adapt MIT-licensed recipes from agent-beacon.
+
 ## Projects and scopes
 
 Each project folder becomes a scope `project:<folder-name>`; `project:demo` is a throwaway sandbox.
@@ -53,6 +71,28 @@ Patch tasks always name an explicit capability.
 
 `swarm_status` returns live workers, provider headroom with reset times, task counts per scope and
 recent tasks. `npm run usage` prints the local readings.
+
+## Lessons
+
+Finished chats become reviewed, reusable guidance: distill, review, reuse.
+
+- **Distill.** `npm run distill -- [--once] [--dry-run]` (a daily LaunchAgent runs it) acts as the `distiller` identity
+  (created on first run, frontend role, never admin). It queues read-only `review` tasks (`auto.read`) holding the redacted,
+  fenced transcripts of up to five ended or idle (30 min) chats per scope (at least 4 turns), then collects finished tasks
+  and files each valid lesson with `lesson_propose` (`source: "distill"`). Scopes no worker serves, and `project:general`,
+  are marked skipped. A task prompt is capped at 16000 characters by `task_submit`, so long chats are shortened (first and
+  last turns kept).
+- **Propose.** Any agent with `memory:write` can call `lesson_propose`. Secrets are redacted, safety findings are stored as
+  `flags` (prompt-injection, risky-command and credential-access patterns), invisible/bidi characters are rejected. Lessons
+  start as `candidate` and are data, never instructions.
+- **Review.** `lesson_review` needs `lesson:review`, which nobody has by default:
+  `npm run admin -- grant --name <frontend identity> --permission lesson:review` (`revoke-grant` removes it). Approve (with
+  optional edits; the original is kept in the audit log), reject, or supersede an approved lesson. `swarm_status` shows
+  `lessons_pending`.
+- **Reuse.** Approved lessons appear in `context_get` (`lessons`, at most five) and `lesson_search`, always as guidance that
+  yields to the user's instructions and the project's docs.
+
+Run `npm run migrate` (migration `008_lessons.sql`) before restarting the service.
 
 ## NotchTrader
 

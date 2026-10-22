@@ -106,6 +106,11 @@ ul.plain { list-style: none; display: grid; gap: 6px; }
     <h2 id="h-services">Services</h2>
     <div id="services" role="group" aria-labelledby="h-services"></div>
 
+    <section id="apps" class="hidden" aria-labelledby="h-apps">
+      <h2 id="h-apps">Other apps</h2>
+      <div id="appcards" role="group" aria-labelledby="h-apps"></div>
+    </section>
+
     <h2 id="h-projects">Projects</h2>
     <p class="hint">Folders the swarm may read. Each becomes a scope named <code>project:&lt;folder&gt;</code>. <code>project:demo</code> (a scratch sandbox) always exists, and your interactive agents also get <code>project:general</code>, a scope with no folder.</p>
     <div id="projects" role="list" aria-labelledby="h-projects"></div>
@@ -203,6 +208,22 @@ function buildServices() {
   }
 }
 
+const CAPTURE_LABELS = { cursor: 'Cursor', opencode: 'OpenCode', copilot: 'Copilot CLI', cline: 'Cline', roo: 'Roo Code', devin: 'Devin CLI', hermes: 'Hermes', factory: 'Factory', pi: 'Pi' };
+const HOOK_APPS = { kiro: 'Kiro', windsurf: 'Windsurf / Devin Desktop', qwen: 'Qwen Code' };
+function buildApps() {
+  const st = det.state || {};
+  const cap = det.captureSources || [], hooks = det.hookApps || [];
+  if (!cap.length && !hooks.length) return;
+  $('apps').classList.remove('hidden');
+  const card = (id, name, desc, checked) => {
+    const input = h('input', { type: 'checkbox', id, checked });
+    $('appcards').append(h('section', { class: 'card on', 'aria-label': name }, h('div', { class: 'row' },
+      h('label', { class: 't', for: id }, h('span', { class: 'name' }, name), h('div', { class: 'hint' }, desc)), h('span', { class: 'switch' }, input))));
+  };
+  if (cap.length) card('cap-on', 'Capture chats from other apps (Cursor, OpenCode, …)', `Reads the local chat history of ${cap.map(k => CAPTURE_LABELS[k] || k).join(', ')} every couple of minutes so your agents can recall it. Nothing runs in the background between scans.`, st.capture ?? true);
+  for (const k of hooks) card(`ha-${k}`, HOOK_APPS[k] || k, 'Share chats across harnesses: adds a small hook that records this app’s chats.', st.hookApps ? st.hookApps.includes(k) : true);
+}
+
 function sync() {
   for (const k in sv) {
     const r = sv[k], on = r.connect.checked;
@@ -233,7 +254,9 @@ function plan() {
   const harnesses = {};
   for (const k in sv) { const r = sv[k]; harnesses[k] = { connect: r.connect.checked, worker: !!r.worker?.checked, share: r.share ? r.share.checked : false }; }
   const hosted = sv.grok.connect.checked || sv.dot.connect.checked;
-  return { harnesses, folders, autostart: $('autostart').checked, ...(hosted && $('remoteOn').checked ? { remote: { hostname: $('hostname').value.trim() } } : {}) };
+  const hookApps = {};
+  for (const k of det.hookApps || []) if ($(`ha-${k}`)?.checked) hookApps[k] = { share: true };
+  return { harnesses, capture: { enabled: !!$('cap-on')?.checked }, hookApps, folders, autostart: $('autostart').checked, ...(hosted && $('remoteOn').checked ? { remote: { hostname: $('hostname').value.trim() } } : {}) };
 }
 
 let polling;
@@ -276,6 +299,8 @@ function renderSummary(s) {
   add('Connected', names(s.agents));
   add('Background workers', names(s.workers));
   add('Chat sharing', names(s.sharing));
+  if ((s.captured || []).length) add('Captured apps', s.captured.map(k => CAPTURE_LABELS[k] || k).join(', '));
+  if ((s.hookApps || []).length) add('Hook apps', s.hookApps.map(k => HOOK_APPS[k] || k).join(', '));
   add('Scopes', h('ul', { class: 'plain' }, s.projects.map(p => h('li', {}, h('span', { class: 'mono' }, p.scope), ' → ', h('span', { class: 'mono' }, p.root))), h('li', {}, h('span', { class: 'mono' }, 'project:general'), ' → no folder (interactive agents only)')));
   add('Service', h('span', { class: 'mono' }, s.serviceUrl));
   if (s.mcpUrl) {
@@ -306,7 +331,7 @@ async function init() {
   $('hostname').value = (st.remote && st.remote.hostname) || det.defaultHostname;
   $('autostart').checked = st.autostart ?? true;
   if (det.dry) $('banner').classList.remove('hidden');
-  buildServices(); renderFolders(); sync();
+  buildServices(); buildApps(); renderFolders(); sync();
 }
 init();
 </script>

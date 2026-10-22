@@ -12,11 +12,12 @@ import pg from 'pg';
 import { loadConfig } from '../src/config.js';
 import { createPool } from '../src/db.js';
 import { PasskeyService } from '../src/passkeys.js';
+import { SOURCES, detectSources } from '../src/capture/index.js';
 import { installJournalHooks, removeJournalHooks, type Harness } from './hooks-install.js';
 import {
-  AGY_TOOLS, DEFAULT_HOSTNAME, HARNESS_KEYS, PlanError, SHARING_HARNESSES, WORKER_HARNESSES, bridgeConfig, identityScopes, mergeAgyPermissions,
+  AGY_TOOLS, DEFAULT_HOSTNAME, HARNESS_KEYS, HOOK_APP_KEYS, PlanError, SHARING_HARNESSES, WORKER_HARNESSES, bridgeConfig, identityScopes, mergeAgyPermissions,
   parseEnv, plist, slugScopes, splitFolder, stateFile, validHostname, validatePlan, yes,
-  type HarnessKey, type ScopeRoot, type SetupPlan, type State,
+  type HarnessKey, type HookAppKey, type ScopeRoot, type SetupPlan, type State,
 } from './setup-lib.js';
 import { setupTunnel } from './tunnel.js';
 
@@ -35,6 +36,11 @@ const META: Record<HarnessKey, { label: string; ident: string; stem: string; mod
   dot: { label: 'Dot', ident: 'dot', stem: 'dot' },
   notchtrader: { label: 'NotchTrader', ident: 'notchtrader', stem: 'notchtrader' },
 };
+const HOOK_APPS: Record<HookAppKey, { label: string; marks: (home: string, env: NodeJS.ProcessEnv) => string[]; bin: string }> = {
+  kiro: { label: 'Kiro', bin: 'kiro', marks: (h, e) => [e.KIRO_HOME?.trim() || join(h, '.kiro'), '/Applications/Kiro.app', join(h, 'Applications/Kiro.app')] },
+  windsurf: { label: 'Windsurf / Devin Desktop', bin: 'windsurf', marks: h => [join(h, '.codeium/windsurf'), '/Applications/Windsurf.app', join(h, 'Applications/Windsurf.app')] },
+  qwen: { label: 'Qwen Code', bin: 'qwen', marks: h => [join(h, '.qwen')] },
+};
 const CLI_KEYS = ['claude', 'codex', 'agy'] as const;
 const HOSTED = ['grok', 'dot'] as const;
 
@@ -46,6 +52,10 @@ export interface Detected {
   postgres: { found: boolean; reachable: boolean };
   envExists: boolean;
   state: State;
+  /** Ids of the poll-captured apps found on this Mac (cursor, opencode, ...). */
+  captureSources?: string[];
+  /** Hook-based apps found on this Mac (kiro, windsurf, qwen). */
+  hookApps?: HookAppKey[];
 }
 
 const exe = (p: string) => { try { accessSync(p, constants.X_OK); return statSync(p).isFile(); } catch { return false; } };
@@ -69,7 +79,8 @@ export async function detect(root = ROOT): Promise<Detected> {
   const url = envExists ? parseEnv(readFileSync(join(root, '.env'), 'utf8')).DATABASE_URL : undefined;
   let reachable = false;
   if (url) { const c = await pgConnect(url); reachable = !!c; await c?.end(); }
-  return { clis, notchtrader: existsSync('/Applications/NotchTrader.app'), postgres: { found: reachable || !!findPgBin(), reachable }, envExists, state };
+  const hookApps = HOOK_APP_KEYS.filter(k => HOOK_APPS[k].marks(HOME, process.env).some(existsSync) || !!findCli(HOOK_APPS[k].bin));
+  return { clis, notchtrader: existsSync('/Applications/NotchTrader.app'), postgres: { found: reachable || !!findPgBin(), reachable }, envExists, state, captureSources: detectSources(), hookApps };
 }
 
 // ---------------------------------------------------------------- the setup engine
@@ -78,6 +89,8 @@ export interface StepRecord { id: string; label: string; status: 'running' | 'ok
 export interface SetupSummary {
   dry: boolean; ok: boolean; error?: string;
   agents: string[]; workers: string[]; sharing: string[];
+  /** Poll-captured sources and hook apps that are on (additive; absent in older summaries). */
+  captured?: string[]; hookApps?: string[];
   projects: ScopeRoot[]; serviceUrl: string;
   mcpUrl?: string; remote?: { hostname: string; ok: boolean };
   steps: StepRecord[]; warnings: string[]; nextSteps: string[];
@@ -114,7 +127,7 @@ export async function runSetup(plan: SetupPlan, opts: RunOpts): Promise<SetupSum
   const mkdirp = (dir: string, mode = 0o700) => { if (dry) pl(`mkdir -p ${dir}`); else mkdirSync(dir, { recursive: true, mode }); };
   const die: (s: string) => never = s => { throw new Error(s); };
 
-  const summary: SetupSummary = { dry, ok: true, agents: [], workers: [], sharing: [], projects: [], serviceUrl: '', steps: [], warnings: [], nextSteps: [] };
+  const summary: SetupSummary = { dry, ok: true, agents: [], workers: [], sharing: [], captured: [], hookApps: [], projects: [], serviceUrl: '', steps: [], warnings: [], nextSteps: [] };
   async function step(id: string, label: string, fn: () => Promise<string | { skipped: string } | void>, fatal = false): Promise<void> {
     const rec: StepRecord = { id, label, status: 'running' };
     summary.steps.push(rec); opts.onStep?.({ ...rec });
@@ -266,6 +279,33 @@ export async function runSetup(plan: SetupPlan, opts: RunOpts): Promise<SetupSum
       }
     });
 
+    // Hook-based apps (Kiro, Windsurf, Qwen): their own identity plus journal hooks; hooks are removed when switched off on a re-run.
+    const foundApps = det.hookApps ?? [];
+    for (const k of HOOK_APP_KEYS) {
+      const want = !!plan.hookApps[k]?.share && foundApps.includes(k);
+      if (!want && !state.hookApps?.includes(k)) continue;
+      await step(`hookapp:${k}`, HOOK_APPS[k].label, async () => {
+        const o = { root, dry, log: (l: string) => say(`  ${l}`) };
+        if (!want) { await removeJournalHooks(k, o); return 'chat sharing removed'; }
+        if (!ensureIdentity(k, 'frontend', join(root, `.local/${k}.json`), interactive)) throw new Error(`could not create or update the ${k} identity`);
+        const r = await installJournalHooks(k, o);
+        if (r.skipped) throw new Error(r.skipped);
+        summary.hookApps!.push(k);
+        return 'chats are shared';
+      });
+    }
+
+    // Poll-captured apps (Cursor, OpenCode, ...): one `capture` identity; the capture LaunchAgent is created with autostart.
+    const found = det.captureSources ?? [];
+    const captureOn = plan.capture.enabled && found.length > 0;
+    if (captureOn || state.capture) await step('capture', 'Capture chats from other apps', async () => {
+      if (!captureOn) return 'switched off';
+      if (!ensureIdentity('capture', 'frontend', join(root, '.local/capture.json'), interactive)) throw new Error('could not create or update the capture identity');
+      summary.captured = found;
+      say(`  apps: ${found.map(id => SOURCES.find(x => x.id === id)?.label ?? id).join(', ')}`);
+      return found.join(', ');
+    });
+
     // Remote access for hosted agents (Grok, Dot).
     const hosted = HOSTED.filter(k => summary.agents.includes(k));
     if (plan.remote && hosted.length) await step('remote', 'Remote access', async () => {
@@ -289,6 +329,7 @@ export async function runSetup(plan: SetupPlan, opts: RunOpts): Promise<SetupSum
         if (managed) say(`  LC_ALL=en_US.UTF-8 ${join(findPgBin() ?? '<pgbin>', 'pg_ctl')} -D .local/pg -o "-p 54329 -k /tmp -h 127.0.0.1" -l .local/pg.log -w start`);
         say('  npm run dev');
         for (const k of summary.workers) say(`  npm run bridge -- --config .local/bridge-${k}.json`);
+        if (captureOn) say('  npm run capture -- --once   (captures chats from the other apps; run it now and then, or switch autostart on)');
         summary.nextSteps.push('Start the service: npm run dev (autostart is off).');
         return;
       }
@@ -297,14 +338,18 @@ export async function runSetup(plan: SetupPlan, opts: RunOpts): Promise<SetupSum
       const baseEnv = { PATH: `${dirname(NODE)}:/opt/homebrew/bin:${HOME}/.local/bin:/usr/bin:/bin`, HOME };
       const pgbin = managed ? (bin ?? findPgBin()) : undefined;
       if (managed && !pgbin) say('  PostgreSQL binaries not found; not creating a postgres LaunchAgent.');
-      const jobs: { id: string; args: string[]; extra?: Record<string, string>; wd?: string }[] = [
+      const jobs: { id: string; args: string[]; extra?: Record<string, string>; wd?: string; log?: string; interval?: number; calendar?: { hour: number; minute: number }; script?: string }[] = [
         ...(pgbin ? [{ id: 'postgres', args: [join(pgbin, 'postgres'), '-D', PGDATA, '-p', '54329', '-k', '/tmp', '-h', '127.0.0.1'], extra: PGENV }] : []),
         { id: 'service', args: [NODE, `--env-file=${join(root, '.env')}`, join(root, 'dist/src/server.js')], wd: root },
         ...summary.workers.map(k => ({ id: `bridge.${k}`, args: [NODE, join(root, 'dist/src/bridge.js'), '--config', join(root, `.local/bridge-${k}.json`)], wd: root })),
+        // One-shot jobs: no KeepAlive. Their own *.log (status words) is written by the scripts; launchd output goes to *.launchd.log.
+        ...(captureOn ? [{ id: 'capture', args: [NODE, '--import', 'tsx', join(root, 'scripts/capture.ts'), '--once'], wd: root, log: 'capture.launchd.log', interval: 120 }] : []),
+        { id: 'distill', args: [NODE, '--import', 'tsx', join(root, 'scripts/distill.ts'), '--once'], wd: root, log: 'distill.launchd.log', calendar: { hour: 3, minute: 30 }, script: 'scripts/distill.ts' },
       ];
       for (const j of jobs) {
-        const file = join(LA, `${label(j.id)}.plist`), log = join(LOGS, `${j.id}.log`);
-        const xml = plist(label(j.id), j.args, { workingDirectory: j.wd, env: { ...baseEnv, ...j.extra }, stdout: log, stderr: log });
+        if (j.script && !dry && !existsSync(join(root, j.script))) { say(`  ${j.script} is not present yet; not creating the ${j.id} LaunchAgent.`); continue; }
+        const file = join(LA, `${label(j.id)}.plist`), log = join(LOGS, j.log ?? `${j.id}.log`);
+        const xml = plist(label(j.id), j.args, { workingDirectory: j.wd, env: { ...baseEnv, ...j.extra }, stdout: log, stderr: log, startInterval: j.interval, calendar: j.calendar, ...(j.calendar ? { runAtLoad: false } : {}) });
         if (dry) { pl(`write ${file}`); say(xml.replace(/^/gm, '      ')); } else writeFileSync(file, xml, { mode: 0o644 });
         if (j.id === 'postgres' && run(join(pgbin!, 'pg_ctl'), ['-D', PGDATA, 'status'], { mutating: false, env: PGENV }).status === 0) {
           const r = run(join(pgbin!, 'pg_ctl'), ['-D', PGDATA, '-m', 'fast', 'stop'], { env: PGENV });
@@ -317,10 +362,10 @@ export async function runSetup(plan: SetupPlan, opts: RunOpts): Promise<SetupSum
         if (r.status !== 0 && !dry) { spawnSync('sleep', ['1']); r = run('launchctl', ['bootstrap', `gui/${uid}`, file]); }
         if (r.status === 0) say(`  loaded ${label(j.id)}`); else { say(`  launchctl bootstrap ${label(j.id)} failed:\n${tail(r)}`); summary.warnings.push(`launchctl bootstrap ${label(j.id)} failed`); }
       }
-      for (const k of ['claude', 'codex']) {
-        const file = join(LA, `${label(`bridge.${k}`)}.plist`);
-        if (summary.workers.includes(k) || !existsSync(file)) continue;
-        run('launchctl', ['bootout', `gui/${uid}/${label(`bridge.${k}`)}`]);
+      for (const [id, keep] of [['bridge.claude', summary.workers.includes('claude')], ['bridge.codex', summary.workers.includes('codex')], ['capture', captureOn]] as const) {
+        const file = join(LA, `${label(id)}.plist`);
+        if (keep || !existsSync(file)) continue;
+        run('launchctl', ['bootout', `gui/${uid}/${label(id)}`]);
         if (dry) pl(`rm ${file}`); else rmSync(file, { force: true });
       }
     });
@@ -345,7 +390,7 @@ export async function runSetup(plan: SetupPlan, opts: RunOpts): Promise<SetupSum
     });
 
     await step('save', 'Save settings', async () => {
-      put(join(root, '.local/setup.json'), `${JSON.stringify(stateFile({ folders: plan.folders, projects, agents: summary.agents, workers: summary.workers, sharing: summary.sharing, autostart, remote: plan.remote }), null, 2)}\n`);
+      put(join(root, '.local/setup.json'), `${JSON.stringify(stateFile({ folders: plan.folders, projects, agents: summary.agents, workers: summary.workers, sharing: summary.sharing, capture: captureOn, hookApps: summary.hookApps, autostart, remote: plan.remote }), null, 2)}\n`);
     });
     if (summary.agents.some(a => (CLI_KEYS as readonly string[]).includes(a))) summary.nextSteps.push('Restart Claude Code, Codex or Antigravity so they pick up the swarma MCP server.');
     if (!summary.agents.length) summary.nextSteps.push('Nothing was connected. Re-run setup and switch a service on.');
@@ -360,6 +405,8 @@ export function printSummary(s: SetupSummary, say: (l?: string) => void): void {
   say(`  Agents connected: ${s.agents.join(', ') || 'none'}`);
   say(`  Background workers: ${s.workers.join(', ') || 'none'}`);
   say(`  Chats shared across harnesses: ${s.sharing.join(', ') || 'none'}`);
+  say(`  Chats captured from other apps: ${(s.captured ?? []).join(', ') || 'none'}`);
+  say(`  Hook apps (Kiro / Windsurf / Qwen): ${(s.hookApps ?? []).join(', ') || 'none'}`);
   say('  Scopes:');
   for (const p of s.projects) say(`    ${p.scope} -> ${p.root}`);
   say('    project:general -> (no folder; interactive agents only)');
@@ -432,6 +479,7 @@ export function createOnboarding(o: OnboardingOptions) {
         return send(res, 200, {
           dry: o.dry, defaultHostname: DEFAULT_HOSTNAME, state: d.state,
           installed: { claude: !!d.clis.claude, codex: !!d.clis.codex, agy: !!d.clis.agy, notchtrader: d.notchtrader },
+          captureSources: d.captureSources ?? [], hookApps: d.hookApps ?? [],
           postgres: d.postgres,
         });
       }
@@ -448,7 +496,7 @@ export function createOnboarding(o: OnboardingOptions) {
         const onStep = (s: StepRecord) => { const i = j.steps.findIndex(x => x.id === s.id); const r = { ...s, ...(s.note ? { note: redact(s.note) } : {}) }; if (i < 0) j.steps.push(r); else j.steps[i] = r; };
         runner(plan, { dry, log, onStep, root }).then(
           s => { j.summary = JSON.parse(redact(JSON.stringify(s))) as SetupSummary; },
-          e => { j.summary = { dry, ok: false, error: redact((e as Error).message), agents: [], workers: [], sharing: [], projects: [], serviceUrl: '', steps: j.steps, warnings: [], nextSteps: [] }; },
+          e => { j.summary = { dry, ok: false, error: redact((e as Error).message), agents: [], workers: [], sharing: [], captured: [], hookApps: [], projects: [], serviceUrl: '', steps: j.steps, warnings: [], nextSteps: [] }; },
         ).finally(() => { j.running = false; });
         return send(res, 202, { id: j.id, dry });
       }
@@ -531,13 +579,17 @@ async function cliMain(dry: boolean): Promise<number> {
       const share = SHARING_HARNESSES.includes(k) && await askYes(`Share ${m.label} chats across harnesses?`, state.sharing ? state.sharing.includes(k) : true);
       harnesses[k] = { connect: true, worker, share };
     }
+    const found = det.captureSources ?? [];
+    const capture = { enabled: found.length > 0 && await askYes(`Capture chats from other apps (${found.map(id => SOURCES.find(x => x.id === id)?.label ?? id).join(', ')}) so your agents can recall them?`, state.capture ?? true) };
+    const hookApps: Record<string, { share: boolean }> = {};
+    for (const k of det.hookApps ?? []) if (await askYes(`Share ${HOOK_APPS[k].label} chats across harnesses?`, state.hookApps ? state.hookApps.includes(k) : true)) hookApps[k] = { share: true };
     let remote: { hostname: string } | undefined;
     if (HOSTED.some(k => harnesses[k]) && await askYes('Set up remote access with a Cloudflare Tunnel (opens Cloudflare in your browser to authorize)?', true)) {
       const h = validHostname(await ask(`Hostname [${state.remote?.hostname ?? DEFAULT_HOSTNAME}]:`) || state.remote?.hostname || DEFAULT_HOSTNAME);
       if (h) remote = { hostname: h }; else say('  that is not a valid hostname; skipping remote access.');
     }
     const autostart = await askYes('Start Swarmaa automatically at login?', state.autostart ?? true);
-    const s = await runSetup(validatePlan({ harnesses, folders, remote, autostart }), { dry, log: say, detected: det });
+    const s = await runSetup(validatePlan({ harnesses, capture, hookApps, folders, remote, autostart }), { dry, log: say, detected: det });
     printSummary(s, say);
     return s.ok ? 0 : 1;
   } finally { rl.close(); }

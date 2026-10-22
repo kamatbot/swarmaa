@@ -1,0 +1,6 @@
+{"type":"session_start","id":"fa-1","title":"Fix flaky test","cwd":"/w/app"}
+{"type":"message","id":"m1","timestamp":"2026-10-20T10:00:00Z","message":{"role":"user","content":[{"type":"text","text":"<user_query>Why is login flaky?</user_query>"}]}}
+{"type":"message","id":"m2","message":{"role":"user","visibility":"llm_only","content":[{"type":"text","text":"<system-reminder>injected rules</system-reminder>"}]}}
+{"type":"message","id":"m3","message":{"role":"assistant","content":[{"type":"thinking","thinking":"secret reasoning"},{"type":"tool_use","id":"u1","name":"Read","input":{}},{"type":"text","text":"It races on the session cookie."}]}}
+{"type":"message","id":"m4","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"u1","content":"file body"}]}}
+{"type":"todo_state","id":"t1"}
