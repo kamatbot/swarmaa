@@ -89,7 +89,7 @@ export async function detect(root = ROOT): Promise<Detected> {
 export interface StepRecord { id: string; label: string; status: 'running' | 'ok' | 'skipped' | 'failed'; note?: string }
 export interface SetupSummary {
   dry: boolean; ok: boolean; error?: string;
-  agents: string[]; workers: string[]; sharing: string[];
+  agents: string[]; workers: string[]; /** workers allowed to edit (task:patch) */ edits: string[]; sharing: string[];
   /** Poll-captured sources and hook apps that are on (additive; absent in older summaries). */
   captured?: string[]; hookApps?: string[];
   projects: ScopeRoot[]; serviceUrl: string;
@@ -129,7 +129,7 @@ export async function runSetup(plan: SetupPlan, opts: RunOpts): Promise<SetupSum
   const mkdirp = (dir: string, mode = 0o700) => { if (dry) pl(`mkdir -p ${dir}`); else mkdirSync(dir, { recursive: true, mode }); };
   const die: (s: string) => never = s => { throw new Error(s); };
 
-  const summary: SetupSummary = { dry, ok: true, agents: [], workers: [], sharing: [], captured: [], hookApps: [], projects: [], serviceUrl: '', steps: [], warnings: [], nextSteps: [] };
+  const summary: SetupSummary = { dry, ok: true, agents: [], workers: [], edits: [], sharing: [], captured: [], hookApps: [], projects: [], serviceUrl: '', steps: [], warnings: [], nextSteps: [] };
   async function step(id: string, label: string, fn: () => Promise<string | { skipped: string } | void>, fatal = false): Promise<void> {
     const rec: StepRecord = { id, label, status: 'running' };
     summary.steps.push(rec); opts.onStep?.({ ...rec });
@@ -157,7 +157,7 @@ export async function runSetup(plan: SetupPlan, opts: RunOpts): Promise<SetupSum
     say('Building (npm run build) ...'); const r = run('npm', ['run', 'build']); if (r.status !== 0) say(`  build failed:\n${tail(r)}`); return built = r.status === 0; };
 
   try {
-    if (Number(process.versions.node.split('.')[0]) < 22) die('Swarmaa needs Node >= 22.');
+    if (Number(process.versions.node.split('.')[0]) !== 24) die(`Swarmaa needs Node 24.x (running ${process.versions.node}). Install Node 24 and re-run setup.`);
 
     await step('env', 'Local credentials', async () => {
       if (existsSync(join(root, '.env'))) return;
@@ -218,6 +218,14 @@ export async function runSetup(plan: SetupPlan, opts: RunOpts): Promise<SetupSum
     const demo = join(root, '.local/demo-project');
     await step('projects', 'Project folders', async () => {
       if (!existsSync(demo)) { mkdirp(demo); put(join(demo, 'README.md'), '# Swarmaa demo project\n\nA scratch folder for trying the swarm without touching real code.\n', 0o644); }
+      // Standalone git repo so edit tasks (worktrees) work in a packaged install; local identity via env, no global config touched.
+      if (!existsSync(join(demo, '.git'))) {
+        const id = { GIT_AUTHOR_NAME: 'Swarmaa', GIT_AUTHOR_EMAIL: 'swarmaa@localhost', GIT_COMMITTER_NAME: 'Swarmaa', GIT_COMMITTER_EMAIL: 'swarmaa@localhost' };
+        for (const a of [['init', '-q', '-b', 'main'], ['add', 'README.md'], ['-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'Initial commit']]) {
+          const r = run('git', ['-C', demo, ...a], { env: id });
+          if (r.status !== 0) { summary.warnings.push(`demo project is not a git repo (edit tasks will not work there): ${tail(r)}`); break; }
+        }
+      }
       return `${plan.folders.length} folder${plan.folders.length === 1 ? '' : 's'} plus the demo sandbox`;
     });
     const projects: ScopeRoot[] = [{ scope: 'project:demo', root: demo }, ...slugScopes(plan.folders, ['demo'])];
@@ -226,9 +234,14 @@ export async function runSetup(plan: SetupPlan, opts: RunOpts): Promise<SetupSum
     const workerScopes = identityScopes('worker', projects).join(',');
     for (const p of projects) say(`  ${p.scope} -> ${p.root}`);
 
-    const ensureIdentity = (name: string, role: string, file: string, scopes: string): boolean => {
+    /** `patch` (workers only) reconciles the task:patch grant: created with it, granted on an existing worker, or revoked when switching back to read-only. */
+    const ensureIdentity = (name: string, role: string, file: string, scopes: string, patch?: boolean): boolean => {
       const exists = existsSync(file);
-      const r = exists ? admin('set-scopes', '--name', name, '--scopes', scopes) : admin('create', '--name', name, '--role', role, '--scopes', scopes, '--out', file);
+      const r = exists ? admin('set-scopes', '--name', name, '--scopes', scopes) : admin('create', '--name', name, '--role', role, '--scopes', scopes, ...(patch ? ['--grant', 'task:patch'] : []), '--out', file);
+      if (r.status === 0 && exists && patch !== undefined) {
+        const g = admin(patch ? 'grant' : 'revoke-grant', '--name', name, '--permission', 'task:patch');
+        if (g.status !== 0) { say(`  could not ${patch ? 'grant' : 'revoke'} task:patch for ${name}:\n${tail(g)}`); return false; }
+      }
       if (r.status === 0) { say(`  ${exists ? 'updated scopes of' : 'created'} ${name}`); return true; }
       if (!exists && /already exists|duplicate|unique/i.test(r.stderr)) say(`  ${name} already exists but ${file} is missing. Rotate it into place with:\n    npm run admin -- rotate --name ${name} --out ${file}\n  (or revoke it and use another name), then re-run setup.`);
       else say(`  could not ${exists ? 'update' : 'create'} ${name}:\n${tail(r)}`);
@@ -258,12 +271,13 @@ export async function runSetup(plan: SetupPlan, opts: RunOpts): Promise<SetupSum
           }
         } else if ((HOSTED as readonly string[]).includes(key)) say(`  ${m.label} reaches Swarmaa over HTTPS and needs remote access (below).`);
         summary.agents.push(key);
-        // Background worker: its own worker identity (project scopes only) and read-only bridge config.
+        // Background worker: its own worker identity (project scopes only) and bridge config (read-only unless the plan opts into edits).
         if (hp.worker && WORKER_HARNESSES.includes(key)) {
           const tokenFile = join(root, `.local/worker-${key}.json`);
-          if (!ensureIdentity(`worker-${key}`, 'worker', tokenFile, workerScopes)) throw new Error(`could not create or update worker-${key}`);
-          put(join(root, `.local/bridge-${key}.json`), `${JSON.stringify(bridgeConfig({ port, tokenFile, agent: { id: m.agent ?? key, provider: m.agent ?? key, binary: cli!, model: m.model }, projects }), null, 2)}\n`);
+          if (!ensureIdentity(`worker-${key}`, 'worker', tokenFile, workerScopes, hp.edit)) throw new Error(`could not create or update worker-${key}`);
+          put(join(root, `.local/bridge-${key}.json`), `${JSON.stringify(bridgeConfig({ port, tokenFile, agent: { id: m.agent ?? key, provider: m.agent ?? key, binary: cli!, model: m.model }, projects, edit: hp.edit }), null, 2)}\n`);
           summary.workers.push(key);
+          if (hp.edit) summary.edits.push(key);
         }
       });
     }
@@ -396,7 +410,7 @@ export async function runSetup(plan: SetupPlan, opts: RunOpts): Promise<SetupSum
     });
 
     await step('save', 'Save settings', async () => {
-      put(join(root, '.local/setup.json'), `${JSON.stringify(stateFile({ folders: plan.folders, projects, agents: summary.agents, workers: summary.workers, sharing: summary.sharing, capture: captureOn, hookApps: summary.hookApps, autostart, remote: plan.remote }), null, 2)}\n`);
+      put(join(root, '.local/setup.json'), `${JSON.stringify(stateFile({ folders: plan.folders, projects, agents: summary.agents, workers: summary.workers, edits: summary.edits, sharing: summary.sharing, capture: captureOn, hookApps: summary.hookApps, autostart, remote: plan.remote }), null, 2)}\n`);
     });
     if (summary.agents.some(a => (CLI_KEYS as readonly string[]).includes(a))) summary.nextSteps.push('Restart Claude Code, Codex or Antigravity so they pick up the swarma MCP server.');
     if (!summary.agents.length) summary.nextSteps.push('Nothing was connected. Re-run setup and switch a service on.');
@@ -409,7 +423,7 @@ export async function runSetup(plan: SetupPlan, opts: RunOpts): Promise<SetupSum
 export function printSummary(s: SetupSummary, say: (l?: string) => void): void {
   say(s.ok ? `\nSetup ${s.dry ? 'dry run ' : ''}complete.` : `\nSetup failed: ${s.error}`);
   say(`  Agents connected: ${s.agents.join(', ') || 'none'}`);
-  say(`  Background workers: ${s.workers.join(', ') || 'none'}`);
+  say(`  Background workers: ${s.workers.map(w => `${w} (${s.edits.includes(w) ? 'can edit' : 'read-only'})`).join(', ') || 'none'}`);
   say(`  Chats shared across harnesses: ${s.sharing.join(', ') || 'none'}`);
   say(`  Chats captured from other apps: ${(s.captured ?? []).join(', ') || 'none'}`);
   say(`  Hook apps (Kiro / Windsurf / Qwen): ${(s.hookApps ?? []).join(', ') || 'none'}`);
@@ -502,7 +516,7 @@ export function createOnboarding(o: OnboardingOptions) {
         const onStep = (s: StepRecord) => { const i = j.steps.findIndex(x => x.id === s.id); const r = { ...s, ...(s.note ? { note: redact(s.note) } : {}) }; if (i < 0) j.steps.push(r); else j.steps[i] = r; };
         runner(plan, { dry, log, onStep, root }).then(
           s => { j.summary = JSON.parse(redact(JSON.stringify(s))) as SetupSummary; },
-          e => { j.summary = { dry, ok: false, error: redact((e as Error).message), agents: [], workers: [], sharing: [], captured: [], hookApps: [], projects: [], serviceUrl: '', steps: j.steps, warnings: [], nextSteps: [] }; },
+          e => { j.summary = { dry, ok: false, error: redact((e as Error).message), agents: [], workers: [], edits: [], sharing: [], captured: [], hookApps: [], projects: [], serviceUrl: '', steps: j.steps, warnings: [], nextSteps: [] }; },
         ).finally(() => { j.running = false; });
         return send(res, 202, { id: j.id, dry });
       }
@@ -573,7 +587,7 @@ async function cliMain(dry: boolean): Promise<number> {
       try { if (statSync(p).isDirectory()) { folders.push(name ? `${name}=${resolve(p)}` : resolve(p)); continue; } } catch { /* fallthrough */ }
       say(`  skipped ${raw}: not an existing directory`);
     }
-    const harnesses: Record<string, { connect: boolean; worker: boolean; share: boolean }> = {};
+    const harnesses: Record<string, { connect: boolean; worker: boolean; edit: boolean; share: boolean }> = {};
     for (const k of HARNESS_KEYS) {
       const m = META[k];
       const was = state.agents ? state.agents.includes(k) : !(HOSTED as readonly string[]).includes(k);
@@ -581,9 +595,10 @@ async function cliMain(dry: boolean): Promise<number> {
       if (k === 'notchtrader') { if (!det.notchtrader) continue; }
       const q = k === 'notchtrader' ? 'Show Swarmaa agents and swarms in NotchTrader?' : (HOSTED as readonly string[]).includes(k) ? `Connect ${m.label} (hosted; needs remote access)?` : `Connect ${m.label} to Swarmaa shared memory?`;
       if (!await askYes(q, k === 'notchtrader' ? true : was)) continue;
-      const worker = WORKER_HARNESSES.includes(k) && await askYes(`Run ${k} as a background worker (read-only tasks${k === 'agy' ? ', sandboxed' : ''})?`, state.workers?.includes(k) ?? false);
+      const worker = WORKER_HARNESSES.includes(k) && await askYes(`Run ${k} as a background worker (read-only review/research${k === 'agy' ? ', sandboxed' : ''})?`, state.workers?.includes(k) ?? false);
+      const edit = worker && await askYes(`Let the ${k} worker EDIT files and run commands in sandboxed git worktrees (commits to local swarma/${k}/<id> branches, never pushes)?`, state.edits?.includes(k) ?? false);
       const share = SHARING_HARNESSES.includes(k) && await askYes(`Share ${m.label} chats across harnesses?`, state.sharing ? state.sharing.includes(k) : true);
-      harnesses[k] = { connect: true, worker, share };
+      harnesses[k] = { connect: true, worker, edit, share };
     }
     const found = det.captureSources ?? [];
     const capture = { enabled: found.length > 0 && await askYes(`Capture chats from other apps (${found.map(id => SOURCES.find(x => x.id === id)?.label ?? id).join(', ')}) so your agents can recall them?`, state.capture ?? true) };

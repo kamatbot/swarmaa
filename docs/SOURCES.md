@@ -46,4 +46,4 @@ The adapter flags and templates target the documented interfaces reviewed during
 
 Direct npm versions were selected from read-only public package metadata during authoring: `pg`, `ipaddr.js`, `typescript`, `tsx`, `@types/node` and `@types/pg`. The exact selected versions are in `package.json`. Dependencies were not installed or audited and no resolved transitive lockfile was generated in this session.
 
-The optional container uses Node 22 and PostgreSQL 17 image families. Pin reviewed digests and preserve the generated npm lockfile when preparing a maintained deployment.
+The optional container uses Node 24 and PostgreSQL 17 image families. Pin reviewed digests and preserve the generated npm lockfile when preparing a maintained deployment.

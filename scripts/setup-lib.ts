@@ -120,16 +120,18 @@ export interface BridgeConfigInput {
   tokenFile: string;
   agent: { id: string; binary: string; model?: string; provider?: string };
   projects: ScopeRoot[];
+  /** Opt-in: sandboxed edits in git worktrees. Default read-only (research/review), which needs no task:patch grant. */
+  edit?: boolean;
 }
 
-export function bridgeConfig({ port, tokenFile, agent, projects }: BridgeConfigInput): Record<string, unknown> {
+export function bridgeConfig({ port, tokenFile, agent, projects, edit = false }: BridgeConfigInput): Record<string, unknown> {
   return {
     service_url: `http://127.0.0.1:${port}`,
     token_file: tokenFile,
     poll_seconds: 3, lease_seconds: 120, heartbeat_seconds: 20, request_timeout_ms: 10000,
     task_timeout_seconds: 3600, max_output_bytes: 4194304, max_prompt_bytes: 131072,
-    agents: [{ id: agent.id, provider: agent.provider ?? agent.id, binary: agent.binary, ...(agent.model ? { model: agent.model } : {}), enable_patch: true, ...(agent.provider === 'antigravity' ? { sandbox: true } : {}) }],
-    projects: projects.map(p => ({ scope: p.scope, root: p.root, agents: [agent.id], allow_patch: true })),
+    agents: [{ id: agent.id, provider: agent.provider ?? agent.id, binary: agent.binary, ...(agent.model ? { model: agent.model } : {}), enable_patch: edit, ...(agent.provider === 'antigravity' ? { sandbox: true } : {}) }],
+    projects: projects.map(p => ({ scope: p.scope, root: p.root, agents: [agent.id], allow_patch: edit })),
     reason: null,
   };
 }
@@ -145,7 +147,8 @@ export const SHARING_HARNESSES: readonly HarnessKey[] = ['claude', 'codex', 'agy
 export const GENERAL_SCOPE = 'project:general';
 export const DEFAULT_HOSTNAME = 'api.swarmaa.com';
 
-export interface HarnessPlan { connect: boolean; worker: boolean; share: boolean }
+/** `edit` is the worker's explicit opt-in to edits (needs the task:patch grant); it implies `worker`. */
+export interface HarnessPlan { connect: boolean; worker: boolean; edit: boolean; share: boolean }
 export interface SetupPlan {
   harnesses: Partial<Record<HarnessKey, HarnessPlan>>;
   /** Poll chats of the other installed AI coding apps (Cursor, OpenCode, ...). Off unless the plan says so. */
@@ -155,7 +158,7 @@ export interface SetupPlan {
   remote?: { hostname: string };
   autostart: boolean;
 }
-export interface State { folders?: string[]; projects?: ScopeRoot[]; agents?: string[]; workers?: string[]; sharing?: string[]; capture?: boolean; hookApps?: string[]; autostart?: boolean; remote?: { hostname: string } }
+export interface State { folders?: string[]; projects?: ScopeRoot[]; agents?: string[]; workers?: string[]; edits?: string[]; sharing?: string[]; capture?: boolean; hookApps?: string[]; autostart?: boolean; remote?: { hostname: string } }
 
 /** Interactive identities see every project plus project:general; workers never get project:general (it has no folder). */
 export function identityScopes(kind: 'interactive' | 'worker', projects: ScopeRoot[]): string[] {
@@ -164,8 +167,8 @@ export function identityScopes(kind: 'interactive' | 'worker', projects: ScopeRo
 }
 
 /** Contents of .local/setup.json; the chat-journal hooks read `projects`. */
-export function stateFile(s: { folders: string[]; projects: ScopeRoot[]; agents: string[]; workers: string[]; sharing: string[]; capture?: boolean; hookApps?: string[]; autostart: boolean; remote?: { hostname: string } }): State {
-  return { folders: s.folders, projects: s.projects.map(p => ({ scope: p.scope, root: p.root })), agents: s.agents, workers: s.workers, sharing: s.sharing, ...(s.capture !== undefined ? { capture: s.capture } : {}), ...(s.hookApps ? { hookApps: s.hookApps } : {}), autostart: s.autostart, ...(s.remote ? { remote: s.remote } : {}) };
+export function stateFile(s: { folders: string[]; projects: ScopeRoot[]; agents: string[]; workers: string[]; edits?: string[]; sharing: string[]; capture?: boolean; hookApps?: string[]; autostart: boolean; remote?: { hostname: string } }): State {
+  return { folders: s.folders, projects: s.projects.map(p => ({ scope: p.scope, root: p.root })), agents: s.agents, workers: s.workers, ...(s.edits ? { edits: s.edits } : {}), sharing: s.sharing, ...(s.capture !== undefined ? { capture: s.capture } : {}), ...(s.hookApps ? { hookApps: s.hookApps } : {}), autostart: s.autostart, ...(s.remote ? { remote: s.remote } : {}) };
 }
 
 /** Lowercased DNS name with at least two labels and an alphabetic (or punycode) TLD; undefined if invalid. */
@@ -192,12 +195,14 @@ export function validatePlan(input: unknown): SetupPlan {
     if (!(HARNESS_KEYS as readonly string[]).includes(key)) { errors.push(`unknown harness "${key.slice(0, 40)}"`); continue; }
     const k = key as HarnessKey;
     if (!isObj(v)) { errors.push(`harness ${k} must be an object`); continue; }
-    for (const f of Object.keys(v)) if (!['connect', 'worker', 'share'].includes(f)) errors.push(`harness ${k}: unknown field "${f.slice(0, 40)}"`);
-    for (const f of ['connect', 'worker', 'share']) if (v[f] !== undefined && typeof v[f] !== 'boolean') errors.push(`harness ${k}: ${f} must be true or false`);
+    for (const f of Object.keys(v)) if (!['connect', 'worker', 'edit', 'share'].includes(f)) errors.push(`harness ${k}: unknown field "${f.slice(0, 40)}"`);
+    for (const f of ['connect', 'worker', 'edit', 'share']) if (v[f] !== undefined && typeof v[f] !== 'boolean') errors.push(`harness ${k}: ${f} must be true or false`);
     if (v.worker === true && !WORKER_HARNESSES.includes(k)) errors.push(`harness ${k} cannot run as a background worker`);
+    if (v.edit === true && v.worker !== true) errors.push(`harness ${k}: edit requires worker`);
     if (v.share === true && !SHARING_HARNESSES.includes(k)) errors.push(`harness ${k} does not support chat sharing`);
     const connect = v.connect === true;
-    harnesses[k] = { connect, worker: connect && v.worker === true, share: connect && SHARING_HARNESSES.includes(k) && v.share !== false };
+    const worker = connect && v.worker === true;
+    harnesses[k] = { connect, worker, edit: worker && v.edit === true, share: connect && SHARING_HARNESSES.includes(k) && v.share !== false };
   }
   let capture = false;
   if (input.capture !== undefined) {

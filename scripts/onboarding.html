@@ -201,7 +201,8 @@ function buildServices() {
       h('span', { class: 'switch' }, connect)));
     const rec = { card, connect, s };
     const sub = h('div', { class: 'sub' });
-    if (s.worker) { const r = subRow(`w-${s.key}`, 'Run background worker', 'Picks up read-only review and research tasks.', !!(st.workers || []).includes(s.key)); rec.worker = r.input; sub.append(r.row); }
+    if (s.worker) { const r = subRow(`w-${s.key}`, 'Run background worker', 'Read-only: picks up review and research tasks. It cannot change your files.', !!(st.workers || []).includes(s.key)); rec.worker = r.input; sub.append(r.row);
+      const e = subRow(`e-${s.key}`, 'Allow edits (off = read-only)', 'Opt in: edits files and runs commands in sandboxed git worktrees, commits to local swarma/' + s.key + '/<id> branches, never pushes.', !!(st.edits || []).includes(s.key)); rec.edit = e.input; sub.append(e.row); }
     if (s.share) { const r = subRow(`s-${s.key}`, 'Share chats across harnesses', 'Records this tool’s chats so your other agents can recall them.', st.sharing ? st.sharing.includes(s.key) : true); rec.share = r.input; sub.append(r.row); }
     if (sub.children.length) { card.append(sub); rec.sub = sub; }
     sv[s.key] = rec; $('services').append(card);
@@ -229,6 +230,7 @@ function sync() {
     const r = sv[k], on = r.connect.checked;
     r.card.classList.toggle('on', on); r.card.classList.toggle('off', !on);
     for (const x of [r.worker, r.share]) if (x) { x.disabled = !on; }
+    if (r.edit) { r.edit.disabled = !on || !r.worker.checked; if (r.edit.disabled) r.edit.checked = false; }
   }
   const hosted = sv.grok.connect.checked || sv.dot.connect.checked;
   $('remote').classList.toggle('hidden', !hosted);
@@ -252,7 +254,7 @@ function addFolder() {
 
 function plan() {
   const harnesses = {};
-  for (const k in sv) { const r = sv[k]; harnesses[k] = { connect: r.connect.checked, worker: !!r.worker?.checked, share: r.share ? r.share.checked : false }; }
+  for (const k in sv) { const r = sv[k]; harnesses[k] = { connect: r.connect.checked, worker: !!r.worker?.checked, edit: !!r.edit?.checked, share: r.share ? r.share.checked : false }; }
   const hosted = sv.grok.connect.checked || sv.dot.connect.checked;
   const hookApps = {};
   for (const k of det.hookApps || []) if ($(`ha-${k}`)?.checked) hookApps[k] = { share: true };
@@ -298,6 +300,7 @@ function renderSummary(s) {
   const add = (t, d) => { dl.append(h('dt', {}, t), h('dd', {}, d)); };
   add('Connected', names(s.agents));
   add('Background workers', names(s.workers));
+  if ((s.edits || []).length) add('Can edit files', names(s.edits));
   add('Chat sharing', names(s.sharing));
   if ((s.captured || []).length) add('Captured apps', s.captured.map(k => CAPTURE_LABELS[k] || k).join(', '));
   if ((s.hookApps || []).length) add('Hook apps', s.hookApps.map(k => HOOK_APPS[k] || k).join(', '));

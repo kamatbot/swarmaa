@@ -6,7 +6,7 @@
   "description": "Scoped collective memory, durable tasks and MCP access for Dot, Grok, Claude, Codex and Antigravity.",
   "license": "MIT",
   "engines": {
-    "node": ">=22.0.0"
+    "node": ">=24 <25"
   },
   "scripts": {
     "init:local": "node --import tsx scripts/init-local.ts",

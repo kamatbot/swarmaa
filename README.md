@@ -50,7 +50,7 @@ The service shares explicit facts, decisions, task state and artifacts. It does 
 
 ## Local setup
 
-Use a disposable demo project first. You need Node.js 22 or later, npm, and PostgreSQL 16+; the supplied Compose file uses PostgreSQL 17. Docker is optional if you already administer PostgreSQL. Claude/Codex CLIs are needed only when you start their worker adapters.
+Use a disposable demo project first. You need Node.js 24 (24.x only), npm, and PostgreSQL 16+; the supplied Compose file uses PostgreSQL 17. Docker is optional if you already administer PostgreSQL. Claude/Codex CLIs are needed only when you start their worker adapters.
 
 The commands below are for your local machine. They were not run while creating this source bundle. If your current Claude session is under a code-only policy, explicitly authorize local installation/build/test execution before asking it to run them.
 
@@ -99,7 +99,7 @@ The demo uses the Dot identity to create a memory and task, reads them with the 
 
 Read [docs/AGENT_SETUP.md](docs/AGENT_SETUP.md) for each client and the bridge. Start with the local stdio proxy for desktop clients. Dot and cloud Grok access require the service to be reachable over HTTPS. [docs/OPERATIONS.md](docs/OPERATIONS.md) describes the public origin, proxy, OAuth redirects, event callback allowlist and credential rotation.
 
-The defaults enable read-only research/review execution. The Claude adapter also implements an explicitly enabled local file-patch mode. This requires the worker's `task:patch` grant, the provider's patch opt-in, the project's patch opt-in, and a resource key on the task. Codex patch mode and unattended Antigravity execution are intentionally unsupported in this version; Antigravity still uses the common MCP tools interactively.
+Read tasks run as `<provider>.read` or `auto.read`; edit tasks as `<provider>.patch` or `auto.patch`. Edits are an explicit per-install opt-in (setup's "Allow edits", default read-only): the worker gets the `task:patch` grant and `enable_patch`/`allow_patch` together. Edit tasks run in sandboxed git worktrees with commands allowed, commit to the local branch `swarma/<provider>/<id>` and never push. Antigravity does review and in-project edits, not research. The routing policy picks the provider by order and quota. Interactive Antigravity use over MCP is unchanged.
 
 ## Example work request
 

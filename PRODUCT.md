@@ -26,14 +26,14 @@ One brain, every agent. Swarmaa is not another agent: it is the shared memory an
 
 - Runs locally: PostgreSQL + a small Node service on the developer's Mac, started at login; `npm run setup` connects the CLIs.
 - Interactive clients connect over MCP (Claude Code, Codex, Antigravity); hosted agents (Dot, Grok) connect over HTTPS through a tunnel.
-- Background workers (Claude, Codex) take read-only review/research tasks with leases, checkpoints and retries.
+- Background workers (Claude, Codex, Antigravity) take read tasks (`<provider>.read`/`auto.read`) by default; edit tasks (`<provider>.patch`/`auto.patch`) are an explicit opt-in per install and run in sandboxed git worktrees, committed to local `swarma/<provider>/<id>` branches, never pushed. Antigravity: review and in-project edits, no research. Leases, checkpoints and retries throughout.
 - Workers report each provider's quota windows and reset times; `auto.read` tasks go to the live provider with most headroom.
 - NotchTrader (macOS notch app) shows agents and swarms; a web portal at swarmaa.com is planned.
 
 ## Capabilities and Constraints
 
-Confirmed: shared scoped memory with sources and revision history; durable tasks with leases, checkpoints, retries and idempotent handoffs; MCP + REST + OAuth; per-client scoped identities; quota-aware routing; read-only autonomous workers (Claude file-edit mode opt-in only); macOS LaunchAgent autostart; notch dashboard.
-Constraints: no unattended Antigravity worker; shared memory holds what agents publish, it does not import vendors' private memories; hosted agents need a public HTTPS endpoint.
+Confirmed: shared scoped memory with sources and revision history; durable tasks with leases, checkpoints, retries and idempotent handoffs; MCP + REST + OAuth; per-client scoped identities; quota-aware routing; autonomous workers (read-only by default; sandboxed worktree edits opt-in); macOS LaunchAgent autostart; notch dashboard.
+Constraints: shared memory holds what agents publish, it does not import vendors' private memories; hosted agents need a public HTTPS endpoint.
 Undecided: pricing, licensing/open-source status, release date, portal feature set, non-macOS support.
 
 ## Brand Commitments
@@ -49,5 +49,5 @@ Working local system with passing test suites and real quota readings from Claud
 1. Your agents, your machine: data and credentials stay local by default.
 2. Agents are interchangeable entry points; no work is trapped in one vendor's chat.
 3. Spend quota where it is available instead of hitting a wall.
-4. Autonomy is opt-in and bounded: read-only by default, every write leased and fenced.
+4. Autonomy is opt-in and bounded: read-only by default, edits only by explicit opt-in, every write leased and fenced.
 5. Say exactly what works today; label what is planned.

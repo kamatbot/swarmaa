@@ -4,7 +4,7 @@
 
 ## 1. Dependencies and source checks
 
-Use Node.js 22 or later and record the installed Node/npm versions. Install the pinned direct dependencies, inspect the generated dependency lockfile, then run:
+Use Node.js 24 and record the installed Node/npm versions. Install the pinned direct dependencies, inspect the generated dependency lockfile, then run:
 
 ```bash
 npm install

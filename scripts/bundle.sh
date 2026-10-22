@@ -1,12 +1,14 @@
 #!/bin/bash
 # Builds build/runtime/: a self-contained Swarmaa runtime (compiled service + prod node_modules + Node + PostgreSQL 17)
 # for the macOS app to embed. darwin-arm64 only. Downloads are cached in build/cache and SHA-verified.
-#   bash scripts/bundle.sh            (env: NODE_VERSION=24.21.0 PG_VERSION=17.11.0 to override)
+#   bash scripts/bundle.sh            (Node 24 only; env: NODE_VERSION=24.21.0 PG_VERSION=17.11.0 to override)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT=$PWD
 OUT=$ROOT/build/runtime CACHE=$ROOT/build/cache
 NODE_VERSION=${NODE_VERSION:-$(node -p 'process.versions.node')}
+case $NODE_VERSION in 24.*) ;; *) echo "Node 24.x required (got $NODE_VERSION); set NODE_VERSION=24.x.y" >&2; exit 1;; esac
+[ "$(node -p 'process.versions.node.split(".")[0]')" = 24 ] || { echo "build with Node 24 (running $(node -v))" >&2; exit 1; }
 PG_VERSION=${PG_VERSION:-17.11.0}
 [ "$(uname -m)" = arm64 ] || { echo "darwin-arm64 only" >&2; exit 1; }
 mkdir -p "$CACHE"

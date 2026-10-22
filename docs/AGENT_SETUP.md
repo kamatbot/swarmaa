@@ -166,9 +166,9 @@ automatic stale-lock deletion that could overlap a still-active local process.
 
 | Provider | Autonomous support | Enforced mode |
 |---|---|---|
-| Claude Code | Research/review; opt-in file-only patch | `--restricted`, explicit built-in tool list, MCP tools denied, empty strict MCP config, permission prompts denied. |
-| Codex CLI | Research/review | `exec --sandbox read-only`, never approvals, user config ignored, apps/plugins disabled. |
-| Antigravity (`agy`) | Research/review, read-only | `--mode plan --output-format json --print-timeout`, prompt as one argv element (`-p=<text>`), no `--dangerously-skip-permissions`. Requires `sandbox:true`: the Seatbelt profile is the file boundary. |
+| Claude Code | Research/review; opt-in edits in sandboxed git worktrees (commands allowed) | `--restricted`, explicit built-in tool list, MCP tools denied, empty strict MCP config, permission prompts denied. |
+| Codex CLI | Research/review; opt-in edits in sandboxed git worktrees | `exec --sandbox read-only`, never approvals, user config ignored, apps/plugins disabled. |
+| Antigravity (`agy`) | Review and in-project edits (no research) | `--mode plan --output-format json --print-timeout`, prompt as one argv element (`-p=<text>`), no `--dangerously-skip-permissions`. Requires `sandbox:true`: the Seatbelt profile is the file boundary. |
 
 Claude requires a release supporting `--restricted` and `--permission-prompts none` (at least
 v2.1.259 for the latter). Read-only mode exposes `Read`, `Glob` and `Grep`. File-only patch mode
@@ -190,11 +190,13 @@ file, so the worker has no MCP tools and cannot call Swarmaa. `agy` still needs 
 conversations' `brain/` and `conversations/` are unreadable. Not confined: network access, and the
 read-only guarantee for patch work (Antigravity has no patch mode here). Interactive MCP use of Antigravity is unchanged.
 
-To activate Claude patch work, explicitly do all three:
+Contract: Read tasks run as `<provider>.read` or `auto.read`; edit tasks as `<provider>.patch` or `auto.patch`. Edits are an explicit per-install opt-in (setup's "Allow edits", default read-only): the worker gets the `task:patch` grant and `enable_patch`/`allow_patch` together. Edit tasks run in sandboxed git worktrees with commands allowed, commit to the local branch `swarma/<provider>/<id>` and never push. Antigravity does review and in-project edits, not research. The routing policy picks the provider by order and quota.
 
-1. Grant `task:patch` to the intended worker principal using the admin CLI's `--grant task:patch`
-   option when creating that principal.
-2. Set the Claude agent's `enable_patch` and the intended project's `allow_patch` to `true` in
+Edits are opt-in. `npm run setup` ("Allow edits") provisions all of the following together and reconciles them on re-run (switching back to read-only revokes the grant). By hand, do all three:
+
+1. Grant `task:patch` to the worker principal: `--grant task:patch` on `admin create`, or
+   `admin grant --name <n> --permission task:patch` for an existing worker.
+2. Set the agent's `enable_patch` and the intended project's `allow_patch` to `true` in
    local bridge configuration. Use a dedicated reviewable working copy.
 3. Submit a `patch` task with `required_capability: "claude.patch"`, a stable `resource_key`,
    clear constraints, and acceptance criteria.

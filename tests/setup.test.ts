@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { request } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import { parseBridgeConfig } from '../src/bridge/config.js';
+import { projectCapabilities } from '../src/bridge/adapters.js';
 import { createOnboarding, runSetup, type Detected, type SetupSummary } from '../scripts/setup.js';
 import { AGY_TOOLS, GENERAL_SCOPE, PlanError, WORKER_HARNESSES, bridgeConfig, identityScopes, mergeAgyPermissions, parseEnv, plist, slugScopes, stateFile, validHostname, validatePlan, yes } from '../scripts/setup-lib.js';
 
@@ -40,10 +42,10 @@ test('bridgeConfig matches the example shape with token_file', () => {
   assert.equal(c.service_url, 'http://127.0.0.1:8787');
   assert.equal(c.token_file, '/r/.local/worker-claude.json');
   assert.equal(c.token_env, undefined);
-  assert.deepEqual(c.agents, [{ id: 'claude', provider: 'claude', binary: '/b/claude', model: 'sonnet', enable_patch: true }]);
-  assert.deepEqual(c.projects, [{ scope: 'project:demo', root: '/r/demo', agents: ['claude'], allow_patch: true }]);
+  assert.deepEqual(c.agents, [{ id: 'claude', provider: 'claude', binary: '/b/claude', model: 'sonnet', enable_patch: false }]);
+  assert.deepEqual(c.projects, [{ scope: 'project:demo', root: '/r/demo', agents: ['claude'], allow_patch: false }]);
   assert.equal(c.reason, null);
-  const agy = bridgeConfig({ port: 1, tokenFile: '/t', agent: { id: 'antigravity', provider: 'antigravity', binary: '/b/agy' }, projects: [{ scope: 'project:demo', root: '/r/demo' }] }) as any;
+  const agy = bridgeConfig({ port: 1, tokenFile: '/t', agent: { id: 'antigravity', provider: 'antigravity', binary: '/b/agy' }, projects: [{ scope: 'project:demo', root: '/r/demo' }], edit: true }) as any;
   assert.deepEqual(agy.agents, [{ id: 'antigravity', provider: 'antigravity', binary: '/b/agy', enable_patch: true, sandbox: true }]);
   assert.deepEqual(agy.projects[0].agents, ['antigravity']);
   assert.ok(WORKER_HARNESSES.includes('agy'));
@@ -72,10 +74,10 @@ const rejects = (input: unknown, re: RegExp) => assert.throws(() => validatePlan
 test('validatePlan accepts a good plan and fills defaults', () => {
   const p = validatePlan({ ...okPlan(), harnesses: { claude: { connect: true, worker: true }, agy: { connect: true }, grok: { connect: true }, codex: { connect: false, worker: true } }, remote: { hostname: ' API.Example.com ' } });
   assert.deepEqual(p.folders, [dir]);
-  assert.deepEqual(p.harnesses.claude, { connect: true, worker: true, share: true });
-  assert.deepEqual(p.harnesses.agy, { connect: true, worker: false, share: true });
-  assert.deepEqual(p.harnesses.grok, { connect: true, worker: false, share: false });
-  assert.deepEqual(p.harnesses.codex, { connect: false, worker: false, share: false });
+  assert.deepEqual(p.harnesses.claude, { connect: true, worker: true, edit: false, share: true });
+  assert.deepEqual(p.harnesses.agy, { connect: true, worker: false, edit: false, share: true });
+  assert.deepEqual(p.harnesses.grok, { connect: true, worker: false, edit: false, share: false });
+  assert.deepEqual(p.harnesses.codex, { connect: false, worker: false, edit: false, share: false });
   assert.deepEqual(p.remote, { hostname: 'api.example.com' });
   assert.deepEqual(validatePlan({ ...okPlan(), folders: [dir, dir] }).folders, [dir]);
 });
@@ -167,7 +169,7 @@ function req(base: string, path: string, o: { method?: string; headers?: Record<
 
 async function withServer(fn: (ctx: { base: string; token: string; t: (extra?: Record<string, string>) => Record<string, string>; calls: { dry: boolean }[] }) => Promise<void>, idleMs = 0) {
   const calls: { dry: boolean }[] = [];
-  const fakeRun = (async (_p, o) => { calls.push({ dry: o.dry }); o.log('hello'); o.onStep?.({ id: 'db', label: 'Database', status: 'ok' }); return { dry: o.dry, ok: true, agents: [], workers: [], sharing: [], projects: [], serviceUrl: 'http://127.0.0.1:8787', steps: [], warnings: [], nextSteps: [] } satisfies SetupSummary; }) as typeof runSetup;
+  const fakeRun = (async (_p, o) => { calls.push({ dry: o.dry }); o.log('hello'); o.onStep?.({ id: 'db', label: 'Database', status: 'ok' }); return { dry: o.dry, ok: true, agents: [], workers: [], edits: [], sharing: [], projects: [], serviceUrl: 'http://127.0.0.1:8787', steps: [], warnings: [], nextSteps: [] } satisfies SetupSummary; }) as typeof runSetup;
   const ob = createOnboarding({ dry: true, idleMs, run: fakeRun, detectFn: async () => fakeDetected(), html: '<!doctype html><title>Swarmaa</title>' });
   const url = await ob.listen();
   const base = new URL(url).origin;
@@ -266,4 +268,51 @@ test('scriptCommand picks compiled dist/*.js without tsx and tsx otherwise', asy
     assert.equal(isCompiled(root), false);
     assert.deepEqual(scriptCommand(root, 'scripts/migrate'), ['--import', 'tsx', join(root, 'scripts/migrate.ts')]);
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+// ---- worker edit opt-in: config and grant are provisioned together ----
+
+/** Setup-built bridge config -> parser -> capabilities -> claim kinds (the rule in BridgeWorker.claimAndRun). */
+function claimFor(edit: boolean) {
+  const cfg = parseBridgeConfig(bridgeConfig({ port: 8787, tokenFile: '/t', agent: { id: 'claude', binary: '/b/claude' }, projects: [{ scope: 'project:demo', root: '/r/demo' }], edit }));
+  const capabilities = projectCapabilities(cfg.projects[0]!, cfg.agents);
+  return { capabilities, kinds: capabilities.some(c => c.endsWith('.patch')) ? ['research', 'review', 'patch'] : ['research', 'review'] };
+}
+
+test('edit requires worker; default is read-only', () => {
+  rejects({ ...okPlan(), harnesses: { claude: { connect: true, edit: true } } }, /edit requires worker/);
+  assert.equal(validatePlan(okPlan()).harnesses.claude!.edit, false);
+  assert.equal(validatePlan({ ...okPlan(), harnesses: { claude: { connect: true, worker: true, edit: true } } }).harnesses.claude!.edit, true);
+});
+
+test('setup-to-claim: read-only requests research/review only, edit requests patch and provisions task:patch', async () => {
+  const ro = claimFor(false), rw = claimFor(true);
+  assert.deepEqual(ro.kinds, ['research', 'review']);
+  assert.deepEqual(ro.capabilities, ['claude.read', 'auto.read']);
+  assert.ok(rw.kinds.includes('patch') && rw.capabilities.includes('claude.patch') && rw.capabilities.includes('auto.patch'));
+  const dry = async (edit: boolean, root: string) => {
+    const lines: string[] = [];
+    const plan = validatePlan({ harnesses: { claude: { connect: true, worker: true, edit } }, folders: [dir], autostart: false });
+    const s = await runSetup(plan, { dry: true, log: l => lines.push(l), root, detected: fakeDetected() });
+    assert.equal(s.ok, true, String(s.error));
+    assert.deepEqual(s.edits, edit ? ['claude'] : []);
+    return lines.filter(l => l.includes('admin.ts') && l.includes('worker-claude'));
+  };
+  const fresh = () => realpathSync(mkdtempSync(join(tmpdir(), 'swarmaa-root-')));
+  const [ro1] = await dry(false, fresh()), [rw1] = await dry(true, fresh());
+  assert.doesNotMatch(ro1!, /task:patch/);
+  assert.match(rw1!, /--grant task:patch/);
+  // re-run on an existing worker reconciles the grant either way
+  const existing = fresh();
+  mkdirSync(join(existing, '.local'));
+  writeFileSync(join(existing, '.local/worker-claude.json'), '{}');
+  assert.match((await dry(true, existing)).join('\n'), /\bgrant --name worker-claude --permission task:patch/);
+  assert.match((await dry(false, existing)).join('\n'), /revoke-grant --name worker-claude --permission task:patch/);
+});
+
+test('demo project is planned as a standalone git repo', async () => {
+  const lines: string[] = [];
+  await runSetup(validatePlan({ harnesses: {}, folders: [], autostart: false }), { dry: true, log: l => lines.push(l), root: realpathSync(mkdtempSync(join(tmpdir(), 'swarmaa-root-'))), detected: fakeDetected() });
+  assert.ok(lines.some(l => /git -C \S*demo-project init -q -b main/.test(l)));
+  assert.ok(lines.some(l => /demo-project -c commit\.gpgsign=false commit/.test(l)));
 });
