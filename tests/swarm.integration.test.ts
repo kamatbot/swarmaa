@@ -95,6 +95,7 @@ describe('swarm usage routing and status', {skip:!connectionString,concurrency:f
     await call(claude,'usage_report',report('claude',10));
     const served = await call(front,'task_submit',submit('k-warn-2'));
     assert.equal(served.warning,undefined);
+    assert.match(served.message,/^Swarm started: task [0-9a-f]{8} is queued in project:a\. 1 live worker with 1 free slot serve it, so it should start within seconds\./);
   });
 
   it('swarm_status describes running tasks and the branch a finished task landed on', async () => {

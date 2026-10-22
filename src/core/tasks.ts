@@ -206,10 +206,16 @@ export class TaskService {
       const row = result.rows[0]!;
       await taskChanged(db,p,row,'submitted');
       // Say so now rather than let the task sit unclaimed: no live worker serves this project.
-      const served = await db.query(`SELECT 1 FROM principals WHERE tenant_id=$1 AND role='worker' AND NOT disabled
-        AND $2=ANY(scopes) AND last_seen_at>clock_timestamp()-interval '60 seconds' LIMIT 1`,[p.tenantId,scope]);
-      const warning = served.rows.length ? {} : {warning:`No live worker serves ${scope}, so this task will wait in the queue. Start a worker for this project or submit it to a project a worker serves.`};
-      return {task:await taskWithInstructions(db,row),replayed:false,...warning};
+      const served = await db.query<{workers:number;free:number}>(`SELECT count(*)::int AS workers,
+          coalesce(sum(greatest(coalesce(w.worker_slots,1)-(SELECT count(*) FROM tasks t WHERE t.lease_owner=w.id AND t.status='running'),0)),0)::int AS free
+        FROM principals w WHERE w.tenant_id=$1 AND w.role='worker' AND NOT w.disabled
+        AND $2=ANY(w.scopes) AND w.last_seen_at>clock_timestamp()-interval '60 seconds'`,[p.tenantId,scope]);
+      const {workers,free} = served.rows[0] ?? {workers:0,free:0};
+      if (!workers) return {task:await taskWithInstructions(db,row),replayed:false,
+        warning:`No live worker serves ${scope}, so this task will wait in the queue. Start a worker for this project or submit it to a project a worker serves.`};
+      // Acknowledge to the submitting agent, in words it can relay to the user.
+      const message = `Swarm started: task ${row.id.slice(0,8)} is queued in ${scope}. ${workers} live worker${workers===1?'':'s'} with ${free} free slot${free===1?'':'s'} serve it, so it ${free ? 'should start within seconds' : 'will start when a slot frees up'}. Follow it with events_poll on ${scope} (claimed, then finished) or task_get.`;
+      return {task:await taskWithInstructions(db,row),replayed:false,message};
     });
   }
 
