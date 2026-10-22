@@ -65,8 +65,9 @@ export function buildInvocation(agent: AgentConfig, project: ProjectConfig, task
     ];
   } else if (agent.provider === 'codex') {
     args = [
-      'exec', '--ignore-user-config', '--disable', 'apps', '--disable', 'plugins',
-      '--sandbox', patch ? 'workspace-write' : 'read-only', '--search', '-c', 'approval_policy="never"', ...(native?.codexHome ? [] : ['--ephemeral']), '--color', 'never', '--json'
+      // --search is a top-level flag: it must come before `exec`.
+      '--search', 'exec', '--ignore-user-config', '--disable', 'apps', '--disable', 'plugins',
+      '--sandbox', patch ? 'workspace-write' : 'read-only', '-c', 'approval_policy="never"', ...(native?.codexHome ? [] : ['--ephemeral']), '--color', 'never', '--json'
     ];
   } else {
     // agy takes the prompt only as the value of -p (no stdin), attached with '=' so it is never parsed as a flag.

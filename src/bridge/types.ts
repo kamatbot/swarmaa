@@ -26,6 +26,8 @@ export interface BridgeConfig {
   heartbeat_seconds: number;
   request_timeout_ms: number;
   task_timeout_seconds: number;
+  /** Tasks one bridge process runs at once (each in its own sandbox; patches in their own worktree). */
+  max_concurrent: number;
   max_output_bytes: number;
   max_prompt_bytes: number;
   agents: AgentConfig[];

@@ -64,11 +64,20 @@ export class BridgeWorker {
     }
   }
 
-  /** Poll projects fairly; one process owns at most one local task at a time. */
+  /**
+   * Runs `max_concurrent` independent claim loops, so one process works on up to that many tasks at
+   * once. Claims are atomic on the service, so loops never take the same task.
+   */
   async run(signal: AbortSignal, once = false): Promise<void> {
+    if (once) return this.loop(signal, true, true);
+    await Promise.all(Array.from({ length: this.config.max_concurrent }, (_, i) => this.loop(signal, false, i === 0)));
+  }
+
+  /** Poll projects fairly; one loop owns at most one local task at a time. Only the first loop reports usage. */
+  private async loop(signal: AbortSignal, once: boolean, reportsUsage: boolean): Promise<void> {
     while (!signal.aborted) {
       let claimedAny = false;
-      await this.reportUsage(signal);
+      if (reportsUsage) await this.reportUsage(signal);
       for (const project of this.config.projects) {
         if (signal.aborted) return;
         try {

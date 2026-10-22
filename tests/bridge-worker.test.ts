@@ -192,3 +192,27 @@ test('a run is recorded as a swarm chat; a continuation appends; failure is harm
   const bad = sessionHarness([],undefined,true); await run(bad);
   assert.equal((bad.calls.find(c=>c.name==='task_finish')!.args as any).outcome,'completed');
 });
+
+test('one worker runs up to max_concurrent tasks at the same time', async () => {
+  const cfg = parseBridgeConfig({ service_url:'http://localhost:8080', max_concurrent:3, agents:[{id:'claude',provider:'claude',binary:'/bin/claude',sandbox:false}], projects:[{scope:'project:demo',root:'/projects/demo',agents:['claude']}] });
+  let handed = 0, active = 0, peak = 0, finished = 0;
+  const ids = ['11111111-1111-4111-8111-11111111111a','11111111-1111-4111-8111-11111111111b','11111111-1111-4111-8111-11111111111c'];
+  const client: ToolClient = { async call<T>(name:string):Promise<T> {
+    if(name==='task_claim') return (handed < ids.length ? {task:{...task,id:ids[handed++]},lease_token:'l',lease_generation:1} : {task:null}) as T;
+    if(name==='context_get') return {scope:task.scope,task,memories:[],conflicts:[]} as T;
+    if(name==='artifact_put') return {artifact:{id:'22222222-2222-4222-8222-222222222222'}} as T;
+    if(name==='session_list') return {sessions:[]} as T;
+    return {task} as T;
+  } };
+  let release!: () => void; const all3 = { promise: new Promise<void>(r => { release = r; }), resolve: () => release() };
+  const stop = new AbortController();
+  const worker = new BridgeWorker(cfg,client,()=>{},async () => {
+    active++; peak = Math.max(peak,active); if(active === 3) all3.resolve();
+    await Promise.race([all3.promise,new Promise(r => setTimeout(r,2000))]);
+    active--; if(++finished === 3) stop.abort();
+    return result;
+  });
+  await worker.run(stop.signal);
+  assert.equal(peak,3,'all three tasks ran at once');
+  assert.equal(handed,3);
+});

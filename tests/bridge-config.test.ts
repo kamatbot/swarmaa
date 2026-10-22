@@ -105,7 +105,7 @@ test('sandbox defaults on: argv is wrapped in sandbox-exec; codex inner sandbox 
   assert.ok(req.args.includes('--restricted'));
   const codex = parseBridgeConfig({ ...input(), agents: [{ id: 'codex', provider: 'codex', binary: '/bin/codex' }], projects: [{ scope: 'project:demo', root: '/projects/demo', agents: ['codex'] }] });
   const c = buildInvocation(codex.agents[0]!, codex.projects[0]!, { ...task, required_capability: 'codex.read' }, {}, codex, signal, {});
-  assert.deepEqual(c.args.slice(2, 4), ['/bin/codex', 'exec']);
+  assert.deepEqual(c.args.slice(2, 5), ['/bin/codex', '--search', 'exec']);
   assert.equal(c.args[c.args.indexOf('--sandbox') + 1], 'danger-full-access');
   const off = parseBridgeConfig({ ...input(), agents: [{ id: 'codex', provider: 'codex', binary: '/bin/codex', sandbox: false }], projects: [{ scope: 'project:demo', root: '/projects/demo', agents: ['codex'] }] });
   const o = buildInvocation(off.agents[0]!, off.projects[0]!, { ...task, required_capability: 'codex.read' }, {}, off, signal, {});
