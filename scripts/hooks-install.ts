@@ -6,14 +6,14 @@ import { dirname, join } from 'node:path';
 
 export type Harness = 'claude' | 'codex' | 'agy' | 'kiro' | 'windsurf' | 'qwen';
 export interface HookResult { harness: Harness; changed: string[]; skipped?: string }
-interface Opts { root: string; dry: boolean; log: (line: string) => void; home?: string }
+interface Opts { root: string; dry: boolean; log: (line: string) => void; home?: string; /** node binary for hook commands; default `node` from PATH */ node?: string }
 
 const MARKER = 'clients/hooks/swarmaa-journal.mjs';
 const AGY_HOOK_NAME = 'swarmaa-journal';
 type Obj = Record<string, unknown>;
 const isObj = (v: unknown): v is Obj => typeof v === 'object' && v !== null && !Array.isArray(v);
 const script = (root: string) => join(root, MARKER);
-const command = (root: string, arg: string) => `node "${script(root)}" ${arg}`;
+const command = (root: string, arg: string, node = 'node') => `${/\s/.test(node) ? JSON.stringify(node) : node} "${script(root)}" ${arg}`;
 const isOurs = (c: unknown) => typeof c === 'string' && c.includes(MARKER);
 
 async function readText(path: string): Promise<string | null> {
@@ -84,13 +84,13 @@ async function settingsHooks(harness: Harness, path: string, events: string[], h
 }
 
 const claude = (install: boolean, o: Opts, home: string) =>
-  settingsHooks('claude', join(home, '.claude', 'settings.json'), CLAUDE_EVENTS, { type: 'command', command: command(o.root, 'claude'), timeout: 5 }, install, o, false);
+  settingsHooks('claude', join(home, '.claude', 'settings.json'), CLAUDE_EVENTS, { type: 'command', command: command(o.root, 'claude', o.node), timeout: 5 }, install, o, false);
 
 // ---- Qwen Code: ~/.qwen/settings.json, Claude-style hooks but timeouts in MILLISECONDS and an explicit shell ----
 // Adapted from Asymptote Labs agent-beacon (MIT). A seconds-valued timeout here would be read as a few milliseconds and kill the hook.
 const QWEN_TIMEOUT_MS = 5000;
 const qwen = (install: boolean, o: Opts, home: string) =>
-  settingsHooks('qwen', join(home, '.qwen', 'settings.json'), ['UserPromptSubmit', 'Stop'], { type: 'command', shell: 'bash', command: command(o.root, 'qwen'), timeout: QWEN_TIMEOUT_MS }, install, o, true);
+  settingsHooks('qwen', join(home, '.qwen', 'settings.json'), ['UserPromptSubmit', 'Stop'], { type: 'command', shell: 'bash', command: command(o.root, 'qwen', o.node), timeout: QWEN_TIMEOUT_MS }, install, o, true);
 
 // ---- Codex: ~/.codex/config.toml, top-level notify = [...] ----
 /** Index range [start, end) of the top-level `notify = ...` statement (may span lines), or null. */
@@ -137,7 +137,7 @@ async function codex(install: boolean, o: Opts, home: string): Promise<HookResul
   // Codex runs one notify program, so an existing one is chained: the journal starts it with the same payload.
   const current = found ? parseNotify(statement) : null;
   const chained = ours ? (current && current.includes('--then') ? current.slice(current.indexOf('--then') + 1) : []) : (current ?? []);
-  const want = `notify = ${JSON.stringify(['node', script(o.root), 'codex', ...(chained.length ? ['--then', ...chained] : [])])}`;
+  const want = `notify = ${JSON.stringify([o.node ?? 'node', script(o.root), 'codex', ...(chained.length ? ['--then', ...chained] : [])])}`;
 
   if (install) {
     if (found && !ours && !current) return { harness: 'codex', changed: [], skipped: `${path}: notify is set to a value this installer cannot parse; not overwriting` };
@@ -172,7 +172,7 @@ async function agy(install: boolean, o: Opts, home: string): Promise<HookResult>
   const file = r.data;
   const existing = file[AGY_HOOK_NAME];
   const ours = existing !== undefined && JSON.stringify(existing).includes(MARKER);
-  const want = { Stop: [{ type: 'command', command: command(o.root, 'agy'), timeout: 5 }] };
+  const want = { Stop: [{ type: 'command', command: command(o.root, 'agy', o.node), timeout: 5 }] };
 
   if (install) {
     if (existing !== undefined && !ours) return { harness: 'agy', changed: [], skipped: `${path}: hook "${AGY_HOOK_NAME}" already exists and is not ours; not overwriting` };
@@ -196,7 +196,7 @@ const kiroWant = (o: Opts) => ({
   version: 'v1',
   hooks: [['UserPromptSubmit', 'prompt'], ['Stop', 'reply']].map(([trigger, what]) => ({
     name: `swarmaa-journal-${what}`, description: 'Swarmaa chat journal. Records this chat locally into the Swarmaa service.',
-    trigger, action: { type: 'command', command: command(o.root, 'kiro') }, timeout: KIRO_TIMEOUT_S, enabled: true,
+    trigger, action: { type: 'command', command: command(o.root, 'kiro', o.node) }, timeout: KIRO_TIMEOUT_S, enabled: true,
   })),
 });
 
@@ -228,7 +228,7 @@ async function windsurf(install: boolean, o: Opts, home: string): Promise<HookRe
   const file = r.data;
   if (file.hooks !== undefined && !isObj(file.hooks)) return { harness: 'windsurf', changed: [], skipped: `${path}: "hooks" is not an object; left untouched` };
   const hooks: Obj = isObj(file.hooks) ? file.hooks : {};
-  const want = { command: command(o.root, 'windsurf'), show_output: false };
+  const want = { command: command(o.root, 'windsurf', o.node), show_output: false };
   let dirty = false;
   for (const ev of WINDSURF_EVENTS) {
     if (hooks[ev] !== undefined && !Array.isArray(hooks[ev])) return { harness: 'windsurf', changed: [], skipped: `${path}: hooks.${ev} is not an array; left untouched` };

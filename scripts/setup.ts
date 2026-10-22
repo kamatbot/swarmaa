@@ -15,13 +15,13 @@ import { PasskeyService } from '../src/passkeys.js';
 import { SOURCES, detectSources } from '../src/capture/index.js';
 import { installJournalHooks, removeJournalHooks, type Harness } from './hooks-install.js';
 import {
-  AGY_TOOLS, DEFAULT_HOSTNAME, HARNESS_KEYS, HOOK_APP_KEYS, PlanError, SHARING_HARNESSES, WORKER_HARNESSES, bridgeConfig, identityScopes, mergeAgyPermissions,
+  AGY_TOOLS, DEFAULT_HOSTNAME, isCompiled, packageRoot, scriptCommand, HARNESS_KEYS, HOOK_APP_KEYS, PlanError, SHARING_HARNESSES, WORKER_HARNESSES, bridgeConfig, identityScopes, mergeAgyPermissions,
   parseEnv, plist, slugScopes, splitFolder, stateFile, validHostname, validatePlan, yes,
   type HarnessKey, type HookAppKey, type ScopeRoot, type SetupPlan, type State,
 } from './setup-lib.js';
 import { setupTunnel } from './tunnel.js';
 
-export const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+export const ROOT = packageRoot(dirname(fileURLToPath(import.meta.url)));
 const HOME = homedir();
 // Prefer the stable Homebrew symlink so LaunchAgents survive `brew upgrade node`.
 const NODE = (() => { try { return realpathSync('/opt/homebrew/bin/node') === realpathSync(process.execPath) ? '/opt/homebrew/bin/node' : process.execPath; } catch { return process.execPath; } })();
@@ -63,7 +63,8 @@ function findCli(cmd: string): string | undefined {
   const sh = spawnSync('/bin/sh', ['-lc', `command -v ${cmd}`], { encoding: 'utf8' }).stdout?.trim().split('\n').pop() ?? '';
   return [sh, join(HOME, '.local/bin', cmd), join('/opt/homebrew/bin', cmd)].find(p => p.startsWith('/') && exe(p));
 }
-const findPgBin = () => ['/opt/homebrew/opt/postgresql@17/bin', '/opt/homebrew/opt/postgresql@16/bin', spawnSync('pg_config', ['--bindir'], { encoding: 'utf8' }).stdout?.trim()].find(d => d && existsSync(join(d, 'pg_ctl')));
+// SWARMAA_PG_BIN (the bundled PostgreSQL) wins over Homebrew.
+const findPgBin = () => [process.env.SWARMAA_PG_BIN?.trim(), '/opt/homebrew/opt/postgresql@17/bin', '/opt/homebrew/opt/postgresql@16/bin', spawnSync('pg_config', ['--bindir'], { encoding: 'utf8' }).stdout?.trim()].find(d => d && existsSync(join(d, 'pg_ctl')));
 async function pgConnect(target: string): Promise<pg.Client | undefined> {
   const c = new pg.Client({ connectionString: target, connectionTimeoutMillis: 3000 });
   c.on('error', () => undefined);
@@ -106,6 +107,7 @@ export async function runSetup(plan: SetupPlan, opts: RunOpts): Promise<SetupSum
   const root = opts.root ?? ROOT;
   const PGDATA = join(root, '.local/pg'), PGLOG = join(root, '.local/pg.log'), LOGS = join(root, '.local/logs');
   const LAUNCHER = join(root, 'clients/macos/swarma-mcp.sh');
+  const bundledNode = existsSync(join(root, 'node')) ? join(root, 'node') : undefined; // runtime layout ships its own node
   const det = opts.detected ?? await detect(root);
   const state = det.state;
   const say = (s = '') => { for (const l of s.split('\n')) opts.log(l); };
@@ -119,7 +121,7 @@ export async function runSetup(plan: SetupPlan, opts: RunOpts): Promise<SetupSum
     return { status: r.status ?? 1, stderr: r.stderr ?? '' };
   };
   const tail = (r: Result) => r.stderr.trim().split('\n').slice(-5).join('\n');
-  const admin = (...a: string[]) => run(NODE, ['--env-file=.env', '--import', 'tsx', 'scripts/admin.ts', ...a]);
+  const admin = (...a: string[]) => run(NODE, [...scriptCommand(root, 'scripts/admin', { envFile: true }), ...a]);
   const put = (file: string, data: string, mode = 0o600): void => {
     if (dry) { pl(`write ${file} (mode ${mode.toString(8)})`); return; }
     mkdirSync(dirname(file), { recursive: true }); writeFileSync(file, data, { mode }); chmodSync(file, mode);
@@ -146,10 +148,13 @@ export async function runSetup(plan: SetupPlan, opts: RunOpts): Promise<SetupSum
 
   let env: Record<string, string> = {};
   let port = '8787';
+  let pgPort = '54329';
   let managed = false;
   let bin: string | undefined;
   let built = false;
-  const build = () => { if (built) return true; say('Building (npm run build) ...'); const r = run('npm', ['run', 'build']); if (r.status !== 0) say(`  build failed:\n${tail(r)}`); return built = r.status === 0; };
+  const build = () => { if (built) return true;
+    if (isCompiled(root) && !existsSync(join(root, 'tsconfig.json'))) return built = true; // compiled runtime: nothing to build
+    say('Building (npm run build) ...'); const r = run('npm', ['run', 'build']); if (r.status !== 0) say(`  build failed:\n${tail(r)}`); return built = r.status === 0; };
 
   try {
     if (Number(process.versions.node.split('.')[0]) < 22) die('Swarmaa needs Node >= 22.');
@@ -157,17 +162,18 @@ export async function runSetup(plan: SetupPlan, opts: RunOpts): Promise<SetupSum
     await step('env', 'Local credentials', async () => {
       if (existsSync(join(root, '.env'))) return;
       say('Creating .env with unique local credentials...');
-      const r = run(NODE, ['--import', 'tsx', 'scripts/init-local.ts']);
+      const r = run(NODE, scriptCommand(root, 'scripts/init-local'));
       if (r.status !== 0) die(`init-local failed:\n${tail(r)}`);
     }, true);
     env = existsSync(join(root, '.env')) ? parseEnv(readFileSync(join(root, '.env'), 'utf8')) : {};
     port = env.PORT || '8787';
+    pgPort = env.PG_PORT || '54329';
     summary.serviceUrl = `http://127.0.0.1:${port}`;
 
     await step('db', 'Database', async () => {
       const url = env.DATABASE_URL;
       const u = url ? new URL(url) : undefined;
-      managed = !!u && u.hostname === '127.0.0.1' && u.port === '54329';
+      managed = !!u && u.hostname === '127.0.0.1' && u.port === pgPort;
       if (!url || !u) {
         if (!dry) die('DATABASE_URL is missing from .env.');
         pl('.env would be created first; database steps are skipped in this dry run');
@@ -189,8 +195,8 @@ export async function runSetup(plan: SetupPlan, opts: RunOpts): Promise<SetupSum
         } finally { rmSync(pwfile, { force: true }); }
       }
       if (run(pgctl, ['-D', PGDATA, 'status'], { mutating: false, env: PGENV }).status !== 0) {
-        say('Starting PostgreSQL on 127.0.0.1:54329 ...');
-        const r = run(pgctl, ['-D', PGDATA, '-o', '-p 54329 -k /tmp -h 127.0.0.1', '-l', PGLOG, '-w', 'start'], { env: PGENV });
+        say(`Starting PostgreSQL on 127.0.0.1:${pgPort} ...`);
+        const r = run(pgctl, ['-D', PGDATA, '-o', `-p ${pgPort} -k /tmp -h 127.0.0.1`, '-l', PGLOG, '-w', 'start'], { env: PGENV });
         if (r.status !== 0) die(`pg_ctl start failed (see .local/pg.log):\n${tail(r)}`);
       }
       const name = u.pathname.slice(1);
@@ -204,7 +210,7 @@ export async function runSetup(plan: SetupPlan, opts: RunOpts): Promise<SetupSum
     }, true);
 
     await step('migrate', 'Database migrations', async () => {
-      const m = run(NODE, ['--env-file=.env', '--import', 'tsx', 'scripts/migrate.ts']);
+      const m = run(NODE, scriptCommand(root, 'scripts/migrate', { envFile: true }));
       if (m.status !== 0) die(`migrate failed:\n${tail(m)}`);
     }, true);
 
@@ -269,7 +275,7 @@ export async function runSetup(plan: SetupPlan, opts: RunOpts): Promise<SetupSum
         const want = !!plan.harnesses[k]?.connect && plan.harnesses[k]!.share && summary.agents.includes(k);
         if (!want && !state.sharing?.includes(k)) continue;
         try {
-          const o = { root, dry, log: (l: string) => say(`  ${l}`) };
+          const o = { root, dry, node: bundledNode, log: (l: string) => say(`  ${l}`) };
           if (want) { await installJournalHooks(k as Harness, o); summary.sharing.push(k); say(`  ${META[k].label}: chats are shared`); }
           else { await removeJournalHooks(k as Harness, o); say(`  ${META[k].label}: chat sharing removed`); }
         } catch (e) {
@@ -285,7 +291,7 @@ export async function runSetup(plan: SetupPlan, opts: RunOpts): Promise<SetupSum
       const want = !!plan.hookApps[k]?.share && foundApps.includes(k);
       if (!want && !state.hookApps?.includes(k)) continue;
       await step(`hookapp:${k}`, HOOK_APPS[k].label, async () => {
-        const o = { root, dry, log: (l: string) => say(`  ${l}`) };
+        const o = { root, dry, node: bundledNode, log: (l: string) => say(`  ${l}`) };
         if (!want) { await removeJournalHooks(k, o); return 'chat sharing removed'; }
         if (!ensureIdentity(k, 'frontend', join(root, `.local/${k}.json`), interactive)) throw new Error(`could not create or update the ${k} identity`);
         const r = await installJournalHooks(k, o);
@@ -326,7 +332,7 @@ export async function runSetup(plan: SetupPlan, opts: RunOpts): Promise<SetupSum
       const uid = process.getuid?.() ?? 501, label = (s: string) => `com.swarma.${s}`;
       if (!autostart) {
         say('Manual start commands (from the repo root):');
-        if (managed) say(`  LC_ALL=en_US.UTF-8 ${join(findPgBin() ?? '<pgbin>', 'pg_ctl')} -D .local/pg -o "-p 54329 -k /tmp -h 127.0.0.1" -l .local/pg.log -w start`);
+        if (managed) say(`  LC_ALL=en_US.UTF-8 ${join(findPgBin() ?? '<pgbin>', 'pg_ctl')} -D .local/pg -o "-p ${pgPort} -k /tmp -h 127.0.0.1" -l .local/pg.log -w start`);
         say('  npm run dev');
         for (const k of summary.workers) say(`  npm run bridge -- --config .local/bridge-${k}.json`);
         if (captureOn) say('  npm run capture -- --once   (captures chats from the other apps; run it now and then, or switch autostart on)');
@@ -339,15 +345,15 @@ export async function runSetup(plan: SetupPlan, opts: RunOpts): Promise<SetupSum
       const pgbin = managed ? (bin ?? findPgBin()) : undefined;
       if (managed && !pgbin) say('  PostgreSQL binaries not found; not creating a postgres LaunchAgent.');
       const jobs: { id: string; args: string[]; extra?: Record<string, string>; wd?: string; log?: string; interval?: number; calendar?: { hour: number; minute: number }; script?: string }[] = [
-        ...(pgbin ? [{ id: 'postgres', args: [join(pgbin, 'postgres'), '-D', PGDATA, '-p', '54329', '-k', '/tmp', '-h', '127.0.0.1'], extra: PGENV }] : []),
+        ...(pgbin ? [{ id: 'postgres', args: [join(pgbin, 'postgres'), '-D', PGDATA, '-p', pgPort, '-k', '/tmp', '-h', '127.0.0.1'], extra: PGENV }] : []),
         { id: 'service', args: [NODE, `--env-file=${join(root, '.env')}`, join(root, 'dist/src/server.js')], wd: root },
         ...summary.workers.map(k => ({ id: `bridge.${k}`, args: [NODE, join(root, 'dist/src/bridge.js'), '--config', join(root, `.local/bridge-${k}.json`)], wd: root })),
         // One-shot jobs: no KeepAlive. Their own *.log (status words) is written by the scripts; launchd output goes to *.launchd.log.
-        ...(captureOn ? [{ id: 'capture', args: [NODE, '--import', 'tsx', join(root, 'scripts/capture.ts'), '--once'], wd: root, log: 'capture.launchd.log', interval: 120 }] : []),
-        { id: 'distill', args: [NODE, '--import', 'tsx', join(root, 'scripts/distill.ts'), '--once'], wd: root, log: 'distill.launchd.log', calendar: { hour: 3, minute: 30 }, script: 'scripts/distill.ts' },
+        ...(captureOn ? [{ id: 'capture', args: [NODE, ...scriptCommand(root, 'scripts/capture'), '--once'], wd: root, log: 'capture.launchd.log', interval: 120 }] : []),
+        { id: 'distill', args: [NODE, ...scriptCommand(root, 'scripts/distill', { envFile: true }), '--once'], wd: root, log: 'distill.launchd.log', calendar: { hour: 3, minute: 30 }, script: 'scripts/distill' },
       ];
       for (const j of jobs) {
-        if (j.script && !dry && !existsSync(join(root, j.script))) { say(`  ${j.script} is not present yet; not creating the ${j.id} LaunchAgent.`); continue; }
+        if (j.script && !dry && !existsSync(scriptCommand(root, j.script).at(-1)!)) { say(`  ${j.script} is not present yet; not creating the ${j.id} LaunchAgent.`); continue; }
         const file = join(LA, `${label(j.id)}.plist`), log = join(LOGS, j.log ?? `${j.id}.log`);
         const xml = plist(label(j.id), j.args, { workingDirectory: j.wd, env: { ...baseEnv, ...j.extra }, stdout: log, stderr: log, startInterval: j.interval, calendar: j.calendar, ...(j.calendar ? { runAtLoad: false } : {}) });
         if (dry) { pl(`write ${file}`); say(xml.replace(/^/gm, '      ')); } else writeFileSync(file, xml, { mode: 0o644 });
@@ -432,7 +438,7 @@ export interface OnboardingOptions {
 export function createOnboarding(o: OnboardingOptions) {
   const root = o.root ?? ROOT;
   const token = randomBytes(32).toString('base64url');
-  const html = o.html ?? readFileSync(new URL('./onboarding.html', import.meta.url), 'utf8');
+  const html = o.html ?? readFileSync(join(ROOT, 'scripts/onboarding.html'), 'utf8');
   const runner = o.run ?? runSetup, detector = o.detectFn ?? detect;
   const idleMs = o.idleMs ?? 15 * 60_000;
   let port = 0;

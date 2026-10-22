@@ -245,3 +245,21 @@ test('folder entries can name their scope', async () => {
   assert.deepEqual(splitFolder('fametc=/x/Planner'), { name: 'fametc', path: '/x/Planner' });
   assert.deepEqual(slugScopes(['fametc=/x/Planner', '/y/Futuremap']).map(s => s.scope), ['project:fametc', 'project:futuremap']);
 });
+
+test('scriptCommand picks compiled dist/*.js without tsx and tsx otherwise', async () => {
+  const { mkdtempSync, mkdirSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { scriptCommand, isCompiled, packageRoot } = await import('../scripts/setup-lib.js');
+  const root = mkdtempSync(join(tmpdir(), 'swarmaa-cmd-'));
+  try {
+    writeFileSync(join(root, 'package.json'), '{}');
+    mkdirSync(join(root, 'dist/scripts'), { recursive: true });
+    assert.equal(isCompiled(root), true);
+    assert.deepEqual(scriptCommand(root, 'scripts/admin', { envFile: true }), [`--env-file=${join(root, '.env')}`, join(root, 'dist/scripts/admin.js')]);
+    assert.equal(packageRoot(join(root, 'dist/scripts')), root);
+    mkdirSync(join(root, 'node_modules/tsx'), { recursive: true });
+    assert.equal(isCompiled(root), false);
+    assert.deepEqual(scriptCommand(root, 'scripts/migrate'), ['--import', 'tsx', join(root, 'scripts/migrate.ts')]);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});

@@ -1,10 +1,11 @@
 import { createHash } from 'node:crypto';
 import { readdir, readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { packageRoot } from './setup-lib.js';
 import { createPool } from '../src/db.js';
 
-export async function migrate(databaseUrl: string, directory = fileURLToPath(new URL('../db/migrations/', import.meta.url))): Promise<void> {
+export async function migrate(databaseUrl: string, directory = join(packageRoot(dirname(fileURLToPath(import.meta.url))), 'db/migrations')): Promise<void> {
   const pool = createPool(databaseUrl);
   const client = await pool.connect();
   try {
