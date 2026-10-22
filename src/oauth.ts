@@ -113,6 +113,8 @@ export function validateRedirectUri(value: unknown, config: ServerConfig): strin
   const safeScheme = url.protocol === 'https:' || (config.allowInsecureLocalhost && loopback && url.protocol === 'http:');
   const allowed = config.oauthRedirectHosts.map(host => host.toLowerCase()).includes(url.hostname.toLowerCase());
   if (!safeScheme || !allowed || url.username || url.password || raw.includes('#') || raw !== url.href) {
+    // The owner adds a client's callback host to OAUTH_REDIRECT_HOSTS; log only the hostname so it can be found.
+    if (!allowed) console.error(JSON.stringify({ event: 'oauth_redirect_host_rejected', host: url.hostname.toLowerCase().slice(0, 253) }));
     throw new OAuthError('invalid_redirect_uri', 'Redirect URI must be canonical, use an allowed host, and have no credentials or fragment.');
   }
   // Exact URI matching is enforced again on authorization and code exchange.
