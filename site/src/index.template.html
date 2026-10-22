@@ -1,0 +1,355 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Swarmaa — One brain, every agent</title>
+<meta name="description" content="Swarmaa gives Claude Code, Codex, Antigravity, Dot and Grok one shared memory and one task queue, and sends each task to whichever agent has the most quota left. Runs on your Mac.">
+<meta property="og:title" content="Swarmaa — One brain, every agent">
+<meta property="og:description" content="Shared memory and quota-aware routing for the AI agents you already use.">
+<meta property="og:url" content="https://swarmaa.com/">
+<meta name="theme-color" content="#FF5A3C">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="preload" href="/fonts/stardos-stencil-700.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/fonts/ibm-plex-sans-condensed-500.woff2" as="font" type="font/woff2" crossorigin>
+<style>
+{{FONTS}}
+/* Kind Swarm design system · kind-swarm@1.0.0 (tokens and the components this page uses) */
+:root{
+  --ks-ink:#15111F;--ks-paper:#F4EFE6;--ks-white:#FFFFFF;--ks-flame:#FF5A3C;--ks-flame-deep:#F0361A;--ks-flame-hot:#FF3D1F;
+  --ks-lime:#D4FF3A;--ks-lime-deep:#C6F230;--ks-focus:#3D7BFF;
+  --ks-text-soft:#3A3347;--ks-text-muted:#5A5168;--ks-text-card:#2A2436;--ks-on-ink-soft:#CFC6E8;--ks-on-ink-muted:#B9B0CC;--ks-on-ink-faint:#E4DEF2;
+  --ks-ink-raised:#1F1A2E;--ks-ink-line:#3B3358;--ks-ink-ring:#221C3A;--ks-flame-shadow:#5A160C;
+  --ks-stage-2:#FFE08A;--ks-stage-4:#D6C2FF;
+  --ks-font-display:"Stardos Stencil","Courier New",serif;
+  --ks-font-body:"IBM Plex Sans Condensed","Arial Narrow",Arial,sans-serif;
+  --ks-font-mono:"IBM Plex Mono",ui-monospace,Menlo,monospace;
+  --ks-display-xl:clamp(60px,13vw,200px);--ks-display-lg:clamp(48px,8.4vw,136px);--ks-display-md:clamp(40px,4.4vw,72px);
+  --ks-body-lg:20px;--ks-body:17px;
+  --ks-radius-pill:999px;--ks-radius-card:30px;--ks-radius-plan:28px;--ks-radius-panel:24px;--ks-radius-inset:14px;
+  --ks-border:3px;--ks-border-thin:2px;
+  --ks-shadow-offset:8px;
+  --ks-shadow:var(--ks-shadow-offset) var(--ks-shadow-offset) 0 var(--ks-ink);
+  --ks-shadow-hover:calc(var(--ks-shadow-offset) + 2px) calc(var(--ks-shadow-offset) + 2px) 0 var(--ks-ink);
+  --ks-shadow-lime:var(--ks-shadow-offset) var(--ks-shadow-offset) 0 var(--ks-lime);
+  --ks-ring-size:120px;--ks-ring-size-sm:90px;
+  --ks-page-max:1280px;--ks-gutter:clamp(16px,4vw,56px);--ks-section-y:clamp(72px,9vw,140px);--ks-gap:36px;--ks-gap-lg:56px;
+  --ks-ease-press:cubic-bezier(.2,.8,.2,1);--ks-ease-spring:cubic-bezier(.3,1.4,.5,1);--ks-ease-bob:cubic-bezier(.45,0,.55,1);--ks-ease-rise:cubic-bezier(.16,1,.3,1);
+  --ks-dur-press:.14s;--ks-dur-poke:.76s;--ks-dur-bob:3.4s;--ks-dur-blink:5.6s;--ks-dur-rise:1s;--ks-dur-marquee:48s;--ks-dur-drift:16s;
+}
+*{box-sizing:border-box}
+html{background:var(--ks-paper);scroll-behavior:smooth}
+body{margin:0;background:var(--ks-paper);color:var(--ks-ink);font:400 var(--ks-body)/1.55 var(--ks-font-body);-webkit-font-smoothing:antialiased}
+a{color:inherit}
+a:focus-visible,button:focus-visible,input:focus-visible{outline:3px solid var(--ks-focus);outline-offset:4px}
+.ks-disp{font-family:var(--ks-font-display);font-weight:700;text-transform:uppercase;line-height:.92;letter-spacing:.01em;margin:0}
+.ks-serif{font-family:var(--ks-font-body);font-style:italic;font-weight:400;text-transform:none;letter-spacing:-.02em}
+.ks-label{margin:0;font:500 13px/1.35 var(--ks-font-mono);letter-spacing:.16em;text-transform:uppercase}
+.ks-wrap{width:100%;max-width:var(--ks-page-max);margin:0 auto;padding-left:var(--ks-gutter);padding-right:var(--ks-gutter)}
+.ks-btn{display:inline-flex;align-items:center;justify-content:center;gap:10px;min-height:56px;padding:0 28px;border:var(--ks-border) solid var(--ks-ink);border-radius:var(--ks-radius-pill);font:600 17px/1 var(--ks-font-body);text-decoration:none;cursor:pointer;box-shadow:var(--ks-shadow);transition:transform var(--ks-dur-press) var(--ks-ease-press),box-shadow var(--ks-dur-press) var(--ks-ease-press)}
+.ks-btn:hover{transform:translate(-2px,-2px);box-shadow:var(--ks-shadow-hover)}
+.ks-btn:active{transform:translate(8px,8px);box-shadow:0 0 0 var(--ks-ink)}
+.ks-btn-ink{background:var(--ks-ink);color:var(--ks-paper)}.ks-btn-ink:hover{color:var(--ks-lime)}
+.ks-btn-paper{background:var(--ks-paper);color:var(--ks-ink)}
+.ks-btn[disabled]{opacity:.6;cursor:progress}
+.ks-navlink{text-decoration:none;font-weight:600;font-size:16px;padding:12px 4px}
+.ks-navlink:hover{text-decoration:underline;text-decoration-thickness:3px;text-underline-offset:6px}
+.ks-rings{--_g:var(--c2) 4% 14%,var(--c1) 14% 24%,var(--c2) 22% 34%,var(--c1) 34% 44%,var(--c2) 44% 56%,var(--c1) 56% 66%,var(--c2) 66% 76%,var(--c1) 76% 86%,var(--c2) 86% 96%;background-image:radial-gradient(100% 100% at 100% 0,var(--c1) 4%,var(--_g),var(--sh) 96%,#0000),radial-gradient(100% 100% at 0 100%,#0000,var(--sh) 4%,var(--_g),var(--c1) 96%);background-size:var(--s) var(--s)}
+.ks-hero-rings{--s:var(--ks-ring-size);--c1:var(--ks-flame);--c2:var(--ks-flame-deep);--sh:#0005}
+.ks-mq-rings{--s:var(--ks-ring-size-sm);--c1:var(--ks-lime);--c2:var(--ks-lime-deep);--sh:#0002}
+.ks-ink-rings{--s:var(--ks-ring-size);--c1:var(--ks-ink);--c2:var(--ks-ink-ring);--sh:#0007}
+.ks-wave-text{display:inline-block;--s:var(--ks-ring-size);--c1:var(--ks-ink);--c2:var(--ks-flame-shadow);--sh:#0000;color:transparent;-webkit-background-clip:text;background-clip:text;animation:ks-drift var(--ks-dur-drift) linear infinite}
+.ks-grain{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;opacity:.22;mix-blend-mode:multiply;transform:translateZ(0)}
+.ks-moji{display:block;width:100%;height:100%;overflow:visible}
+.ks-moji .ks-bod{transform-box:fill-box;transform-origin:50% 90%;animation:ks-bob var(--ks-dur-bob) var(--ks-ease-bob) infinite}
+.ks-moji .ks-eye{transform-box:fill-box;transform-origin:center;animation:ks-blink var(--ks-dur-blink) infinite}
+.ks-moji .ks-pupil{transform:translate(var(--px,0px),var(--py,0px));transition:transform .18s var(--ks-ease-press)}
+.ks-moji.ks-d1 .ks-bod{animation-delay:-.7s}.ks-moji.ks-d1 .ks-eye{animation-delay:-1.9s}
+.ks-moji.ks-d2 .ks-bod{animation-delay:-1.5s}.ks-moji.ks-d2 .ks-eye{animation-delay:-3.4s}
+.ks-moji.ks-d3 .ks-bod{animation-delay:-2.3s}.ks-moji.ks-d3 .ks-eye{animation-delay:-.6s}
+.ks-moji.ks-d4 .ks-bod{animation-delay:-2.9s}.ks-moji.ks-d4 .ks-eye{animation-delay:-4.6s}
+.ks-moji.ks-react .ks-bod{animation:ks-poke var(--ks-dur-poke) var(--ks-ease-spring)}
+.ks-poke{display:block;width:100%;padding:0;border:0;background:none;cursor:pointer;border-radius:50%}
+.ks-poke svg{filter:drop-shadow(var(--ks-shadow))}
+.ks-rise{animation:ks-rise var(--ks-dur-rise) var(--ks-ease-rise) both}
+.ks-mqbox{padding:22px 0;-webkit-mask-image:linear-gradient(90deg,transparent,#000 7%,#000 93%,transparent);mask-image:linear-gradient(90deg,transparent,#000 7%,#000 93%,transparent)}
+.ks-mqbox:hover .ks-mq{animation-play-state:paused}
+.ks-mq{display:flex;align-items:center;width:max-content;animation:ks-mq var(--ks-dur-marquee) linear infinite}
+.ks-mq span{padding:0 28px;font-family:var(--ks-font-display);font-weight:700;font-size:clamp(32px,4.4vw,64px);line-height:1.25;text-transform:uppercase;white-space:nowrap}
+.ks-mq span:nth-of-type(even){color:transparent;-webkit-text-stroke:1.5px var(--ks-ink)}
+.ks-mq svg{flex:0 0 auto}
+.ks-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr));margin:0}
+.ks-stat{display:flex;flex-direction:column-reverse;justify-content:flex-end;gap:12px;padding:32px 28px;border-left:1px solid rgba(244,239,230,.16)}
+.ks-stat:first-child{border-left:0;padding-left:0}
+.ks-stat dd{margin:0;font-family:var(--ks-font-display);font-weight:700;font-size:clamp(40px,4.2vw,60px);line-height:.9;letter-spacing:.01em;color:var(--ks-paper)}
+.ks-stat dt{display:flex;align-items:center;gap:10px;font:500 13px/1.35 var(--ks-font-mono);letter-spacing:.14em;text-transform:uppercase;color:var(--ks-on-ink-soft)}
+.ks-live{flex:0 0 auto;width:9px;height:9px;border-radius:50%;background:var(--ks-lime);animation:ks-live 2s ease-out infinite}
+.ks-pill{min-height:44px;padding:0 20px;border:2px solid var(--ks-paper);border-radius:var(--ks-radius-pill);background:transparent;color:var(--ks-paper);font:600 15px/1 var(--ks-font-body);cursor:pointer;transition:background .15s,color .15s}
+.ks-pill:hover{background:rgba(244,239,230,.12)}
+.ks-pill.ks-on{background:var(--ks-lime);border-color:var(--ks-lime);color:var(--ks-ink)}
+.ks-step{display:flex;flex-direction:column;gap:16px;padding-top:24px;border-top:var(--ks-border) solid var(--ks-ink)}
+.ks-num{font-family:var(--ks-font-display);font-weight:700;font-size:96px;line-height:.8;color:transparent;-webkit-text-stroke:2.5px var(--ks-ink)}
+.ks-plan{display:flex;flex-direction:column;gap:18px;padding:36px 32px;border:var(--ks-border) solid var(--ks-ink);border-radius:var(--ks-radius-plan);background:#fff;box-shadow:var(--ks-shadow)}
+@keyframes ks-drift{to{background-position:120px 120px}}
+@keyframes ks-live{0%{box-shadow:0 0 0 0 rgba(212,255,58,.6)}70%{box-shadow:0 0 0 10px rgba(212,255,58,0)}100%{box-shadow:0 0 0 0 rgba(212,255,58,0)}}
+@keyframes ks-bob{0%,100%{transform:translateY(0) scale(1,1)}50%{transform:translateY(-5px) scale(1.02,.98)}}
+@keyframes ks-blink{0%,93%,100%{transform:scaleY(1)}95%{transform:scaleY(.08)}}
+@keyframes ks-poke{0%{transform:scale(1,1)}18%{transform:translateY(5px) scale(1.12,.86)}45%{transform:translateY(-16px) scale(.92,1.12)}70%{transform:translateY(2px) scale(1.04,.97)}100%{transform:scale(1,1)}}
+@keyframes ks-rise{from{opacity:0;transform:translateY(70px)}to{opacity:1;transform:none}}
+@keyframes ks-mq{to{transform:translateX(-50%)}}
+@media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}*,*::before{animation:none !important;transition:none !important}}
+
+/* Swarmaa landing · layout on Kind Swarm tokens */
+.skip{position:absolute;left:-9999px;top:8px;z-index:9;padding:10px 16px;background:var(--ks-lime);border:var(--ks-border-thin) solid var(--ks-ink);border-radius:var(--ks-radius-pill);font-weight:700}
+.skip:focus{left:16px}
+.l-bar{display:flex;align-items:center;justify-content:space-between;gap:16px;padding-top:20px;padding-bottom:20px}
+.l-mark{display:inline-flex;align-items:center;gap:10px;text-decoration:none;font:700 28px/1 var(--ks-font-display);text-transform:uppercase;letter-spacing:.02em}
+.l-mark svg{width:34px;height:34px}
+.l-nav{display:flex;align-items:center;gap:clamp(8px,2vw,24px)}
+.l-nav .ks-btn{min-height:46px;padding:0 20px;font-size:15px;white-space:nowrap;box-shadow:4px 4px 0 var(--ks-ink)}
+.l-hero{position:relative;overflow:hidden;background-color:var(--ks-flame);border-bottom:var(--ks-border) solid var(--ks-ink)}
+.l-hero>.ks-wrap{position:relative}
+.l-hero-in{padding-top:clamp(28px,5vw,64px);padding-bottom:clamp(48px,6vw,88px)}
+.l-chip{display:inline-flex;align-items:center;gap:10px;min-height:36px;padding:0 16px;border:var(--ks-border-thin) solid var(--ks-ink);border-radius:var(--ks-radius-pill);background:var(--ks-paper);font:600 13px/1 var(--ks-font-mono);letter-spacing:.08em;text-transform:uppercase}
+.l-chip .ks-live{background:var(--ks-ink);animation:none}
+.l-hero h1{margin-top:26px;font-size:var(--ks-display-xl)}
+.l-hero h1 .ks-serif{display:block;font-size:.62em;line-height:1.02}
+.l-lede{max-width:640px;margin:28px 0 0;font-size:var(--ks-body-lg);font-weight:500;line-height:1.5}
+.l-ctas{display:flex;flex-wrap:wrap;gap:16px;margin-top:32px}
+.l-cast{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:clamp(10px,2vw,28px);max-width:760px;margin-top:clamp(36px,5vw,60px)}
+.l-cast figure{margin:0;display:flex;flex-direction:column;align-items:center;gap:12px}
+.l-cast .ks-poke{aspect-ratio:1}
+.l-cast figcaption{padding:6px 12px;border:var(--ks-border-thin) solid var(--ks-ink);border-radius:var(--ks-radius-pill);background:var(--ks-white);font:600 12px/1 var(--ks-font-mono);letter-spacing:.06em;text-transform:uppercase;white-space:nowrap;box-shadow:0 2px 0 var(--ks-ink)}
+.l-band{background:var(--ks-ink);color:var(--ks-paper);border-bottom:var(--ks-border) solid var(--ks-ink)}
+.l-band .ks-stats{padding-top:8px;padding-bottom:8px}
+.l-sec{padding-top:var(--ks-section-y);padding-bottom:var(--ks-section-y)}
+.l-head{display:flex;flex-direction:column;gap:20px;max-width:900px}
+.l-head h2{font-size:var(--ks-display-lg)}
+.l-head h2 .ks-serif{display:block;font-size:.6em;line-height:1.05}
+.l-head p{max-width:640px;margin:0;font-size:var(--ks-body-lg);color:var(--ks-text-soft)}
+.l-steps{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,280px),1fr));gap:var(--ks-gap);margin-top:var(--ks-gap-lg)}
+.l-steps h3{margin:0;font-size:28px;line-height:1.1;font-weight:700}
+.l-steps p{margin:0;color:var(--ks-text-card)}
+code{font:500 .88em/1.5 var(--ks-font-mono);background:var(--ks-stage-4);padding:1px 8px;border-radius:var(--ks-radius-pill)}
+.l-deep{position:relative;background-color:var(--ks-ink);color:var(--ks-on-ink-soft)}
+.l-deep .l-head h2{color:var(--ks-paper)}
+.l-deep .l-head p{color:var(--ks-on-ink-soft)}
+.l-deep .ks-label{color:var(--ks-lime)}
+.l-berg{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.3fr);gap:var(--ks-gap-lg);align-items:start;margin-top:var(--ks-gap-lg)}
+.l-pills{display:flex;flex-wrap:wrap;gap:10px}
+.l-count{margin:24px 0 0;font:700 clamp(40px,4.4vw,64px)/.95 var(--ks-font-display);text-transform:uppercase;color:var(--ks-paper)}
+.l-count small{display:block;margin-top:10px;font:500 13px/1.35 var(--ks-font-mono);letter-spacing:.14em;color:var(--ks-on-ink-muted)}
+.l-layers{display:flex;flex-direction:column;gap:10px;margin:0;padding:0;list-style:none}
+.l-layers li{display:flex;align-items:center;justify-content:space-between;gap:16px;min-height:64px;padding:0 22px;border:var(--ks-border-thin) solid var(--ks-ink-line);border-radius:var(--ks-radius-inset);background:var(--ks-ink-raised);color:var(--ks-paper);font-weight:700;font-size:20px;transition:background .3s var(--ks-ease-press),color .3s,border-color .3s}
+.l-layers li span{font:600 12px/1 var(--ks-font-mono);letter-spacing:.12em;text-transform:uppercase;padding:8px 12px;border-radius:var(--ks-radius-pill);background:var(--ks-flame);color:var(--ks-ink);white-space:nowrap}
+.l-layers li.is-below{background:var(--ks-lime);border-color:var(--ks-lime);color:var(--ks-ink)}
+.l-layers li.is-below span{background:var(--ks-ink);color:var(--ks-lime)}
+.l-layers li.is-water{position:relative;margin-top:34px}
+.l-layers li.is-water::before{content:"waterline";position:absolute;left:0;right:0;top:-24px;padding-top:6px;border-top:3px dashed var(--ks-lime);text-align:right;font:500 12px/1 var(--ks-font-mono);letter-spacing:.14em;text-transform:uppercase;color:var(--ks-lime)}
+.l-mq{position:relative;overflow:hidden;background-color:var(--ks-lime);color:var(--ks-ink);border-top:var(--ks-border) solid var(--ks-ink);border-bottom:var(--ks-border) solid var(--ks-ink)}
+.l-join{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:var(--ks-gap-lg);align-items:center}
+.l-join .ks-plan h3{margin:0;font:700 30px/1.05 var(--ks-font-body)}
+.l-form{display:flex;flex-direction:column;gap:12px}
+.l-form label{font:500 12px/1 var(--ks-font-mono);letter-spacing:.14em;text-transform:uppercase;color:var(--ks-text-muted)}
+.l-form input{width:100%;min-height:56px;padding:0 20px;border:var(--ks-border) solid var(--ks-ink);border-radius:var(--ks-radius-pill);background:var(--ks-paper);color:var(--ks-ink);font:500 17px/1 var(--ks-font-body)}
+.l-form .ks-btn{margin-top:8px}
+.l-msg{min-height:1.5em;margin:0;font-weight:600}
+.l-msg.ok{color:#1F7A3A}.l-msg.err{color:var(--ks-flame-deep)}
+.l-fine{margin:0;font-size:14px;color:var(--ks-text-muted)}
+footer{background:var(--ks-ink);color:var(--ks-on-ink-soft)}
+.l-foot{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:20px;padding-top:40px;padding-bottom:40px}
+.l-foot nav{display:flex;flex-wrap:wrap;gap:20px}
+.l-foot a{font:500 13px/1.35 var(--ks-font-mono);letter-spacing:.14em;text-transform:uppercase;text-decoration:none}
+.l-foot a:hover{color:var(--ks-lime)}
+@media (max-width:860px){
+  .l-berg,.l-join{grid-template-columns:minmax(0,1fr)}
+  .l-nav .ks-navlink{display:none}
+  .ks-stat{border-left:0;padding-left:0;border-top:1px solid rgba(244,239,230,.16)}
+  .ks-stat:first-child{border-top:0}
+}
+@media (max-width:520px){
+  .l-cast{grid-template-columns:repeat(3,minmax(0,1fr));gap:22px 16px;max-width:360px}
+  .l-cast figcaption{font-size:12px;padding:6px 10px}
+  .l-ctas .ks-btn{flex:1 1 100%}
+  .l-mark{font-size:22px}.l-mark svg{width:28px;height:28px}
+  .l-nav .ks-btn{min-height:42px;padding:0 14px;font-size:14px}
+  .l-layers li{font-size:17px;padding:0 14px}
+}
+</style>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+{{DEFS}}
+<header class="l-hero ks-rings ks-hero-rings">
+<svg class="ks-grain" aria-hidden="true"><rect width="100%" height="100%" filter="url(#ks-noise)"></rect></svg>
+<div class="ks-wrap">
+  <div class="l-bar">
+    <a class="l-mark" href="/" aria-label="Swarmaa home">{{MARK}}Swarmaa</a>
+    <nav class="l-nav" aria-label="Main">
+      <a class="ks-navlink" href="#how">How it works</a>
+      <a class="ks-navlink" href="#surface">Below the surface</a>
+      <a class="ks-navlink" href="/guide">Guide</a>
+      <a class="ks-navlink" href="https://api.swarmaa.com/account">Sign in</a>
+      <a class="ks-btn ks-btn-ink" href="#waitlist">Join the waitlist</a>
+    </nav>
+  </div>
+  <div class="l-hero-in" id="main">
+    <span class="l-chip"><span class="ks-live" aria-hidden="true"></span>Private beta · macOS</span>
+    <h1 class="ks-disp ks-rise"><span class="ks-rings ks-wave-text">One brain,</span> <span class="ks-serif">every agent.</span></h1>
+    <p class="l-lede">Swarmaa gives Claude Code, Codex, Antigravity, Dot and Grok one shared memory and one task queue, and sends each task to whichever agent has the most quota left. It runs on your Mac.</p>
+    <div class="l-ctas">
+      <a class="ks-btn ks-btn-ink" href="#waitlist">Join the waitlist</a>
+      <a class="ks-btn ks-btn-paper" href="/guide">Read the guide</a>
+    </div>
+    <div class="l-cast">
+      <figure><button class="ks-poke" type="button" data-ks-poke aria-label="Poke Claude">{{MOJI_CLAUDE}}</button><figcaption>Claude</figcaption></figure>
+      <figure><button class="ks-poke" type="button" data-ks-poke aria-label="Poke Codex">{{MOJI_CODEX}}</button><figcaption>Codex</figcaption></figure>
+      <figure><button class="ks-poke" type="button" data-ks-poke aria-label="Poke Antigravity">{{MOJI_AGY}}</button><figcaption>Antigravity</figcaption></figure>
+      <figure><button class="ks-poke" type="button" data-ks-poke aria-label="Poke Grok">{{MOJI_GROK}}</button><figcaption>Grok</figcaption></figure>
+      <figure><button class="ks-poke" type="button" data-ks-poke aria-label="Poke Dot">{{MOJI_DOT}}</button><figcaption>Dot</figcaption></figure>
+    </div>
+  </div>
+</div>
+</header>
+
+<div class="l-band">
+  <dl class="ks-stats ks-wrap">
+    <div class="ks-stat"><dt><span class="ks-live" aria-hidden="true"></span>Agents, one memory</dt><dd>5</dd></div>
+    <div class="ks-stat"><dt>Quota windows watched</dt><dd>2</dd></div>
+    <div class="ks-stat"><dt>Pushes without you</dt><dd>0</dd></div>
+  </dl>
+</div>
+
+<main>
+<section class="l-sec" id="how" aria-labelledby="how-h">
+  <div class="ks-wrap">
+    <div class="l-head">
+      <p class="ks-label">How it works</p>
+      <h2 class="ks-disp" id="how-h">From five chats to one swarm <span class="ks-serif">in three moves.</span></h2>
+      <p>No new agent to learn. Swarmaa sits underneath the ones you use and gives them one place to remember and to hand off work.</p>
+    </div>
+    <div class="l-steps">
+      <div class="ks-step"><span class="ks-num" aria-hidden="true">01</span><h3>Connect your agents</h3><p>Pick your agents in the Swarmaa app. Each gets its own scoped key, and Swarmaa registers over MCP in Claude Code, Codex and Antigravity.</p></div>
+      <div class="ks-step"><span class="ks-num" aria-hidden="true">02</span><h3>Share one memory</h3><p>Agents publish notes with their sources, and shared decisions wait for your approval. Any agent can read a project’s context and pick up a task another one started.</p></div>
+      <div class="ks-step"><span class="ks-num" aria-hidden="true">03</span><h3>Route by quota</h3><p>Workers report each provider’s usage and reset time. Ask for work and it goes to the live agent with the most headroom — or name the one you want. Edits come back as a local branch for you to review.</p></div>
+    </div>
+  </div>
+</section>
+
+<section class="l-sec l-deep ks-rings ks-ink-rings" id="surface" aria-labelledby="surface-h">
+  <div class="ks-wrap">
+    <div class="l-head">
+      <p class="ks-label">Below the surface</p>
+      <h2 class="ks-disp" id="surface-h">You do the thinking. <span class="ks-serif">Swarmaa carries the rest.</span></h2>
+      <p>Working with several agents means a lot of invisible work done by hand. Watch the waterline drop as Swarmaa takes it over, until only the decisions are left to you.</p>
+    </div>
+    <div class="l-berg">
+      <div>
+        <div class="l-pills" role="group" aria-label="How you work today" data-ks-pills>
+          <button class="ks-pill ks-on" type="button" aria-pressed="true" data-n="5">One chat</button>
+          <button class="ks-pill" type="button" aria-pressed="false" data-n="4">Copy-paste</button>
+          <button class="ks-pill" type="button" aria-pressed="false" data-n="3">Glue scripts</button>
+          <button class="ks-pill" type="button" aria-pressed="false" data-n="1">Swarmaa</button>
+        </div>
+        <p class="l-count" aria-live="polite"><span id="bergN">5 of 5</span><small>layers you manage by hand</small></p>
+      </div>
+      <ol class="l-layers" id="layers">
+        <li>Decisions<span>You</span></li>
+        <li>Handoffs<span>You</span></li>
+        <li>Shared context<span>You</span></li>
+        <li>Retries &amp; leases<span>You</span></li>
+        <li>Quota juggling<span>You</span></li>
+      </ol>
+    </div>
+  </div>
+</section>
+
+<div class="l-mq ks-rings ks-mq-rings" aria-hidden="true"><div class="ks-mqbox"><div class="ks-mq">{{MARQUEE}}</div></div></div>
+
+<section class="l-sec" id="waitlist" aria-labelledby="join-h">
+  <div class="ks-wrap l-join">
+    <div class="l-head">
+      <p class="ks-label">Waitlist</p>
+      <h2 class="ks-disp" id="join-h">Every agent, <span class="ks-serif">one swarm.</span></h2>
+      <p>Swarmaa is in private beta on macOS. Join the waitlist and we’ll invite you when the portal opens.</p>
+    </div>
+    <div class="ks-plan">
+      <h3>Get an invite</h3>
+      <form class="l-form" id="join" novalidate>
+        <label for="email">Email</label>
+        <input id="email" name="email" type="email" autocomplete="email" required placeholder="you@company.com">
+        <label for="invite">Invite code</label>
+        <input id="invite" name="invite" type="text" autocomplete="off" spellcheck="false" required placeholder="Invite code">
+        <button class="ks-btn ks-btn-ink" type="submit">Join the waitlist</button>
+        <p class="l-msg" id="msg" role="status" aria-live="polite"></p>
+      </form>
+      <p class="l-fine">We store only the email address you enter, and use it only to invite you to Swarmaa. No tracking scripts run on this page.</p>
+    </div>
+  </div>
+</section>
+</main>
+
+<footer>
+  <div class="ks-wrap l-foot">
+    <a class="l-mark" href="/" style="font-size:22px;letter-spacing:.02em">Swarmaa</a>
+    <nav aria-label="Footer"><a href="#how">How it works</a><a href="#surface">Below the surface</a><a href="/guide">Guide</a><a href="#waitlist">Waitlist</a><a href="https://api.swarmaa.com/account">Sign in</a></nav>
+  </div>
+</footer>
+
+<script>
+(function(){
+  'use strict';
+  var reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  /* Pupils follow the pointer: one rAF-throttled write, scoped to the hero so only it restyles. */
+  var hero = document.querySelector('.l-hero'), px = 0, py = 0, queued = false;
+  if (!reduce && matchMedia('(pointer:fine)').matches) {
+    addEventListener('pointermove', function (e) {
+      px = (e.clientX / innerWidth - .5) * 14; py = (e.clientY / innerHeight - .5) * 14;
+      if (!queued) { queued = true; requestAnimationFrame(function () { queued = false; hero.style.setProperty('--px', px.toFixed(1) + 'px'); hero.style.setProperty('--py', py.toFixed(1) + 'px'); }); }
+    }, { passive: true });
+  }
+  /* Poke a character */
+  document.addEventListener('click', function (e) {
+    var b = e.target.closest('[data-ks-poke]'); if (!b) return;
+    var m = b.querySelector('.ks-moji'); m.classList.remove('ks-react'); void m.getBoundingClientRect(); m.classList.add('ks-react');
+    clearTimeout(m._t); m._t = setTimeout(function () { m.classList.remove('ks-react'); }, 780);
+  });
+  /* Waterline: n = layers still above the waterline (yours) */
+  var pills = document.querySelectorAll('[data-ks-pills] .ks-pill'), rows = document.querySelectorAll('#layers li'), count = document.getElementById('bergN'), timer = null, at = 0;
+  function stage(i) {
+    at = i; var n = +pills[i].dataset.n;
+    pills.forEach(function (p, k) { p.classList.toggle('ks-on', k === i); p.setAttribute('aria-pressed', k === i); });
+    rows.forEach(function (r, k) { var below = k >= n; r.classList.toggle('is-below', below); r.classList.toggle('is-water', k === n); r.lastChild.textContent = below ? 'Swarmaa' : 'You'; });
+    count.textContent = n + ' of 5';
+  }
+  pills.forEach(function (p, i) { p.addEventListener('click', function () { clearInterval(timer); timer = null; stage(i); }); });
+  /* Auto-advance once while the section is on screen, until someone picks a stage. */
+  if (!reduce && 'IntersectionObserver' in window) {
+    var started = false;
+    new IntersectionObserver(function (es, o) {
+      if (!es[0].isIntersecting || started) return; started = true; o.disconnect();
+      timer = setInterval(function () { if (at === pills.length - 1) { clearInterval(timer); return; } stage(at + 1); }, 1800);
+    }, { threshold: .5 }).observe(document.getElementById('layers'));
+  }
+  /* Waitlist */
+  var f = document.getElementById('join'), msg = document.getElementById('msg');
+  f.addEventListener('submit', function (e) {
+    e.preventDefault();
+    var email = f.email.value.trim(), invite = f.invite.value.trim(), btn = f.querySelector('button');
+    msg.className = 'l-msg err';
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) { msg.textContent = 'Enter a valid email address.'; f.email.focus(); return; }
+    if (!invite) { msg.textContent = 'Enter your invite code.'; f.invite.focus(); return; }
+    btn.disabled = true; msg.className = 'l-msg'; msg.textContent = 'Joining…';
+    fetch('/api/waitlist', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: email, invite: invite }) })
+      .then(function (r) { return r.json().catch(function () { return { ok: false }; }); })
+      .then(function (j) {
+        if (j.ok) { msg.className = 'l-msg ok'; msg.textContent = 'You’re on the list. We’ll email you when your invite is ready.'; f.reset(); }
+        else { msg.className = 'l-msg err'; msg.textContent = j.error === 'invalid_invite' ? 'That invite code isn’t valid.' : j.error === 'invalid_email' ? 'Enter a valid email address.' : 'Something went wrong. Try again.'; }
+      })
+      .catch(function () { msg.className = 'l-msg err'; msg.textContent = 'Network error. Try again.'; })
+      .finally(function () { btn.disabled = false; });
+  });
+})();
+</script>
+</body>
+</html>

@@ -4,64 +4,341 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Swarmaa Guide</title>
+<meta name="description" content="How to use Swarmaa: ask for work, review branches, routing rules, shared memory, /swarm and Grok.">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="preload" href="/fonts/stardos-stencil-700.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/fonts/ibm-plex-sans-condensed-400.woff2" as="font" type="font/woff2" crossorigin>
 <style>
-  :root {
-    --bg: #fbfaf7; --card: #ffffff; --ink: #1d1d1f; --muted: #5f6368; --line: #e6e2da;
-    --accent: #3d5afe; --accent-soft: #eef0ff; --code: #f3f1ec; --warn: #9a5b00; --warn-soft: #fff4e0;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --bg: #141416; --card: #1c1c1f; --ink: #ececef; --muted: #a0a0a8; --line: #2c2c31;
-      --accent: #8c9bff; --accent-soft: #23264a; --code: #26262b; --warn: #ffb347; --warn-soft: #3a2a12;
-    }
-  }
-  * { box-sizing: border-box; }
-  body { margin: 0; background: var(--bg); color: var(--ink);
-    font: 16px/1.6 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif; }
-  main { max-width: 760px; margin: 0 auto; padding: 48px 16px 80px; }
-  header { margin-bottom: 36px; }
-  h1 { font-size: 34px; line-height: 1.15; margin: 0 0 8px; letter-spacing: -0.02em; }
-  .lede { color: var(--muted); font-size: 18px; margin: 0; }
-  nav { display: flex; flex-wrap: wrap; gap: 8px; margin: 24px 0 0; }
-  nav a { font-size: 14px; padding: 4px 10px; border: 1px solid var(--line); border-radius: 999px;
-    color: var(--ink); text-decoration: none; background: var(--card); }
-  nav a:hover { border-color: var(--accent); color: var(--accent); }
-  section { background: var(--card); border: 1px solid var(--line); border-radius: 14px;
-    padding: 22px 24px; margin: 18px 0; }
-  h2 { font-size: 21px; margin: 0 0 10px; letter-spacing: -0.01em; }
-  h2 .n { display: inline-grid; place-items: center; width: 26px; height: 26px; margin-right: 8px;
-    border-radius: 50%; background: var(--accent-soft); color: var(--accent); font-size: 14px; vertical-align: 2px; }
-  h3 { font-size: 16px; margin: 18px 0 6px; }
-  p { margin: 8px 0; }
-  ul { margin: 8px 0; padding-left: 20px; }
-  li { margin: 4px 0; }
-  code { font: 13.5px/1.5 "SF Mono", ui-monospace, Menlo, monospace; background: var(--code);
-    padding: 1px 6px; border-radius: 5px; }
-  pre { background: var(--code); border-radius: 10px; padding: 12px 14px; overflow-x: auto; margin: 10px 0; }
-  pre code { background: none; padding: 0; }
-  .say { border-left: 3px solid var(--accent); background: var(--accent-soft); border-radius: 0 10px 10px 0;
-    padding: 10px 14px; margin: 10px 0; }
-  .say p { margin: 4px 0; }
-  .note { border-left: 3px solid var(--warn); background: var(--warn-soft); border-radius: 0 10px 10px 0;
-    padding: 10px 14px; margin: 12px 0; }
-  table { width: 100%; border-collapse: collapse; font-size: 14.5px; margin: 10px 0; }
-  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
-  th { color: var(--muted); font-weight: 600; font-size: 13px; text-transform: uppercase; letter-spacing: 0.04em; }
-  .table-wrap { overflow-x: auto; }
-  footer { color: var(--muted); font-size: 13px; text-align: center; margin-top: 32px; }
+@font-face{font-family:'IBM Plex Mono';font-style:normal;font-weight:500;font-display:swap;src:url(/fonts/ibm-plex-mono-500.woff2) format('woff2');unicode-range:U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD}
+@font-face{font-family:'IBM Plex Mono';font-style:normal;font-weight:600;font-display:swap;src:url(/fonts/ibm-plex-mono-600.woff2) format('woff2');unicode-range:U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD}
+@font-face{font-family:'IBM Plex Sans Condensed';font-style:italic;font-weight:400;font-display:swap;src:url(/fonts/ibm-plex-sans-condensed-400i.woff2) format('woff2');unicode-range:U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD}
+@font-face{font-family:'IBM Plex Sans Condensed';font-style:italic;font-weight:500;font-display:swap;src:url(/fonts/ibm-plex-sans-condensed-500i.woff2) format('woff2');unicode-range:U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD}
+@font-face{font-family:'IBM Plex Sans Condensed';font-style:normal;font-weight:400;font-display:swap;src:url(/fonts/ibm-plex-sans-condensed-400.woff2) format('woff2');unicode-range:U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD}
+@font-face{font-family:'IBM Plex Sans Condensed';font-style:normal;font-weight:500;font-display:swap;src:url(/fonts/ibm-plex-sans-condensed-500.woff2) format('woff2');unicode-range:U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD}
+@font-face{font-family:'IBM Plex Sans Condensed';font-style:normal;font-weight:600;font-display:swap;src:url(/fonts/ibm-plex-sans-condensed-600.woff2) format('woff2');unicode-range:U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD}
+@font-face{font-family:'IBM Plex Sans Condensed';font-style:normal;font-weight:700;font-display:swap;src:url(/fonts/ibm-plex-sans-condensed-700.woff2) format('woff2');unicode-range:U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD}
+@font-face{font-family:'Stardos Stencil';font-style:normal;font-weight:700;font-display:swap;src:url(/fonts/stardos-stencil-700.woff2) format('woff2');unicode-range:U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD}
+/* InstaLanding design system · Kind Swarm · kind-swarm@1.0.0
+   Extracted from https://instalanding.ai/demos/kindswarm-casework.html
+   Fonts (self-hosted, latin): Stardos Stencil 700, IBM Plex Sans Condensed 400-700 + italics, IBM Plex Mono 500/600 */
+:root {
+  /* Color · core */
+  --ks-ink: #15111F;
+  --ks-paper: #F4EFE6;
+  --ks-white: #FFFFFF;
+  --ks-flame: #FF5A3C;
+  --ks-flame-deep: #F0361A;
+  --ks-flame-hot: #FF3D1F;
+  --ks-lime: #D4FF3A;
+  --ks-lime-deep: #C6F230;
+  --ks-focus: #3D7BFF;
+
+  /* Color · text */
+  --ks-text-soft: #3A3347;
+  --ks-text-muted: #5A5168;
+  --ks-text-card: #2A2436;
+  --ks-on-ink-soft: #CFC6E8;
+  --ks-on-ink-muted: #B9B0CC;
+  --ks-on-ink-faint: #E4DEF2;
+
+  /* Color · dark surfaces */
+  --ks-ink-raised: #1F1A2E;
+  --ks-ink-line: #3B3358;
+  --ks-ink-ring: #221C3A;
+  --ks-flame-shadow: #5A160C;
+
+  /* Color · character gradients */
+  --ks-moji-blue: #3D7BFF;
+  --ks-moji-violet: #B56CFF;
+  --ks-moji-sun: #FFD24A;
+  --ks-moji-sun-deep: #FF9A1C;
+  --ks-moji-peach: #FFB36B;
+  --ks-moji-pink: #FF6FB5;
+
+  /* Color · stage pastels */
+  --ks-stage-1: #9CC8FF;
+  --ks-stage-1-ring: #84B6F7;
+  --ks-stage-2: #FFE08A;
+  --ks-stage-2-ring: #FFD15C;
+  --ks-stage-3: #FFC4A8;
+  --ks-stage-3-ring: #FFAE8A;
+  --ks-stage-4: #D6C2FF;
+  --ks-stage-4-ring: #C3A8FF;
+  --ks-stage-5: #FFB8D9;
+  --ks-stage-5-ring: #FF9CC8;
+  --ks-stage-6: #C9F26B;
+  --ks-stage-6-ring: #B6E34A;
+  --ks-stage-7: #A8E6FF;
+  --ks-stage-7-ring: #86D8F7;
+  --ks-stage-8: #F2C4FF;
+  --ks-stage-8-ring: #E6A8FA;
+
+  /* Type · families */
+  --ks-font-display: "Stardos Stencil", "Courier New", serif;
+  --ks-font-body: "IBM Plex Sans Condensed", "Arial Narrow", Arial, sans-serif;
+  --ks-font-mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+
+  /* Type · scale */
+  --ks-display-xl: clamp(60px, 17vw, 260px);
+  --ks-display-lg: clamp(48px, 8.4vw, 136px);
+  --ks-display-md: clamp(40px, 4.4vw, 72px);
+  --ks-display-sm: 34px;
+  --ks-body-lg: 20px;
+  --ks-body: 17px;
+  --ks-label: 13px;
+  --ks-label-tracking: .16em;
+  --ks-leading-display: .92;
+  --ks-leading-body: 1.55;
+
+  /* Shape · radii */
+  --ks-radius-pill: 999px;
+  --ks-radius-card: 30px;
+  --ks-radius-plan: 28px;
+  --ks-radius-panel: 24px;
+  --ks-radius-stage: 22px;
+  --ks-radius-inset: 14px;
+
+  /* Shape · borders */
+  --ks-border: 3px;
+  --ks-border-stage: 2.5px;
+  --ks-border-thin: 2px;
+
+  /* Depth · hard shadows */
+  --ks-shadow-offset: 8px;
+  --ks-shadow: var(--ks-shadow-offset) var(--ks-shadow-offset) 0 var(--ks-ink);
+  --ks-shadow-hover: calc(var(--ks-shadow-offset) + 2px) calc(var(--ks-shadow-offset) + 2px) 0 var(--ks-ink);
+  --ks-shadow-lime: var(--ks-shadow-offset) var(--ks-shadow-offset) 0 var(--ks-lime);
+  --ks-shadow-lime-hover: calc(var(--ks-shadow-offset) + 3px) calc(var(--ks-shadow-offset) + 3px) 0 var(--ks-lime);
+
+  /* Pattern · rings */
+  --ks-ring-size: 120px;
+  --ks-ring-size-sm: 90px;
+  --ks-ring-size-stage: 76px;
+  --ks-grain-opacity: .22;
+
+  /* Space · layout */
+  --ks-page-max: 1440px;
+  --ks-gutter: clamp(16px, 4vw, 56px);
+  --ks-section-y: clamp(80px, 10vw, 160px);
+  --ks-gap: 36px;
+  --ks-gap-lg: 56px;
+
+  /* Motion · easing */
+  --ks-ease-press: cubic-bezier(.2, .8, .2, 1);
+  --ks-ease-spring: cubic-bezier(.3, 1.4, .5, 1);
+  --ks-ease-bob: cubic-bezier(.45, 0, .55, 1);
+  --ks-ease-rise: cubic-bezier(.16, 1, .3, 1);
+
+  /* Motion · durations */
+  --ks-dur-press: .14s;
+  --ks-dur-hover: .25s;
+  --ks-dur-poke: .76s;
+  --ks-dur-bob: 3.4s;
+  --ks-dur-blink: 5.6s;
+  --ks-dur-rise: 1s;
+  --ks-dur-marquee: 56s;
+  --ks-dur-drift: 16s;
+}
+
+/* Components · scoped under .ks; class names use the ks- prefix */
+:where(.ks) a{color:inherit}:where(.ks) a:hover{color:inherit}
+.ks{font-family:var(--ks-font-body);color:var(--ks-ink);-webkit-font-smoothing:antialiased;}
+.ks *{box-sizing:border-box}
+.ks-disp{font-family:var(--ks-font-display);font-weight:700;text-transform:uppercase;line-height:.92;letter-spacing:.01em;margin:0}
+.ks-serif{font-family:var(--ks-font-body);font-style:italic;font-weight:400;text-transform:none;letter-spacing:-.02em}
+.ks-label{margin:0;font-family:var(--ks-font-mono);font-size:13px;font-weight:500;letter-spacing:.16em;text-transform:uppercase}
+.ks-wrap{width:100%;max-width:var(--ks-page-max);margin:0 auto;padding-left:var(--ks-gutter);padding-right:var(--ks-gutter)}
+.ks-btn{display:inline-flex;align-items:center;justify-content:center;gap:10px;min-height:56px;padding:0 28px;border:var(--ks-border) solid var(--ks-ink);border-radius:var(--ks-radius-pill);font:600 17px/1 var(--ks-font-body);text-decoration:none;cursor:pointer;box-shadow:var(--ks-shadow);transition:transform var(--ks-dur-press) var(--ks-ease-press),box-shadow var(--ks-dur-press) var(--ks-ease-press)}
+.ks-btn:hover{transform:translate(-2px,-2px);box-shadow:var(--ks-shadow-hover)}
+.ks-btn:active{transform:translate(8px,8px);box-shadow:0 0 0 var(--ks-ink)}
+.ks-btn-ink{background:var(--ks-ink);color:var(--ks-paper)}.ks-btn-ink:hover{color:var(--ks-lime)}
+.ks-btn-paper{background:var(--ks-paper);color:var(--ks-ink)}
+.ks-btn-lime{background:var(--ks-lime);color:var(--ks-ink)}
+.ks-on-ink .ks-btn{border-color:var(--ks-lime);box-shadow:var(--ks-shadow-lime)}
+.ks-on-ink .ks-btn:hover{box-shadow:10px 10px 0 var(--ks-lime)}
+.ks a:focus-visible,.ks button:focus-visible{outline:3px solid var(--ks-focus);outline-offset:4px}
+.ks-navlink{text-decoration:none;font-weight:600;font-size:16px;padding:12px 4px}
+.ks-navlink:hover{text-decoration:underline;text-decoration-thickness:3px;text-underline-offset:6px}
+.ks-rings{--_g:var(--c2) 4% 14%,var(--c1) 14% 24%,var(--c2) 22% 34%,var(--c1) 34% 44%,var(--c2) 44% 56%,var(--c1) 56% 66%,var(--c2) 66% 76%,var(--c1) 76% 86%,var(--c2) 86% 96%;background-image:radial-gradient(100% 100% at 100% 0,var(--c1) 4%,var(--_g),var(--sh) 96%,#0000),radial-gradient(100% 100% at 0 100%,#0000,var(--sh) 4%,var(--_g),var(--c1) 96%);background-size:var(--s) var(--s)}
+.ks-hero-rings{--s:var(--ks-ring-size);--c1:var(--ks-flame);--c2:var(--ks-flame-deep);--sh:#0005}
+.ks-st1{--c1:var(--ks-stage-1);--c2:var(--ks-stage-1-ring);background-color:var(--ks-stage-1)}
+.ks-st2{--c1:var(--ks-stage-2);--c2:var(--ks-stage-2-ring);background-color:var(--ks-stage-2)}
+.ks-st3{--c1:var(--ks-stage-3);--c2:var(--ks-stage-3-ring);background-color:var(--ks-stage-3)}
+.ks-st4{--c1:var(--ks-stage-4);--c2:var(--ks-stage-4-ring);background-color:var(--ks-stage-4)}
+.ks-st5{--c1:var(--ks-stage-5);--c2:var(--ks-stage-5-ring);background-color:var(--ks-stage-5)}
+.ks-st6{--c1:var(--ks-stage-6);--c2:var(--ks-stage-6-ring);background-color:var(--ks-stage-6)}
+.ks-st7{--c1:var(--ks-stage-7);--c2:var(--ks-stage-7-ring);background-color:var(--ks-stage-7)}
+.ks-st8{--c1:var(--ks-stage-8);--c2:var(--ks-stage-8-ring);background-color:var(--ks-stage-8)}
+.ks-grain{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;opacity:.22;mix-blend-mode:multiply}
+.ks-moji{display:block;width:100%;height:100%;overflow:visible}
+.ks-moji .ks-bod{transform-box:fill-box;transform-origin:50% 90%;animation:ks-bob var(--ks-dur-bob) var(--ks-ease-bob) infinite}
+.ks-moji .ks-eye{transform-box:fill-box;transform-origin:center;animation:ks-blink var(--ks-dur-blink) infinite}
+.ks-moji .ks-pupil{transform:translate(var(--px,0px),var(--py,0px));transition:transform .18s cubic-bezier(.2,.8,.2,1)}
+.ks-moji.ks-d1 .ks-bod{animation-delay:-.7s}.ks-moji.ks-d1 .ks-eye{animation-delay:-1.9s}
+.ks-moji.ks-d2 .ks-bod{animation-delay:-1.5s}.ks-moji.ks-d2 .ks-eye{animation-delay:-3.4s}
+.ks-moji.ks-d3 .ks-bod{animation-delay:-2.3s}.ks-moji.ks-d3 .ks-eye{animation-delay:-.6s}
+.ks-moji.ks-d4 .ks-bod{animation-delay:-2.9s}.ks-moji.ks-d4 .ks-eye{animation-delay:-4.6s}
+.ks-moji.ks-react .ks-bod{animation:ks-poke var(--ks-dur-poke) var(--ks-ease-spring)}
+.ks-poke{display:block;padding:0;border:0;background:none;cursor:pointer;border-radius:50%}
+.ks-poke svg{filter:drop-shadow(var(--ks-shadow))}
+.ks-rise{animation:ks-rise var(--ks-dur-rise) var(--ks-ease-rise) both}
+.ks-mq-rings{--s:var(--ks-ring-size-sm);--c1:var(--ks-lime);--c2:var(--ks-lime-deep);--sh:#0002}
+.ks-wave-text{display:inline-block;--s:var(--ks-ring-size);--c1:var(--ks-ink);--c2:var(--ks-flame-shadow);--sh:#0000;color:transparent;-webkit-background-clip:text;background-clip:text;animation:ks-drift var(--ks-dur-drift) linear infinite}
+@keyframes ks-drift{to{background-position:120px 120px}}
+.ks-ink-rings{--s:var(--ks-ring-size);--c1:var(--ks-ink);--c2:var(--ks-ink-ring);--sh:#0007}
+.ks-mqbox{padding:26px 0;-webkit-mask-image:linear-gradient(90deg,transparent,#000 7%,#000 93%,transparent);mask-image:linear-gradient(90deg,transparent,#000 7%,#000 93%,transparent)}
+.ks-mqbox:hover .ks-mq{animation-play-state:paused}
+.ks-mq{display:flex;align-items:center;width:max-content;animation:ks-mq var(--ks-dur-marquee) linear infinite}
+.ks-mq span:nth-of-type(even){color:transparent;-webkit-text-stroke:1.5px var(--ks-ink)}
+.ks-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,280px),1fr));margin:0 auto}
+.ks-stat{display:flex;flex-direction:column-reverse;justify-content:flex-end;gap:12px;padding:32px 28px;border-left:1px solid rgba(244,239,230,.16)}
+.ks-stat:first-child{border-left:0;padding-left:0}
+.ks-stat dd{margin:0;font-family:var(--ks-font-display);font-weight:700;font-size:clamp(44px,4.4vw,64px);line-height:.9;letter-spacing:.01em}
+.ks-stat dt{display:flex;align-items:center;gap:10px;font:500 13px/1.35 var(--ks-font-mono);letter-spacing:.14em;text-transform:uppercase;color:var(--ks-on-ink-soft)}
+.ks-live{flex:0 0 auto;width:9px;height:9px;border-radius:50%;background:var(--ks-lime);animation:ks-live 2s ease-out infinite}
+@keyframes ks-live{0%{box-shadow:0 0 0 0 rgba(212,255,58,.6)}70%{box-shadow:0 0 0 10px rgba(212,255,58,0)}100%{box-shadow:0 0 0 0 rgba(212,255,58,0)}}
+.ks-mq span{padding:0 28px;font-family:var(--ks-font-display);font-weight:700;font-size:clamp(32px,4.4vw,64px);line-height:1.25;text-transform:uppercase;white-space:nowrap}
+.ks-mq svg{flex:0 0 auto}
+.ks-pill{min-height:44px;padding:0 20px;border:2px solid var(--ks-paper);border-radius:var(--ks-radius-pill);background:transparent;color:var(--ks-paper);font:600 15px/1 var(--ks-font-body);cursor:pointer;transition:background .15s,color .15s}
+.ks-pill:hover{background:rgba(244,239,230,.12)}
+.ks-pill.ks-on{background:var(--ks-lime);border-color:var(--ks-lime);color:var(--ks-ink)}
+.ks-card{display:flex;flex-direction:column;padding:10px;background:var(--ks-paper);border-radius:var(--ks-radius-card);box-shadow:var(--ks-shadow-lime);transition:transform var(--ks-dur-hover) var(--ks-ease-press),box-shadow var(--ks-dur-hover) var(--ks-ease-press)}
+.ks-card:hover{transform:translate(-3px,-3px);box-shadow:var(--ks-shadow-lime-hover)}
+.ks-stage{--s:var(--ks-ring-size-stage);--sh:#0002;position:relative;height:270px;display:grid;place-items:center;border:var(--ks-border-stage) solid var(--ks-ink);border-radius:var(--ks-radius-stage);overflow:hidden;box-shadow:inset 0 0 0 1px rgba(255,255,255,.45),inset 0 -60px 80px -40px rgba(21,17,31,.28)}
+.ks-stage::after{content:"";position:absolute;left:50%;bottom:34px;width:120px;height:16px;margin-left:-60px;border-radius:50%;background:rgba(21,17,31,.22);filter:blur(4px);transition:transform .3s var(--ks-ease-spring)}
+.ks-stage .ks-poke{position:relative;z-index:1;width:164px;height:164px;transition:transform .35s var(--ks-ease-spring)}
+.ks-card:hover .ks-stage .ks-poke{transform:translateY(-8px) rotate(-4deg) scale(1.05)}
+.ks-card:hover .ks-stage::after{transform:scale(.8)}
+.ks-tag{position:absolute;z-index:2;top:14px;left:14px;padding:9px 14px;border:var(--ks-border-thin) solid var(--ks-ink);border-radius:var(--ks-radius-pill);background:var(--ks-white);color:var(--ks-ink);font:600 13px/1 var(--ks-font-mono);letter-spacing:.06em;text-transform:uppercase;box-shadow:0 2px 0 var(--ks-ink)}
+.ks-code{position:absolute;z-index:2;top:14px;right:14px;padding:9px 12px;border:var(--ks-border-thin) solid var(--ks-ink);border-radius:var(--ks-radius-pill);background:var(--ks-ink);color:var(--ks-white);font:600 13px/1 var(--ks-font-mono);letter-spacing:.08em}
+.ks-cbody{flex:1;display:flex;flex-direction:column;gap:12px;padding:22px 14px 14px}
+.ks-chead{display:flex;justify-content:space-between;align-items:center;gap:12px}
+.ks-chead{align-items:flex-start}
+.ks-cname{font-family:var(--ks-font-body);font-weight:700;font-size:30px;line-height:1.05;letter-spacing:-.01em;text-transform:none;color:var(--ks-ink)}
+.ks-cprice{flex:0 0 auto;padding:9px 14px;border-radius:var(--ks-radius-pill);background:var(--ks-ink);color:var(--ks-white);font:600 16px/1 var(--ks-font-mono);white-space:nowrap}
+.ks-cprice small{font-size:13px;font-weight:500;color:var(--ks-on-ink-faint)}
+.ks-cdesc{margin:0;font-size:17px;line-height:1.55;color:var(--ks-text-card)}
+.ks-cskills{margin:auto 0 0;padding-top:14px;border-top:1.5px solid rgba(21,17,31,.25);font:500 13px/1.5 var(--ks-font-mono);letter-spacing:.04em;text-transform:uppercase;color:var(--ks-text-soft)}
+.ks-step{display:flex;flex-direction:column;gap:16px;padding-top:24px;border-top:var(--ks-border) solid var(--ks-ink)}
+.ks-num{font-family:var(--ks-font-display);font-weight:700;font-size:96px;line-height:.8;color:transparent;-webkit-text-stroke:2.5px var(--ks-ink)}
+.ks-qrow{display:grid;grid-template-columns:56px minmax(0,1fr) auto;gap:16px;align-items:center;padding:18px 22px;border-top:2px solid rgba(21,17,31,.12)}
+.ks-qbtn{min-height:44px;padding:0 16px;border:var(--ks-border-thin) solid var(--ks-ink);border-radius:var(--ks-radius-pill);background:#fff;font:600 14px/1 var(--ks-font-body);cursor:pointer}
+.ks-qbtn.ks-go{background:var(--ks-ink);color:var(--ks-lime)}
+.ks-chip{display:inline-flex;align-items:center;min-height:44px;padding:0 20px;border:var(--ks-border-thin) solid var(--ks-ink);border-radius:var(--ks-radius-pill);font-weight:700;font-size:15px;letter-spacing:.04em}
+.ks-rule{display:flex;flex-direction:column;gap:14px;padding:32px;border:2px solid var(--ks-ink-line);border-radius:var(--ks-radius-panel);background:var(--ks-ink-raised)}
+.ks-plan{display:flex;flex-direction:column;gap:18px;padding:36px 32px;border:var(--ks-border) solid var(--ks-ink);border-radius:var(--ks-radius-plan);background:#fff;box-shadow:var(--ks-shadow)}
+.ks-plan ul{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:10px;font-size:16px}
+.ks-plan li{padding-left:22px;position:relative}
+.ks-plan li::before{content:"";position:absolute;left:0;top:7px;width:10px;height:10px;transform:rotate(45deg);border-radius:2px;background:currentColor}
+@keyframes ks-bob{0%,100%{transform:translateY(0) scale(1,1)}50%{transform:translateY(-5px) scale(1.02,.98)}}
+@keyframes ks-blink{0%,93%,100%{transform:scaleY(1)}95%{transform:scaleY(.08)}}
+@keyframes ks-poke{0%{transform:scale(1,1)}18%{transform:translateY(5px) scale(1.12,.86)}45%{transform:translateY(-16px) scale(.92,1.12)}70%{transform:translateY(2px) scale(1.04,.97)}100%{transform:scale(1,1)}}
+@keyframes ks-rise{from{opacity:0;transform:translateY(70px)}to{opacity:1;transform:none}}
+@keyframes ks-mq{to{transform:translateX(-50%)}}
+@media (prefers-reduced-motion: reduce){.ks *,.ks *::before{animation:none !important;transition:none !important}}
+
+/* Swarmaa guide · page layout on Kind Swarm tokens (kind-swarm@1.0.0) */
+:root {
+  /* Added in the ks- scheme: hairline on light grounds (the source uses rgba(21,17,31,.12–.25) inline) */
+  --ks-line-soft: rgba(21, 17, 31, .14);
+}
+html { background: var(--ks-paper); }
+body { margin: 0; background: var(--ks-paper); font-size: var(--ks-body); line-height: var(--ks-leading-body); }
+.g-in { max-width: 960px; margin: 0 auto; padding-left: var(--ks-gutter); padding-right: var(--ks-gutter); }
+
+/* Hero: flame rings band */
+.g-hero { position: relative; overflow: hidden; background-color: var(--ks-flame); border-bottom: var(--ks-border) solid var(--ks-ink); }
+.g-hero .g-in { position: relative; padding-top: clamp(40px, 6vw, 72px); padding-bottom: clamp(40px, 6vw, 64px); }
+.g-top { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 24px 40px; }
+.g-hero h1 { font-size: var(--ks-display-lg); }
+.g-hero h1 .ks-serif { display: block; font-size: .72em; line-height: 1; }
+.g-cast { display: flex; gap: 14px; align-items: flex-end; margin-bottom: 10px; }
+.g-cast span { display: block; width: clamp(56px, 7vw, 92px); height: clamp(56px, 7vw, 92px); }
+.g-cast svg { filter: drop-shadow(var(--ks-shadow)); }
+.lede { max-width: 620px; margin: 28px 0 0; font-size: var(--ks-body-lg); font-weight: 500; line-height: 1.5; }
+.g-hero nav { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 32px; }
+.g-hero nav a { display: inline-flex; align-items: center; min-height: 44px; padding: 0 18px; border: var(--ks-border-thin) solid var(--ks-ink); border-radius: var(--ks-radius-pill); background: var(--ks-paper); font-weight: 600; font-size: 15px; line-height: 1; text-decoration: none; transition: background var(--ks-dur-press) var(--ks-ease-press); }
+.g-hero nav a:hover { background: var(--ks-lime); }
+
+/* Sections: white outlined cards with hard shadows */
+main { max-width: 960px; margin: 0 auto; padding: var(--ks-gap-lg) var(--ks-gutter) var(--ks-section-y); display: flex; flex-direction: column; gap: var(--ks-gap-lg); }
+section { min-width: 0; scroll-margin-top: 24px; padding: 32px clamp(20px, 4vw, 40px) 36px; background: var(--ks-white); color: var(--ks-text-card); border: var(--ks-border) solid var(--ks-ink); border-radius: var(--ks-radius-plan); box-shadow: var(--ks-shadow); }
+h2 { display: flex; align-items: flex-end; flex-wrap: wrap; gap: 8px 16px; margin: 0 0 20px; padding-bottom: 18px; border-bottom: var(--ks-border) solid var(--ks-ink); color: var(--ks-ink); font-family: var(--ks-font-display); font-weight: 700; font-size: min(var(--ks-display-sm), 8vw); line-height: var(--ks-leading-display); letter-spacing: .01em; text-transform: uppercase; }
+h2 .n { flex: 0 0 auto; font-size: 72px; line-height: .8; color: transparent; -webkit-text-stroke: 2.5px var(--ks-ink); }
+h2 code { font-size: .55em; text-transform: none; letter-spacing: 0; }
+h3 { margin: 26px 0 8px; color: var(--ks-ink); font-size: 19px; font-weight: 700; line-height: 1.3; }
+p { margin: 10px 0; }
+b { color: var(--ks-ink); font-weight: 700; }
+
+/* Lists: diamond bullets */
+ul { list-style: none; margin: 14px 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+li { position: relative; padding-left: 22px; }
+li::before { content: ""; position: absolute; left: 0; top: 8px; width: 10px; height: 10px; transform: rotate(45deg); border-radius: 2px; background: var(--ks-ink); }
+
+/* Code */
+code { font: 500 .86em/1.5 var(--ks-font-mono); background: var(--ks-stage-4); color: var(--ks-ink); padding: 1px 8px; border-radius: var(--ks-radius-pill); -webkit-box-decoration-break: clone; box-decoration-break: clone; }
+p code, li code { overflow-wrap: anywhere; }
+td code { white-space: nowrap; }
+pre { margin: 14px 0; padding: 18px 22px; background: var(--ks-ink); color: var(--ks-on-ink-faint); border-radius: var(--ks-radius-inset); overflow-x: auto; }
+pre code { display: block; background: none; color: inherit; padding: 0; border-radius: 0; font-size: 14px; white-space: pre; overflow-wrap: normal; }
+
+/* What to say: lime panels */
+.say { margin: 18px 0; padding: 16px 24px; background: var(--ks-lime); color: var(--ks-ink); border: var(--ks-border) solid var(--ks-ink); border-radius: var(--ks-radius-panel); }
+.say p { margin: 6px 0; font-size: 19px; font-style: italic; font-weight: 500; line-height: 1.45; }
+
+/* Note: butter stage panel */
+.note { margin: 18px 0; padding: 16px 22px; background: var(--ks-stage-2); color: var(--ks-ink); border: var(--ks-border) solid var(--ks-ink); border-radius: var(--ks-radius-panel); }
+.note code { background: var(--ks-white); }
+
+/* Tables: ink header like the approval queue */
+.table-wrap { overflow-x: auto; margin: 18px 0; border: var(--ks-border-thin) solid var(--ks-ink); border-radius: var(--ks-radius-inset); }
+table { width: 100%; min-width: 520px; border-collapse: collapse; font-size: 16px; }
+th, td { text-align: left; vertical-align: top; padding: 12px 16px; border-bottom: var(--ks-border-thin) solid var(--ks-line-soft); }
+th { background: var(--ks-ink); color: var(--ks-paper); border-bottom: 0; font: 500 var(--ks-label)/1.35 var(--ks-font-mono); letter-spacing: var(--ks-label-tracking); text-transform: uppercase; }
+tr:last-child td { border-bottom: 0; }
+td { color: var(--ks-ink); }
+
+/* Guardrails: the featured, inverted card */
+#limits { background: var(--ks-ink); color: var(--ks-on-ink-soft); box-shadow: var(--ks-shadow-offset) var(--ks-shadow-offset) 0 var(--ks-flame-hot); }
+#limits h2 { color: var(--ks-paper); border-bottom-color: var(--ks-lime); }
+#limits h2 .n { -webkit-text-stroke-color: var(--ks-lime); }
+#limits li::before { background: var(--ks-lime); }
+
+/* Closing bands */
+.g-mq { position: relative; overflow: hidden; background-color: var(--ks-lime); color: var(--ks-ink); border-top: var(--ks-border) solid var(--ks-ink); }
+footer { padding: 40px var(--ks-gutter); background: var(--ks-ink); color: var(--ks-on-ink-soft); border-top: var(--ks-border) solid var(--ks-ink); text-align: center; font: 500 var(--ks-label)/1.35 var(--ks-font-mono); letter-spacing: var(--ks-label-tracking); text-transform: uppercase; }
 </style>
 </head>
-<body>
-<main>
-<header>
-  <h1>Swarmaa guide</h1>
+<body class="ks">
+<svg id="ks-defs" width="0" height="0" style="position: absolute" aria-hidden="true" focusable="false">
+<defs>
+<linearGradient id="ks-blue" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#3D7BFF"></stop><stop offset="1" stop-color="#B56CFF"></stop></linearGradient>
+<linearGradient id="ks-violet" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#3D7BFF"></stop><stop offset="1" stop-color="#C873FF"></stop></linearGradient>
+<linearGradient id="ks-sun" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#FFD24A"></stop><stop offset="1" stop-color="#FF9A1C"></stop></linearGradient>
+<linearGradient id="ks-peach" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#FFB36B"></stop><stop offset="1" stop-color="#FF6FB5"></stop></linearGradient>
+<linearGradient id="ks-peri" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#7AA8FF"></stop><stop offset="1" stop-color="#B56CFF"></stop></linearGradient>
+<linearGradient id="ks-lilac" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#E7A6FF"></stop><stop offset="1" stop-color="#B56CFF"></stop></linearGradient>
+<radialGradient id="ks-gloss" cx=".32" cy=".24" r=".55"><stop offset="0" stop-color="#FFFFFF" stop-opacity=".6"></stop><stop offset="1" stop-color="#FFFFFF" stop-opacity="0"></stop></radialGradient>
+<radialGradient id="ks-shade" cx=".62" cy=".9" r=".6"><stop offset="0" stop-color="#15111F" stop-opacity=".24"></stop><stop offset="1" stop-color="#15111F" stop-opacity="0"></stop></radialGradient>
+<filter id="ks-noise"><feTurbulence type="fractalNoise" baseFrequency=".85" numOctaves="2" stitchTiles="stitch"></feTurbulence><feColorMatrix type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 .7 0"></feColorMatrix></filter>
+</defs>
+</svg>
+<header class="g-hero ks-rings ks-hero-rings">
+<svg class="ks-grain" aria-hidden="true"><rect width="100%" height="100%" filter="url(#ks-noise)"></rect></svg>
+<div class="g-in">
+  <div class="g-top">
+  <h1 class="ks-disp ks-rise"><span class="ks-rings ks-wave-text">Swarmaa</span> <span class="ks-serif">guide</span></h1>
+  <div class="g-cast" aria-hidden="true"><span><svg class="ks-moji ks-d1" viewBox="0 0 200 200" aria-hidden="true"><g class="ks-bod"><path d="M104 30q-4-16 8-20q12-2 10 10" fill="none" stroke="#3D7BFF" stroke-width="8" stroke-linecap="round"></path><path d="M100 22C112 22 118 28 128 38L166 76C176 86 182 94 182 104S176 122 166 132L128 170C118 180 112 186 100 186S82 180 72 170L34 132C24 122 18 114 18 104S24 86 34 76L72 38C82 28 88 22 100 22Z" fill="url(#ks-blue)" stroke="#15111F" stroke-width="5"></path><path d="M100 22C112 22 118 28 128 38L166 76C176 86 182 94 182 104S176 122 166 132L128 170C118 180 112 186 100 186S82 180 72 170L34 132C24 122 18 114 18 104S24 86 34 76L72 38C82 28 88 22 100 22Z" fill="url(#ks-shade)"></path><path d="M100 22C112 22 118 28 128 38L166 76C176 86 182 94 182 104S176 122 166 132L128 170C118 180 112 186 100 186S82 180 72 170L34 132C24 122 18 114 18 104S24 86 34 76L72 38C82 28 88 22 100 22Z" fill="url(#ks-gloss)"></path><path d="M52 78q10-14 26-22" fill="none" stroke="#FFFFFF" stroke-width="7" stroke-linecap="round" opacity=".8"></path><path d="M134 158l24-24" fill="none" stroke="#FFFFFF" stroke-width="3.5" stroke-linecap="round" opacity=".45"></path><g class="ks-eye"><ellipse cx="76" cy="100" rx="17" ry="18.4" fill="#F6EFDC"></ellipse><g class="ks-pupil"><circle cx="76" cy="101" r="9.5" fill="#15111F"></circle><circle cx="72.6" cy="96.6" r="2.9" fill="#FFFFFF"></circle></g></g><g class="ks-eye"><ellipse cx="124" cy="100" rx="17" ry="18.4" fill="#F6EFDC"></ellipse><g class="ks-pupil"><circle cx="124" cy="101" r="9.5" fill="#15111F"></circle><circle cx="120.6" cy="96.6" r="2.9" fill="#FFFFFF"></circle></g></g><path d="M88 128q12 9 24 0" fill="none" stroke="#15111F" stroke-width="4.5" stroke-linecap="round"></path></g></svg></span><span><svg class="ks-moji ks-d2" viewBox="0 0 200 200" aria-hidden="true"><g class="ks-bod"><path d="M100 22C112 22 118 28 128 38L166 76C176 86 182 94 182 104S176 122 166 132L128 170C118 180 112 186 100 186S82 180 72 170L34 132C24 122 18 114 18 104S24 86 34 76L72 38C82 28 88 22 100 22Z" fill="url(#ks-sun)" stroke="#15111F" stroke-width="5"></path><path d="M100 22C112 22 118 28 128 38L166 76C176 86 182 94 182 104S176 122 166 132L128 170C118 180 112 186 100 186S82 180 72 170L34 132C24 122 18 114 18 104S24 86 34 76L72 38C82 28 88 22 100 22Z" fill="url(#ks-shade)"></path><path d="M100 22C112 22 118 28 128 38L166 76C176 86 182 94 182 104S176 122 166 132L128 170C118 180 112 186 100 186S82 180 72 170L34 132C24 122 18 114 18 104S24 86 34 76L72 38C82 28 88 22 100 22Z" fill="url(#ks-gloss)"></path><path d="M52 78q10-14 26-22" fill="none" stroke="#FFFFFF" stroke-width="7" stroke-linecap="round" opacity=".8"></path><path d="M134 158l24-24" fill="none" stroke="#FFFFFF" stroke-width="3.5" stroke-linecap="round" opacity=".45"></path><g class="ks-eye"><ellipse cx="76" cy="100" rx="17" ry="18.4" fill="#F6EFDC"></ellipse><g class="ks-pupil"><circle cx="76" cy="101" r="9.5" fill="#15111F"></circle><circle cx="72.6" cy="96.6" r="2.9" fill="#FFFFFF"></circle></g></g><g class="ks-eye"><ellipse cx="124" cy="100" rx="17" ry="18.4" fill="#F6EFDC"></ellipse><g class="ks-pupil"><circle cx="124" cy="101" r="9.5" fill="#15111F"></circle><circle cx="120.6" cy="96.6" r="2.9" fill="#FFFFFF"></circle></g></g><path d="M86 126q14 13 28 0z" fill="#15111F"></path><path d="M150 150l26-40" stroke="#15111F" stroke-width="6" stroke-linecap="round"></path><path d="M178 92l5 11 12 2-9 8 2 12-10-6-10 6 2-12-9-8 12-2z" fill="#FFFFFF" stroke="#15111F" stroke-width="3" stroke-linejoin="round"></path><path d="M34 52l3 7 7 1-5 5 1 7-6-3-6 3 1-7-5-5 7-1z" fill="#FFFFFF" stroke="#15111F" stroke-width="2.5" stroke-linejoin="round"></path></g></svg></span><span><svg class="ks-moji ks-d3" viewBox="0 0 200 200" aria-hidden="true"><g class="ks-bod"><path d="M100 22C112 22 118 28 128 38L166 76C176 86 182 94 182 104S176 122 166 132L128 170C118 180 112 186 100 186S82 180 72 170L34 132C24 122 18 114 18 104S24 86 34 76L72 38C82 28 88 22 100 22Z" fill="url(#ks-peach)" stroke="#15111F" stroke-width="5"></path><path d="M100 22C112 22 118 28 128 38L166 76C176 86 182 94 182 104S176 122 166 132L128 170C118 180 112 186 100 186S82 180 72 170L34 132C24 122 18 114 18 104S24 86 34 76L72 38C82 28 88 22 100 22Z" fill="url(#ks-shade)"></path><path d="M100 22C112 22 118 28 128 38L166 76C176 86 182 94 182 104S176 122 166 132L128 170C118 180 112 186 100 186S82 180 72 170L34 132C24 122 18 114 18 104S24 86 34 76L72 38C82 28 88 22 100 22Z" fill="url(#ks-gloss)"></path><path d="M52 78q10-14 26-22" fill="none" stroke="#FFFFFF" stroke-width="7" stroke-linecap="round" opacity=".8"></path><g class="ks-eye"><ellipse cx="76" cy="100" rx="17" ry="18.4" fill="#F6EFDC"></ellipse><g class="ks-pupil"><circle cx="76" cy="101" r="9.5" fill="#15111F"></circle><circle cx="72.6" cy="96.6" r="2.9" fill="#FFFFFF"></circle></g></g><g class="ks-eye"><ellipse cx="124" cy="100" rx="17" ry="18.4" fill="#F6EFDC"></ellipse><g class="ks-pupil"><circle cx="124" cy="101" r="9.5" fill="#15111F"></circle><circle cx="120.6" cy="96.6" r="2.9" fill="#FFFFFF"></circle></g></g><path d="M90 130h20" stroke="#15111F" stroke-width="4.5" stroke-linecap="round"></path><circle cx="124" cy="100" r="30" fill="#C8E6FF" fill-opacity=".35" stroke="#15111F" stroke-width="7"></circle><path d="M146 122l26 26" stroke="#15111F" stroke-width="12" stroke-linecap="round"></path><path d="M146 122l26 26" stroke="#3D7BFF" stroke-width="6" stroke-linecap="round"></path><path d="M110 86q8-6 16-2" stroke="#FFFFFF" stroke-width="4" fill="none" stroke-linecap="round"></path></g></svg></span><span><svg class="ks-moji ks-d4" viewBox="0 0 200 200" aria-hidden="true"><g class="ks-bod"><path d="M100 22C112 22 118 28 128 38L166 76C176 86 182 94 182 104S176 122 166 132L128 170C118 180 112 186 100 186S82 180 72 170L34 132C24 122 18 114 18 104S24 86 34 76L72 38C82 28 88 22 100 22Z" fill="url(#ks-lilac)" stroke="#15111F" stroke-width="5"></path><path d="M100 22C112 22 118 28 128 38L166 76C176 86 182 94 182 104S176 122 166 132L128 170C118 180 112 186 100 186S82 180 72 170L34 132C24 122 18 114 18 104S24 86 34 76L72 38C82 28 88 22 100 22Z" fill="url(#ks-shade)"></path><path d="M100 22C112 22 118 28 128 38L166 76C176 86 182 94 182 104S176 122 166 132L128 170C118 180 112 186 100 186S82 180 72 170L34 132C24 122 18 114 18 104S24 86 34 76L72 38C82 28 88 22 100 22Z" fill="url(#ks-gloss)"></path><path d="M52 78q10-14 26-22" fill="none" stroke="#FFFFFF" stroke-width="7" stroke-linecap="round" opacity=".8"></path><path d="M62 88l26 26M88 88l-26 26" stroke="#15111F" stroke-width="7" stroke-linecap="round"></path><g class="ks-eye"><ellipse cx="124" cy="102" rx="17" ry="18.4" fill="#F6EFDC"></ellipse><g class="ks-pupil"><circle cx="124" cy="103" r="9.5" fill="#15111F"></circle><circle cx="120.6" cy="98.6" r="2.9" fill="#FFFFFF"></circle></g><path d="M106 103A18 19 0 0 1 142 103Z" fill="#B56CFF" stroke="#15111F" stroke-width="3" stroke-linejoin="round"></path></g><path d="M108 82l30-8" stroke="#15111F" stroke-width="4.5" stroke-linecap="round"></path><path d="M86 134h28" stroke="#15111F" stroke-width="4.5" stroke-linecap="round"></path></g></svg></span></div>
+  </div>
   <p class="lede">One swarm for Claude Code, Codex, Antigravity and Grok: they share memory and chats, and any of them can hand work to the others.</p>
   <nav>
     <a href="#idea">The idea</a><a href="#ask">Ask for work</a><a href="#edits">Edits &amp; branches</a>
     <a href="#routing">Routing</a><a href="#memory">Shared memory</a><a href="#chats">Chats &amp; /swarm</a>
     <a href="#grok">Grok</a><a href="#limits">Limits</a><a href="#fix">Troubleshooting</a>
   </nav>
+</div>
 </header>
+<main>
 
 <section id="idea">
   <h2><span class="n">1</span>The idea</h2>
@@ -174,7 +451,41 @@ launchctl kickstart -k gui/$(id -u)/com.swarma.bridge.codex</code></pre>
   <p>Ask your agent to read the task: blocked tasks say why (no git repo, bad branch name, provider disabled by routing, or a command the sandbox refused). Fix it and continue the task.</p>
 </section>
 
-<footer>Swarmaa · updated 22 October 2026</footer>
 </main>
+<div class="ks-rings ks-mq-rings g-mq" aria-hidden="true"><div class="ks-mqbox"><div class="ks-mq"><span>The idea</span><svg width="26" height="26" viewBox="0 0 24 24"><path d="M12 0C12.8 7.2 16.8 11.2 24 12C16.8 12.8 12.8 16.8 12 24C11.2 16.8 7.2 12.8 0 12C7.2 11.2 11.2 7.2 12 0Z" fill="#15111F"></path></svg><span>Ask for work</span><svg width="26" height="26" viewBox="0 0 24 24"><path d="M12 0C12.8 7.2 16.8 11.2 24 12C16.8 12.8 12.8 16.8 12 24C11.2 16.8 7.2 12.8 0 12C7.2 11.2 11.2 7.2 12 0Z" fill="#15111F"></path></svg><span>Edits &amp; branches</span><svg width="26" height="26" viewBox="0 0 24 24"><path d="M12 0C12.8 7.2 16.8 11.2 24 12C16.8 12.8 12.8 16.8 12 24C11.2 16.8 7.2 12.8 0 12C7.2 11.2 11.2 7.2 12 0Z" fill="#15111F"></path></svg><span>Routing</span><svg width="26" height="26" viewBox="0 0 24 24"><path d="M12 0C12.8 7.2 16.8 11.2 24 12C16.8 12.8 12.8 16.8 12 24C11.2 16.8 7.2 12.8 0 12C7.2 11.2 11.2 7.2 12 0Z" fill="#15111F"></path></svg><span>Shared memory</span><svg width="26" height="26" viewBox="0 0 24 24"><path d="M12 0C12.8 7.2 16.8 11.2 24 12C16.8 12.8 12.8 16.8 12 24C11.2 16.8 7.2 12.8 0 12C7.2 11.2 11.2 7.2 12 0Z" fill="#15111F"></path></svg><span>Chats &amp; /swarm</span><svg width="26" height="26" viewBox="0 0 24 24"><path d="M12 0C12.8 7.2 16.8 11.2 24 12C16.8 12.8 12.8 16.8 12 24C11.2 16.8 7.2 12.8 0 12C7.2 11.2 11.2 7.2 12 0Z" fill="#15111F"></path></svg><span>Grok</span><svg width="26" height="26" viewBox="0 0 24 24"><path d="M12 0C12.8 7.2 16.8 11.2 24 12C16.8 12.8 12.8 16.8 12 24C11.2 16.8 7.2 12.8 0 12C7.2 11.2 11.2 7.2 12 0Z" fill="#15111F"></path></svg><span>The idea</span><svg width="26" height="26" viewBox="0 0 24 24"><path d="M12 0C12.8 7.2 16.8 11.2 24 12C16.8 12.8 12.8 16.8 12 24C11.2 16.8 7.2 12.8 0 12C7.2 11.2 11.2 7.2 12 0Z" fill="#15111F"></path></svg><span>Ask for work</span><svg width="26" height="26" viewBox="0 0 24 24"><path d="M12 0C12.8 7.2 16.8 11.2 24 12C16.8 12.8 12.8 16.8 12 24C11.2 16.8 7.2 12.8 0 12C7.2 11.2 11.2 7.2 12 0Z" fill="#15111F"></path></svg><span>Edits &amp; branches</span><svg width="26" height="26" viewBox="0 0 24 24"><path d="M12 0C12.8 7.2 16.8 11.2 24 12C16.8 12.8 12.8 16.8 12 24C11.2 16.8 7.2 12.8 0 12C7.2 11.2 11.2 7.2 12 0Z" fill="#15111F"></path></svg><span>Routing</span><svg width="26" height="26" viewBox="0 0 24 24"><path d="M12 0C12.8 7.2 16.8 11.2 24 12C16.8 12.8 12.8 16.8 12 24C11.2 16.8 7.2 12.8 0 12C7.2 11.2 11.2 7.2 12 0Z" fill="#15111F"></path></svg><span>Shared memory</span><svg width="26" height="26" viewBox="0 0 24 24"><path d="M12 0C12.8 7.2 16.8 11.2 24 12C16.8 12.8 12.8 16.8 12 24C11.2 16.8 7.2 12.8 0 12C7.2 11.2 11.2 7.2 12 0Z" fill="#15111F"></path></svg><span>Chats &amp; /swarm</span><svg width="26" height="26" viewBox="0 0 24 24"><path d="M12 0C12.8 7.2 16.8 11.2 24 12C16.8 12.8 12.8 16.8 12 24C11.2 16.8 7.2 12.8 0 12C7.2 11.2 11.2 7.2 12 0Z" fill="#15111F"></path></svg><span>Grok</span><svg width="26" height="26" viewBox="0 0 24 24"><path d="M12 0C12.8 7.2 16.8 11.2 24 12C16.8 12.8 12.8 16.8 12 24C11.2 16.8 7.2 12.8 0 12C7.2 11.2 11.2 7.2 12 0Z" fill="#15111F"></path></svg></div></div></div>
+<footer><a href="/" style="text-decoration:none">Swarmaa</a> · updated 22 October 2026</footer>
+<script id="ks-components-js">
+(function () {
+  'use strict';
+  /* Kind Swarm components. Pupils follow the pointer through --px / --py on <html>. */
+  var root = document.documentElement.style;
+  window.addEventListener('pointermove', function (e) {
+    var x = (e.clientX / window.innerWidth - 0.5) * 2, y = (e.clientY / window.innerHeight - 0.5) * 2;
+    root.setProperty('--px', (x * 7).toFixed(2) + 'px');
+    root.setProperty('--py', (y * 7).toFixed(2) + 'px');
+  }, { passive: true });
+  document.addEventListener('click', function (e) {
+    /* Poke a character: replay its .ks-react animation */
+    var b = e.target.closest('[data-ks-poke]');
+    if (b) {
+      var m = b.querySelector('.ks-moji');
+      m.classList.remove('ks-react');
+      void m.getBoundingClientRect();
+      m.classList.add('ks-react');
+      clearTimeout(m._t);
+      m._t = setTimeout(function () { m.classList.remove('ks-react'); }, 780);
+    }
+    /* Filter pills: one pressed at a time within a [data-ks-pills] group */
+    var p = e.target.closest('[data-ks-pills] .ks-pill');
+    if (p) {
+      var all = p.closest('[data-ks-pills]').querySelectorAll('.ks-pill');
+      for (var i = 0; i < all.length; i++) {
+        all[i].classList.toggle('ks-on', all[i] === p);
+        all[i].setAttribute('aria-pressed', all[i] === p ? 'true' : 'false');
+      }
+    }
+  });
+})();
+</script>
 </body>
 </html>
