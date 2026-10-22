@@ -1,7 +1,9 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import type { Pool, PoolClient } from 'pg';
 import { transaction } from './db.js';
+import { principalFromRow } from './auth.js';
 import { AppError } from './errors.js';
+import { escapeHtml, shell } from './passkey-ui.js';
 import type { AuthBackend, Principal, ServerConfig } from './types.js';
 
 const ACCESS_SECONDS = 3600;
@@ -24,6 +26,12 @@ export interface AuthorizationForm {
   clientName: string;
   redirectUri: string;
   principal?: Principal;
+  /** Signed-in owner: connection identities that may be chosen, and the default pick. */
+  owner?: { identities: { id: string; name: string }[]; defaultId: string };
+  /** Passkey sign-in state for a browser without an owner session. */
+  passkey?: 'ready' | 'none' | 'unavailable';
+  /** CSP nonce for the inline passkey script. */
+  nonce?: string;
 }
 
 export type AuthorizationReply = AuthorizationForm | { kind: 'redirect'; location: string };
@@ -103,6 +111,18 @@ export function narrowGrant(snapshot: Principal, current: Principal | null): Pri
   const permissions = snapshot.permissions.filter(permission => current.permissions.includes(permission));
   if (!scopes.length || !permissions.length) return null;
   return { ...current, scopes, permissions };
+}
+
+/** Only non-admin, non-wildcard identities can be delegated to an OAuth client. */
+function connectable(principal: Principal): boolean {
+  return principal.role !== 'admin' && !principal.permissions.includes('admin') && !principal.scopes.includes('*');
+}
+
+/** Default identity: the one whose name appears in the client name (longest match), else the first. */
+export function defaultIdentity(clientName: string, identities: { id: string; name: string }[]): string {
+  const lower = clientName.toLowerCase();
+  const hit = identities.filter(i => lower.includes(i.name.toLowerCase())).sort((a, b) => b.name.length - a.name.length)[0];
+  return (hit ?? identities[0])?.id ?? '';
 }
 
 export function validateRedirectUri(value: unknown, config: ServerConfig): string {
@@ -188,7 +208,7 @@ export class OAuthService {
     };
   }
 
-  async beginAuthorize(params: URLSearchParams, browserCookie?: string): Promise<AuthorizationForm> {
+  async beginAuthorize(params: URLSearchParams, browserCookie?: string, ownerTenant?: string): Promise<AuthorizationForm> {
     const clientId = requiredParameter(params, 'client_id', 128);
     const redirectUri = requiredParameter(params, 'redirect_uri');
     const responseType = requiredParameter(params, 'response_type', 64);
@@ -212,15 +232,23 @@ export class OAuthService {
       'INSERT INTO oauth_pending(id,client_id,redirect_uri,state,challenge,resource,csrf_hash,browser_hash,expires_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,now()+make_interval(secs=>$9))',
       [requestId, clientId, redirectUri, state ?? null, challenge, resource, tokenHash(csrf), tokenHash(browser), PENDING_SECONDS],
     );
-    return { kind: 'form', requestId, csrf, browserCookie: browser, clientName: registered.client_name, redirectUri };
+    const form: AuthorizationForm = { kind: 'form', requestId, csrf, browserCookie: browser, clientName: registered.client_name, redirectUri };
+    if (ownerTenant) {
+      const rows = await this.pool.query<{ id: string; name: string }>(
+        "SELECT id,name FROM principals WHERE tenant_id=$1 AND role='frontend' AND disabled=false AND NOT ('admin'=ANY(permissions)) AND NOT ('*'=ANY(scopes)) ORDER BY name",
+        [ownerTenant],
+      );
+      form.owner = { identities: rows.rows, defaultId: defaultIdentity(registered.client_name, rows.rows) };
+    }
+    return form;
   }
 
-  async respondAuthorize(form: URLSearchParams, browserCookie?: string): Promise<AuthorizationReply> {
+  async respondAuthorize(form: URLSearchParams, browserCookie?: string, ownerTenant?: string): Promise<AuthorizationReply> {
     const requestId = requiredParameter(form, 'request_id', 64);
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(requestId)) throw new OAuthError('invalid_request', 'Invalid authorization request.');
     const csrf = requiredParameter(form, 'csrf', 128);
     const action = requiredParameter(form, 'action', 32);
-    if (!['identify', 'approve', 'deny'].includes(action)) throw new OAuthError('invalid_request', 'Invalid authorization action.');
+    if (!['identify', 'identify_owner', 'approve', 'deny'].includes(action)) throw new OAuthError('invalid_request', 'Invalid authorization action.');
     if (!browserCookie || !/^[A-Za-z0-9_-]{43}$/u.test(browserCookie)) throw new OAuthError('invalid_request', 'Authorization browser cookie is missing.', 403);
     const browser = browserCookie;
     let identifyingPrincipal: Principal | null = null;
@@ -228,13 +256,30 @@ export class OAuthService {
     if (action === 'identify') {
       const token = requiredParameter(form, 'connection_token', 4096);
       identifyingPrincipal = await this.auth.authenticate(token);
-      if (!identifyingPrincipal || identifyingPrincipal.role === 'admin' || identifyingPrincipal.permissions.includes('admin') || identifyingPrincipal.scopes.includes('*')) {
+      if (!identifyingPrincipal || !connectable(identifyingPrincipal)) {
         throw new OAuthError('access_denied', 'Use a valid non-admin connection token issued for this client.', 403);
       }
       identifyingTokenHash = tokenHash(token);
     }
+    let ownerChoice: string | undefined;
+    if (action === 'identify_owner') {
+      if (!ownerTenant) throw new OAuthError('access_denied', 'Sign in with your passkey first.', 403);
+      ownerChoice = requiredParameter(form, 'principal_id', 64);
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(ownerChoice)) throw new OAuthError('invalid_request', 'Invalid connection identity.');
+    }
     return transaction<AuthorizationReply>(this.pool, async client => {
-      if (identifyingPrincipal) {
+      if (ownerChoice) {
+        // Same lock order as rotation/revocation. The chosen identity must be an
+        // enabled, non-admin frontend principal of the owner's own tenant.
+        const locked = await client.query(
+          "SELECT * FROM principals WHERE id=$1 AND tenant_id=$2 AND role='frontend' AND disabled=false FOR SHARE",
+          [ownerChoice, ownerTenant],
+        );
+        const chosen = locked.rows[0] ? principalFromRow(locked.rows[0]) : null;
+        if (!chosen || !connectable(chosen)) throw new OAuthError('access_denied', 'Choose an enabled, non-admin connection identity.', 403);
+        identifyingPrincipal = chosen;
+      }
+      if (identifyingPrincipal && !ownerChoice) {
         // The owner rotates/revokes by locking the principal before pending
         // requests. Use the same order and recheck the credential after taking
         // the lock: an old token cannot outlive rotation through an in-flight
@@ -257,7 +302,7 @@ export class OAuthService {
         await client.query('DELETE FROM oauth_pending WHERE id=$1', [requestId]);
         return { kind: 'redirect', location: this.redirect(pending, { error: 'access_denied' }) };
       }
-      if (action === 'identify') {
+      if (action === 'identify' || action === 'identify_owner') {
         // Connection tokens are checked but never stored or re-rendered.
         const principal = identifyingPrincipal!;
         const nextCsrf = randomBytes(32).toString('base64url');
@@ -388,15 +433,25 @@ export class OAuthService {
   }
 }
 
-function escapeHtml(value: string): string {
-  return value.replace(/[&<>"']/gu, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]!);
-}
-
 export function authorizationHtml(form: AuthorizationForm): string {
   const hidden = `<input type="hidden" name="request_id" value="${escapeHtml(form.requestId)}"><input type="hidden" name="csrf" value="${escapeHtml(form.csrf)}">`;
+  const tokenField = (open: boolean): string => `<details${open ? ' open' : ''}><summary>Use a connection token instead</summary><p>Enter the non-admin connection token your service owner issued for this client.</p><label>Connection token <input name="connection_token" type="password" autocomplete="off" spellcheck="false" required maxlength="4096"></label><button name="action" value="identify">Review permissions</button></details>`;
   const grant = form.principal;
-  const fields = grant
-    ? `<p>Identity: <strong>${escapeHtml(grant.name)}</strong> (${escapeHtml(grant.role)}).</p><p>Projects: ${grant.scopes.map(escapeHtml).join(', ')}.</p><p>Permissions: ${grant.permissions.map(escapeHtml).join(', ')}.</p><p>This client will receive only these grants. Authorization expires in at most 30 days. Disabling the connection identity revokes its access.</p><button name="action" value="approve">Approve connection</button>`
-    : '<p>Enter the non-admin connection token your service owner issued for this client. The next screen shows the exact projects and permissions before you approve.</p><label>Connection token <input name="connection_token" type="password" autocomplete="off" spellcheck="false" required maxlength="4096"></label><button name="action" value="identify">Review permissions</button>';
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Connect collective network</title></head><body><main><h1>Connect collective network</h1><p>Client: <strong>${escapeHtml(form.clientName)}</strong>. This client name is self-reported.</p><p>Return address: <code>${escapeHtml(form.redirectUri)}</code></p><form method="post" action="/oauth/authorize">${hidden}${fields}<button name="action" value="deny" formnovalidate>Deny</button></form></main></body></html>`;
+  let fields: string;
+  if (grant) {
+    fields = `<div class="card"><p>Identity: <strong>${escapeHtml(grant.name)}</strong> (${escapeHtml(grant.role)})</p><p>Projects: ${grant.scopes.map(escapeHtml).join(', ')}</p><p>Permissions: ${grant.permissions.map(escapeHtml).join(', ')}</p></div><p>This client will receive only these grants. Authorization expires in at most 30 days. Disabling the connection identity revokes its access.</p><button class="primary" name="action" value="approve">Approve connection</button>`;
+  } else if (form.owner) {
+    const options = form.owner.identities.map(i => `<option value="${escapeHtml(i.id)}"${i.id === form.owner!.defaultId ? ' selected' : ''}>${escapeHtml(i.name)}</option>`).join('');
+    fields = form.owner.identities.length
+      ? `<p>Choose which connection identity this client gets. The next screen shows its exact projects and permissions.</p><label>Connection identity <select name="principal_id">${options}</select></label><button class="primary" name="action" value="identify_owner">Review permissions</button>`
+      : '<p>No enabled connection identity exists yet. Create one with <code>npm run admin -- create</code>.</p>';
+  } else if (form.passkey === 'ready' || form.passkey === 'none') {
+    fields = `<div id="pk-msg" role="status"></div>${form.passkey === 'ready'
+      ? '<button type="button" class="primary" data-pk="login" data-next="reload">Sign in with passkey</button>'
+      : '<p>No passkey exists yet. Run <code>npm run setup</code> to create one.</p>'}${tokenField(false)}`;
+  } else {
+    fields = `<p>Enter the non-admin connection token your service owner issued for this client. The next screen shows the exact projects and permissions before you approve.</p><label>Connection token <input name="connection_token" type="password" autocomplete="off" spellcheck="false" required maxlength="4096"></label><button class="primary" name="action" value="identify">Review permissions</button>`;
+  }
+  const body = `<h1>Connect to Swarmaa</h1><p>Client: <strong>${escapeHtml(form.clientName)}</strong>. This client name is self-reported.</p><p>Return address: <code>${escapeHtml(form.redirectUri)}</code></p><form method="post" action="/oauth/authorize">${hidden}${fields}<button class="quiet" name="action" value="deny" formnovalidate>Deny</button></form>`;
+  return shell('Connect to Swarmaa', body, form.nonce);
 }

@@ -6,6 +6,7 @@ import { loadConfig } from '../src/config.js';
 import { createPool, transaction } from '../src/db.js';
 import { requireCondition } from '../src/errors.js';
 import { EventService } from '../src/events.js';
+import { PasskeyService } from '../src/passkeys.js';
 import { ROLE_PERMISSIONS } from '../src/policy.js';
 import type { Permission, Role } from '../src/types.js';
 import { enumValue, scopeName, string } from '../src/validation.js';
@@ -16,11 +17,11 @@ const { values, positionals } = parseArgs({
     name: { type: 'string' }, role: { type: 'string' }, scopes: { type: 'string' },
     tenant: { type: 'string', default: 'personal' }, grant: { type: 'string', multiple: true },
     out: { type: 'string' }, scope: { type: 'string' }, event: { type: 'string', default: 'task.updated' },
-    id: { type: 'string' }, days: { type: 'string', default: '7' },
+    id: { type: 'string' }, days: { type: 'string', default: '7' }, minutes: { type: 'string', default: '30' },
   },
 });
 const command = positionals[0];
-const commands = ['create', 'list', 'set-scopes', 'rotate', 'revoke', 'subscriptions', 'add-sink', 'remove-sink'];
+const commands = ['create', 'list', 'set-scopes', 'rotate', 'revoke', 'subscriptions', 'add-sink', 'remove-sink', 'passkey-invite'];
 requireCondition(positionals.length === 1 && commands.includes(command), 400, 'usage', `Usage: npm run admin -- ${commands.join('|')} [options]. See docs/OPERATIONS.md.`);
 const tenant = string(values.tenant, 'tenant', 100);
 requireCondition(/^[a-z0-9][a-z0-9_-]*$/.test(tenant), 400, 'invalid_tenant', 'Tenant must use lowercase letters, digits, underscore and hyphen.');
@@ -102,6 +103,15 @@ try {
       await client.query('INSERT INTO audit_log(id,tenant_id,actor_id,operation,subject_id,details) VALUES($1,$2,$3,$4,$5,$6::jsonb)', [randomUUID(), tenant, principal.id, `principal.${command}`, principal.id, JSON.stringify({ local_owner: true })]);
     });
     await emit({ id: principal.id, name: principal.name, action: command, ...(token ? { token } : {}) }, !!token);
+  } else if (command === 'passkey-invite') {
+    // A secret one-time link: shown once, stored only as a hash, never logged.
+    const config = loadConfig();
+    const passkeys = new PasskeyService(pool, config);
+    requireCondition(!!passkeys.rp, 409, 'passkeys_unavailable', 'Passkeys need the public HTTPS address.');
+    const minutes = Number(values.minutes);
+    requireCondition(Number.isInteger(minutes) && minutes >= 1 && minutes <= 1440, 400, 'invalid_minutes', 'Use --minutes between 1 and 1440.');
+    const code = await passkeys.createInvite(minutes);
+    await emit({ url: `${config.publicUrl}/account?code=${code}`, expires_in_minutes: minutes }, true);
   } else if (command === 'subscriptions') {
     const result = await pool.query('SELECT s.id,p.name AS owner,s.scope,s.name AS event,s.mode,s.active,s.expires_at FROM event_subscriptions s JOIN principals p ON p.id=s.principal_id WHERE s.tenant_id=$1 ORDER BY s.created_at', [tenant]);
     await emit(result.rows);

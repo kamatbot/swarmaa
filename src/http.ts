@@ -1,8 +1,10 @@
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { AppError, publicError } from './errors.js';
 import { handleMcp } from './mcp.js';
 import { OAuthError, OAuthService, OAUTH_COOKIE, authorizationHtml, type AuthorizationForm } from './oauth.js';
+import { accountHtml, type AccountView } from './passkey-ui.js';
+import { BIND_COOKIE, OWNER_COOKIE, PasskeyService, bindCookie, newBinding, ownerCookie } from './passkeys.js';
 import type { HttpDependencies, Principal } from './types.js';
 
 const MAX_RESPONSE_BYTES = 6 * 1024 * 1024;
@@ -114,14 +116,20 @@ class RateLimiter {
   }
 }
 
-function authorizationPage(response: ServerResponse, form: AuthorizationForm, secure: boolean): void {
+/** Inline passkey script and styles run only with this per-response nonce; fetch is same-origin only. */
+function pageCsp(nonce: string, formAction: string): string {
+  return `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'nonce-${nonce}'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action ${formAction}`;
+}
+
+function authorizationPage(response: ServerResponse, form: AuthorizationForm, secure: boolean, passkey?: AuthorizationForm['passkey']): void {
+  const nonce = randomBytes(16).toString('base64url');
   response.setHeader('Set-Cookie', `${OAUTH_COOKIE}=${form.browserCookie}; Path=/oauth/authorize; HttpOnly; SameSite=Lax; Max-Age=600${secure ? '; Secure' : ''}`);
   // Some browsers also apply form-action to a POST's 303 redirect. The exact
   // registered callback is already validated; allow its origin for that return.
-  response.setHeader('Content-Security-Policy', `default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self' ${new URL(form.redirectUri).origin}`);
+  response.setHeader('Content-Security-Policy', pageCsp(nonce, `'self' ${new URL(form.redirectUri).origin}`));
   response.setHeader('Content-Type', 'text/html; charset=utf-8');
   response.statusCode = 200;
-  response.end(authorizationHtml(form));
+  response.end(authorizationHtml({ ...form, passkey: form.principal || form.owner ? undefined : passkey, nonce }));
 }
 
 /** Node's HTTP server is deliberately the only HTTP framework dependency. */
@@ -139,8 +147,69 @@ export function createHttpHandler(dependencies: HttpDependencies): (request: Inc
     if (parsed.origin !== origin || !['https:', 'http:'].includes(parsed.protocol)) throw new Error('ALLOWED_ORIGINS must contain exact HTTP(S) origins.');
   }
   const oauth = config.oauthEnabled ? new OAuthService(dependencies.pool, dependencies.auth, config) : undefined;
+  const passkeys = new PasskeyService(dependencies.pool, config);
   const limiter = new RateLimiter();
   let inFlight = 0;
+  const secureCookies = publicUrl.protocol === 'https:';
+
+  /** Passkey routes: JSON POSTs are same-origin only (exact PUBLIC_URL origin), JSON-typed and small. */
+  async function account(request: IncomingMessage, response: ServerResponse, url: URL, path: string, origin: string | undefined, remote: string): Promise<void> {
+    limiter.accept(`passkey:${remote}`, 30);
+    const owner = cookieValue(request, OWNER_COOKIE);
+    if (request.method === 'GET' && path === '/account') {
+      response.statusCode = passkeys.rp ? 200 : 409;
+      const nonce = randomBytes(16).toString('base64url');
+      let view: AccountView = { kind: 'unavailable' };
+      if (passkeys.rp) {
+        if (await passkeys.session(owner)) view = { kind: 'owner', passkeys: await passkeys.list(owner) };
+        else {
+          const codes = url.searchParams.getAll('code');
+          const code = codes.length === 1 ? codes[0] : undefined;
+          const usable = await passkeys.inviteUsable(code);
+          view = { kind: 'guest', hasPasskeys: await passkeys.hasPasskeys(), code: usable ? code : undefined, codeInvalid: codes.length > 0 && !usable };
+        }
+      }
+      response.setHeader('Content-Security-Policy', pageCsp(nonce, "'self'"));
+      response.setHeader('Content-Type', 'text/html; charset=utf-8');
+      response.end(accountHtml(view, nonce));
+      return;
+    }
+    const routes = ['/account/logout', '/account/passkeys/delete', '/account/passkeys/register/options', '/account/passkeys/register/verify', '/account/passkeys/login/options', '/account/passkeys/login/verify'];
+    if (!routes.includes(path)) throw new AppError(404, 'not_found', 'Endpoint not found.');
+    onlyMethod(request, response, ['POST']);
+    if (!passkeys.rp) throw new AppError(409, 'passkeys_unavailable', 'Passkeys need the public HTTPS address.');
+    if (origin !== publicUrl.origin) throw new AppError(403, 'invalid_origin', 'Origin is not allowed.');
+    requireType(request, 'application/json');
+    const raw = parseJson(await readBody(request, 32_768));
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new AppError(400, 'invalid_request', 'Invalid request.');
+    const body = raw as Record<string, unknown>;
+    const code = typeof body.code === 'string' ? body.code : undefined;
+    if (path === '/account/logout') {
+      await passkeys.endSession(owner);
+      response.setHeader('Set-Cookie', ownerCookie(null, secureCookies));
+      json(response, 200, { ok: true });
+      return;
+    }
+    if (path === '/account/passkeys/delete') {
+      await passkeys.remove(owner, body.id);
+      json(response, 200, { ok: true });
+      return;
+    }
+    const browser = newBinding(cookieValue(request, BIND_COOKIE));
+    if (path.endsWith('/options')) {
+      const options = path.includes('/register/')
+        ? await passkeys.registrationOptions({ code, sessionToken: owner, browser })
+        : await passkeys.authenticationOptions(browser);
+      response.setHeader('Set-Cookie', bindCookie(browser, secureCookies));
+      json(response, 200, { options });
+      return;
+    }
+    const token = path.includes('/register/')
+      ? await passkeys.verifyRegistration({ code, sessionToken: owner, browser, response: body.response, name: body.name })
+      : await passkeys.verifyAuthentication({ browser, response: body.response });
+    response.setHeader('Set-Cookie', ownerCookie(token, secureCookies));
+    json(response, 200, { ok: true });
+  }
 
   async function authenticate(request: IncomingMessage, response: ServerResponse, mcp: boolean): Promise<Principal> {
     const header = oneHeader(request, 'authorization');
@@ -224,18 +293,26 @@ export function createHttpHandler(dependencies: HttpDependencies): (request: Inc
       json(response, 201, await oauth.registerClient(parseJson(await readBody(request, Math.min(config.maxBodyBytes, 16_384)))));
       return;
     }
+    if (path === '/account' || path.startsWith('/account/')) {
+      await account(request, response, url, path, origin, remote);
+      return;
+    }
     if (oauth && path === '/oauth/authorize') {
       onlyMethod(request, response, ['GET', 'POST']);
       limiter.accept(`authorization:${remote}`, 30);
+      // The owner cookie only identifies the approving human; it is never read as an API credential.
+      const ownerTenant = (await passkeys.session(cookieValue(request, OWNER_COOKIE)))?.tenantId;
       if (request.method === 'GET') {
-        authorizationPage(response, await oauth.beginAuthorize(url.searchParams, cookieValue(request, OAUTH_COOKIE)), publicUrl.protocol === 'https:');
+        const form = await oauth.beginAuthorize(url.searchParams, cookieValue(request, OAUTH_COOKIE), ownerTenant);
+        const passkey = ownerTenant ? undefined : !passkeys.rp ? 'unavailable' : await passkeys.hasPasskeys() ? 'ready' : 'none';
+        authorizationPage(response, form, secureCookies, passkey);
         return;
       }
       // Browser approval is same-origin even when API CORS allows other clients.
       if (origin !== publicUrl.origin) throw new OAuthError('invalid_request', 'Authorization forms require the service origin.', 403);
       requireType(request, 'application/x-www-form-urlencoded');
-      const reply = await oauth.respondAuthorize(new URLSearchParams(await readBody(request, 16_384)), cookieValue(request, OAUTH_COOKIE));
-      if (reply.kind === 'form') authorizationPage(response, reply, publicUrl.protocol === 'https:');
+      const reply = await oauth.respondAuthorize(new URLSearchParams(await readBody(request, 16_384)), cookieValue(request, OAUTH_COOKIE), ownerTenant);
+      if (reply.kind === 'form') authorizationPage(response, reply, secureCookies);
       else { response.statusCode = 303; response.setHeader('Location', reply.location); response.end(); }
       return;
     }

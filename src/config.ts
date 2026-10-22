@@ -38,5 +38,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     oauthEnabled: flag(env.OAUTH_ENABLED, true),
     oauthRedirectHosts: csv(env.OAUTH_REDIRECT_HOSTS).map(h => h.toLowerCase()),
     eventCallbackHosts: callbackHosts, eventEncryptionKey,
+    passkeyRpId: env.PASSKEY_RP_ID?.trim().toLowerCase() || undefined,
   };
 }

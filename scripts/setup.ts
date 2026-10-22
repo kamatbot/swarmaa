@@ -9,6 +9,9 @@ import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import pg from 'pg';
+import { loadConfig } from '../src/config.js';
+import { createPool } from '../src/db.js';
+import { PasskeyService } from '../src/passkeys.js';
 import { installJournalHooks, removeJournalHooks, type Harness } from './hooks-install.js';
 import {
   AGY_TOOLS, DEFAULT_HOSTNAME, HARNESS_KEYS, PlanError, SHARING_HARNESSES, WORKER_HARNESSES, bridgeConfig, identityScopes, mergeAgyPermissions,
@@ -320,6 +323,25 @@ export async function runSetup(plan: SetupPlan, opts: RunOpts): Promise<SetupSum
         run('launchctl', ['bootout', `gui/${uid}/${label(`bridge.${k}`)}`]);
         if (dry) pl(`rm ${file}`); else rmSync(file, { force: true });
       }
+    });
+
+    // Passkey for the OAuth approval page (hosted agents). Only over the public HTTPS address, and only until the first passkey exists.
+    // The signup link is a secret: it goes to the browser, never to the log, summary or next steps.
+    await step('passkey', 'Owner passkey', async () => {
+      const current = existsSync(join(root, '.env')) ? parseEnv(readFileSync(join(root, '.env'), 'utf8')) : env;
+      const publicUrl = (current.PUBLIC_URL ?? '').replace(/\/$/, '');
+      if (!/^https:\/\//.test(publicUrl)) return { skipped: 'passkeys need the public HTTPS address (enable remote access first)' };
+      if (dry) { pl(`create a one-time passkey signup link and open ${publicUrl}/account?code=<hidden> in your browser`); summary.nextSteps.push(`Create your passkey at ${publicUrl}/account`); return; }
+      const pool = createPool(current.DATABASE_URL ?? die('DATABASE_URL is missing from .env.'));
+      try {
+        const passkeys = new PasskeyService(pool, loadConfig({ ...current, PUBLIC_URL: publicUrl }));
+        if (!passkeys.rp) return { skipped: 'PUBLIC_URL host does not support passkeys' };
+        if (await passkeys.hasPasskeys()) return { skipped: 'a passkey already exists' };
+        const code = await passkeys.createInvite(30);
+        spawn('open', [`${publicUrl}/account?code=${code}`], { stdio: 'ignore', detached: true }).on('error', () => undefined).unref();
+        summary.nextSteps.push(`Create your passkey at ${publicUrl}/account (the signup link opened in your browser and expires in 30 minutes; run "npm run admin -- passkey-invite" for a new one).`);
+        return 'signup link opened in your browser';
+      } finally { await pool.end(); }
     });
 
     await step('save', 'Save settings', async () => {

@@ -130,3 +130,7 @@ OAuth cleanup must preserve refresh replay records while a grant lives. Event de
 Stop a foreground bridge with Ctrl-C; it requests subprocess termination and reports incomplete work. Stop the server with Ctrl-C/SIGTERM; it stops accepting new work, waits for bounded in-flight activity and closes the pool. Restart the service against the same database to retain state. Expired tasks become claimable through the bounded retry policy; a new worker resumes from durable context/checkpoints, not from a hidden provider conversation state.
 
 Inspect a task's current status and artifacts before continuing an ambiguous completion. Use its expected version and a stable continuation idempotency key. For patch work, inspect local files and any surviving workspace lock before starting another writer; a crashed-process lock is intentionally an operator recovery step.
+
+## Owner passkey sign-in
+
+The OAuth approval page signs the owner in with a passkey (WebAuthn), then lets them pick the non-admin connection identity the agent receives. Passkeys need the public HTTPS `PUBLIC_URL`; over plain loopback the approval page keeps the connection-token method. Apply migration `007_passkeys.sql`, then run `npm run admin -- passkey-invite [--minutes 30]` (or `npm run setup`) and open the one-time `/account?code=...` link it prints. The link is a secret; it is stored only as a hash and expires after use. The owner session cookie (`swarmaa_owner`, 12 h) is never accepted on `/mcp` or `/api/tools/*`.

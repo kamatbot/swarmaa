@@ -47,6 +47,8 @@ export interface ServerConfig {
   oauthRedirectHosts: string[];
   eventCallbackHosts: string[];
   eventEncryptionKey: string;
+  /** Optional override for the WebAuthn RP ID (registrable domain of PUBLIC_URL by default). */
+  passkeyRpId?: string;
 }
 
 export interface HttpDependencies {
