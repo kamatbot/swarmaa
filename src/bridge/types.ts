@@ -52,6 +52,8 @@ export interface Claim {
   task: Task | null;
   lease_token?: string;
   lease_generation?: number;
+  /** Router decision for auto.* tasks: the provider to run (null = any allowed) and the providers the policy enables. */
+  route?: { provider: string | null; allowed: string[] };
 }
 export interface Lease {
   task_id: string;

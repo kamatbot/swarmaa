@@ -68,9 +68,7 @@ export function validatePolicy(input: unknown): RoutingPolicy {
 export async function getPolicy(db: Db, tenantId: string): Promise<{ policy: RoutingPolicy; is_default: boolean; updated_at: string | null; default_policy: RoutingPolicy }> {
   const r = await db.query<{ policy: RoutingPolicy; updated_at: Date }>('SELECT policy,updated_at FROM routing_policies WHERE tenant_id=$1', [tenantId]);
   const row = r.rows[0];
-  // A policy saved before patch routing existed gains patch wherever the default allows it (migration 011 does the same in SQL).
-  const withPatch = (p: RoutingPolicy): RoutingPolicy => ({ ...p, providers: p.providers.map(x => x.kinds.includes('patch') || !DEFAULT_POLICY.providers.find(d => d.provider === x.provider)?.kinds.includes('patch') ? x : { ...x, kinds: [...x.kinds, 'patch' as const] }) });
-  return row ? { policy: withPatch(row.policy), is_default: false, updated_at: row.updated_at.toISOString(), default_policy: DEFAULT_POLICY } : { policy: DEFAULT_POLICY, is_default: true, updated_at: null, default_policy: DEFAULT_POLICY };
+  return row ? { policy: row.policy, is_default: false, updated_at: row.updated_at.toISOString(), default_policy: DEFAULT_POLICY } : { policy: DEFAULT_POLICY, is_default: true, updated_at: null, default_policy: DEFAULT_POLICY };
 }
 
 export async function setPolicy(db: Db, p: Principal, input: unknown): Promise<{ policy: RoutingPolicy; updated_at: string }> {

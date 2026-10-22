@@ -6,6 +6,9 @@ import { after, before, describe, it } from 'node:test';
 import pg, { type Pool } from 'pg';
 import { CoreService } from '../src/core/index.js';
 import { DEFAULT_POLICY, type RoutingPolicy } from '../src/core/routing.js';
+import { parseBridgeConfig } from '../src/bridge/config.js';
+import { BridgeWorker } from '../src/bridge/worker.js';
+import type { ToolClient } from '../src/bridge/types.js';
 import { AppError } from '../src/errors.js';
 import { ROLE_PERMISSIONS } from '../src/policy.js';
 import type { Principal } from '../src/types.js';
@@ -246,11 +249,57 @@ describe('routing policy', {skip:!connectionString,concurrency:false}, () => {
     const old = structuredClone(DEFAULT_POLICY);
     for (const p of old.providers) p.kinds = p.kinds.filter(k => k !== 'patch');
     await pool.query('INSERT INTO routing_policies(tenant_id,policy,updated_by) VALUES($1,$2::jsonb,$3)',[owner.tenantId,JSON.stringify(old),owner.id]);
-    const got = await call(front,'routing_get',{});
-    assert.deepEqual(got.policy.providers.map((p:any) => p.kinds),DEFAULT_POLICY.providers.map(p => p.kinds));
-    // The SQL migration does the same to existing rows.
+    // Reads never rewrite a stored policy; the SQL migration upgrades existing rows once.
+    assert.deepEqual((await call(front,'routing_get',{})).policy.providers.map((p:any) => p.kinds),old.providers.map(p => p.kinds));
     await pool.query(await readFile(new URL('../db/migrations/011_patch_routing.sql',import.meta.url),'utf8').then(sql => sql.split('UPDATE routing_policies').slice(1).map(x => 'UPDATE routing_policies'+x).join('\n')));
     const row = await pool.query('SELECT policy FROM routing_policies WHERE tenant_id=$1',[owner.tenantId]);
     assert.deepEqual(row.rows[0].policy.providers.map((p:any) => p.kinds),DEFAULT_POLICY.providers.map(p => p.kinds));
+  });
+
+  it('keeps an owner-removed patch kind: get round-trips, explicit submit and auto claim honour it', async () => {
+    const {owner,front,claude} = await fixture();
+    claude.permissions.push('task:patch');
+    const pol = policy(p => { entry(p,'claude').kinds = ['review','research']; });
+    await call(owner,'routing_set',{policy:pol});
+    assert.deepEqual((await call(front,'routing_get',{})).policy,pol);
+    await assert.rejects(() => call(front,'task_submit',{...submit('np1','patch','claude.patch'),objective:'Edit it.'}),code('kind_not_allowed'));
+    await call(front,'task_submit',{...submit('np2','patch','auto.patch'),objective:'Edit it.'});
+    const got = await call(claude,'task_claim',{scope:'project:a',capabilities:['claude.read','claude.patch','auto.read','auto.patch'],kinds:['patch']});
+    assert.equal(got.task,null);
+  });
+
+  describe('router decision binds bridge execution', () => {
+    const bridge = (w:Principal) => {
+      const calls:string[] = [];
+      const client:ToolClient = {call:async <T,>(name:string,args:Record<string,unknown>) => { calls.push(name); return await core.call(w,name,args) as T; }};
+      const cfg = parseBridgeConfig({service_url:'http://localhost:8080',
+        agents:[{id:'codex',provider:'codex',binary:'/bin/codex',sandbox:false},{id:'claude',provider:'claude',binary:'/bin/claude',sandbox:false}],
+        projects:[{scope:'project:a',root:'/projects/a',agents:['codex','claude']}]});
+      const ran:string[] = [];
+      const res = {exit_code:0,signal:null,stdout:'{"type":"turn.completed"}',stderr:'',duration_ms:1,stop_reason:null};
+      const worker = new BridgeWorker(cfg,client,() => {},async r => { ran.push(r.command); return res; },async () => []);
+      return {ran,run:() => worker.claimAndRun(cfg.projects[0]!,new AbortController().signal)};
+    };
+
+    it('never runs a disabled provider on auto.read', async () => {
+      const {owner,front,claude} = await fixture();
+      await call(owner,'routing_set',{policy:policy(p => { entry(p,'codex').enabled = false; })});
+      const t = (await call(front,'task_submit',submit('br1'))).task;
+      const b = bridge(claude);
+      assert.equal(await b.run(),true);
+      assert.deepEqual(b.ran,['/bin/claude']);
+      assert.equal((await call(front,'task_get',{task_id:t.id})).task.result.provider,'claude');
+    });
+
+    it('runs codex when claude is over its quota ceiling', async () => {
+      const {owner,front,claude} = await fixture();
+      await call(owner,'routing_set',{policy:policy(() => {})});
+      await call(claude,'usage_report',{reports:[report('claude',95,10).reports[0],report('codex',10,10).reports[0]]});
+      const t = (await call(front,'task_submit',submit('br2'))).task;
+      const b = bridge(claude);
+      assert.equal(await b.run(),true);
+      assert.deepEqual(b.ran,['/bin/codex']);
+      assert.equal((await call(front,'task_get',{task_id:t.id})).task.result.provider,'codex');
+    });
   });
 });

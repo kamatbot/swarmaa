@@ -92,7 +92,7 @@ test('usage readings are reported and steer auto.read to the agent with most hea
   const autoTask = {...task,required_capability:'auto.read'};
   const client: ToolClient = { async call<T>(name:string,args:Record<string,unknown>):Promise<T> {
     calls.push({name,args});
-    if(name==='task_claim') return {task:autoTask,lease_token:'lease-secret',lease_generation:1} as T;
+    if(name==='task_claim') return {task:autoTask,lease_token:'lease-secret',lease_generation:1,route:{provider:null,allowed:['claude','codex']}} as T;
     if(name==='context_get') return {scope:task.scope,task:autoTask,memories:[],conflicts:[]} as T;
     if(name==='artifact_put') return {artifact:{id:'22222222-2222-4222-8222-222222222222'}} as T;
     return {task:autoTask,accepted:2} as T;
@@ -115,4 +115,50 @@ test('usage readings are reported and steer auto.read to the agent with most hea
   await worker.claimAndRun(cfg.projects[0]!,signal);
   assert.equal(command,'/bin/codex');
   assert.ok((calls.find(c => c.name==='task_claim')!.args.capabilities as string[]).includes('auto.read'));
+});
+
+function routed(route:unknown,cap='auto.read') {
+  const calls:{name:string;args:Record<string,unknown>}[]=[];
+  const t={...task,required_capability:cap};
+  const client:ToolClient={async call<T>(name:string,args:Record<string,unknown>):Promise<T>{
+    calls.push({name,args});
+    if(name==='task_claim') return {task:t,lease_token:'lease-secret',lease_generation:1,...(route===undefined?{}:{route})} as T;
+    if(name==='context_get') return {scope:task.scope,task:t,memories:[],conflicts:[]} as T;
+    if(name==='artifact_put') return {artifact:{id:'22222222-2222-4222-8222-222222222222'}} as T;
+    return {task:t} as T;
+  }};
+  const cfg=parseBridgeConfig({service_url:'http://localhost:8080',
+    agents:[{id:'claude',provider:'claude',binary:'/bin/claude',sandbox:false},{id:'codex',provider:'codex',binary:'/bin/codex',sandbox:false}],
+    projects:[{scope:'project:demo',root:'/projects/demo',agents:['claude','codex']}]});
+  const ran:string[]=[];
+  const worker=new BridgeWorker(cfg,client,()=>{},async r=>{ran.push(r.command);return result;},async()=>[
+    {provider:'claude' as const,ok:true,windows:[{name:'5h',used_percent:1,resets_at:null}],fetched_at:new Date().toISOString()}]);
+  return {cfg,worker,ran,calls};
+}
+const go=async(x:ReturnType<typeof routed>)=>{await x.worker.reportUsage(new AbortController().signal);return x.worker.claimAndRun(x.cfg.projects[0]!,new AbortController().signal);};
+const finishOf=(x:ReturnType<typeof routed>)=>x.calls.find(c=>c.name==='task_finish')!.args;
+
+test('route.provider pins the agent even when another has more headroom',async()=>{
+  const x=routed({provider:'codex',allowed:['claude','codex']});
+  await go(x);
+  assert.deepEqual(x.ran,['/bin/codex']);
+  assert.equal((finishOf(x).result as Record<string,unknown>).provider,'codex');
+});
+
+test('route.allowed excludes a disabled provider from the headroom pick',async()=>{
+  const x=routed({provider:null,allowed:['codex']});
+  await go(x);
+  assert.deepEqual(x.ran,['/bin/codex']); // claude has far more headroom but is not allowed
+  const y=routed({provider:null,allowed:['claude']});
+  await go(y);
+  assert.deepEqual(y.ran,['/bin/claude']);
+});
+
+test('auto task without a route, or with a provider this bridge lacks, is finished blocked and never runs a provider',async()=>{
+  for(const route of [undefined,{provider:'antigravity',allowed:['antigravity']}]) {
+    const x=routed(route);
+    await go(x);
+    assert.deepEqual(x.ran,[]);
+    assert.equal(finishOf(x).outcome,'blocked');
+  }
 });

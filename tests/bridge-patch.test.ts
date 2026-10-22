@@ -35,7 +35,7 @@ async function scenario(opts: { repo: boolean; baseRef?: string }) {
     const calls: { name: string; args: Record<string, unknown> }[] = [];
     const client: ToolClient = { async call<T>(name: string, args: Record<string, unknown>): Promise<T> {
       calls.push({ name, args });
-      if (name === 'task_claim') return { task, lease_token: 'l', lease_generation: 1 } as T;
+      if (name === 'task_claim') return { task, lease_token: 'l', lease_generation: 1, route: { provider: null, allowed: ['codex'] } } as T;
       if (name === 'context_get') return { scope: task.scope, task, memories: [], conflicts: [] } as T;
       if (name === 'artifact_put') return { artifact: { id: `${calls.length}`.padStart(8, '0') + '-2222-4222-8222-222222222222' } } as T;
       return { task } as T;

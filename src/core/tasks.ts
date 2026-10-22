@@ -3,7 +3,7 @@ import type { Pool, PoolClient } from 'pg';
 import { transaction } from '../db.js';
 import { requireCondition } from '../errors.js';
 import { hasPermission } from '../policy.js';
-import type { Principal } from '../types.js';
+import { ARTIFACT_MAX_BYTES, type Principal } from '../types.js';
 import { enumValue, integer, optionalString, scopeName, string, strings, uuid } from '../validation.js';
 import { assertKnownScope, audit, canonicalJson, event, jsonObject, newId, noExtraKeys, requireFound, scopeLock, scopeSql, sha256, uuidArray, type Db } from './shared.js';
 import { decideAll, getPolicy, policyAllows, scopeUsage, type RoutingKind } from './routing.js';
@@ -365,7 +365,11 @@ export class TaskService {
         await db.query(`INSERT INTO task_runs (id,task_id,generation,worker_id,lease_hash,status)
           VALUES ($1,$2,$3,$4,$5,'running')`,[newId(),row.id,generation,p.id,hash]);
         await taskChanged(db,p,next,'claimed');
-        return {task:await taskWithInstructions(db,next),lease_token:token,lease_generation:generation};
+        // Bind the router's decision to execution: the bridge may only run what the policy allows for this kind.
+        const auto = row.required_capability === AUTO_READ || row.required_capability === AUTO_PATCH;
+        const d = auto ? decisions?.[row.kind as RoutingKind] : undefined;
+        const route = auto ? {provider:d?.provider ?? null,allowed:policy.providers.filter(x => x.enabled && (x.kinds as string[]).includes(row.kind)).map(x => x.provider)} : undefined;
+        return {task:await taskWithInstructions(db,next),lease_token:token,lease_generation:generation,...(route ? {route} : {})};
       }
       return {task:null};
     });
@@ -471,7 +475,7 @@ export class TaskService {
     requireCondition(typeof input.content === 'string' && !input.content.includes('\u0000'),400,'invalid_arguments','content must be a UTF-8 text string without NUL.');
     const content = input.content;
     const bytes = Buffer.byteLength(content,'utf8');
-    requireCondition(bytes<=262144,400,'artifact_too_large','Artifact exceeds 256 KiB in UTF-8.');
+    requireCondition(bytes<=ARTIFACT_MAX_BYTES,400,'artifact_too_large','Artifact exceeds 256 KiB in UTF-8.');
     const mediaType = input.media_type === undefined ? 'text/plain' : enumValue(input.media_type,'media_type',['text/plain','text/markdown','application/json','text/x-diff','application/x-patch'] as const);
     const hash = sha256(content);
     return transaction(this.pool,async db => {

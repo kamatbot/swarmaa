@@ -22,10 +22,16 @@ function validateClaim(claim: Claim, project: ProjectConfig, agents: AgentConfig
   if (task.scope !== project.scope || !['research', 'review', 'patch'].includes(task.kind) || typeof task.id !== 'string' || !claim.lease_token || !Number.isInteger(claim.lease_generation)) throw new Error('Invalid or misrouted task claim');
   const patch = task.kind === 'patch';
   const candidates = agents.filter(a => project.agents.includes(a.id) && (!patch || (project.allow_patch && a.enable_patch)));
-  const agent = task.required_capability === (patch ? AUTO_PATCH : AUTO_READ)
-    ? candidates.sort((a, b) => (headroom.get(b.provider) ?? 50) - (headroom.get(a.provider) ?? 50))[0]
+  const auto = task.required_capability === (patch ? AUTO_PATCH : AUTO_READ);
+  // The service's route binds execution; without it (older service) auto work fails closed.
+  if (auto && !claim.route) throw Object.assign(new Error('Service claim has no routing decision for auto work'), { code: 'route_unavailable' });
+  const route = claim.route;
+  const agent = auto
+    ? (route!.provider !== null
+      ? candidates.find(a => a.provider === route!.provider)
+      : candidates.filter(a => route!.allowed.includes(a.provider)).sort((a, b) => (headroom.get(b.provider) ?? 50) - (headroom.get(a.provider) ?? 50))[0])
     : candidates.find(a => task.required_capability === capability(a, patch));
-  if (!agent) throw new Error('Service returned a capability this worker did not advertise');
+  if (!agent) throw Object.assign(new Error('Service returned a capability this worker did not advertise'), { code: auto ? 'route_unavailable' : 'worker_operation_failed' });
   return { task, agent, lease: { task_id: task.id, lease_token: claim.lease_token, lease_generation: claim.lease_generation as number } };
 }
 
@@ -88,7 +94,18 @@ export class BridgeWorker {
       kinds: allowsPatch ? ['research', 'review', 'patch'] : ['research', 'review'],
       lease_seconds: this.config.lease_seconds
     }, signal);
-    const valid = validateClaim(claim, project, this.config.agents, this.headroom);
+    let valid: ReturnType<typeof validateClaim>;
+    try { valid = validateClaim(claim, project, this.config.agents, this.headroom); }
+    catch (error) {
+      // A routing mismatch is not retryable here: release the lease as blocked so the owner sees why, and run nothing.
+      if (errorCode(error) === 'route_unavailable' && claim.task && claim.lease_token) {
+        await this.client.call('task_finish', { task_id: claim.task.id, lease_token: claim.lease_token, lease_generation: claim.lease_generation, outcome: 'blocked', result: {
+          code: 'route_unavailable', review_required: true, acceptance_criteria_verified: false,
+          summary: 'Service routing decision is missing or names a provider this worker cannot run; nothing was executed.' } });
+        return true;
+      }
+      throw error;
+    }
     if (!valid) return false;
     await this.execute(valid.task, valid.lease, valid.agent, project, signal, claimStarted);
     return true;
@@ -102,6 +119,7 @@ export class BridgeWorker {
     let completionAttempted = false;
     let worktree: Worktree | undefined;
     let patchResult: PatchOutcome | undefined;
+    let finalizeFailure: { worktree_path: string; recovery: string } | undefined;
     let expiryTimer: ReturnType<typeof setTimeout> | undefined;
     let progress = { output_bytes: 0, stdout_tail: '' };
     const startedAt = new Date().toISOString();
@@ -169,21 +187,29 @@ export class BridgeWorker {
         // Whatever the provider did (even if aborted), commit it to the branch and drop the worktree.
         if (worktree) {
           try { patchResult = await finishWorktree(project.root, agent.provider, task, worktree, this.config.max_output_bytes); }
-          catch { this.logger('worktree_requires_review', { task_id: task.id, dir: worktree.dir }); }
+          catch {
+            // Finalization failed: the worktree stays on disk and the task must not read as completed.
+            this.logger('worktree_requires_review', { task_id: task.id, dir: worktree.dir });
+            finalizeFailure = { worktree_path: worktree.dir, recovery: `edits kept in ${worktree.dir} on branch ${worktree.branch}; commit or remove manually` };
+          }
         }
       }
       if (leaseLost) return;
       // A provider that stopped because the sandbox denied actions it needed did not finish the task.
       const denied = deniedActions(agent.provider, result.stdout);
-      const outcome = shutdown.aborted || denied.length ? 'blocked' : providerSucceeded(agent.provider, result) ? 'completed' : 'failed';
+      const outcome = finalizeFailure ? 'failed' : shutdown.aborted || denied.length ? 'blocked' : providerSucceeded(agent.provider, result) ? 'completed' : 'failed';
       await this.client.call('task_checkpoint', { ...lease, checkpoint: checkpoint('provider_finished') });
       const artifact = await this.client.call<{ artifact: { id: string } }>('artifact_put', {
         ...lease, name: `${agent.id}-transcript.txt`, media_type: 'text/plain',
         content: this.resultArtifact(agent, result)
       });
-      const diffArtifact = patchResult?.diff
-        ? await this.client.call<{ artifact: { id: string } }>('artifact_put', { ...lease, name: `${agent.id}-patch.diff`, media_type: 'text/x-diff', content: patchResult.diff })
-        : undefined;
+      let diffArtifact: { artifact: { id: string } } | undefined;
+      let diffArtifactError: string | undefined;
+      if (patchResult?.diff) {
+        // The commit already exists; a failed upload must not lose branch/base/head provenance.
+        try { diffArtifact = await this.client.call<{ artifact: { id: string } }>('artifact_put', { ...lease, name: `${agent.id}-patch.diff`, media_type: 'text/x-diff', content: patchResult.diff }); }
+        catch (error) { if (leaseLost) return; diffArtifactError = `${errorCode(error)}: ${error instanceof Error ? error.message.slice(0, 200) : ''}`; }
+      }
       if (leaseLost) return;
       // Stop concurrent heartbeats before the terminal update to avoid a harmless
       // post-completion heartbeat being mistaken for a lost lease. Renew once more
@@ -203,7 +229,7 @@ export class BridgeWorker {
           answer: cleanText(finalAnswer(agent.provider, result.stdout), 8 * 1024),
           ...(denied.length ? { denied_actions: denied, next_step: 'This worker cannot run those actions (read-only sandbox). Resubmit with a capability whose worker can, e.g. codex.read, or narrow the task.' } : {}),
           summary: outcome === 'completed' ? 'Provider completed. Review the transcript and acceptance criteria before integrating changes.' : 'Provider did not complete successfully. Review the transcript before continuing the task.',
-          ...(task.kind === 'patch' ? { commands_allowed: true, ...(patchResult ? { branch: patchResult.branch, base_ref: patchResult.base_ref, base_commit: patchResult.base_commit, head_commit: patchResult.head_commit, changed_files: patchResult.changed_files, diffstat: patchResult.diffstat } : {}) } : {}),
+          ...(task.kind === 'patch' ? { commands_allowed: true, ...(patchResult ? { branch: patchResult.branch, base_ref: patchResult.base_ref, base_commit: patchResult.base_commit, head_commit: patchResult.head_commit, changed_files: patchResult.changed_files, diffstat: patchResult.diffstat, ...(patchResult.continued ? { continued: true } : {}) } : {}), ...(diffArtifactError ? { diff_artifact_error: diffArtifactError } : {}), ...(finalizeFailure ?? {}) } : {}),
           tests_run_by_bridge: false
         }
       };

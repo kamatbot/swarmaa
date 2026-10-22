@@ -1,5 +1,8 @@
 import type { Pool } from 'pg';
 
+/** Largest artifact the service stores, in UTF-8 bytes. */
+export const ARTIFACT_MAX_BYTES = 262144;
+
 export type Role = 'admin' | 'frontend' | 'worker';
 export type Permission = 'admin' | 'memory:read' | 'memory:write' | 'memory:moderate' | 'task:read' | 'task:submit' | 'task:claim' | 'task:work' | 'task:patch' | 'task:cancel' | 'artifact:read' | 'artifact:write' | 'events:read' | 'lesson:review' | 'routing:manage';
 

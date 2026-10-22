@@ -1,15 +1,17 @@
 import { execFile } from 'node:child_process';
+import { existsSync, realpathSync } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
+import { ARTIFACT_MAX_BYTES } from '../types.js';
 import type { Task } from './types.js';
 
 const run = promisify(execFile);
 const fail = (code: string, message: string): Error => Object.assign(new Error(message), { code });
 
-export interface Worktree { dir: string; gitDir: string; branch: string; baseRef: string; baseCommit: string }
-export interface PatchOutcome { branch: string; base_ref: string; base_commit: string; head_commit: string | null; changed_files: number; diffstat: string; diff: string }
+export interface Worktree { dir: string; gitDir: string; branch: string; baseRef: string; baseCommit: string; continued: boolean }
+export interface PatchOutcome { branch: string; base_ref: string; base_commit: string; head_commit: string | null; changed_files: number; diffstat: string; diff: string; continued: boolean }
 
 async function git(cwd: string, args: string[], env?: NodeJS.ProcessEnv, maxBuffer = 64 * 1024 * 1024): Promise<string> {
   const { stdout } = await run('git', ['-C', cwd, ...args], { env: { ...process.env, ...env }, maxBuffer, encoding: 'utf8' });
@@ -44,9 +46,30 @@ export async function createWorktree(root: string, provider: string, task: Task)
   const branch = `swarma/${provider}/${task.id.slice(0, 8)}`;
   const dir = worktreeDir(task.scope, task.id);
   await mkdir(dirname(dir), { recursive: true });
+  // Attempt-aware: reuse a surviving worktree (keeps a crashed run's edits), else continue the retained branch, else branch fresh.
   // Branch from the resolved commit, not the ref name, so a moving ref cannot change what the diff is against.
-  await serialized(root, () => git(root, ['worktree', 'add', '-b', branch, dir, baseCommit]));
-  return { dir, gitDir, branch, baseRef, baseCommit };
+  return serialized(root, async () => {
+    await git(root, ['worktree', 'prune']);
+    const real = (d: string): string => { try { return realpathSync(d); } catch { return d; } };
+    const registered = (await git(root, ['worktree', 'list', '--porcelain'])).split('\n').some(l => l.startsWith('worktree ') && real(l.slice(9)) === real(dir));
+    const branchExists = await git(root, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`]).then(() => true, () => false);
+    if (existsSync(dir) && !registered) throw fail('worktree_dir_occupied', 'Worktree directory exists but is not a registered worktree of this repository');
+    if (registered || branchExists) {
+      if (!registered) await git(root, ['worktree', 'add', dir, branch]);
+      const base = (await git(root, ['merge-base', branch, baseCommit])).trim();
+      return { dir, gitDir, branch, baseRef, baseCommit: base, continued: true };
+    }
+    await git(root, ['worktree', 'add', '-b', branch, dir, baseCommit]);
+    return { dir, gitDir, branch, baseRef, baseCommit, continued: false };
+  });
+}
+
+/** Clip to maxBytes of UTF-8 without splitting a character. */
+function clipUtf8(text: string, maxBytes: number): string {
+  const buf = Buffer.from(text);
+  let end = Math.min(buf.length, maxBytes);
+  while (end > 0 && end < buf.length && (buf[end]! & 0xc0) === 0x80) end--;
+  return buf.subarray(0, end).toString('utf8');
 }
 
 /** Commits whatever the provider left, captures the diff, removes the worktree (branch kept). Never pushes. */
@@ -69,10 +92,15 @@ export async function finishWorktree(root: string, provider: string, task: Task,
         files = (await git(wt.dir, ['diff', '--name-only', range])).split('\n').filter(Boolean).length;
         stat = Buffer.from(await git(wt.dir, ['diff', '--stat', range])).subarray(0, 4096).toString('utf8');
         try { diff = await git(wt.dir, ['diff', range]); } catch { diff = '(diff too large to capture; see the branch)\n'; }
-        if (Buffer.byteLength(diff) > maxBytes) diff = Buffer.from(diff).subarray(0, maxBytes).toString('utf8') + `\n[diff truncated at ${maxBytes} bytes; full change is on branch ${wt.branch}]\n`;
+        // Content plus note must fit what the service will store, so the upload cannot fail on size.
+        const limit = Math.min(maxBytes, ARTIFACT_MAX_BYTES);
+        if (Buffer.byteLength(diff) > limit) {
+          const note = `\n[diff truncated at ${limit} bytes; full change is on branch ${wt.branch}]\n`;
+          diff = clipUtf8(diff, limit - Buffer.byteLength(note)) + note;
+        }
       }
       await git(root, ['worktree', 'remove', '--force', wt.dir]);
-      return { branch: wt.branch, base_ref: wt.baseRef, base_commit: wt.baseCommit, head_commit: unchanged ? null : head, changed_files: files, diffstat: stat, diff };
+      return { branch: wt.branch, base_ref: wt.baseRef, base_commit: wt.baseCommit, head_commit: unchanged ? null : head, changed_files: files, diffstat: stat, diff, continued: wt.continued };
     }
   });
 }
