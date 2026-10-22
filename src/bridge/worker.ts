@@ -65,37 +65,39 @@ export class BridgeWorker {
   }
 
   /**
-   * Runs `max_concurrent` independent claim loops, so one process works on up to that many tasks at
-   * once. Claims are atomic on the service, so loops never take the same task.
+   * One polling loop with `max_concurrent` slots: each pass asks every project for work once, and keeps
+   * claiming from a project while it has work and a slot is free. Claimed tasks run in the background, so a
+   * worker runs up to `max_concurrent` tasks at once without multiplying its requests to the service.
    */
   async run(signal: AbortSignal, once = false): Promise<void> {
-    if (once) return this.loop(signal, true, true);
-    await Promise.all(Array.from({ length: this.config.max_concurrent }, (_, i) => this.loop(signal, false, i === 0)));
-  }
-
-  /** Poll projects fairly; one loop owns at most one local task at a time. Only the first loop reports usage. */
-  private async loop(signal: AbortSignal, once: boolean, reportsUsage: boolean): Promise<void> {
+    let inflight = 0;
+    const running = new Set<Promise<unknown>>();
     while (!signal.aborted) {
       let claimedAny = false;
-      if (reportsUsage) await this.reportUsage(signal);
+      await this.reportUsage(signal);
       for (const project of this.config.projects) {
-        if (signal.aborted) return;
-        try {
-          const claimed = await this.claimAndRun(project, signal);
-          claimedAny ||= claimed;
-          if (once && claimed) return;
-        } catch (error) {
-          this.logger('bridge_poll_failed', { scope: project.scope, code: errorCode(error) });
+        while (!signal.aborted && inflight < this.config.max_concurrent) {
+          let claimed!: () => void;
+          const started = new Promise<boolean>(r => { claimed = () => r(true); });
+          inflight++;
+          const task = this.claimAndRun(project, signal, claimed)
+            .catch(error => { this.logger('bridge_poll_failed', { scope: project.scope, code: errorCode(error) }); return false; })
+            .finally(() => { inflight--; running.delete(task); });
+          running.add(task);
+          if (!(await Promise.race([started, task]))) break; // nothing to claim here
+          claimedAny = true;
+          if (once) { await task; return; }
         }
       }
       if (once) return;
       if (!claimedAny) {
-        try { await delay(this.config.poll_seconds * 1000, undefined, { signal }); } catch { return; }
+        try { await delay(this.config.poll_seconds * 1000, undefined, { signal }); } catch { break; }
       }
     }
+    await Promise.allSettled([...running]);
   }
 
-  async claimAndRun(project: ProjectConfig, signal: AbortSignal): Promise<boolean> {
+  async claimAndRun(project: ProjectConfig, signal: AbortSignal, onClaimed?: () => void): Promise<boolean> {
     const capabilities = projectCapabilities(project, this.config.agents);
     const allowsPatch = capabilities.some(c => c.endsWith('.patch'));
     const claimStarted = performance.now();
@@ -117,6 +119,7 @@ export class BridgeWorker {
       throw error;
     }
     if (!valid) return false;
+    onClaimed?.();
     await this.execute(valid.task, valid.lease, valid.agent, project, signal, claimStarted);
     return true;
   }

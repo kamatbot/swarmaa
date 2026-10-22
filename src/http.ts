@@ -260,9 +260,9 @@ export function createHttpHandler(dependencies: HttpDependencies): (request: Inc
       response.setHeader('Vary', 'Origin');
       response.setHeader('Access-Control-Expose-Headers', 'WWW-Authenticate, X-Request-Id');
     }
-    // Forwarded headers are intentionally ignored. Configure limits at your TLS
-    // proxy too; all users behind a proxy share its socket IP in this limiter.
-    limiter.accept(`ip:${remote}`, 600);
+    // Per-address limit for visitors (through the tunnel, keyed by their own address). Same-machine clients
+    // (bridges, the notch, stdio proxies) share 127.0.0.1, so they skip it; each identity keeps its own limit below.
+    if (!loopback) limiter.accept(`ip:${remote}`, 600);
     if (request.method === 'OPTIONS') {
       const requestedMethod = oneHeader(request, 'access-control-request-method');
       const requestedHeaders = oneHeader(request, 'access-control-request-headers')?.split(',').map(header => header.trim().toLowerCase()) ?? [];
