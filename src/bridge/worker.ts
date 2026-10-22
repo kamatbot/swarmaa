@@ -60,7 +60,7 @@ export class BridgeWorker {
       await this.client.call('usage_report', { reports: snapshots.map(s => ({ provider: s.provider, ok: s.ok, windows: s.windows, fetched_at: s.fetched_at,
         ...(s.plan ? { plan: s.plan.slice(0, 80) } : {}), ...(s.error ? { error: s.error.slice(0, 200) } : {}) })), slots: this.config.max_concurrent }, signal);
     } catch (error) {
-      this.logger('usage_report_failed', { code: errorCode(error) });
+      this.logger('usage_report_failed', { code: errorCode(error), message: String((error as Error)?.message ?? error).slice(0, 200) });
     }
   }
 
@@ -81,7 +81,7 @@ export class BridgeWorker {
           const started = new Promise<boolean>(r => { claimed = () => r(true); });
           inflight++;
           const task = this.claimAndRun(project, signal, claimed)
-            .catch(error => { this.logger('bridge_poll_failed', { scope: project.scope, code: errorCode(error) }); return false; })
+            .catch(error => { this.logger('bridge_poll_failed', { scope: project.scope, code: errorCode(error), message: String((error as Error)?.message ?? error).slice(0, 200) }); return false; })
             .finally(() => { inflight--; running.delete(task); });
           running.add(task);
           if (!(await Promise.race([started, task]))) break; // nothing to claim here
