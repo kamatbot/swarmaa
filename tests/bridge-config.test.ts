@@ -37,7 +37,7 @@ test('task text remains stdin data and cannot select executable, args, or cwd', 
   assert.ok(request.input.includes('$(touch /tmp/injected)'));
   assert.ok(!request.args.some(arg => arg.includes('$(touch')));
   assert.ok(request.args.includes('--restricted'));
-  assert.equal(request.args[request.args.indexOf('--tools') + 1], 'Read,Glob,Grep');
+  assert.equal(request.args[request.args.indexOf('--tools') + 1], 'Read,Glob,Grep,WebSearch,WebFetch');
   assert.ok(request.args.includes('mcp__*'));
   assert.throws(() => buildInvocation(config.agents[0]!, config.projects[0]!, {...task, scope:'project:other'}, {}, config, new AbortController().signal));
 });
@@ -77,7 +77,7 @@ test('auto.read runs as a read-only invocation and never as a patch', () => {
   const config = { ...parseBridgeConfig(input()), token_env: 'COLLECTIVE_WORKER_TOKEN' };
   const signal = new AbortController().signal;
   const auto = buildInvocation(config.agents[0]!, config.projects[0]!, { ...task, required_capability: 'auto.read' }, null, config, signal, {});
-  assert.ok(auto.args.includes('Read,Glob,Grep'));
+  assert.ok(auto.args.some((a: string) => a.startsWith('Read,Glob,Grep,WebSearch,WebFetch') && !a.includes('Edit')));
   assert.throws(() => buildInvocation(config.agents[0]!, config.projects[0]!, { ...task, kind: 'patch', required_capability: 'auto.read' }, null, config, signal, {}));
 });
 
@@ -163,14 +163,14 @@ test('patch argv per provider: cwd is the worktree; Bash/commands only when sand
   const off = all(false);
   const c0 = patchReq(off, 'claude');
   assert.equal(c0.r.cwd, '/wt/x');
-  assert.equal(c0.args[c0.args.indexOf('--tools') + 1], 'Read,Glob,Grep,Edit,Write');
-  assert.ok(!c0.args.includes('--allowedTools') && c0.args[c0.args.indexOf('--permission-mode') + 1] === 'acceptEdits');
+  assert.equal(c0.args[c0.args.indexOf('--tools') + 1], 'Read,Glob,Grep,WebSearch,WebFetch,Edit,Write');
+  assert.ok(c0.args[c0.args.indexOf('--allowedTools') + 1] === 'WebSearch,WebFetch' && c0.args[c0.args.indexOf('--permission-mode') + 1] === 'acceptEdits');
   const x0 = patchReq(off, 'codex');
   assert.equal(x0.args[x0.args.indexOf('--sandbox') + 1], 'workspace-write');
   const on = all(true);
   const c1 = patchReq(on, 'claude', 'auto.patch');
-  assert.equal(c1.args[c1.args.indexOf('--tools') + 1], 'Read,Glob,Grep,Edit,Write,Bash');
-  assert.equal(c1.args[c1.args.indexOf('--allowedTools') + 1], 'Bash');
+  assert.equal(c1.args[c1.args.indexOf('--tools') + 1], 'Read,Glob,Grep,WebSearch,WebFetch,Edit,Write,Bash');
+  assert.equal(c1.args[c1.args.indexOf('--allowedTools') + 1], 'WebSearch,WebFetch,Bash');
   assert.equal(patchReq(on, 'codex').args[patchReq(on, 'codex').args.indexOf('--sandbox') + 1], 'danger-full-access');
   const a = patchReq(on, 'antigravity');
   assert.ok(!a.args.includes('--mode'));
