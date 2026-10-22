@@ -214,9 +214,11 @@ export async function runSetup(plan: SetupPlan, opts: RunOpts): Promise<SetupSum
       if (m.status !== 0) die(`migrate failed:\n${tail(m)}`);
     }, true);
 
-    // Projects: demo sandbox + the real folders. project:general has no folder and is interactive-only.
+    // Projects: demo sandbox + the real folders. project:general runs in an empty folder (research only).
     const demo = join(root, '.local/demo-project');
+    const general = join(root, '.local/general');
     await step('projects', 'Project folders', async () => {
+      if (!existsSync(general)) mkdirp(general);
       if (!existsSync(demo)) { mkdirp(demo); put(join(demo, 'README.md'), '# Swarmaa demo project\n\nA scratch folder for trying the swarm without touching real code.\n', 0o644); }
       // Standalone git repo so edit tasks (worktrees) work in a packaged install; local identity via env, no global config touched.
       if (!existsSync(join(demo, '.git'))) {
@@ -275,7 +277,7 @@ export async function runSetup(plan: SetupPlan, opts: RunOpts): Promise<SetupSum
         if (hp.worker && WORKER_HARNESSES.includes(key)) {
           const tokenFile = join(root, `.local/worker-${key}.json`);
           if (!ensureIdentity(`worker-${key}`, 'worker', tokenFile, workerScopes, hp.edit)) throw new Error(`could not create or update worker-${key}`);
-          put(join(root, `.local/bridge-${key}.json`), `${JSON.stringify(bridgeConfig({ port, tokenFile, agent: { id: m.agent ?? key, provider: m.agent ?? key, binary: cli!, model: m.model }, projects, edit: hp.edit }), null, 2)}\n`);
+          put(join(root, `.local/bridge-${key}.json`), `${JSON.stringify(bridgeConfig({ port, tokenFile, agent: { id: m.agent ?? key, provider: m.agent ?? key, binary: cli!, model: m.model }, projects, edit: hp.edit, generalRoot: general }), null, 2)}\n`);
           summary.workers.push(key);
           if (hp.edit) summary.edits.push(key);
         }
@@ -429,7 +431,7 @@ export function printSummary(s: SetupSummary, say: (l?: string) => void): void {
   say(`  Hook apps (Kiro / Windsurf / Qwen): ${(s.hookApps ?? []).join(', ') || 'none'}`);
   say('  Scopes:');
   for (const p of s.projects) say(`    ${p.scope} -> ${p.root}`);
-  say('    project:general -> (no folder; interactive agents only)');
+  say('    project:general -> .local/general (research only, no codebase)');
   say(`  Service URL: ${s.serviceUrl}`);
   if (s.mcpUrl) say(`  Remote MCP URL (Grok / Dot): ${s.mcpUrl}`);
   for (const w of s.warnings) say(`  warning: ${w}`);

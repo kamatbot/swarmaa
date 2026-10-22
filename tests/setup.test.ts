@@ -102,10 +102,12 @@ test('validatePlan rejects unknown harnesses, bad folders, bad hostnames and jun
   assert.equal(validHostname('xn--bcher-kva.example'), 'xn--bcher-kva.example');
 });
 
-test('interactive identities get project:general, workers never do', () => {
+test('every identity gets project:general; workers run it read-only in an empty folder', () => {
   const projects = [{ scope: 'project:demo', root: '/d' }, { scope: 'project:app', root: '/a' }];
   assert.deepEqual(identityScopes('interactive', projects), ['project:demo', 'project:app', GENERAL_SCOPE]);
-  assert.deepEqual(identityScopes('worker', projects), ['project:demo', 'project:app']);
+  assert.deepEqual(identityScopes('worker', projects), ['project:demo', 'project:app', GENERAL_SCOPE]);
+  const c = bridgeConfig({ port: 1, tokenFile: '/t', agent: { id: 'claude', binary: '/b/claude' }, projects, edit: true, generalRoot: '/g' }) as any;
+  assert.deepEqual(c.projects.at(-1), { scope: GENERAL_SCOPE, root: '/g', agents: ['claude'], allow_patch: false });
   assert.equal(GENERAL_SCOPE, 'project:general');
 });
 
@@ -132,7 +134,7 @@ test('runSetup dry-run assigns scopes by identity kind and only plans', async ()
   const cmd = (name: string) => lines.find(l => l.includes('admin.ts') && l.includes(`--name ${name}`)) ?? '';
   for (const n of ['claude-interactive', 'codex-interactive', 'grok', 'dot']) assert.match(cmd(n), /--scopes \S*project:general\b/, n);
   assert.match(cmd('worker-claude'), /--role worker/);
-  assert.doesNotMatch(cmd('worker-claude'), /project:general/);
+  assert.match(cmd('worker-claude'), /project:general/);
   assert.match(cmd('worker-claude'), /project:demo,project:/);
   assert.match(text, /write .*setup\.json/);
   assert.match(text, /\[dry-run\]/);

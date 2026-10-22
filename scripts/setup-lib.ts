@@ -122,16 +122,20 @@ export interface BridgeConfigInput {
   projects: ScopeRoot[];
   /** Opt-in: sandboxed edits in git worktrees. Default read-only (research/review), which needs no task:patch grant. */
   edit?: boolean;
+  /** Empty folder that project:general (research with no codebase) runs in; omitted = no general project. */
+  generalRoot?: string;
 }
 
-export function bridgeConfig({ port, tokenFile, agent, projects, edit = false }: BridgeConfigInput): Record<string, unknown> {
+export function bridgeConfig({ port, tokenFile, agent, projects, edit = false, generalRoot }: BridgeConfigInput): Record<string, unknown> {
   return {
     service_url: `http://127.0.0.1:${port}`,
     token_file: tokenFile,
     poll_seconds: 3, lease_seconds: 120, heartbeat_seconds: 20, request_timeout_ms: 10000,
     task_timeout_seconds: 3600, max_output_bytes: 4194304, max_prompt_bytes: 131072,
     agents: [{ id: agent.id, provider: agent.provider ?? agent.id, binary: agent.binary, ...(agent.model ? { model: agent.model } : {}), enable_patch: edit, ...(agent.provider === 'antigravity' ? { sandbox: true } : {}) }],
-    projects: projects.map(p => ({ scope: p.scope, root: p.root, agents: [agent.id], allow_patch: edit })),
+    projects: [...projects.map(p => ({ scope: p.scope, root: p.root, agents: [agent.id], allow_patch: edit })),
+      // project:general has no codebase: read-only research/review only.
+      ...(generalRoot ? [{ scope: GENERAL_SCOPE, root: generalRoot, agents: [agent.id], allow_patch: false }] : [])],
     reason: null,
   };
 }
@@ -160,10 +164,9 @@ export interface SetupPlan {
 }
 export interface State { folders?: string[]; projects?: ScopeRoot[]; agents?: string[]; workers?: string[]; edits?: string[]; sharing?: string[]; capture?: boolean; hookApps?: string[]; autostart?: boolean; remote?: { hostname: string } }
 
-/** Interactive identities see every project plus project:general; workers never get project:general (it has no folder). */
-export function identityScopes(kind: 'interactive' | 'worker', projects: ScopeRoot[]): string[] {
-  const scopes = projects.map(p => p.scope);
-  return kind === 'interactive' ? [...scopes, GENERAL_SCOPE] : scopes;
+/** Every identity sees every project plus project:general; workers run general (research) tasks in an empty, read-only folder. */
+export function identityScopes(_kind: 'interactive' | 'worker', projects: ScopeRoot[]): string[] {
+  return [...projects.map(p => p.scope), GENERAL_SCOPE];
 }
 
 /** Contents of .local/setup.json; the chat-journal hooks read `projects`. */
