@@ -90,9 +90,11 @@ try {
     await emit({ id: principal.id, name: principal.name, scopes });
   } else if (command === 'grant' || command === 'revoke-grant') {
     // Reviewing lessons is never part of a role. The owner grants it to one named frontend identity.
-    const permission = enumValue<Permission>(values.permission, 'permission', GRANTABLE_PERMISSIONS);
+    const permission = enumValue<Permission>(values.permission, 'permission', [...GRANTABLE_PERMISSIONS, 'task:patch']);
     const principal = await lookupPrincipal();
-    requireCondition(principal.role === 'frontend', 400, 'invalid_grant', `${permission} can only be granted to frontend identities.`);
+    // task:patch lets an existing worker take edit tasks; every other grant is for frontends.
+    const role = permission === 'task:patch' ? 'worker' : 'frontend';
+    requireCondition(principal.role === role, 400, 'invalid_grant', `${permission} can only be granted to ${role} identities.`);
     requireCondition(command === 'revoke-grant' || !principal.disabled, 400, 'disabled', 'A revoked principal cannot be granted anything.');
     const permissions = await transaction(pool, async client => {
       const updated = await client.query<{ permissions: string[] }>(command === 'grant'
