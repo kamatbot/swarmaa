@@ -296,7 +296,9 @@ export function createHttpHandler(dependencies: HttpDependencies): (request: Inc
     inFlight++;
     void route(request, response).catch((error: unknown) => {
       const safe = publicError(error);
-      if (safe.status >= 500) console.error(JSON.stringify({ event: 'request_failed', requestId, code: safe.code }));
+      // The response promises the logs explain the failure; record the cause (bounded) next to the request ID.
+      if (safe.status >= 500) console.error(JSON.stringify({ event: 'request_failed', requestId, code: safe.code,
+        cause: error instanceof Error ? `${error.name}: ${error.message}`.slice(0, 300) : 'non-error thrown' }));
       if (response.headersSent || response.destroyed) { response.destroy(); return; }
       response.setHeader('Connection', 'close');
       if (safe.status === 429) response.setHeader('Retry-After', '60');

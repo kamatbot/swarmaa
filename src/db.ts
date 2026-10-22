@@ -5,6 +5,9 @@ export function createPool(connectionString: string): Pool {
   // Idle connections can fail between requests during a database restart. Avoid
   // an unhandled EventEmitter error, and never print connection credentials.
   pool.on('error', () => process.stderr.write('An idle database connection failed; the next request will reconnect.\n'));
+  // A connection that is checked out when the database restarts also emits 'error'.
+  // Its query already rejects, so swallowing the event keeps the process alive.
+  pool.on('connect', client => client.on('error', () => process.stderr.write('A database connection failed mid-request; the request returns an error and the next one reconnects.\n')));
   return pool;
 }
 
