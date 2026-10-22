@@ -20,7 +20,7 @@ describe('swarm usage routing and status', {skip:!connectionString,concurrency:f
     control = new pg.Pool({connectionString,max:2});
     await control.query(`CREATE SCHEMA "${schema}"`);
     pool = new pg.Pool({connectionString,max:8,options:`-c search_path=${schema},public`});
-    for (const file of ['001_identity.sql','002_core.sql','005_swarm.sql','006_sessions.sql','008_lessons.sql']) {
+    for (const file of ['001_identity.sql','002_core.sql','005_swarm.sql','006_sessions.sql','008_lessons.sql','010_routing_policy.sql']) {
       await pool.query(await readFile(new URL(`../db/migrations/${file}`,import.meta.url),'utf8'));
     }
     core = new CoreService(pool);
@@ -111,7 +111,7 @@ describe('swarm usage routing and status', {skip:!connectionString,concurrency:f
     await call(front,'session_record',{harness:'codex',session_id:'c-1',scope:'project:a',turns:[{role:'user',text:'Review auth'}]});
     const status = await call(front,'swarm_status',{});
     assert.equal(status.routing.recommended,'codex');
-    assert.match(status.routing.reason,/^codex has the most quota left \(90%\); claude 5h at 95%, resets /);
+    assert.match(status.routing.reason,/^claude: 5-hour window at 95% ≥ 90% limit → codex \(5-hour 10%, weekly 10%\)$/);
     assert.deepEqual(status.sessions.map((s:any) => [s.harness,s.title]),[['codex','Review auth']]);
   });
 });

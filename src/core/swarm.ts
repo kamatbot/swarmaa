@@ -3,6 +3,7 @@ import { requireCondition } from '../errors.js';
 import type { Principal } from '../types.js';
 import { object, optionalString, scopeName, string } from '../validation.js';
 import { LessonService } from './lessons.js';
+import { decideAll, getPolicy, type RoutingPolicy, type UsageRow } from './routing.js';
 import { SessionService } from './sessions.js';
 import { assertKnownScope, noExtraKeys, scopeSql, type Db } from './shared.js';
 
@@ -15,18 +16,6 @@ export function workerProviders(capabilities: string[]): string[] {
   return capabilities.filter(c => c.endsWith('.read') && c !== AUTO_READ).map(c => c.slice(0, -5));
 }
 
-/**
- * The provider that should take auto-routed work in a scope: fresh, healthy usage reported by a live
- * worker that serves the scope. Null means no usable data, so any auto-capable worker may claim.
- */
-export async function bestProvider(db: Db, tenantId: string, scope: string): Promise<string | null> {
-  const best = await db.query<{ provider: string }>(`SELECT u.provider FROM provider_usage u JOIN principals w ON w.id=u.reporter_id
-    WHERE u.tenant_id=$1 AND u.ok AND u.headroom>5 AND u.fetched_at>clock_timestamp()-interval '15 minutes'
-      AND NOT w.disabled AND w.last_seen_at>clock_timestamp()-interval '60 seconds' AND $2=ANY(w.scopes)
-    ORDER BY u.headroom DESC, u.provider LIMIT 1`, [tenantId, scope]);
-  return best.rows[0]?.provider ?? null;
-}
-
 export async function touchWorker(db: Db, p: Principal): Promise<void> {
   await db.query(`UPDATE principals SET last_seen_at=clock_timestamp() WHERE id=$1
     AND (last_seen_at IS NULL OR last_seen_at<clock_timestamp()-interval '10 seconds')`, [p.id]);
@@ -35,20 +24,14 @@ export async function touchWorker(db: Db, p: Principal): Promise<void> {
 interface Window { name: string; used_percent: number; resets_at: string | null }
 interface UsageView { provider: string; ok: boolean; headroom: number; windows?: Window[]; fetched_at: Date | string }
 
-/** Explains auto.read routing for people and front ends; the claim path applies the same rule per scope. */
-export function routing(usage: UsageView[], liveProviders: Set<string>, now = Date.now()) {
+/** Explains auto.read routing for people and front ends; the claim path applies the same decision per scope. */
+export function routing(usage: UsageView[], liveProviders: Set<string>, policy: RoutingPolicy, isDefault: boolean, now = Date.now()) {
   const providers = usage.map(u => ({ provider: u.provider, headroom: u.headroom, live_worker: liveProviders.has(u.provider), windows: u.windows ?? [],
     fresh: now - new Date(u.fetched_at).getTime() < 15 * 60e3, ok: u.ok }));
-  const best = providers.filter(x => x.ok && x.fresh && x.live_worker && x.headroom > 5)
-    .sort((a, b) => b.headroom - a.headroom || a.provider.localeCompare(b.provider))[0];
-  const tight = providers.filter(x => x.ok && x.headroom <= 25 && x.windows.length).map(x => {
-    const w = x.windows.reduce((a, b) => (b.used_percent > a.used_percent ? b : a));
-    return `${x.provider} ${w.name} at ${Math.round(w.used_percent)}%${w.resets_at ? `, resets ${w.resets_at}` : ''}`;
-  });
-  const reason = best
-    ? [`${best.provider} has the most quota left (${Math.round(best.headroom)}%)`, ...tight].join('; ')
-    : 'No fresh quota reading from a live worker; any live worker may take auto.read work.';
-  return { recommended: best?.provider ?? null, reason, providers: providers.map(({ fresh, ok, ...rest }) => ({ ...rest, ok, fresh })) };
+  const rows: UsageRow[] = providers.map(x => ({ provider: x.provider, ok: x.ok, headroom: x.headroom, windows: x.windows, fresh: x.fresh, live: x.live_worker }));
+  const by_kind = decideAll(policy, rows);
+  return { recommended: by_kind.review.provider, reason: by_kind.review.reason, policy, is_default: isDefault, by_kind,
+    providers: providers.map(({ fresh, ok, ...rest }) => ({ ...rest, ok, fresh })) };
 }
 
 function headroom(windows: { used_percent: number }[], ok: boolean): number {
@@ -106,7 +89,7 @@ export class SwarmService {
       assertKnownScope(p, scope);
       [all, scopes] = [false, [scope]];
     }
-    const [workers, usage, counts, recent, sessions, lessonsPending] = await Promise.all([
+    const [workers, usage, counts, recent, sessions, lessonsPending, policy] = await Promise.all([
       this.pool.query(`SELECT w.name,w.last_seen_at,coalesce(w.last_seen_at>clock_timestamp()-interval '60 seconds',false) AS live,
           (SELECT coalesce(json_agg(json_build_object('task_id',t.id,'scope',t.scope)),'[]') FROM tasks t
             WHERE t.lease_owner=w.id AND t.status='running' AND ($2::boolean OR t.scope=ANY($3::text[]))) AS running,
@@ -125,6 +108,7 @@ export class SwarmService {
         WHERE t.tenant_id=$1 AND ($2::boolean OR t.scope=ANY($3::text[])) ORDER BY t.updated_at DESC LIMIT 15`, [p.tenantId, all, scopes]),
       this.sessions.active(p, all, scopes),
       this.lessons.pending(p, all, scopes),
+      getPolicy(this.pool, p.tenantId),
     ]);
     const usageView: UsageView[] = usage.rows.map(r => ({ provider: r.provider, ok: r.ok, headroom: r.headroom, ...r.windows, fetched_at: r.fetched_at }));
     const live = new Set<string>(workers.rows.filter(w => w.live).flatMap(w => w.providers as string[]));
@@ -133,7 +117,7 @@ export class SwarmService {
     const byScope = new Map<string, Record<string, unknown>>(counts.rows.map(r => [r.scope as string, r]));
     if (!all) for (const scope of scopes) if (!byScope.has(scope)) byScope.set(scope, { scope, ...zero });
     return {
-      workers: workers.rows, usage: usageView, routing: routing(usageView, live), sessions,
+      workers: workers.rows, usage: usageView, routing: routing(usageView, live, policy.policy, policy.is_default), sessions,
       scopes: [...byScope.values()].sort((a, b) => String(a.scope).localeCompare(String(b.scope))),
       recent: recent.rows, lessons_pending: lessonsPending, generated_at: new Date().toISOString(),
     };

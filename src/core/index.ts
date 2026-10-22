@@ -8,6 +8,7 @@ import { LESSON_GUIDANCE, LessonService } from './lessons.js';
 import { booleanOption, MemoryService } from './memory.js';
 import { assertKnownScope, noExtraKeys } from './shared.js';
 import { SessionService } from './sessions.js';
+import { getPolicy, setPolicy } from './routing.js';
 import { SwarmService } from './swarm.js';
 import { findTask, TaskService, taskWithInstructions, type TaskRow } from './tasks.js';
 import { TOOL_PERMISSIONS, TOOLS } from './tools.js';
@@ -76,6 +77,8 @@ export class CoreService implements ToolBackend {
       case 'lesson_list': return this.lessons.list(principal,input);
       case 'lesson_review': return this.lessons.review(principal,input);
       case 'lesson_search': return this.lessons.search(principal,input);
+      case 'routing_get': noExtraKeys(input,[]); return getPolicy(this.pool,principal.tenantId);
+      case 'routing_set': noExtraKeys(input,['policy']); return transaction(this.pool,db => setPolicy(db,principal,input.policy));
       case 'swarm_status': return this.swarm.status(principal,input);
       case 'session_record': return this.sessions.record(principal,input);
       case 'session_list': return this.sessions.list(principal,input);

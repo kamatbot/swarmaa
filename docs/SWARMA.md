@@ -62,14 +62,28 @@ Removing a scope takes effect on the next request, including for OAuth-connected
 
 ## Routing work by remaining quota
 
-Workers report each provider's quota windows and reset times (`usage_report`, from `src/usage`,
-ported from NotchTrader). Submit read work with `required_capability: "auto.read"` and the service
-gives it to the live worker whose provider has the most headroom. Without fresh readings (older than
-15 minutes, or no live worker for the best provider) any auto-capable worker may take it, so work
-never stalls. Name an explicit capability (`claude.read`, `codex.read`) to pin a provider.
+Workers report each provider's quota windows (`5h`, `weekly`) and reset times (`usage_report`, from `src/usage`).
+Submit read work with `required_capability: "auto.read"` and the owner's **routing policy** decides, per task kind
+(`review`, `research`), who takes it: providers are walked in priority order and the first that is enabled, allows
+the kind, has a live worker for the scope, has a fresh reading (under 15 minutes) and is under both its
+`max_five_hour_pct` and `max_weekly_pct` wins. If none qualifies, `fallback: "most_headroom"` picks the allowed
+live provider with the most headroom, and `"none"` leaves auto.read tasks of that kind waiting. With no fresh
+readings at all, any enabled worker that allows the kind may claim, so work never stalls.
+
+Default policy (no saved row): claude, codex (review + research, 90% / 95% ceilings) then antigravity (review only, 95%).
+Antigravity cannot run commands or reach outside the project, so it never gets research. `routing_get` returns
+`{policy, is_default, default_policy, updated_at}`; `routing_set {policy}` replaces it and needs `routing:manage`:
+`npm run admin -- grant --name <frontend identity> --permission routing:manage` (`revoke-grant` removes it).
+Changes are audit-logged. Explicit capabilities obey the policy too: `<provider>.read` for a kind the provider
+does not take is rejected with `kind_not_allowed`, and a disabled provider with `provider_disabled`; queued
+work already pinned to such a provider is skipped by its worker.
+
+Rule for agents and front ends: prefer `auto.read`; use `antigravity.read` only for review tasks that need just
+the project's own files; anything needing commands, builds, cloning/fetching external repos or reading outside the
+project goes to `codex.read`/`claude.read`/`auto.read`. Check `swarm_status.routing.by_kind` before naming a provider.
 Patch tasks always name an explicit capability.
 
-`swarm_status` returns live workers, provider headroom with reset times, task counts per scope and
+`swarm_status` returns live workers, provider headroom with reset times, `routing` (`recommended`/`reason` for review, plus `policy`, `is_default`, `by_kind`), task counts per scope and
 recent tasks. `npm run usage` prints the local readings.
 
 ## Lessons

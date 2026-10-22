@@ -6,7 +6,8 @@ import { hasPermission } from '../policy.js';
 import type { Principal } from '../types.js';
 import { enumValue, integer, optionalString, scopeName, string, strings, uuid } from '../validation.js';
 import { assertKnownScope, audit, canonicalJson, event, jsonObject, newId, noExtraKeys, requireFound, scopeLock, scopeSql, sha256, uuidArray, type Db } from './shared.js';
-import { AUTO_READ, bestProvider, touchWorker, workerProviders } from './swarm.js';
+import { decideAll, getPolicy, policyAllows, scopeUsage, type RoutingKind } from './routing.js';
+import { AUTO_READ, touchWorker, workerProviders } from './swarm.js';
 
 export const TASK_KINDS = ['research','review','patch'] as const;
 export const TASK_STATUSES = ['queued','running','blocked','completed','failed','cancelled'] as const;
@@ -162,6 +163,15 @@ export class TaskService {
         requireCondition(existing.rows[0].request_hash === requestHash,409,'idempotency_conflict','This idempotency key was used for different task inputs.');
         return {task:await taskWithInstructions(db,existing.rows[0]),replayed:true};
       }
+      if (capability.endsWith('.read') && capability !== AUTO_READ && kind !== 'patch') {
+        const {policy} = await getPolicy(db,p.tenantId);
+        const provider = capability.slice(0,-5);
+        const entry = policy.providers.find(x => x.provider === provider);
+        requireCondition(!entry || entry.enabled,400,'provider_disabled',`${capability} is disabled by the owner's routing policy. Use auto.read or another provider.`);
+        requireCondition(policyAllows(policy,provider,kind),400,'kind_not_allowed',provider === 'antigravity'
+          ? 'Antigravity takes review tasks only (it cannot run commands or reach outside the project). Use auto.read or codex.read.'
+          : `${provider} does not take ${kind} tasks under the owner's routing policy. Use auto.read or another provider.`);
+      }
       await scopeLock(db,'tasks',p,scope);
       const count = await db.query<{count:string}>(`SELECT count(*)::text AS count FROM tasks
         WHERE tenant_id=$1 AND scope=$2 AND status IN ('queued','running','blocked')`,[p.tenantId,scope]);
@@ -269,12 +279,21 @@ export class TaskService {
     return transaction(this.pool,async db => {
       await scopeLock(db,'tasks',p,scope);
       await touchWorker(db,p);
-      // Auto-routed work goes to the live provider with most quota headroom; without fresh readings, to anyone.
-      let eligible = capabilities;
-      if (capabilities.includes(AUTO_READ)) {
-        const best = await bestProvider(db,p.tenantId,scope);
-        if (best && !workerProviders(capabilities).includes(best)) eligible = capabilities.filter(c => c !== AUTO_READ);
-      }
+      // The owner's routing policy decides, per kind, which provider takes auto.read work; explicit
+      // capabilities still obey the policy's enabled flag and allowed kinds.
+      const served = workerProviders(capabilities);
+      const {policy} = await getPolicy(db,p.tenantId);
+      const decisions = capabilities.includes(AUTO_READ) ? decideAll(policy,await scopeUsage(db,p.tenantId,scope)) : null;
+      const eligible = (row:TaskRow):boolean => {
+        if (row.kind === 'patch') return true;
+        if (row.required_capability === AUTO_READ) {
+          const d = decisions?.[row.kind as RoutingKind];
+          if (!d) return false;
+          if (d.anyone) return !served.length || served.some(s => policyAllows(policy,s,row.kind));
+          return d.provider !== null && served.includes(d.provider);
+        }
+        return !row.required_capability.endsWith('.read') || policyAllows(policy,row.required_capability.slice(0,-5),row.kind);
+      };
       // Sweep expired attempts before selection. No process-local retry state is needed after a restart.
       const expired = await db.query<TaskRow>(`SELECT * FROM tasks WHERE tenant_id=$1 AND scope=$2 AND status='running'
         AND lease_expires_at<=clock_timestamp() ORDER BY created_at,id FOR UPDATE`,[p.tenantId,scope]);
@@ -295,8 +314,9 @@ export class TaskService {
         AND attempt_count<max_attempts AND required_capability=ANY($3::text[]) AND kind=ANY($4::text[])
         AND (kind<>'patch' OR NOT EXISTS (SELECT 1 FROM task_resource_leases r WHERE r.tenant_id=tasks.tenant_id
           AND r.scope=tasks.scope AND r.resource_key=tasks.resource_key AND r.expires_at>clock_timestamp()))
-        ORDER BY created_at,id LIMIT 100 FOR UPDATE SKIP LOCKED`,[p.tenantId,scope,eligible,kinds]);
+        ORDER BY created_at,id LIMIT 100 FOR UPDATE SKIP LOCKED`,[p.tenantId,scope,capabilities,kinds]);
       for (const row of candidates.rows) {
+        if (!eligible(row)) continue;
         const generation = row.lease_generation+1;
         if (row.kind === 'patch') {
           const resource = await db.query(`INSERT INTO task_resource_leases

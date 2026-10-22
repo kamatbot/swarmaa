@@ -22,7 +22,7 @@ describe('core transactional invariants', {skip:!connectionString,concurrency:fa
     control = new pg.Pool({connectionString,max:2});
     await control.query(`CREATE SCHEMA "${schema}"`);
     pool = new pg.Pool({connectionString,max:8,options:`-c search_path=${schema},public`});
-    for (const file of ['001_identity.sql','002_core.sql','005_swarm.sql','006_sessions.sql','008_lessons.sql']) {
+    for (const file of ['001_identity.sql','002_core.sql','005_swarm.sql','006_sessions.sql','008_lessons.sql','010_routing_policy.sql']) {
       await pool.query(await readFile(new URL(`../db/migrations/${file}`,import.meta.url),'utf8'));
     }
     core = new CoreService(pool);
@@ -72,7 +72,8 @@ describe('core transactional invariants', {skip:!connectionString,concurrency:fa
     const f = await fixture();
     await rejects(f.front,'task_submit',{...submission(),required_capability:'gemini.read'},'unknown_capability');
     await rejects(f.front,'task_submit',{...submission(),kind:'patch',resource_key:'repo:x',required_capability:'antigravity.patch'},'unknown_capability');
-    await call(f.front,'task_submit',{...submission(),required_capability:'antigravity.read'});
+    await call(f.front,'task_submit',{...submission(),kind:'review',required_capability:'antigravity.read'});
+    await rejects(f.front,'task_submit',{...submission(),idempotency_key:'agy-research',required_capability:'antigravity.read'},'kind_not_allowed');
   });
 
   it('enforces permissions, roles, tenant and exact scope inside CoreService',async () => {
