@@ -372,3 +372,27 @@ test('drain deadline uses the shutdown abort path for running providers', { time
     assert.equal(events.filter(e => e === 'bridge_drain_deadline').length,1);
   } finally { stop.abort(); await run; }
 });
+
+test('credential-shaped provider output is redacted before it is stored as answer, transcript or checkpoint', async () => {
+  const secret = 'AbCdEfGhIjKlMnOpQrStUvWxYz0123456789';
+  const calls: {name:string;args:Record<string,unknown>}[] = [];
+  const client: ToolClient = { async call<T>(name:string,args:Record<string,unknown>):Promise<T> {
+    calls.push({name,args});
+    if(name==='task_claim') return {task,lease_token:'lease-secret',lease_generation:1} as T;
+    if(name==='context_get') return {scope:task.scope,task,memories:[],conflicts:[]} as T;
+    if(name==='artifact_put') return {artifact:{id:'22222222-2222-4222-8222-222222222222'}} as T;
+    return {task} as T;
+  } };
+  const leaked = `Found ghp_${secret} in .env and password=${secret}`;
+  const cfg = config(); cfg.heartbeat_seconds = 0.01;
+  const worker = new BridgeWorker(cfg,client,()=>{},async request => {
+    request.on_progress?.({output_bytes:leaked.length,stdout_tail:leaked});
+    await new Promise(r=>setTimeout(r,60));
+    return {...result,stdout:JSON.stringify({type:'result',subtype:'success',is_error:false,result:leaked}),stderr:`warning: ${leaked}`};
+  });
+  await worker.claimAndRun(cfg.projects[0]!,new AbortController().signal);
+  const stored = JSON.stringify(calls.filter(c => ['task_finish','artifact_put','task_checkpoint','session_record'].includes(c.name)).map(c => c.args));
+  assert.ok(calls.some(c => c.name==='task_finish'));
+  assert.ok(!stored.includes(secret), 'secret reached the service');
+  assert.match(String((calls.find(c=>c.name==='task_finish')!.args.result as Record<string,unknown>).answer), /Found ghp_/u);
+});

@@ -7,10 +7,19 @@ import { reasonNotify } from './reason.js';
 import { cleanupNative, finishNative, prepareNative, type NativeSession } from './native-session.js';
 import { createWorktree, finishWorktree, type PatchOutcome, type Worktree } from './worktree.js';
 import type { AgentConfig, BridgeConfig, BridgeLogger, Claim, Lease, ProcessResult, ProcessRunner, ProjectConfig, Task, ToolClient } from './types.js';
+import { redactSecrets } from '../safety/redact.js';
 
 function cleanText(value: string, maxBytes: number): string {
   // PostgreSQL text cannot contain NUL. Clip by UTF-8 bytes, not character count.
   return Buffer.from(value.replaceAll('\0', '\uFFFD'), 'utf8').subarray(0, maxBytes).toString('utf8');
+}
+/**
+ * Provider output on its way into the service (answers, transcripts, diffs, checkpoints, chats) loses credential-shaped
+ * text first: it is stored, readable by everyone with the scope and summarised to event sinks. Clipping with a margin
+ * before redacting bounds the scan; clipping again after means a secret is never cut in half before the redactor sees it.
+ */
+function untrusted(value: string, maxBytes: number): string {
+  return cleanText(redactSecrets(cleanText(value, maxBytes + 4096)), maxBytes);
 }
 function errorCode(error: unknown): string {
   if (error && typeof error === 'object' && 'code' in error && typeof error.code === 'string' && /^[a-z0-9_]+$/u.test(error.code)) return error.code;
@@ -201,7 +210,7 @@ export class BridgeWorker {
     armExpiry(claimStarted);
     const checkpoint = (phase: string): Record<string, unknown> => ({
       phase, agent: agent.id, provider: agent.provider, started_at: startedAt,
-      output_bytes: progress.output_bytes, partial_output: cleanText(progress.stdout_tail, 8192),
+      output_bytes: progress.output_bytes, partial_output: untrusted(progress.stdout_tail, 8192),
       partial_output_is_untrusted: true
     });
     const heartbeat = (async (): Promise<void> => {
@@ -267,7 +276,7 @@ export class BridgeWorker {
       let diffArtifactError: string | undefined;
       if (patchResult?.diff) {
         // The commit already exists; a failed upload must not lose branch/base/head provenance.
-        try { diffArtifact = await this.client.call<{ artifact: { id: string } }>('artifact_put', { ...lease, name: `${agent.id}-patch.diff`, media_type: 'text/x-diff', content: patchResult.diff }); }
+        try { diffArtifact = await this.client.call<{ artifact: { id: string } }>('artifact_put', { ...lease, name: `${agent.id}-patch.diff`, media_type: 'text/x-diff', content: untrusted(patchResult.diff, Buffer.byteLength(patchResult.diff)) }); }
         catch (error) { if (leaseLost) return; diffArtifactError = `${errorCode(error)}: ${error instanceof Error ? error.message.slice(0, 200) : ''}`; }
       }
       if (leaseLost) return;
@@ -286,7 +295,7 @@ export class BridgeWorker {
           exit_code: result.exit_code, stop_reason: result.stop_reason,
           duration_ms: result.duration_ms,
           // The agent's own answer, so callers can read it with task_get; untrusted provider output.
-          answer: cleanText(finalAnswer(agent.provider, result.stdout), 8 * 1024),
+          answer: untrusted(finalAnswer(agent.provider, result.stdout), 8 * 1024),
           ...(denied.length ? { denied_actions: denied, next_step: 'This worker cannot run those actions (read-only sandbox). Resubmit with a capability whose worker can, e.g. codex.read, or narrow the task.' } : {}),
           summary: outcome === 'completed' ? 'Provider completed. Review the transcript and acceptance criteria before integrating changes.' : 'Provider did not complete successfully. Review the transcript before continuing the task.',
           ...(task.kind === 'patch' ? { commands_allowed: true, ...(patchResult ? { branch: patchResult.branch, base_ref: patchResult.base_ref, base_commit: patchResult.base_commit, head_commit: patchResult.head_commit, changed_files: patchResult.changed_files, diffstat: patchResult.diffstat, ...(patchResult.continued ? { continued: true } : {}) } : {}), ...(diffArtifactError ? { diff_artifact_error: diffArtifactError } : {}), ...(finalizeFailure ?? {}) } : {}),
@@ -359,7 +368,7 @@ export class BridgeWorker {
     const header = JSON.stringify({ provider: agent.provider, agent: agent.id, exit_code: result.exit_code, stop_reason: result.stop_reason, duration_ms: result.duration_ms, acceptance_criteria_verified: false });
     // The final answer goes first: clipping keeps the start, and the answer is what readers need.
     const answer = finalAnswer(agent.provider, result.stdout);
-    return cleanText(`${header}\n\nANSWER (untrusted provider output)\n${answer || '(none)'}\n\nSTDOUT (untrusted provider output)\n${result.stdout}\n\nSTDERR (untrusted provider diagnostics)\n${result.stderr}`, 240 * 1024);
+    return untrusted(`${header}\n\nANSWER (untrusted provider output)\n${answer || '(none)'}\n\nSTDOUT (untrusted provider output)\n${result.stdout}\n\nSTDERR (untrusted provider diagnostics)\n${result.stderr}`, 240 * 1024);
   }
 
   private async notifyReason(taskId: string, outcome: string): Promise<void> {
