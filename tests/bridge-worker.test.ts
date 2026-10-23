@@ -429,7 +429,7 @@ test('credential-shaped provider output is redacted before it is stored as answe
     await new Promise(r=>setTimeout(r,60));
     return {...result,stdout:JSON.stringify({type:'result',subtype:'success',is_error:false,result:leaked}),stderr:`warning: ${leaked}`};
   });
-  await worker.claimAndRun(cfg.projects[0]!,new AbortController().signal);
+  await worker.claimAndRun(cfg.projects,new AbortController().signal);
   const stored = JSON.stringify(calls.filter(c => ['task_finish','artifact_put','task_checkpoint','session_record'].includes(c.name)).map(c => c.args));
   assert.ok(calls.some(c => c.name==='task_finish'));
   assert.ok(!stored.includes(secret), 'secret reached the service');
