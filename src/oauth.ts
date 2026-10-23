@@ -1,9 +1,10 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import type { Pool, PoolClient } from 'pg';
 import { transaction } from './db.js';
-import { principalFromRow } from './auth.js';
+import { hashToken, newToken, principalFromRow } from './auth.js';
 import { AppError } from './errors.js';
-import { escapeHtml, shell } from './passkey-ui.js';
+import { escapeHtml, INVITE_ONLY, shell } from './passkey-ui.js';
+import { ROLE_PERMISSIONS } from './policy.js';
 import type { AuthBackend, Principal, ServerConfig } from './types.js';
 
 const ACCESS_SECONDS = 3600;
@@ -27,7 +28,8 @@ export interface AuthorizationForm {
   redirectUri: string;
   principal?: Principal;
   /** Signed-in owner: connection identities that may be chosen, and the default pick. */
-  owner?: { identities: Identity[]; defaultId: string };
+  owner?: { identities: Identity[]; defaultId: string; createFirst?: boolean };
+  signupUrl?: string;
   /** Passkey sign-in state for a browser without an owner session. */
   passkey?: 'ready' | 'none' | 'unavailable';
   /** CSP nonce for the inline passkey script. */
@@ -47,6 +49,7 @@ interface PendingRow {
   csrf_hash: string;
   browser_hash: string;
   grant_snapshot: Principal | null;
+  owner_tenant: string | null;
 }
 
 function opaque(prefix: string): string {
@@ -266,8 +269,8 @@ export class OAuthService {
     const requestId = randomUUID();
     await this.pool.query('DELETE FROM oauth_pending WHERE expires_at <= now()');
     await this.pool.query(
-      'INSERT INTO oauth_pending(id,client_id,redirect_uri,state,challenge,resource,csrf_hash,browser_hash,expires_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,now()+make_interval(secs=>$9))',
-      [requestId, clientId, redirectUri, state ?? null, challenge, resource, tokenHash(csrf), tokenHash(browser), PENDING_SECONDS],
+      'INSERT INTO oauth_pending(id,client_id,redirect_uri,state,challenge,resource,csrf_hash,browser_hash,expires_at,owner_tenant) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,now()+make_interval(secs=>$9),$10)',
+      [requestId, clientId, redirectUri, state ?? null, challenge, resource, tokenHash(csrf), tokenHash(browser), PENDING_SECONDS, ownerTenant ?? null],
     );
     const form: AuthorizationForm = { kind: 'form', requestId, csrf, browserCookie: browser, clientName: registered.client_name, redirectUri };
     if (ownerTenant) {
@@ -276,6 +279,9 @@ export class OAuthService {
         [ownerTenant],
       );
       form.owner = { identities: rows.rows, defaultId: defaultIdentity(registered.client_name, rows.rows) };
+      if (!rows.rows.length && /^t_[0-9a-f]{32}$/u.test(ownerTenant)) {
+        form.owner.createFirst = !(await this.pool.query("SELECT 1 FROM principals WHERE tenant_id=$1 AND role='frontend' LIMIT 1", [ownerTenant])).rows.length;
+      }
     }
     return form;
   }
@@ -285,7 +291,8 @@ export class OAuthService {
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(requestId)) throw new OAuthError('invalid_request', 'Invalid authorization request.');
     const csrf = requiredParameter(form, 'csrf', 128);
     const action = requiredParameter(form, 'action', 32);
-    if (!['identify', 'identify_owner', 'approve', 'deny'].includes(action)) throw new OAuthError('invalid_request', 'Invalid authorization action.');
+    if (!['identify', 'identify_owner', 'create_first', 'approve', 'deny'].includes(action)) throw new OAuthError('invalid_request', 'Invalid authorization action.');
+    if (action === 'create_first' && (!ownerTenant || !/^t_[0-9a-f]{32}$/u.test(ownerTenant))) throw new OAuthError('access_denied', 'Sign in to your invited space first.', 403);
     if (!browserCookie || !/^[A-Za-z0-9_-]{43}$/u.test(browserCookie)) throw new OAuthError('invalid_request', 'Authorization browser cookie is missing.', 403);
     const browser = browserCookie;
     let identifyingPrincipal: Principal | null = null;
@@ -334,6 +341,7 @@ export class OAuthService {
       if (!pending || !equalHash(pending.csrf_hash, tokenHash(csrf)) || !equalHash(pending.browser_hash, tokenHash(browser))) {
         throw new OAuthError('invalid_request', 'Authorization request expired or verification failed.', 403);
       }
+      if (pending.owner_tenant && pending.owner_tenant !== ownerTenant) throw new OAuthError('access_denied', 'Sign in with the same owner passkey to approve.', 403);
       validateRedirectUri(pending.redirect_uri, this.config);
       if (action === 'deny') {
         await client.query('DELETE FROM oauth_pending WHERE id=$1', [requestId]);
@@ -343,11 +351,25 @@ export class OAuthService {
         // Connection tokens are checked but never stored or re-rendered.
         const principal = identifyingPrincipal!;
         const nextCsrf = randomBytes(32).toString('base64url');
-        await client.query('UPDATE oauth_pending SET grant_snapshot=$2::jsonb,csrf_hash=$3 WHERE id=$1', [requestId, JSON.stringify(principal), tokenHash(nextCsrf)]);
+        await client.query('UPDATE oauth_pending SET grant_snapshot=$2::jsonb,csrf_hash=$3,owner_tenant=$4 WHERE id=$1', [requestId, JSON.stringify(principal), tokenHash(nextCsrf), ownerChoice ? ownerTenant : pending.owner_tenant]);
         return { kind: 'form', requestId, csrf: nextCsrf, browserCookie: browser, clientName: pending.client_name, redirectUri: pending.redirect_uri, principal };
       }
-      if (!pending.grant_snapshot) throw new OAuthError('invalid_request', 'Identify the connection before approving.');
-      const principal = narrowGrant(pending.grant_snapshot, await this.auth.getPrincipal(pending.grant_snapshot.id));
+      let principal: Principal | null;
+      if (action === 'create_first') {
+        // Serialize first-identity creation across simultaneous approval tabs.
+        await client.query('SELECT pg_advisory_xact_lock(420315904,hashtext($1))', [ownerTenant]);
+        const existing = await client.query("SELECT 1 FROM principals WHERE tenant_id=$1 AND role='frontend' LIMIT 1", [ownerTenant]);
+        if (existing.rows.length) throw new OAuthError('access_denied', 'An app identity already exists. Reload and choose it.', 409);
+        const name = `${pending.client_name.toLowerCase().replace(/[^a-z0-9]+/gu, '-').slice(0, 70) || 'app'}-${randomBytes(6).toString('hex')}`;
+        const created = await client.query(
+          "INSERT INTO principals(id,tenant_id,name,role,scopes,permissions,token_hash) VALUES($1,$2,$3,'frontend',$4,$5,$6) RETURNING *",
+          [randomUUID(), ownerTenant, name, ['project:general'], ROLE_PERMISSIONS.frontend, hashToken(newToken())],
+        );
+        principal = principalFromRow(created.rows[0]);
+      } else {
+        if (!pending.grant_snapshot) throw new OAuthError('invalid_request', 'Identify the connection before approving.');
+        principal = narrowGrant(pending.grant_snapshot, await this.auth.getPrincipal(pending.grant_snapshot.id));
+      }
       if (!principal) throw new OAuthError('access_denied', 'This connection identity is no longer authorized.', 403);
       const code = opaque('cn_code');
       await client.query(
@@ -498,11 +520,13 @@ export function authorizationHtml(form: AuthorizationForm): string {
     const options = form.owner.identities.map(i => `<option value="${escapeHtml(i.id)}"${i.id === form.owner!.defaultId ? ' selected' : ''}>${escapeHtml(i.name)}${i.scopes ? ` · ${i.scopes.length} project${i.scopes.length === 1 ? '' : 's'}` : ''}</option>`).join('');
     fields = form.owner.identities.length
       ? `<p>Choose which connection identity this client gets. The next screen shows its exact projects and permissions.</p><label>Connection identity <select name="principal_id">${options}</select></label><button class="primary" name="action" value="identify_owner">Review permissions</button>`
-      : '<p>No enabled connection identity exists yet. Create one with <code>npm run admin -- create</code>.</p>';
+      : form.owner.createFirst
+        ? `<p>Create your first app identity and approve this connection.</p><div class="card"><p>Role: <strong>frontend</strong></p><p>Project: <strong>project:general</strong></p><p>Permissions: ${ROLE_PERMISSIONS.frontend.map(escapeHtml).join(', ')}</p></div><p>Authorization expires in at most 30 days.</p><button class="primary" name="action" value="create_first">Create identity and approve connection</button>`
+        : '<p>No enabled connection identity exists yet. Create one with <code>npm run admin -- create</code>.</p>';
   } else if (form.passkey === 'ready' || form.passkey === 'none') {
-    fields = `<div id="pk-msg" role="status"></div>${form.passkey === 'ready'
+    fields = `<p>${escapeHtml(INVITE_ONLY)}</p><div id="pk-msg" role="status"></div>${form.passkey === 'ready'
       ? '<button type="button" class="primary" data-pk="login" data-next="reload">Sign in with passkey</button>'
-      : '<p>No passkey exists yet. Run <code>npm run setup</code> to create one.</p>'}${tokenField(false)}`;
+      : ''}${form.signupUrl ? `<p><a href="${escapeHtml(form.signupUrl)}">Have an invite? Create your passkey</a></p>` : ''}${tokenField(false)}`;
   } else {
     fields = `<p>Enter the non-admin connection token your service owner issued for this client. The next screen shows the exact projects and permissions before you approve.</p><label>Connection token <input name="connection_token" type="password" autocomplete="off" spellcheck="false" required maxlength="4096"></label><button class="primary" name="action" value="identify">Review permissions</button>`;
   }

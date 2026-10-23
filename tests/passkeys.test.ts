@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { createServer, type Server } from 'node:http';
 import { test, type TestContext } from 'node:test';
+import { runInNewContext } from 'node:vm';
 import type { Pool } from 'pg';
 import { createHttpHandler } from '../src/http.js';
 import { authorizationHtml, defaultIdentity, type AuthorizationForm } from '../src/oauth.js';
@@ -55,7 +56,7 @@ test('consent page: signed-in owner picks an identity; signed-out gets passkey w
   assert.ok(ready.includes('Sign in with passkey') && ready.includes('Use a connection token instead'));
   assert.match(ready, /<script nonce="N0nce">/u);
   assert.ok(!/<script src|https?:\/\/cdn/u.test(ready));
-  assert.ok(authorizationHtml({ ...base, passkey: 'none' }).includes('npm run setup'));
+  assert.ok(authorizationHtml({ ...base, passkey: 'none' }).includes('hosted gateway is invite-only'));
   const fallback = authorizationHtml({ ...base, passkey: 'unavailable' });
   assert.ok(fallback.includes('connection_token') && !fallback.includes('Sign in with passkey'));
 });
@@ -71,6 +72,34 @@ test('account page states', () => {
   assert.ok(!single.includes('data-pk="remove"'), 'the last passkey has no Remove button');
   const two = accountHtml({ kind: 'owner', passkeys: [one, { ...one, id: 'y' }] }, 'n');
   assert.ok(two.includes('data-pk="remove"') && two.includes('Add another passkey') && two.includes('Sign out'));
+});
+
+test('first identity consent shows exact grants; worker output stays in text and does not reload', async () => {
+  const first = authorizationHtml({ ...base, owner: { identities: [], defaultId: '', createFirst: true } });
+  assert.ok(first.includes('value="create_first"') && first.includes('project:general') && first.includes('task:submit'));
+  assert.ok(!first.includes('connection_token') && !first.includes('task:claim'));
+  const html = accountHtml({ kind: 'owner', passkeys: [] }, 'nonce');
+  const code = /<script nonce="nonce">([\s\S]*?)<\/script>/u.exec(html)![1]!;
+  let click: (event: unknown) => Promise<void> = async () => {};
+  const result = { textContent: '' }, message = { textContent: '' };
+  const button = { dataset: { pk: 'worker' }, disabled: false };
+  let calls = 0;
+  runInNewContext(code, {
+    document: {
+      addEventListener: (_: string, handler: typeof click) => { click = handler; },
+      getElementById: (id: string) => id === 'worker-result' ? result : id === 'worker-name' ? { value: 'worker-mac' } : message,
+    },
+    fetch: async (path: string, request: { body: string; credentials: string; headers: Record<string, string> }) => {
+      calls++; assert.equal(path, '/account/workers'); assert.equal(request.credentials, 'same-origin');
+      assert.equal(request.headers['content-type'], 'application/json'); assert.deepEqual(JSON.parse(request.body), { name: 'worker-mac' });
+      return { ok: true, json: async () => ({ token: '<one-time-output>', bridge: { service_url: 'https://api.swarmaa.com' } }) };
+    },
+    location: { reload: () => assert.fail('token must remain visible'), assign: () => assert.fail('token must remain visible') },
+  });
+  await click({ target: { closest: () => button } });
+  assert.equal(calls, 1); assert.equal(button.disabled, true);
+  assert.ok(result.textContent.includes('<one-time-output>') && result.textContent.includes('COLLECTIVE_WORKER_TOKEN'));
+  assert.ok(result.textContent.includes('service_url') && result.textContent.includes('shown only once'));
 });
 
 const core: ToolBackend = { listTools: () => [], call: async () => ({}) };

@@ -20,7 +20,7 @@ test('client registration: expiry, per-IP limit, global cap', { skip: !process.e
   await admin.query(`CREATE SCHEMA ${schema}`);
   const pool = new pg.Pool({ connectionString, options: `-c search_path=${schema},public`, max: 4 });
   t.after(async () => { await pool.end(); await admin.query(`DROP SCHEMA ${schema} CASCADE`); await admin.end(); });
-  for (const m of ['001_identity.sql', '003_oauth.sql', '009_oauth_client_cleanup.sql']) await pool.query(await readFile(new URL(`../db/migrations/${m}`, import.meta.url), 'utf8'));
+  for (const m of ['001_identity.sql', '003_oauth.sql', '007_passkeys.sql', '009_oauth_client_cleanup.sql', '015_gateway_tenants.sql']) await pool.query(await readFile(new URL(`../db/migrations/${m}`, import.meta.url), 'utf8'));
   await pool.query("INSERT INTO principals(id,tenant_id,name,role,scopes,permissions,token_hash) VALUES($1,'t','p','frontend','{project:alpha}','{memory:read}','h')", [PRINCIPAL]);
   const service = new OAuthService(pool, { authenticate: async () => null, getPrincipal: async () => null } as AuthBackend, config);
   const register = (ip?: string) => service.registerClient({ client_name: 'c', redirect_uris: ['https://claude.ai/cb'] }, ip);

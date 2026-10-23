@@ -158,16 +158,21 @@ export function createHttpHandler(dependencies: HttpDependencies): (request: Inc
     limiter.accept(`passkey:${remote}`, 30);
     const owner = cookieValue(request, OWNER_COOKIE);
     if (request.method === 'GET' && path === '/account') {
+      const nextValues = url.searchParams.getAll('next');
+      const next = nextValues.length === 1 && nextValues[0]!.startsWith('/oauth/authorize?') && !/[\u0000-\u0020\\#]/u.test(nextValues[0]!) ? nextValues[0] : undefined;
       response.statusCode = passkeys.rp ? 200 : 409;
       const nonce = randomBytes(16).toString('base64url');
       let view: AccountView = { kind: 'unavailable' };
       if (passkeys.rp) {
-        if (await passkeys.session(owner)) view = { kind: 'owner', passkeys: await passkeys.list(owner) };
+        if (await passkeys.session(owner)) {
+          if (next) { response.statusCode = 303; response.setHeader('Location', next); response.end(); return; }
+          view = { kind: 'owner', passkeys: await passkeys.list(owner) };
+        }
         else {
           const codes = url.searchParams.getAll('code');
           const code = codes.length === 1 ? codes[0] : undefined;
           const usable = await passkeys.inviteUsable(code);
-          view = { kind: 'guest', hasPasskeys: await passkeys.hasPasskeys(), code: usable ? code : undefined, codeInvalid: codes.length > 0 && !usable };
+          view = { kind: 'guest', hasPasskeys: await passkeys.hasPasskeys(), code: usable ? code : undefined, codeInvalid: codes.length > 0 && !usable, next };
         }
       }
       response.setHeader('Content-Security-Policy', pageCsp(nonce, "'self'"));
@@ -175,7 +180,7 @@ export function createHttpHandler(dependencies: HttpDependencies): (request: Inc
       response.end(accountHtml(view, nonce));
       return;
     }
-    const routes = ['/account/logout', '/account/passkeys/delete', '/account/passkeys/register/options', '/account/passkeys/register/verify', '/account/passkeys/login/options', '/account/passkeys/login/verify'];
+    const routes = ['/account/logout', '/account/workers', '/account/passkeys/delete', '/account/passkeys/register/options', '/account/passkeys/register/verify', '/account/passkeys/login/options', '/account/passkeys/login/verify'];
     if (!routes.includes(path)) throw new AppError(404, 'not_found', 'Endpoint not found.');
     onlyMethod(request, response, ['POST']);
     if (!passkeys.rp) throw new AppError(409, 'passkeys_unavailable', 'Passkeys need the public HTTPS address.');
@@ -185,6 +190,17 @@ export function createHttpHandler(dependencies: HttpDependencies): (request: Inc
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new AppError(400, 'invalid_request', 'Invalid request.');
     const body = raw as Record<string, unknown>;
     const code = typeof body.code === 'string' ? body.code : undefined;
+    if (path === '/account/workers') {
+      if (Object.keys(body).some(key => key !== 'name')) throw new AppError(400, 'invalid_request', 'Only a worker name is accepted.');
+      limiter.accept(`worker:${remote}`, 5);
+      const worker = await passkeys.createWorker(owner, body.name);
+      json(response, 201, { ...worker, bridge: {
+        service_url: publicUrl.origin, token_env: 'COLLECTIVE_WORKER_TOKEN',
+        agents: [{ id: 'codex', provider: 'codex', binary: '/opt/homebrew/bin/codex', sandbox: true, enable_patch: false }],
+        projects: worker.scopes.map(scope => ({ scope, root: '/absolute/path/to/project', agents: ['codex'], allow_patch: false })),
+      } });
+      return;
+    }
     if (path === '/account/logout') {
       await passkeys.endSession(owner);
       response.setHeader('Set-Cookie', ownerCookie(null, secureCookies));
@@ -315,6 +331,12 @@ export function createHttpHandler(dependencies: HttpDependencies): (request: Inc
       const ownerTenant = (await passkeys.session(cookieValue(request, OWNER_COOKIE)))?.tenantId;
       if (request.method === 'GET') {
         const form = await oauth.beginAuthorize(url.searchParams, cookieValue(request, OAUTH_COOKIE), ownerTenant);
+        if (!ownerTenant) {
+          const signup = new URLSearchParams({ next: `${url.pathname}${url.search}` });
+          const codes = url.searchParams.getAll('code');
+          if (codes.length === 1) signup.set('code', codes[0]!);
+          form.signupUrl = `/account?${signup}`;
+        }
         const passkey = ownerTenant ? undefined : !passkeys.rp ? 'unavailable' : await passkeys.hasPasskeys() ? 'ready' : 'none';
         authorizationPage(response, form, secureCookies, passkey);
         return;

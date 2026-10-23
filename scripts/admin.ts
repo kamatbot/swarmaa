@@ -21,7 +21,7 @@ const { values, positionals } = parseArgs({
   },
 });
 const command = positionals[0];
-const commands = ['create', 'list', 'set-scopes', 'grant', 'revoke-grant', 'rotate', 'revoke', 'subscriptions', 'add-sink', 'remove-sink', 'passkey-invite'];
+const commands = ['create', 'list', 'set-scopes', 'grant', 'revoke-grant', 'rotate', 'revoke', 'subscriptions', 'add-sink', 'remove-sink', 'passkey-invite', 'gateway-invite'];
 requireCondition(positionals.length === 1 && commands.includes(command), 400, 'usage', `Usage: npm run admin -- ${commands.join('|')} [options]. See docs/OPERATIONS.md.`);
 const tenant = string(values.tenant, 'tenant', 100);
 requireCondition(/^[a-z0-9][a-z0-9_-]*$/.test(tenant), 400, 'invalid_tenant', 'Tenant must use lowercase letters, digits, underscore and hyphen.');
@@ -119,15 +119,16 @@ try {
       await client.query('INSERT INTO audit_log(id,tenant_id,actor_id,operation,subject_id,details) VALUES($1,$2,$3,$4,$5,$6::jsonb)', [randomUUID(), tenant, principal.id, `principal.${command}`, principal.id, JSON.stringify({ local_owner: true })]);
     });
     await emit({ id: principal.id, name: principal.name, action: command, ...(token ? { token } : {}) }, !!token);
-  } else if (command === 'passkey-invite') {
+  } else if (command === 'passkey-invite' || command === 'gateway-invite') {
     // A secret one-time link: shown once, stored only as a hash, never logged.
     const config = loadConfig();
     const passkeys = new PasskeyService(pool, config);
     requireCondition(!!passkeys.rp, 409, 'passkeys_unavailable', 'Passkeys need the public HTTPS address.');
     const minutes = Number(values.minutes);
     requireCondition(Number.isInteger(minutes) && minutes >= 1 && minutes <= 1440, 400, 'invalid_minutes', 'Use --minutes between 1 and 1440.');
-    const code = await passkeys.createInvite(minutes);
-    await emit({ url: `${config.publicUrl}/account?code=${code}`, expires_in_minutes: minutes }, true);
+    const gateway = command === 'gateway-invite' ? await passkeys.createGatewayInvite(minutes) : undefined;
+    const code = gateway?.code ?? await passkeys.createInvite(minutes);
+    await emit({ ...(gateway ? { code, tenant: gateway.tenantId } : {}), url: `${config.publicUrl}/account?code=${code}`, expires_in_minutes: minutes }, true);
   } else if (command === 'subscriptions') {
     const result = await pool.query('SELECT s.id,p.name AS owner,s.scope,s.name AS event,s.mode,s.active,s.expires_at FROM event_subscriptions s JOIN principals p ON p.id=s.principal_id WHERE s.tenant_id=$1 ORDER BY s.created_at', [tenant]);
     await emit(result.rows);
