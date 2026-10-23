@@ -1,9 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { EventEmitter } from 'node:events';
 import { collectUsage, headroom, _providers, _resetBackoff } from '../src/usage/index.js';
 import { fetchClaude, parseClaudeCreds, parseClaudeUsage, type ClaudeCreds } from '../src/usage/claude.js';
 import { fetchCodex, jwtExp, parseCodexAuth, parseCodexUsage } from '../src/usage/codex.js';
-import { discoverEndpoint, fetchAntigravity, parseAntigravityQuota, parsePorts } from '../src/usage/antigravity.js';
+import { discoverEndpoint, fetchAntigravity, parseAntigravityQuota, parsePorts, type AntigravityIO, type AntigravityProcess } from '../src/usage/antigravity.js';
 import { fetchGrok, parseGrokAuth, parseGrokCredits } from '../src/usage/grok.js';
 import { UsageError, type Ctx, type UsageSnapshot } from '../src/usage/types.js';
 
@@ -208,22 +210,199 @@ test('antigravity: direct Cloud Code per-model buckets fold into 4 windows; inva
 test('antigravity: discovery reads the CSRF token from the process table, prefers the IDE, finds the agy CLI, ignores lookalikes', async () => {
   const ports = async () => [63881, 63882];
   const ide = await discoverEndpoint('29283 /Applications/Antigravity.app/Contents/Resources/bin/language_server --standalone --csrf_token d4bd9204 --app_data_dir antigravity', async (pid) => (assert.equal(pid, 29283), [63881, 63882]));
-  assert.deepEqual(ide, { ports: [63881, 63882], csrf: 'd4bd9204' });
+  assert.deepEqual(ide, { ports: [63881, 63882], csrf: 'd4bd9204', pid: 29283 });
   assert.equal(await discoverEndpoint('1 /sbin/launchd', ports), null);
   assert.equal(await discoverEndpoint('1 language_server --csrf_token abc', async () => []), null);
-  assert.deepEqual(await discoverEndpoint('34221 agy', ports), { ports: [63881, 63882], csrf: undefined });
-  assert.deepEqual(await discoverEndpoint('700 /Users/someone/.local/bin/agy', ports), { ports: [63881, 63882], csrf: undefined });
+  assert.deepEqual(await discoverEndpoint('34221 agy', ports), { ports: [63881, 63882], csrf: undefined, pid: 34221 });
+  assert.deepEqual(await discoverEndpoint('700 /Users/someone/.local/bin/agy', ports), { ports: [63881, 63882], csrf: undefined, pid: 700 });
   assert.equal((await discoverEndpoint('29283 /x/language_server --csrf_token abc\n34221 agy', ports))?.csrf, 'abc');
   for (const c of ['/opt/legacy/bin/server', '/usr/bin/agyllomerate', 'imagy-daemon']) assert.equal(await discoverEndpoint(`500 ${c}`, ports), null, c);
   assert.deepEqual(parsePorts('language_server 29283 vinz 12u IPv4 0x1 0t0 TCP 127.0.0.1:63881 (LISTEN)\nlanguage_server 29283 vinz 13u IPv4 0x2 0t0 TCP 127.0.0.1:63882 (LISTEN)'), [63881, 63882]);
 });
 
-test('antigravity: not running is a safe error; the second port answers when the first does not', async () => {
-  await assert.rejects(fetchAntigravity(ctxWith(fetch), { endpoint: async () => null, post: async () => ({}) }), /Antigravity not running/);
+class FakeAntigravity extends EventEmitter implements AntigravityProcess {
+  exitCode: number | null = null;
+  signalCode: string | null = null;
+  signals: NodeJS.Signals[] = [];
+  constructor(readonly pid?: number) { super(); }
+  kill(signal: NodeJS.Signals) { this.signals.push(signal); this.signalCode = signal; this.emit('exit'); return true; }
+}
+
+function antigravityIO(overrides: Partial<AntigravityIO> = {}) {
+  const children: FakeAntigravity[] = [];
+  let psCalls = 0, portCalls = 0, elapsed = 0;
+  const io: AntigravityIO = {
+    ps: async () => { psCalls++; return ''; },
+    ports: async () => { portCalls++; return [1, 2]; },
+    binary: async () => '/Applications/Antigravity.app/Contents/Resources/bin/language_server',
+    spawn: () => {
+      assert.ok(children.every((c) => c.exitCode !== null || c.signalCode !== null), 'only one owned server may be alive');
+      const child = new FakeAntigravity(100 + children.length);
+      children.push(child);
+      return child;
+    },
+    sleep: async (ms) => { elapsed += ms; },
+    now: () => elapsed,
+    post: async () => AGY_REAL,
+    ...overrides,
+  };
+  return { io, children, calls: () => ({ ps: psCalls, ports: portCalls, elapsed }) };
+}
+
+test('antigravity: starts an owned server with the Swift flags and a fresh token; ports and authentication are retried', async (t) => {
+  let portCalls = 0, postCalls = 0, token = '';
+  const fake = antigravityIO({
+    ports: async () => ++portCalls < 3 ? [] : [1],
+    post: async (_port, csrf) => { assert.ok(csrf === token, 'RPC must use the generated token'); return ++postCalls < 3 ? {} : AGY_REAL; },
+  });
+  const spawn = fake.io.spawn;
+  fake.io.spawn = (binary, args, options) => {
+    assert.equal(binary, '/Applications/Antigravity.app/Contents/Resources/bin/language_server');
+    const tokenIndex = args.indexOf('--csrf_token') + 1;
+    token = args[tokenIndex]!;
+    assert.ok(/^[a-f0-9]{64}$/.test(token), 'token must be random hex');
+    assert.deepEqual(args.map((v, i) => i === tokenIndex ? '<redacted>' : v), [
+      '--standalone', '--override_ide_name', 'antigravity', '--subclient_type', 'hub',
+      '--override_user_agent_name', 'antigravity', '--https_server_port', '0', '--csrf_token', '<redacted>',
+      '--app_data_dir', 'swarmaa-bridge', '--api_server_url', 'https://generativelanguage.googleapis.com',
+      '--cloud_code_endpoint', 'https://daily-cloudcode-pa.googleapis.com',
+    ]);
+    assert.deepEqual(options, { detached: false, stdio: 'ignore' });
+    return spawn(binary, args, options);
+  };
+  t.after(() => fake.children.forEach((child) => child.kill('SIGTERM')));
+  assert.equal((await fetchAntigravity(ctxWith(fetch), fake.io)).windows.length, 2);
+  assert.equal(fake.children.length, 1);
+  assert.equal(portCalls, 5);
+  assert.equal(fake.calls().elapsed, 1_000);
+  await fetchAntigravity(ctxWith(fetch), fake.io);
+  assert.equal(fake.calls().ps, 1);
+  assert.equal(portCalls, 5, 'cached owned ports need no lsof');
+  assert.equal(fake.children.length, 1);
+});
+
+test('antigravity: IDE and CLI servers are preferred and cached without ps or lsof; the second port can answer', async () => {
+  for (const table of ['20 language_server --csrf_token test-token\n30 agy', '30 /usr/local/bin/agy']) {
+    const fake = antigravityIO();
+    let psCalls = 0;
+    fake.io.ps = async () => { psCalls++; return table; };
+    const tried: number[] = [];
+    fake.io.post = async (port, csrf) => {
+      assert.ok(csrf === (table.startsWith('20') ? 'test-token' : undefined));
+      tried.push(port);
+      if (port === 1) throw new Error('refused');
+      return AGY_REAL;
+    };
+    for (let i = 0; i < 2; i++) assert.equal((await fetchAntigravity(ctxWith(fetch), fake.io)).windows.length, 2);
+    assert.deepEqual(tried, [1, 2, 1, 2]);
+    assert.equal(psCalls, 1);
+    assert.equal(fake.calls().ports, 1);
+    assert.equal(fake.children.length, 0);
+  }
+});
+
+test('antigravity: failed cached external endpoint triggers rediscovery', async () => {
+  let pid = 20, psCalls = 0;
+  const fake = antigravityIO({ ps: async () => { psCalls++; return `${pid} agy`; }, ports: async (pid) => [pid] });
+  await fetchAntigravity(ctxWith(fetch), fake.io);
+  pid = 30;
   const tried: number[] = [];
-  const r = await fetchAntigravity(ctxWith(fetch), { endpoint: async () => ({ ports: [1, 2], csrf: 'c' }), post: async (port) => { tried.push(port); if (port === 1) throw new Error('refused'); return AGY_REAL; } });
-  assert.deepEqual(tried, [1, 2]);
-  assert.equal(r.windows.length, 2);
+  fake.io.post = async (port) => { tried.push(port); return port === 30 ? AGY_REAL : {}; };
+  assert.equal((await fetchAntigravity(ctxWith(fetch), fake.io)).windows.length, 2);
+  assert.deepEqual(tried, [20, 30]);
+  assert.equal(psCalls, 2);
+  assert.equal(fake.children.length, 0);
+});
+
+test('antigravity: a dead owned server is replaced on the next probe, with one server for overlapping probes', async (t) => {
+  const fake = antigravityIO();
+  const tokens = new Set<string>();
+  fake.io.post = async (_port, csrf) => { tokens.add(csrf!); return AGY_REAL; };
+  t.after(() => fake.children.forEach((child) => child.kill('SIGTERM')));
+  await Promise.all([fetchAntigravity(ctxWith(fetch), fake.io), fetchAntigravity(ctxWith(fetch), fake.io)]);
+  assert.equal(fake.children.length, 1);
+  fake.children[0]!.exitCode = 1;
+  fake.children[0]!.emit('exit');
+  await Promise.all([fetchAntigravity(ctxWith(fetch), fake.io), fetchAntigravity(ctxWith(fetch), fake.io)]);
+  assert.equal(fake.children.length, 2);
+  assert.equal(tokens.size, 2, 'replacement must use a fresh token');
+  assert.equal(fake.calls().ps, 2);
+});
+
+test('antigravity: an unresponsive owned server is stopped and replaced only on the next probe', async (t) => {
+  const fake = antigravityIO();
+  t.after(() => fake.children.forEach((child) => child.kill('SIGTERM')));
+  await fetchAntigravity(ctxWith(fetch), fake.io);
+  fake.io.post = async () => { throw new Error('unsafe server details'); };
+  await assert.rejects(fetchAntigravity(ctxWith(fetch), fake.io), (e: Error) => e instanceof UsageError && e.message === 'Antigravity quota unavailable');
+  assert.deepEqual(fake.children[0]!.signals, ['SIGTERM']);
+  assert.equal(fake.children.length, 1);
+  fake.io.post = async () => AGY_REAL;
+  await fetchAntigravity(ctxWith(fetch), fake.io);
+  assert.equal(fake.children.length, 2);
+});
+
+test('antigravity: replacement waits for termination, escalating when SIGTERM is ignored', async (t) => {
+  const fake = antigravityIO();
+  t.after(() => fake.children.forEach((child) => child.kill('SIGKILL')));
+  await fetchAntigravity(ctxWith(fetch), fake.io);
+  const first = fake.children[0]!;
+  first.kill = (signal) => {
+    first.signals.push(signal);
+    if (signal === 'SIGKILL') { first.signalCode = signal; first.emit('exit'); }
+    return true;
+  };
+  fake.io.post = async () => ({});
+  await assert.rejects(fetchAntigravity(ctxWith(fetch), fake.io), /Antigravity quota unavailable/);
+  assert.deepEqual(first.signals, ['SIGTERM', 'SIGKILL']);
+  assert.equal(fake.calls().elapsed, 1_000);
+  fake.io.post = async () => AGY_REAL;
+  await fetchAntigravity(ctxWith(fetch), fake.io);
+  assert.equal(fake.children.length, 2);
+});
+
+test('antigravity: no executable is not installed; spawn errors and unusable quota stay safe', async () => {
+  const missing = antigravityIO({ binary: async () => null });
+  await assert.rejects(fetchAntigravity(ctxWith(fetch), missing.io), (e: Error) => e instanceof UsageError && e.message === 'Antigravity is not installed');
+  assert.equal(missing.children.length, 0);
+  const failed = antigravityIO({ spawn: () => { throw new Error('unsafe command line'); } });
+  await assert.rejects(fetchAntigravity(ctxWith(fetch), failed.io), (e: Error) => e instanceof UsageError && e.message === 'Antigravity quota unavailable');
+  const empty = antigravityIO({ post: async () => ({}) });
+  await assert.rejects(fetchAntigravity(ctxWith(fetch), empty.io), /Antigravity quota unavailable/);
+  assert.equal(empty.calls().elapsed, 10_000);
+  assert.deepEqual(empty.children[0]!.signals, ['SIGTERM']);
+  const unbound = antigravityIO({ ports: async () => [] });
+  await assert.rejects(fetchAntigravity(ctxWith(fetch), unbound.io), /Antigravity quota unavailable/);
+  assert.equal(unbound.calls().elapsed, 10_000);
+  assert.deepEqual(unbound.children[0]!.signals, ['SIGTERM']);
+});
+
+test('antigravity: async spawn failure is handled without leaking its error', async () => {
+  const child = new FakeAntigravity();
+  const fake = antigravityIO({ spawn: () => { queueMicrotask(() => child.emit('error', new Error('unsafe spawn details'))); return child; } });
+  await assert.rejects(fetchAntigravity(ctxWith(fetch), fake.io), (e: Error) => e instanceof UsageError && e.message === 'Antigravity quota unavailable');
+  assert.equal(fake.calls().ports, 0);
+});
+
+test('antigravity: exit and signals stop owned children without interrupting existing shutdown handlers', () => {
+  const script = `
+    import { EventEmitter } from 'node:events';
+    import { setTimeout as sleep } from 'node:timers/promises';
+    import { fetchAntigravity } from './src/usage/antigravity.ts';
+    const signal = process.argv[2];
+    if (signal !== 'exit') process.once(signal, () => setTimeout(() => console.log('shutdown'), 10));
+    const child = Object.assign(new EventEmitter(), { pid: 100, exitCode: null, signalCode: null,
+      kill(signal) { this.signalCode = signal; this.emit('exit'); console.log('stopped'); return true; } });
+    await fetchAntigravity({ fetcher: fetch, now: () => new Date() }, {
+      ps: async () => '', ports: async () => [1], binary: async () => 'fake', spawn: () => child,
+      now: Date.now, sleep, post: async () => ({ buckets: [{ name: 'session', used: 1, limit: 2 }] }),
+    });
+    if (signal !== 'exit') { process.kill(process.pid, signal); await sleep(30); }
+  `;
+  for (const signal of ['exit', 'SIGTERM', 'SIGINT']) {
+    const output = execFileSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-', signal], { input: script, encoding: 'utf8', timeout: 20_000 });
+    assert.equal(output, signal === 'exit' ? 'stopped\n' : 'stopped\nshutdown\n');
+  }
 });
 
 // ---- collectUsage: never throws, safe errors, 429 backoff ----
