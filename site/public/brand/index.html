@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Swarmaa logo</title>
+<link rel="icon" href="swarmaa-mark.svg">
+<style>
+@font-face{font-family:"Stardos Stencil";src:url(../fonts/stardos-stencil-700.woff2) format("woff2");font-weight:700;font-display:swap}
+@font-face{font-family:"IBM Plex Mono";src:url(../fonts/ibm-plex-mono-500.woff2) format("woff2");font-weight:500;font-display:swap}
+:root{--ink:#15111F;--paper:#F4EFE6;--flame:#FF5A3C;--lime:#D4FF3A;--on-ink:#CFC6E8}
+*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font-family:"IBM Plex Mono",ui-monospace,monospace}
+main{max-width:1040px;margin:0 auto;padding:clamp(16px,4vw,56px);display:grid;gap:20px}
+.tile{border:3px solid var(--ink);border-radius:20px;display:flex;align-items:center;justify-content:center;gap:clamp(12px,3vw,28px);padding:clamp(24px,6vw,64px);flex-wrap:wrap}
+.ink{background:var(--ink);color:var(--paper)}.flame{background:var(--flame)}
+.word{font:700 clamp(48px,11vw,112px)/.9 "Stardos Stencil",serif;letter-spacing:-.02em}
+.word b{color:var(--flame)}.ink .word b{color:var(--lime)}.flame .word b{color:var(--paper)}
+.tag{display:block;font-size:clamp(12px,2.4vw,16px);letter-spacing:.08em;text-transform:uppercase;margin-top:.6em;opacity:.75}
+.row{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:20px}
+.row .tile{flex-direction:column;padding:28px}.row small{opacity:.7}
+img{display:block}
+</style></head><body><main>
+<div class="tile"><img src="swarmaa-mark.svg" width="200" height="200" alt=""><div><span class="word">swarm<b>aa</b></span><span class="tag">a swarm for your AI agents</span></div></div>
+<div class="tile ink"><img src="swarmaa-mark.svg" width="160" height="160" alt=""><div><span class="word">swarm<b>aa</b></span><span class="tag">agents, stacked &amp; spinning</span></div></div>
+<div class="row">
+  <div class="tile"><img src="swarmaa-mark.svg" width="96" height="96" alt=""><small>96px</small></div>
+  <div class="tile ink"><img src="swarmaa-mark.svg" width="48" height="48" alt=""><small>48px</small></div>
+  <div class="tile flame"><img src="swarmaa-mark.svg" width="32" height="32" alt=""><small>32px</small></div>
+</div>
+</main></body></html>
