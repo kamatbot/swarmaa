@@ -104,6 +104,12 @@ describe('swarm usage routing and status', {skip:!connectionString,concurrency:f
     const claim = await call(claude,'task_claim',{scope:'project:a',capabilities:['claude.read','auto.read']});
     const running = (await call(front,'swarm_status',{})).workers.find((w:any) => w.name === 'worker-claude').running[0];
     assert.deepEqual([running.task_id,running.kind,running.objective,running.required_capability,typeof running.started_at],[task.id,task.kind,task.objective.slice(0,140),task.required_capability,'string']);
+    // The bridge checkpoints after every heartbeat, bumping updated_at; started_at stays the attempt's start.
+    await new Promise(r => setTimeout(r,50));
+    await call(claude,'task_checkpoint',{task_id:task.id,lease_token:claim.lease_token,lease_generation:claim.lease_generation,checkpoint:{phase:'running'}});
+    const after = (await call(front,'swarm_status',{})).workers.find((w:any) => w.name === 'worker-claude').running[0];
+    assert.equal(after.started_at,running.started_at);
+    assert.ok(Date.parse((await call(front,'task_get',{task_id:task.id})).task.updated_at) > Date.parse(running.started_at));
     await call(claude,'task_finish',{task_id:task.id,lease_token:claim.lease_token,lease_generation:claim.lease_generation,outcome:'completed',result:{provider:'claude',branch:'swarma/claude/abc12345',changed_files:2}});
     const recent = (await call(front,'swarm_status',{})).recent.find((r:any) => r.id === task.id);
     assert.deepEqual([recent.provider,recent.branch,recent.changed_files],['claude','swarma/claude/abc12345',2]);
