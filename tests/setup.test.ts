@@ -1,13 +1,16 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { request } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 import { parseBridgeConfig } from '../src/bridge/config.js';
 import { projectCapabilities } from '../src/bridge/adapters.js';
 import { createOnboarding, runSetup, type Detected, type SetupSummary } from '../scripts/setup.js';
-import { AGY_TOOLS, GENERAL_SCOPE, PlanError, WORKER_HARNESSES, bridgeConfig, identityScopes, mergeAgyPermissions, parseEnv, plist, slugScopes, stateFile, validHostname, validatePlan, yes } from '../scripts/setup-lib.js';
+import { AGY_TOOLS, DEFAULT_HOSTNAME, GENERAL_SCOPE, PlanError, WORKER_HARNESSES, bridgeConfig, identityScopes, mergeAgyPermissions, parseEnv, plist, slugScopes, stateFile, validHostname, validatePlan, yes } from '../scripts/setup-lib.js';
+import { setupTunnel, validHostname as validTunnelHostname } from '../scripts/tunnel.js';
 
 test('slugScopes normalizes basenames and suffixes collisions', () => {
   assert.deepEqual(slugScopes(['/a/My App!', '/b/my-app', '/c/My App!', '/a/My App!', '/d/Demo']).map(s => s.scope),
@@ -71,14 +74,16 @@ const dir = realpathSync(mkdtempSync(join(tmpdir(), 'swarmaa-setup-')));
 const okPlan = () => ({ harnesses: { claude: { connect: true, worker: true } }, folders: [dir], autostart: true });
 const rejects = (input: unknown, re: RegExp) => assert.throws(() => validatePlan(input), (e: unknown) => e instanceof PlanError && re.test(e.message));
 
-test('validatePlan accepts a good plan and fills defaults', () => {
-  const p = validatePlan({ ...okPlan(), harnesses: { claude: { connect: true, worker: true }, agy: { connect: true }, grok: { connect: true }, codex: { connect: false, worker: true } }, remote: { hostname: ' API.Example.com ' } });
+test('validatePlan defaults to local-only and accepts a user-owned remote domain', () => {
+  assert.equal(DEFAULT_HOSTNAME, '');
+  assert.equal(validatePlan(okPlan()).remote, undefined);
+  const p = validatePlan({ ...okPlan(), harnesses: { claude: { connect: true, worker: true }, agy: { connect: true }, grok: { connect: true }, codex: { connect: false, worker: true } }, remote: { hostname: ' SWARM.Example.com ' } });
   assert.deepEqual(p.folders, [dir]);
   assert.deepEqual(p.harnesses.claude, { connect: true, worker: true, edit: false, share: true });
   assert.deepEqual(p.harnesses.agy, { connect: true, worker: false, edit: false, share: true });
   assert.deepEqual(p.harnesses.grok, { connect: true, worker: false, edit: false, share: false });
   assert.deepEqual(p.harnesses.codex, { connect: false, worker: false, edit: false, share: false });
-  assert.deepEqual(p.remote, { hostname: 'api.example.com' });
+  assert.deepEqual(p.remote, { hostname: 'swarm.example.com' });
   assert.deepEqual(validatePlan({ ...okPlan(), folders: [dir, dir] }).folders, [dir]);
 });
 
@@ -98,7 +103,7 @@ test('validatePlan rejects unknown harnesses, bad folders, bad hostnames and jun
   rejects({ ...okPlan(), extra: 1 }, /unknown field/);
   rejects(null, /object/);
   rejects([], /object/);
-  assert.equal(validHostname('api.swarmaa.com'), 'api.swarmaa.com');
+  assert.equal(validHostname('swarm.example.com'), 'swarm.example.com');
   assert.equal(validHostname('xn--bcher-kva.example'), 'xn--bcher-kva.example');
 });
 
@@ -113,7 +118,7 @@ test('every identity gets project:general; workers run it read-only in an empty 
 
 test('setup.json carries projects as [{scope, root}] including project:demo', () => {
   const projects = [{ scope: 'project:demo', root: '/d' }, ...slugScopes(['/x/App'], ['demo'])];
-  const s = stateFile({ folders: ['/x/App'], projects, agents: ['claude'], workers: [], sharing: ['claude'], autostart: true, remote: { hostname: 'api.swarmaa.com' } });
+  const s = stateFile({ folders: ['/x/App'], projects, agents: ['claude'], workers: [], sharing: ['claude'], autostart: true, remote: { hostname: 'swarm.example.com' } });
   assert.deepEqual(s.projects, [{ scope: 'project:demo', root: '/d' }, { scope: 'project:app', root: '/x/App' }]);
   assert.deepEqual(s.folders, ['/x/App']);
   assert.deepEqual(s.sharing, ['claude']);
@@ -129,29 +134,87 @@ test('runSetup dry-run assigns scopes by identity kind and only plans', async ()
   const s = await runSetup(plan, { dry: true, log: l => lines.push(l), root, detected: fakeDetected() });
   const text = lines.join('\n');
   assert.equal(s.ok, true, String(s.error));
-  assert.deepEqual(s.agents, ['claude', 'codex', 'grok', 'dot']);
+  assert.deepEqual(s.agents, ['claude', 'codex']);
   assert.deepEqual(s.workers, ['claude']);
   const cmd = (name: string) => lines.find(l => l.includes('admin.ts') && l.includes(`--name ${name}`)) ?? '';
-  for (const n of ['claude-interactive', 'codex-interactive', 'grok', 'dot']) assert.match(cmd(n), /--scopes \S*project:general\b/, n);
+  for (const n of ['claude-interactive', 'codex-interactive']) assert.match(cmd(n), /--scopes \S*project:general\b/, n);
+  for (const n of ['grok', 'dot']) {
+    assert.equal(cmd(n), '');
+    assert.equal(s.steps.find(x => x.id === `svc:${n}`)?.status, 'skipped');
+  }
   assert.match(cmd('worker-claude'), /--role worker/);
   assert.match(cmd('worker-claude'), /project:general/);
   assert.match(cmd('worker-claude'), /project:demo,project:/);
   assert.match(text, /write .*setup\.json/);
   assert.match(text, /\[dry-run\]/);
   assert.deepEqual(s.projects.map(p => p.scope)[0], 'project:demo');
-  assert.ok(s.nextSteps.some(n => /Grok/.test(n) && /clients\/grok\/README\.md/.test(n)));
+  assert.ok(s.nextSteps.some(n => /Grok and Dot/.test(n) && /re-run npm run setup/.test(n)));
+  assert.ok(!s.steps.some(x => x.id === 'remote'));
+  assert.doesNotMatch(text, /cloudflared|https:\/\//);
+  assert.match(text, /The hosted gateway at swarmaa\.com is invite-only/);
   assert.equal(s.mcpUrl, undefined);
   // dry run wrote nothing into the fresh root
   assert.throws(() => readFileSync(join(root, '.local/setup.json')));
 });
 
-test('runSetup reports a failing tunnel or hook per item instead of aborting', async () => {
+test('runSetup dry-run accepts an explicitly requested tunnel on the user domain', async () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'swarmaa-root-')));
-  const plan = validatePlan({ harnesses: { claude: { connect: true }, grok: { connect: true } }, folders: [], remote: { hostname: 'api.example.com' }, autostart: false });
+  const plan = validatePlan({ harnesses: { grok: { connect: true }, dot: { connect: true } }, folders: [], remote: { hostname: 'swarm.example.com' }, autostart: false });
   const s = await runSetup(plan, { dry: true, log: () => undefined, root, detected: fakeDetected() });
   assert.equal(s.ok, true);
-  assert.ok(s.steps.some(x => x.id === 'remote'), 'remote step recorded');
+  assert.equal(s.steps.find(x => x.id === 'remote')?.status, 'ok');
+  assert.deepEqual(s.agents, ['grok', 'dot']);
+  assert.equal(s.mcpUrl, 'https://swarm.example.com/mcp');
+  assert.ok(s.nextSteps.some(n => /clients\/grok\/README\.md/.test(n)));
   assert.equal(s.steps.at(-1)!.id, 'save');
+});
+
+test('no-hostname setup generates only local config and plists', async t => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'swarmaa-local-')));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  execFileSync(process.execPath, [fileURLToPath(new URL('../scripts/init-local.ts', import.meta.url))], { cwd: root, env: { PATH: process.env.PATH, SWARMAA_PORT: '9876' }, timeout: 60_000 });
+  const env = parseEnv(readFileSync(join(root, '.env'), 'utf8'));
+  assert.equal(env.PUBLIC_URL, 'http://127.0.0.1:9876');
+  assert.equal(env.ALLOWED_ORIGINS, env.PUBLIC_URL);
+  assert.ok(!JSON.stringify(env).includes('swarmaa.com'), 'generated environment has no gateway URL');
+  // Keep only non-secret settings; the dry run must not probe a real database.
+  writeFileSync(join(root, '.env'), `PORT=${env.PORT}\nPUBLIC_URL=${env.PUBLIC_URL}\n`);
+  const files = new Map<string, string>();
+  const local = { connect: true, worker: true, share: false };
+  const plan = validatePlan({ harnesses: { claude: local, codex: local, grok: { connect: true }, dot: { connect: true } }, folders: [], autostart: true });
+  const s = await runSetup(plan, { dry: true, root, detected: fakeDetected(), log: () => undefined, onFile: (file, data) => files.set(file, data) });
+  assert.equal(s.ok, true, String(s.error));
+  assert.deepEqual(s.warnings, []);
+  assert.equal(s.serviceUrl, env.PUBLIC_URL);
+  assert.equal(s.remote, undefined);
+  assert.equal(s.mcpUrl, undefined);
+  for (const k of ['claude', 'codex']) {
+    const config = JSON.parse(files.get(join(root, `.local/bridge-${k}.json`))!);
+    assert.equal(config.service_url, env.PUBLIC_URL);
+    assert.ok([...files.keys()].some(f => f.endsWith(`com.swarma.bridge.${k}.plist`)));
+  }
+  assert.ok([...files.keys()].some(f => f.endsWith('com.swarma.service.plist')));
+  assert.equal(JSON.parse(files.get(join(root, '.local/setup.json'))!).remote, undefined);
+  assert.ok(!JSON.stringify([...files]).includes('swarmaa.com'), 'all generated config and plists have no gateway URL');
+  assert.deepEqual(readdirSync(join(root, '.local')), [], 'dry run writes no config');
+});
+
+test('tunnel requires a valid hostname and dry-runs a user domain without side effects', async t => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'swarmaa-tunnel-')));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const lines: string[] = [];
+  const options = { root, home: root, dry: true, log: (l: string) => lines.push(l) };
+  for (const hostname of ['', 'localhost', 'https://swarm.example.com', 'bad host.com', '-bad.example.com']) {
+    assert.equal(validTunnelHostname(hostname), false);
+    await assert.rejects(setupTunnel({ ...options, hostname }), /hostname/);
+  }
+  assert.equal(lines.length, 0, 'invalid hostnames fail before any tunnel work');
+  assert.equal(validTunnelHostname('swarm.example.com'), true);
+  const result = await setupTunnel({ ...options, hostname: 'swarm.example.com' });
+  assert.equal(result.publicUrl, 'https://swarm.example.com');
+  assert.match(lines.join('\n'), /approve your domain/);
+  assert.match(lines.join('\n'), /\[dry-run\] cloudflared tunnel route dns swarmaa swarm\.example\.com/);
+  assert.deepEqual(readdirSync(root), [], 'dry run writes nothing');
 });
 
 // ---- onboarding server ----
@@ -195,6 +258,7 @@ test('server: page needs the token, Host and Origin are enforced', async () => {
     const ok = await req(base, '/api/detect', { headers: t({ origin: base }) });
     assert.equal(ok.status, 200);
     assert.deepEqual(ok.json().installed, { claude: true, codex: true, agy: false, notchtrader: false });
+    assert.equal(ok.json().defaultHostname, '');
     assert.equal(ok.body.includes('/bin/claude-fake'), false, 'binary paths are not sent to the page');
   });
 });
@@ -245,7 +309,9 @@ test('onboarding page contains no secrets and no inline token', () => {
     for (const v of Object.values(env)) if (v.length >= 8) assert.ok(!html.includes(v), 'an .env value appears in the page');
   } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e; }
   assert.match(html, /Set up your swarm/);
-  assert.match(html, /api\.swarmaa\.com|defaultHostname/);
+  assert.match(html, /swarm\.example\.com/);
+  assert.doesNotMatch(html, /<input[^>]*id="remoteOn"[^>]*checked/);
+  assert.doesNotMatch(html, /swarmaa\.com/);
 });
 
 test('folder entries can name their scope', async () => {

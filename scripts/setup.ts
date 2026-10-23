@@ -23,8 +23,8 @@ import { setupTunnel } from './tunnel.js';
 
 export const ROOT = packageRoot(dirname(fileURLToPath(import.meta.url)));
 const HOME = homedir();
-// Prefer the stable Homebrew symlink so LaunchAgents survive `brew upgrade node`.
-const NODE = (() => { try { return realpathSync('/opt/homebrew/bin/node') === realpathSync(process.execPath) ? '/opt/homebrew/bin/node' : process.execPath; } catch { return process.execPath; } })();
+// Prefer the stable Node 24 Homebrew symlink so LaunchAgents survive patch upgrades.
+const NODE = (() => { try { return realpathSync('/opt/homebrew/opt/node@24/bin/node') === realpathSync(process.execPath) ? '/opt/homebrew/opt/node@24/bin/node' : process.execPath; } catch { return process.execPath; } })();
 const LA = join(HOME, 'Library/LaunchAgents');
 const PGENV = { LC_ALL: 'en_US.UTF-8' };
 
@@ -96,7 +96,7 @@ export interface SetupSummary {
   mcpUrl?: string; remote?: { hostname: string; ok: boolean };
   steps: StepRecord[]; warnings: string[]; nextSteps: string[];
 }
-export interface RunOpts { dry: boolean; log: (line: string) => void; onStep?: (s: StepRecord) => void; root?: string; detected?: Detected }
+export interface RunOpts { dry: boolean; log: (line: string) => void; onStep?: (s: StepRecord) => void; /** Inspect generated files in dry runs without writing or logging their contents. */ onFile?: (file: string, data: string) => void; root?: string; detected?: Detected }
 
 class Abort extends Error {}
 const errText = (e: unknown) => /not implemented yet/i.test((e as Error).message) ? 'not available yet' : (e as Error).message;
@@ -123,7 +123,7 @@ export async function runSetup(plan: SetupPlan, opts: RunOpts): Promise<SetupSum
   const tail = (r: Result) => r.stderr.trim().split('\n').slice(-5).join('\n');
   const admin = (...a: string[]) => run(NODE, [...scriptCommand(root, 'scripts/admin', { envFile: true }), ...a]);
   const put = (file: string, data: string, mode = 0o600): void => {
-    if (dry) { pl(`write ${file} (mode ${mode.toString(8)})`); return; }
+    if (dry) { opts.onFile?.(file, data); pl(`write ${file} (mode ${mode.toString(8)})`); return; }
     mkdirSync(dirname(file), { recursive: true }); writeFileSync(file, data, { mode }); chmodSync(file, mode);
   };
   const mkdirp = (dir: string, mode = 0o700) => { if (dry) pl(`mkdir -p ${dir}`); else mkdirSync(dir, { recursive: true, mode }); };
@@ -158,6 +158,7 @@ export async function runSetup(plan: SetupPlan, opts: RunOpts): Promise<SetupSum
 
   try {
     if (Number(process.versions.node.split('.')[0]) !== 24) die(`Swarmaa needs Node 24.x (running ${process.versions.node}). Install Node 24 and re-run setup.`);
+    say("The hosted gateway at swarmaa.com is invite-only. You don't need it: everything runs on your Mac.");
 
     await step('env', 'Local credentials', async () => {
       if (existsSync(join(root, '.env'))) return;
@@ -169,6 +170,8 @@ export async function runSetup(plan: SetupPlan, opts: RunOpts): Promise<SetupSum
     port = env.PORT || '8787';
     pgPort = env.PG_PORT || '54329';
     summary.serviceUrl = `http://127.0.0.1:${port}`;
+    const remote = !!plan.remote || /^https:\/\//.test(env.PUBLIC_URL ?? '');
+    if (!remote) summary.nextSteps.push('Grok and Dot are skipped in local-only mode; re-run npm run setup and enable remote access with your domain to connect them.');
 
     await step('db', 'Database', async () => {
       const url = env.DATABASE_URL;
@@ -255,6 +258,7 @@ export async function runSetup(plan: SetupPlan, opts: RunOpts): Promise<SetupSum
       if (!hp?.connect) continue;
       const m = META[key];
       await step(`svc:${key}`, m.label, async () => {
+        if ((HOSTED as readonly string[]).includes(key) && !remote) return { skipped: 'local-only; enable remote access with your domain to connect' };
         const cli = (CLI_KEYS as readonly string[]).includes(key) ? det.clis[key as typeof CLI_KEYS[number]] : undefined;
         if ((CLI_KEYS as readonly string[]).includes(key) && !cli) return { skipped: `${m.label} was not found on this Mac` };
         if (key === 'notchtrader' && !det.notchtrader) return { skipped: 'NotchTrader.app is not installed' };
@@ -330,7 +334,7 @@ export async function runSetup(plan: SetupPlan, opts: RunOpts): Promise<SetupSum
 
     // Remote access for hosted agents (Grok, Dot).
     const hosted = HOSTED.filter(k => summary.agents.includes(k));
-    if (plan.remote && hosted.length) await step('remote', 'Remote access', async () => {
+    if (plan.remote) await step('remote', 'Remote access', async () => {
       summary.remote = { hostname: plan.remote!.hostname, ok: false };
       try {
         await setupTunnel({ hostname: plan.remote!.hostname, root, dry, log: l => say(`  ${l}`) });
@@ -372,7 +376,7 @@ export async function runSetup(plan: SetupPlan, opts: RunOpts): Promise<SetupSum
         if (j.script && !dry && !existsSync(scriptCommand(root, j.script).at(-1)!)) { say(`  ${j.script} is not present yet; not creating the ${j.id} LaunchAgent.`); continue; }
         const file = join(LA, `${label(j.id)}.plist`), log = join(LOGS, j.log ?? `${j.id}.log`);
         const xml = plist(label(j.id), j.args, { workingDirectory: j.wd, env: { ...baseEnv, ...j.extra }, stdout: log, stderr: log, startInterval: j.interval, calendar: j.calendar, ...(j.calendar ? { runAtLoad: false } : {}) });
-        if (dry) { pl(`write ${file}`); say(xml.replace(/^/gm, '      ')); } else writeFileSync(file, xml, { mode: 0o644 });
+        if (dry) { opts.onFile?.(file, xml); pl(`write ${file}`); say(xml.replace(/^/gm, '      ')); } else writeFileSync(file, xml, { mode: 0o644 });
         if (j.id === 'postgres' && run(join(pgbin!, 'pg_ctl'), ['-D', PGDATA, 'status'], { mutating: false, env: PGENV }).status === 0) {
           const r = run(join(pgbin!, 'pg_ctl'), ['-D', PGDATA, '-m', 'fast', 'stop'], { env: PGENV });
           if (r.status !== 0) say(`  could not stop the pg_ctl cluster:\n${tail(r)}`);
@@ -607,8 +611,8 @@ async function cliMain(dry: boolean): Promise<number> {
     const hookApps: Record<string, { share: boolean }> = {};
     for (const k of det.hookApps ?? []) if (await askYes(`Share ${HOOK_APPS[k].label} chats across harnesses?`, state.hookApps ? state.hookApps.includes(k) : true)) hookApps[k] = { share: true };
     let remote: { hostname: string } | undefined;
-    if (HOSTED.some(k => harnesses[k]) && await askYes('Set up remote access with a Cloudflare Tunnel (opens Cloudflare in your browser to authorize)?', true)) {
-      const h = validHostname(await ask(`Hostname [${state.remote?.hostname ?? DEFAULT_HOSTNAME}]:`) || state.remote?.hostname || DEFAULT_HOSTNAME);
+    if (HOSTED.some(k => harnesses[k]) && await askYes('Set up remote access with a Cloudflare Tunnel (opens Cloudflare in your browser to authorize)?', false)) {
+      const h = validHostname(await ask(`Hostname on your domain${state.remote?.hostname ? ` [${state.remote.hostname}]` : ''}:`) || state.remote?.hostname || DEFAULT_HOSTNAME);
       if (h) remote = { hostname: h }; else say('  that is not a valid hostname; skipping remote access.');
     }
     const autostart = await askYes('Start Swarmaa automatically at login?', state.autostart ?? true);

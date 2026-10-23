@@ -423,7 +423,7 @@ git merge swarma/codex/8855687b</code></pre>
 
 <section id="grok">
   <h2><span class="n">7</span>Grok</h2>
-  <p>Grok connects over the internet to <code>https://api.swarmaa.com/mcp</code>. The first time, it opens a Swarmaa sign-in page: sign in with your passkey and approve. After that, Grok can check status, hand out tasks, read results and continue chats from any harness — it’s a good “front desk” from your phone.</p>
+  <p>Grok needs optional remote access on your own domain, for example <code>https://swarm.example.com/mcp</code>; local-only setup skips it. The first time, it opens a Swarmaa sign-in page: sign in with your passkey and approve. After that, Grok can check status, hand out tasks, read results and continue chats from any harness — it’s a good “front desk” from your phone.</p>
   <p>Grok doesn’t run code itself through the swarm; it sends work to Claude, Codex or Antigravity. The instructions to paste into Grok are in <code>clients/grok/INSTRUCTIONS.md</code>.</p>
 </section>
 

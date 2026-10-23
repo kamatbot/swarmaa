@@ -125,9 +125,9 @@ ul.plain { list-style: none; display: grid; gap: 6px; }
       <h2 id="h-remote">Remote access</h2>
       <div class="card on">
         <p class="hint" style="margin:0 0 12px">Grok and Dot are hosted, so they reach Swarmaa through a public HTTPS address. Setup will open Cloudflare in your browser so you can authorize a tunnel for it.</p>
-        <div class="row"><label class="t" for="remoteOn"><span class="name">Set up the tunnel now</span></label><span class="switch"><input type="checkbox" id="remoteOn" checked /></span></div>
+        <div class="row"><label class="t" for="remoteOn"><span class="name">Set up the tunnel now</span></label><span class="switch"><input type="checkbox" id="remoteOn" /></span></div>
         <div class="field"><label for="hostname" class="sr">Hostname</label><input type="text" id="hostname" autocomplete="off" spellcheck="false" aria-describedby="hostHint" /></div>
-        <p class="hint" id="hostHint">A domain you control in Cloudflare, for example <code>api.swarmaa.com</code>.</p>
+        <p class="hint" id="hostHint">Optional: a hostname on your domain in Cloudflare, for example <code>swarm.example.com</code>. Leave the tunnel off to run locally.</p>
       </div>
     </section>
 
