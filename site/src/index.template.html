@@ -270,6 +270,11 @@ svg{display:block}
 .finale h2 .hl{color:var(--lime)}
 .finale-card>p{font-size:18px;color:var(--on-ink-muted);max-width:620px;margin:0 auto 36px}
 .finale-cta .btn{box-shadow:5px 5px 0 var(--lime);border-color:var(--lime)}
+.finale-steps{max-width:560px;margin:0 auto 34px;padding:0;list-style:none;counter-reset:s;text-align:left;display:grid;gap:12px}
+.finale-steps li{counter-increment:s;display:grid;grid-template-columns:34px 1fr;gap:12px;align-items:start;font-size:17px;color:var(--on-ink-muted)}
+.finale-steps li::before{content:counter(s);width:30px;height:30px;border-radius:50%;background:var(--lime);color:var(--ink);font:700 15px/30px var(--mono);text-align:center}
+.finale-steps b{color:var(--paper)}
+.finale-req{margin:22px 0 0;font:500 12px/1.4 var(--mono);letter-spacing:.06em;text-transform:uppercase;color:rgba(255,255,255,.55)}.finale-req a{color:var(--lime)}
 .finale-cta .btn:hover{box-shadow:7px 7px 0 var(--lime)}
 .finale-rule{position:relative;z-index:2;display:flex;align-items:center;margin:110px 0 0}
 .finale-rule span{flex:1;height:1px;background-image:repeating-linear-gradient(90deg,rgba(255,255,255,.28) 0 2px,transparent 2px 6px)}
@@ -333,7 +338,7 @@ svg{display:block}
       <a href="https://github.com/kamatbot/swarmaa">GitHub</a>
       <a href="https://api.swarmaa.com/account">Sign in</a>
     </nav>
-    <a class="nav-cta lime-fill" href="https://github.com/kamatbot/swarmaa">View on GitHub</a>
+    <a class="nav-cta lime-fill" href="https://github.com/kamatbot/swarmaa/releases/latest/download/Swarmaa.zip">Download for Mac</a>
   </div>
 </header>
 
@@ -348,8 +353,8 @@ svg{display:block}
     </h1>
     <p class="hero-desc">Swarmaa gives Claude Code, Codex, Antigravity, Dot and Grok one shared memory and one task queue, and sends each task to whichever agent has the most quota left.</p>
     <div class="hero-ctas">
-      <a class="btn lime-fill" href="https://github.com/kamatbot/swarmaa">View on GitHub<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg></a>
-      <a class="btn btn-ghost" href="/guide">Read the guide</a>
+      <a class="btn lime-fill" href="https://github.com/kamatbot/swarmaa/releases/latest/download/Swarmaa.zip">Download for Mac<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg></a>
+      <a class="btn btn-ghost" href="https://github.com/kamatbot/swarmaa">View on GitHub</a>
     </div>
     <ul class="hero-trust">
       <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg><span>Runs on<br>your Mac</span></li>
@@ -497,8 +502,13 @@ svg{display:block}
   <div class="finale-card">
     <span class="finale-kicker"><i class="live-dot"></i>Open source · macOS</span>
     <h2 class="disp">Every agent, <span class="hl">one swarm.</span></h2>
-    <p>Swarmaa is open source. Clone the repo and follow the README to get started.</p>
-    <div class="finale-cta"><a class="btn lime-fill" href="https://github.com/kamatbot/swarmaa">Get started on GitHub<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg></a></div>
+    <ol class="finale-steps">
+      <li><span><b>Download</b> the Mac app and drag it to Applications.</span></li>
+      <li><span><b>Open it</b> and choose <em>Set up Swarmaa on this Mac</em>. It installs its own database and service; no terminal, no account.</span></li>
+      <li><span><b>Paste the starter prompt</b> it gives you into Claude Code, Codex or Antigravity.</span></li>
+    </ol>
+    <div class="finale-cta"><a class="btn lime-fill" href="https://github.com/kamatbot/swarmaa/releases/latest/download/Swarmaa.zip">Download for Mac<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg></a></div>
+    <p class="finale-req">macOS 15 or later · Apple silicon · free and open source on <a href="https://github.com/kamatbot/swarmaa">GitHub</a></p>
   </div>
   <div class="finale-rule" aria-hidden="true"><i></i><span></span><i></i></div>
   <footer class="site-footer">
