@@ -4,10 +4,12 @@ import {
   type AuthenticationResponseJSON, type RegistrationResponseJSON,
 } from '@simplewebauthn/server';
 import type { Pool, PoolClient } from 'pg';
+import { hashToken, newToken } from './auth.js';
 import { transaction } from './db.js';
 import { AppError } from './errors.js';
 import { tokenHash } from './oauth.js';
-import type { PasskeySummary } from './passkey-ui.js';
+import { INVITE_ONLY, type PasskeySummary } from './passkey-ui.js';
+import { ROLE_PERMISSIONS } from './policy.js';
 import type { ServerConfig } from './types.js';
 
 /** Single owner per tenant for now. */
@@ -57,7 +59,7 @@ export function newBinding(existing?: string): string {
 }
 
 const failed = (): AppError => new AppError(403, 'passkey_failed', 'Passkey verification failed.');
-const forbidden = (): AppError => new AppError(403, 'forbidden', 'A valid signup link or sign-in is required.');
+const forbidden = (): AppError => new AppError(403, 'forbidden', INVITE_ONLY);
 
 function plainObject(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new AppError(400, 'invalid_request', 'Invalid request.');
@@ -88,16 +90,25 @@ export class PasskeyService {
   }
 
   async hasPasskeys(): Promise<boolean> {
-    return (await this.pool.query('SELECT 1 FROM owner_passkeys WHERE tenant_id=$1 LIMIT 1', [PASSKEY_TENANT])).rows.length > 0;
+    return (await this.pool.query('SELECT 1 FROM owner_passkeys LIMIT 1')).rows.length > 0;
   }
 
   /** One-time signup code. Only its hash is stored; the caller prints the code once. */
   async createInvite(minutes = 30): Promise<string> {
+    return this.mintInvite(PASSKEY_TENANT, minutes);
+  }
+
+  async createGatewayInvite(minutes = 30): Promise<{ code: string; tenantId: string }> {
+    const tenantId = `t_${randomBytes(16).toString('hex')}`;
+    return { code: await this.mintInvite(tenantId, minutes), tenantId };
+  }
+
+  private async mintInvite(tenantId: string, minutes: number): Promise<string> {
     if (!Number.isFinite(minutes) || minutes < 1 || minutes > 1440) throw new AppError(400, 'invalid_minutes', 'Minutes must be between 1 and 1440.');
     const code = randomBytes(32).toString('base64url');
     await this.pool.query(
       'INSERT INTO passkey_invites(id,tenant_id,code_hash,expires_at) VALUES ($1,$2,$3,now()+make_interval(secs=>$4))',
-      [randomUUID(), PASSKEY_TENANT, tokenHash(code), Math.round(minutes * 60)],
+      [randomUUID(), tenantId, tokenHash(code), Math.round(minutes * 60)],
     );
     return code;
   }
@@ -118,62 +129,67 @@ export class PasskeyService {
     if (token && COOKIE_VALUE.test(token)) await this.pool.query('DELETE FROM owner_sessions WHERE token_hash=$1', [tokenHash(token)]);
   }
 
-  private async startSession(client: Pick<PoolClient, 'query'>): Promise<string> {
+  private async startSession(client: Pick<PoolClient, 'query'>, tenantId: string): Promise<string> {
     const token = randomBytes(32).toString('base64url');
     await client.query('DELETE FROM owner_sessions WHERE expires_at<=now()');
     await client.query(
       'INSERT INTO owner_sessions(id,tenant_id,token_hash,expires_at) VALUES ($1,$2,$3,now()+make_interval(secs=>$4))',
-      [randomUUID(), PASSKEY_TENANT, tokenHash(token), SESSION_SECONDS],
+      [randomUUID(), tenantId, tokenHash(token), SESSION_SECONDS],
     );
     return token;
   }
 
-  private async storeChallenge(purpose: 'register' | 'authenticate', challenge: string, browser: string): Promise<void> {
+  private async storeChallenge(purpose: 'register' | 'authenticate', challenge: string, browser: string, tenantId: string | null): Promise<void> {
     await this.pool.query("DELETE FROM webauthn_challenges WHERE expires_at<=now()-interval '1 hour'");
     await this.pool.query(
       'INSERT INTO webauthn_challenges(id,tenant_id,purpose,challenge,bound_to,expires_at) VALUES ($1,$2,$3,$4,$5,now()+make_interval(secs=>$6))',
-      [randomUUID(), PASSKEY_TENANT, purpose, challenge, tokenHash(browser), CHALLENGE_SECONDS],
+      [randomUUID(), tenantId, purpose, challenge, tokenHash(browser), CHALLENGE_SECONDS],
     );
   }
 
   /** Single use, unexpired, and only for the browser that asked for it. */
-  private async consumeChallenge(purpose: 'register' | 'authenticate', challenge: string, browser: string): Promise<void> {
+  private async consumeChallenge(purpose: 'register' | 'authenticate', challenge: string, browser: string, tenantId: string | null): Promise<void> {
     const used = await this.pool.query(
-      'UPDATE webauthn_challenges SET used_at=now() WHERE purpose=$1 AND challenge=$2 AND bound_to=$3 AND used_at IS NULL AND expires_at>now() RETURNING id',
-      [purpose, challenge, tokenHash(browser)],
+      `UPDATE webauthn_challenges SET used_at=now(),tenant_id=$4 WHERE purpose=$1 AND challenge=$2 AND bound_to=$3
+       AND (tenant_id=$4 OR (purpose='authenticate' AND tenant_id IS NULL)) AND used_at IS NULL AND expires_at>now() RETURNING id`,
+      [purpose, challenge, tokenHash(browser), tenantId],
     );
     if (!used.rows.length) throw failed();
   }
 
   /** Registration needs an unused invite or an owner session (a session wins and leaves the invite alone). */
-  private async authorizeRegistration(code: string | undefined, sessionToken: string | undefined): Promise<'session' | 'invite'> {
-    if (await this.session(sessionToken)) return 'session';
-    if (await this.inviteUsable(code)) return 'invite';
+  private async authorizeRegistration(code: string | undefined, sessionToken: string | undefined): Promise<{ mode: 'session' | 'invite'; tenantId: string }> {
+    const session = await this.session(sessionToken);
+    if (session) return { mode: 'session', tenantId: session.tenantId };
+    if (code && COOKIE_VALUE.test(code)) {
+      const invite = await this.pool.query<{ tenant_id: string }>('SELECT tenant_id FROM passkey_invites WHERE code_hash=$1 AND used_at IS NULL AND expires_at>now()', [tokenHash(code)]);
+      if (invite.rows[0]) return { mode: 'invite', tenantId: invite.rows[0].tenant_id };
+    }
     throw forbidden();
   }
 
   async registrationOptions(input: { code?: string; sessionToken?: string; browser: string }) {
     const rp = this.need();
-    await this.authorizeRegistration(input.code, input.sessionToken);
-    const existing = await this.pool.query<{ credential_id: string; transports: string[] }>('SELECT credential_id,transports FROM owner_passkeys WHERE tenant_id=$1', [PASSKEY_TENANT]);
+    const { tenantId } = await this.authorizeRegistration(input.code, input.sessionToken);
+    const existing = await this.pool.query<{ credential_id: string; transports: string[] }>('SELECT credential_id,transports FROM owner_passkeys WHERE tenant_id=$1', [tenantId]);
     const options = await generateRegistrationOptions({
       rpName: 'Swarmaa', rpID: rp.rpID, userName: 'owner', userDisplayName: 'Swarmaa owner',
-      userID: createHash('sha256').update(`swarmaa-owner:${PASSKEY_TENANT}`).digest(),
+      userID: createHash('sha256').update(`swarmaa-owner:${tenantId}`).digest(),
       attestationType: 'none', timeout: CHALLENGE_SECONDS * 1000,
       excludeCredentials: existing.rows.map(row => ({ id: row.credential_id, transports: row.transports })),
       authenticatorSelection: { residentKey: 'required', userVerification: 'required' },
     });
-    await this.storeChallenge('register', options.challenge, input.browser);
+    await this.storeChallenge('register', options.challenge, input.browser, tenantId);
     return options;
   }
 
   /** Verifies the attestation, stores the credential, spends the invite, and returns a new owner session token. */
   async verifyRegistration(input: { code?: string; sessionToken?: string; browser: string; response: unknown; name?: unknown }): Promise<string> {
     const rp = this.need();
-    const mode = await this.authorizeRegistration(input.code, input.sessionToken);
+    const { mode, tenantId } = await this.authorizeRegistration(input.code, input.sessionToken);
     const response = input.response as RegistrationResponseJSON;
     plainObject(response);
-    await this.consumeChallenge('register', signedChallenge(response), input.browser);
+    await this.consumeChallenge('register', signedChallenge(response), input.browser, tenantId);
     let verified;
     try {
       verified = await verifyRegistrationResponse({
@@ -187,14 +203,14 @@ export class PasskeyService {
     try {
       return await transaction(this.pool, async client => {
         if (mode === 'invite') {
-          const spent = await client.query('UPDATE passkey_invites SET used_at=now() WHERE code_hash=$1 AND used_at IS NULL AND expires_at>now() RETURNING id', [tokenHash(input.code!)]);
+          const spent = await client.query('UPDATE passkey_invites SET used_at=now() WHERE code_hash=$1 AND tenant_id=$2 AND used_at IS NULL AND expires_at>now() RETURNING id', [tokenHash(input.code!), tenantId]);
           if (!spent.rows.length) throw forbidden();
         }
         await client.query(
           'INSERT INTO owner_passkeys(id,tenant_id,credential_id,public_key,counter,transports,name) VALUES ($1,$2,$3,$4,$5,$6,$7)',
-          [randomUUID(), PASSKEY_TENANT, credential.id, Buffer.from(credential.publicKey), credential.counter, credential.transports ?? [], name],
+          [randomUUID(), tenantId, credential.id, Buffer.from(credential.publicKey), credential.counter, credential.transports ?? [], name],
         );
-        return this.startSession(client);
+        return this.startSession(client, tenantId);
       });
     } catch (error) {
       if (error instanceof AppError) throw error;
@@ -205,7 +221,7 @@ export class PasskeyService {
   async authenticationOptions(browser: string) {
     const rp = this.need();
     const options = await generateAuthenticationOptions({ rpID: rp.rpID, userVerification: 'required', timeout: CHALLENGE_SECONDS * 1000 });
-    await this.storeChallenge('authenticate', options.challenge, browser);
+    await this.storeChallenge('authenticate', options.challenge, browser, null);
     return options;
   }
 
@@ -215,12 +231,12 @@ export class PasskeyService {
     const response = input.response as AuthenticationResponseJSON;
     plainObject(response);
     const challenge = signedChallenge(response);
-    await this.consumeChallenge('authenticate', challenge, input.browser);
     if (typeof response.id !== 'string' || response.id.length > 1400) throw failed();
-    const found = await this.pool.query<{ id: string; public_key: Buffer; counter: string; transports: string[] }>(
-      'SELECT id,public_key,counter,transports FROM owner_passkeys WHERE credential_id=$1 AND tenant_id=$2', [response.id, PASSKEY_TENANT],
+    const found = await this.pool.query<{ id: string; tenant_id: string; public_key: Buffer; counter: string; transports: string[] }>(
+      'SELECT id,tenant_id,public_key,counter,transports FROM owner_passkeys WHERE credential_id=$1', [response.id],
     );
     const row = found.rows[0];
+    await this.consumeChallenge('authenticate', challenge, input.browser, row?.tenant_id ?? null);
     if (!row) throw failed();
     let verified;
     try {
@@ -234,7 +250,7 @@ export class PasskeyService {
       // Compare-and-set: a concurrent replay of the same assertion cannot also advance the counter.
       const updated = await client.query('UPDATE owner_passkeys SET counter=$2,last_used_at=now() WHERE id=$1 AND counter=$3 RETURNING id', [row.id, verified.authenticationInfo.newCounter, row.counter]);
       if (!updated.rows.length) throw failed();
-      return this.startSession(client);
+      return this.startSession(client, row.tenant_id);
     });
   }
 
@@ -245,6 +261,24 @@ export class PasskeyService {
       'SELECT id,name,created_at,last_used_at FROM owner_passkeys WHERE tenant_id=$1 ORDER BY created_at', [session.tenantId],
     );
     return rows.rows.map(r => ({ id: r.id, name: r.name, createdAt: r.created_at, lastUsedAt: r.last_used_at }));
+  }
+
+  async createWorker(sessionToken: string | undefined, name: unknown): Promise<{ id: string; token: string; scopes: string[] }> {
+    const session = await this.session(sessionToken);
+    if (!session) throw forbidden();
+    if (typeof name !== 'string' || name.length > 100 || !/^[a-z][a-z0-9_.-]+$/u.test(name)) throw new AppError(400, 'invalid_name', 'Use a lowercase worker name, such as worker-mac.');
+    const rows = await this.pool.query<{ scope: string }>(
+      "SELECT DISTINCT unnest(scopes) AS scope FROM principals WHERE tenant_id=$1 AND role='frontend' AND disabled=false AND NOT ('admin'=ANY(permissions)) AND NOT ('*'=ANY(scopes)) ORDER BY scope", [session.tenantId],
+    );
+    const scopes = rows.rows.length ? rows.rows.map(row => row.scope) : ['project:general'];
+    if (scopes.length > 50) throw new AppError(409, 'too_many_scopes', 'A bridge can connect at most 50 projects.');
+    const id = randomUUID(), token = newToken();
+    const created = await this.pool.query(
+      "INSERT INTO principals(id,tenant_id,name,role,scopes,permissions,token_hash) VALUES($1,$2,$3,'worker',$4,$5,$6) ON CONFLICT (tenant_id,name) DO NOTHING RETURNING id",
+      [id, session.tenantId, name, scopes, ROLE_PERMISSIONS.worker, hashToken(token)],
+    );
+    if (!created.rows.length) throw new AppError(409, 'name_taken', 'That connection name is already in use.');
+    return { id, token, scopes };
   }
 
   async remove(sessionToken: string | undefined, id: unknown): Promise<void> {

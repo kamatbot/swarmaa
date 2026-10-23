@@ -5,6 +5,8 @@ export function escapeHtml(value: string): string {
   return value.replace(/[&<>"']/gu, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]!);
 }
 
+export const INVITE_ONLY = "Swarmaa's hosted gateway is invite-only. Run Swarmaa locally from github.com/kamatbot/swarmaa, or ask for an invite.";
+
 const STYLE = `:root{color-scheme:dark;--bg:#06060a;--surface:rgba(255,255,255,.04);--line:rgba(255,255,255,.1);--text:#f4f4f7;--muted:#9a9aab;--grad:linear-gradient(90deg,#9be15d 0%,#3fd1a8 30%,#4cc4e8 50%,#7f9cff 72%,#a78bfa 100%)}
 *{box-sizing:border-box}
 body{margin:0;min-height:100vh;background:var(--bg);color:var(--text);font:16px/1.55 Outfit,system-ui,-apple-system,sans-serif;display:flex;padding:24px 16px}
@@ -14,6 +16,7 @@ h2{font-size:1rem;font-weight:600;margin:1.5rem 0 .5rem}
 p{color:var(--muted);margin:.5rem 0}
 strong{color:var(--text);font-weight:500}
 code{font-size:.85em;color:var(--text);word-break:break-all}
+pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:.85em}a{color:#9be15d}
 .card{background:var(--surface);border:1px solid var(--line);border-radius:18px;padding:16px 18px;margin:16px 0}
 .row{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:10px 0;border-top:1px solid var(--line)}
 .row:first-child{border-top:0}
@@ -42,11 +45,12 @@ const login=async()=>{const{options:o}=await post('/account/passkeys/login/optio
 await post('/account/passkeys/login/verify',{response:{id:c.id,rawId:enc(c.rawId),type:c.type,authenticatorAttachment:c.authenticatorAttachment||undefined,clientExtensionResults:c.getClientExtensionResults(),response:{clientDataJSON:enc(r.clientDataJSON),authenticatorData:enc(r.authenticatorData),signature:enc(r.signature),userHandle:r.userHandle?enc(r.userHandle):undefined}}})};
 const register=async code=>{const{options:o}=await post('/account/passkeys/register/options',{code});const c=await navigator.credentials.create({publicKey:{rp:o.rp,user:{id:dec(o.user.id),name:o.user.name,displayName:o.user.displayName},challenge:dec(o.challenge),pubKeyCredParams:o.pubKeyCredParams,timeout:o.timeout,attestation:'none',excludeCredentials:(o.excludeCredentials||[]).map(x=>({type:'public-key',id:dec(x.id),transports:x.transports})),authenticatorSelection:o.authenticatorSelection}});const r=c.response;
 await post('/account/passkeys/register/verify',{code,response:{id:c.id,rawId:enc(c.rawId),type:c.type,authenticatorAttachment:c.authenticatorAttachment||undefined,clientExtensionResults:c.getClientExtensionResults(),response:{clientDataJSON:enc(r.clientDataJSON),attestationObject:enc(r.attestationObject),transports:r.getTransports?r.getTransports():[]}}})};
-const actions={login,register:b=>register(b.dataset.code),add:()=>register(undefined),logout:()=>post('/account/logout',{}),remove:b=>post('/account/passkeys/delete',{id:b.dataset.id})};
+const worker=async()=>{const r=await post('/account/workers',{name:document.getElementById('worker-name').value});document.getElementById('worker-result').textContent='Save this token now; it is shown only once. Set COLLECTIVE_WORKER_TOKEN privately on your Mac:\\n'+r.token+'\\n\\nBridge config (adjust binary and project paths):\\n'+JSON.stringify(r.bridge,null,2)};
+const actions={login,register:b=>register(b.dataset.code),add:()=>register(undefined),logout:()=>post('/account/logout',{}),remove:b=>post('/account/passkeys/delete',{id:b.dataset.id}),worker};
 document.addEventListener('click',async ev=>{const b=ev.target.closest('[data-pk]');if(!b)return;const k=b.dataset.pk;
 if((k==='login'||k==='register'||k==='add')&&!window.PublicKeyCredential){msg('This browser does not support passkeys.');return}
 b.disabled=true;msg('');
-try{await actions[k](b);if(b.dataset.next==='reload')location.reload();else location.assign('/account')}
+try{await actions[k](b);if(k==='worker')return;if(b.dataset.next==='reload')location.reload();else location.assign(b.dataset.next||'/account')}
 catch(e){msg(e&&e.name==='NotAllowedError'?'Cancelled.':(e&&e.message)||'Something went wrong.');b.disabled=false}});
 })();`;
 
@@ -60,7 +64,7 @@ export interface PasskeySummary { id: string; name: string; createdAt: Date; las
 
 export type AccountView =
   | { kind: 'unavailable' }
-  | { kind: 'guest'; hasPasskeys: boolean; code?: string; codeInvalid: boolean }
+  | { kind: 'guest'; hasPasskeys: boolean; code?: string; codeInvalid: boolean; next?: string }
   | { kind: 'owner'; passkeys: PasskeySummary[] };
 
 const date = (value: Date | null): string => value ? value.toISOString().slice(0, 10) : 'never';
@@ -71,13 +75,14 @@ export function accountHtml(view: AccountView, nonce: string): string {
     body = '<h1>Swarmaa</h1><p>Passkeys need the public HTTPS address. Open this page from your Swarmaa domain.</p>';
   } else if (view.kind === 'owner') {
     const rows = view.passkeys.map(p => `<div class="row"><div><strong>${escapeHtml(p.name)}</strong><small>Created ${date(p.createdAt)} · last used ${date(p.lastUsedAt)}</small></div>${view.passkeys.length > 1 ? `<button class="inline quiet" data-pk="remove" data-next="reload" data-id="${escapeHtml(p.id)}">Remove</button>` : ''}</div>`).join('');
-    body = `<h1>Your passkeys</h1><div class="card">${rows}</div><div id="pk-msg" role="status"></div><button data-pk="add" data-next="reload">Add another passkey</button><button class="quiet" data-pk="logout">Sign out</button>`;
+    body = `<h1>Your passkeys</h1><div class="card">${rows}</div><div id="pk-msg" role="status"></div><button data-pk="add" data-next="reload">Add another passkey</button><h2>Add a worker Mac</h2><p>Connect your own Mac to run tasks in your projects. The token is shown once.</p><label>Worker name<input id="worker-name" value="worker-mac" maxlength="100" pattern="[a-z][a-z0-9_.-]+" autocomplete="off"></label><button data-pk="worker">Add a worker Mac</button><pre id="worker-result" role="status"></pre><button class="quiet" data-pk="logout">Sign out</button>`;
   } else {
-    const create = view.code ? `<button class="primary" data-pk="register" data-code="${escapeHtml(view.code)}">Create your Swarmaa passkey</button>` : '';
-    const signIn = view.hasPasskeys ? `<button class="${view.code ? '' : 'primary'}" data-pk="login">Sign in with passkey</button>` : '';
+    const next = view.next ? ` data-next="${escapeHtml(view.next)}"` : '';
+    const create = view.code ? `<button class="primary" data-pk="register" data-code="${escapeHtml(view.code)}"${next}>Create your Swarmaa passkey</button>` : '';
+    const signIn = view.hasPasskeys ? `<button class="${view.code ? '' : 'primary'}" data-pk="login"${next}>Sign in with passkey</button>` : '';
     const note = view.codeInvalid ? '<p>This signup link has expired or was already used.</p>' : '';
-    const help = !view.hasPasskeys && !view.code
-      ? '<p>No passkey exists yet. You need a signup link from setup: run <code>npm run setup</code>, or <code>npm run admin -- passkey-invite</code> on the machine that runs Swarmaa.</p>' : '';
+    const help = !view.code
+      ? `<p>${escapeHtml(INVITE_ONLY)}</p><form method="get" action="/account"><label>Invite code<input name="code" required pattern="[A-Za-z0-9_-]{43}" maxlength="43" autocomplete="off"></label>${view.next ? `<input type="hidden" name="next" value="${escapeHtml(view.next)}">` : ''}<button>Use signup link code</button></form>` : '';
     body = `<h1>Swarmaa</h1><p>${view.code ? 'Create a passkey to approve agent connections.' : 'Sign in to approve agent connections.'}</p>${note}${help}<div id="pk-msg" role="status"></div>${create}${signIn}`;
   }
   return shell('Swarmaa account', body, nonce);

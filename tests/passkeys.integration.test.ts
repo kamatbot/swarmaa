@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import { createHash, createSign, generateKeyPairSync, randomBytes, randomUUID, type KeyObject } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
-import { createServer } from 'node:http';
+import { mkdir, mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { resolve } from 'node:path';
+import { createServer, request } from 'node:http';
 import { test } from 'node:test';
 import pg from 'pg';
 import { AuthService } from '../src/auth.js';
@@ -81,7 +84,7 @@ test('passkey registration, login, sessions and the OAuth owner consent flow', {
     await admin.query(`DROP SCHEMA ${schema} CASCADE`);
     await admin.end();
   });
-  for (const migration of ['001_identity.sql', '003_oauth.sql', '007_passkeys.sql', '009_oauth_client_cleanup.sql']) {
+  for (const migration of ['001_identity.sql', '003_oauth.sql', '007_passkeys.sql', '009_oauth_client_cleanup.sql', '015_gateway_tenants.sql']) {
     await pool.query(await readFile(new URL(`../db/migrations/${migration}`, import.meta.url), 'utf8'));
   }
 
@@ -302,5 +305,316 @@ test('passkey registration, login, sessions and the OAuth owner consent flow', {
   assert.equal(await svc.session(ownerValue), null);
   assert.ok(!(await start(ownerCookie)).html.includes('identify_owner'));
 
+  for (const secret of secrets) for (const line of logged) assert.ok(!line.includes(secret), 'secret appeared in console output');
+});
+
+// Exercises the same HTTP boundaries as the hosted signup, with real signed WebAuthn responses.
+test('gateway invite, first consent and worker tokens stay inside the invited tenant', { skip: !process.env.TEST_DATABASE_URL }, async t => {
+  const admin = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL!, max: 1 });
+  const schema = `gateway_test_${randomBytes(8).toString('hex')}`;
+  await admin.query(`CREATE SCHEMA ${schema}`);
+  const pool = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL!, options: `-c search_path=${schema},public`, max: 8 });
+  const server = createServer();
+  t.after(async () => {
+    server.closeAllConnections();
+    await new Promise<void>(resolve => server.close(() => resolve()));
+    await pool.end();
+    await admin.query(`DROP SCHEMA ${schema} CASCADE`);
+    await admin.end();
+  });
+  for (const migration of ['001_identity.sql', '002_core.sql', '003_oauth.sql', '005_swarm.sql', '006_sessions.sql', '007_passkeys.sql', '008_lessons.sql', '009_oauth_client_cleanup.sql', '010_routing_policy.sql', '011_patch_routing.sql', '012_session_task.sql', '013_worker_slots.sql', '015_gateway_tenants.sql']) {
+    await pool.query(await readFile(new URL(`../db/migrations/${migration}`, import.meta.url), 'utf8'));
+  }
+  const logged: string[] = [], secrets: string[] = [];
+  const originals = { log: console.log, error: console.error, warn: console.warn };
+  const capture = (...args: unknown[]): void => { logged.push(args.map(String).join(' ')); };
+  console.log = capture; console.error = capture; console.warn = capture;
+  t.after(() => { console.log = originals.log; console.error = originals.error; console.warn = originals.warn; });
+  const { CoreService } = await import('../src/core/index.js');
+  const { OAuthService } = await import('../src/oauth.js');
+  const { ROLE_PERMISSIONS } = await import('../src/policy.js');
+  const { INVITE_ONLY, escapeHtml } = await import('../src/passkey-ui.js');
+  const { parseBridgeConfig } = await import('../src/bridge/config.js');
+  const backend = new CoreService(pool), auth = new AuthService(pool);
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const port = (server.address() as { port: number }).port;
+  const config: ServerConfig = {
+    host: '127.0.0.1', port, publicUrl: ORIGIN, allowedOrigins: [], allowInsecureLocalhost: false, maxBodyBytes: 65536,
+    oauthEnabled: true, oauthRedirectHosts: ['grok.example'], eventCallbackHosts: [], eventEncryptionKey: '',
+  };
+  server.on('request', createHttpHandler({ pool, core: backend, auth, config }));
+  const svc = new PasskeyService(pool, config), oauth = new OAuthService(pool, auth, config);
+  const base = `http://127.0.0.1:${port}`, browser = randomBytes(32).toString('base64url');
+  const binding = `swarmaa_pk=${browser}`;
+  // Node fetch ignores Host; use the native client to model tunnel Host + visitor-IP headers.
+  const fetchGateway = (url: string, init: { method?: string; headers?: Record<string, string>; body?: string | URLSearchParams; redirect?: 'manual' } = {}) => new Promise<Response>((resolve, reject) => {
+    const req = request(url, { method: init.method, headers: init.headers }, res => {
+      const chunks: Buffer[] = [], headers = new Headers();
+      for (let n = 0; n < res.rawHeaders.length; n += 2) headers.append(res.rawHeaders[n]!, res.rawHeaders[n + 1]!);
+      res.on('data', chunk => chunks.push(Buffer.from(chunk)));
+      res.on('end', () => resolve(new Response(Buffer.concat(chunks), { status: res.statusCode, headers })));
+      res.on('error', reject);
+    });
+    req.setTimeout(30_000, () => req.destroy(new Error('Gateway test request timed out.')));
+    req.on('error', reject); req.end(init.body?.toString());
+  });
+  let address = 1;
+  const headers = () => ({ host: new URL(ORIGIN).host, 'cf-connecting-ip': `192.0.2.${address++}` });
+  const post = (path: string, body: unknown, cookie = '', origin: string | null = ORIGIN, extra: Record<string, string> = {}) => fetchGateway(`${base}${path}`, {
+    method: 'POST', headers: { ...headers(), 'content-type': 'application/json', ...(origin ? { origin } : {}), cookie, ...extra }, body: JSON.stringify(body),
+  });
+  const sessionFrom = (res: Response): string => {
+    const token = /swarmaa_owner=([^;]+)/u.exec(res.headers.get('set-cookie') ?? '')?.[1];
+    assert.ok(token, 'registration must set an owner cookie'); secrets.push(token); return token;
+  };
+  const options = async (code?: string, cookie = binding) => {
+    const res = await post('/account/passkeys/register/options', code ? { code } : {}, cookie);
+    if (res.status !== 200) assert.fail(`register/options returned ${res.status}: ${((await res.json()) as { error: { code: string } }).error.code}`);
+    return ((await res.json()) as { options: { challenge: string; user: { id: string }; excludeCredentials: unknown[] } }).options;
+  };
+  const signup = async (code: string, device: SoftAuthenticator): Promise<string> => {
+    const o = await options(code);
+    const res = await post('/account/passkeys/register/verify', { code, response: device.register(o.challenge) }, binding);
+    assert.equal(res.status, 200); return sessionFrom(res);
+  };
+  const personalDevice = new SoftAuthenticator();
+  let device = new SoftAuthenticator();
+  const personalCode = await svc.createInvite(); secrets.push(personalCode);
+  const personalOwner = await signup(personalCode, personalDevice);
+  const personal = `swarmaa_owner=${personalOwner}`;
+  const invite = await svc.createGatewayInvite(), secondInvite = await svc.createGatewayInvite();
+  secrets.push(invite.code, secondInvite.code);
+  assert.match(invite.tenantId, /^t_[0-9a-f]{32}$/u);
+  assert.notEqual(invite.tenantId, secondInvite.tenantId);
+  const stored = await pool.query('SELECT tenant_id,code_hash FROM passkey_invites WHERE tenant_id=$1', [invite.tenantId]);
+  assert.deepEqual(stored.rows, [{ tenant_id: invite.tenantId, code_hash: tokenHash(invite.code) }]);
+
+  await t.test('admin gateway-invite returns a fresh tenant and private signup output; passkey-invite stays personal', async () => {
+    await mkdir('.local', { recursive: true });
+    const directory = await mkdtemp(resolve('.local/gateway-admin-'));
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    for (const command of ['gateway-invite', 'passkey-invite']) {
+      const file = `${directory}/${command}.json`;
+      const result = await promisify(execFile)(process.execPath, ['--import', 'tsx', 'scripts/admin.ts', command, '--minutes', '15', '--out', file], {
+        timeout: 120_000, env: { PATH: process.env.PATH, DATABASE_URL: process.env.TEST_DATABASE_URL, PUBLIC_URL: ORIGIN, PGOPTIONS: `-c search_path=${schema},public` },
+      });
+      assert.equal(result.stdout, '');
+      assert.equal((await stat(file)).mode & 0o077, 0);
+      const output = JSON.parse(await readFile(file, 'utf8')) as { code?: string; tenant?: string; url: string; expires_in_minutes: number };
+      const code = new URL(output.url).searchParams.get('code')!; secrets.push(code);
+      assert.equal(output.expires_in_minutes, 15);
+      assert.equal(new URL(output.url).origin, ORIGIN);
+      assert.equal(new URL(output.url).pathname, '/account');
+      assert.ok(!result.stderr.includes(code));
+      const row = (await pool.query('SELECT tenant_id,expires_at>now() AS usable FROM passkey_invites WHERE code_hash=$1', [tokenHash(code)])).rows[0];
+      assert.equal(row.usable, true);
+      if (command === 'gateway-invite') {
+        assert.equal(output.code, code); assert.equal(row.tenant_id, output.tenant);
+        assert.match(output.tenant!, /^t_[0-9a-f]{32}$/u); assert.notEqual(output.tenant, invite.tenantId);
+      } else {
+        assert.equal(row.tenant_id, 'personal'); assert.equal(output.tenant, undefined);
+      }
+    }
+  });
+
+  let ownerToken = '';
+  await t.test('registration requires an unexpired invite, binds its tenant, and spends it atomically', async () => {
+    const refusal = await post('/account/passkeys/register/options', {}, binding);
+    assert.equal(refusal.status, 403);
+    assert.equal(((await refusal.json()) as { error: { message: string } }).error.message, INVITE_ONLY);
+    assert.equal((await post('/account/passkeys/register/verify', { response: {} }, binding)).status, 403);
+    const guest = await (await fetch(`${base}/account`)).text();
+    assert.ok(guest.includes(escapeHtml(INVITE_ONLY)) && !guest.includes('data-pk="register"'));
+    const expired = await svc.createGatewayInvite(); secrets.push(expired.code);
+    await pool.query("UPDATE passkey_invites SET expires_at=now()-interval '1 second' WHERE code_hash=$1", [tokenHash(expired.code)]);
+    assert.equal((await post('/account/passkeys/register/options', { code: expired.code }, binding)).status, 403);
+    assert.equal(await svc.inviteUsable(expired.code), false);
+    const staleCode = await svc.createGatewayInvite(); secrets.push(staleCode.code);
+    const stale = await options(staleCode.code);
+    await pool.query("UPDATE passkey_invites SET expires_at=now()-interval '1 second' WHERE code_hash=$1", [tokenHash(staleCode.code)]);
+    assert.equal((await post('/account/passkeys/register/verify', { code: staleCode.code, response: new SoftAuthenticator().register(stale.challenge) }, binding)).status, 403);
+    const o = await options(invite.code);
+    assert.equal(o.excludeCredentials.length, 0, 'personal passkeys are not disclosed');
+    const personalOptions = await options(undefined, `${binding}; ${personal}`);
+    assert.notEqual(o.user.id, personalOptions.user.id, 'resident user handles differ by tenant');
+    assert.equal((await post('/account/passkeys/register/verify', { code: secondInvite.code, response: device.register(o.challenge) }, binding)).status, 403, 'cannot swap tenants after challenge issuance');
+    // Independent challenges race for one invite: only one credential/session may survive.
+    const other = await options(invite.code), racingDevice = new SoftAuthenticator();
+    const attempts = await Promise.all([
+      post('/account/passkeys/register/verify', { code: invite.code, response: device.register(o.challenge) }, binding),
+      post('/account/passkeys/register/verify', { code: invite.code, response: racingDevice.register(other.challenge) }, binding),
+    ]);
+    assert.deepEqual(attempts.map(r => r.status).sort(), [200, 403]);
+    ownerToken = sessionFrom(attempts.find(r => r.status === 200)!);
+    if (attempts[1]!.status === 200) device = racingDevice;
+    assert.equal((await svc.session(ownerToken))?.tenantId, invite.tenantId);
+    assert.equal((await pool.query('SELECT id FROM owner_passkeys WHERE tenant_id=$1', [invite.tenantId])).rows.length, 1);
+    assert.equal((await pool.query('SELECT id FROM owner_sessions WHERE tenant_id=$1', [invite.tenantId])).rows.length, 1);
+    assert.equal((await post('/account/passkeys/register/options', { code: invite.code }, binding)).status, 403);
+    assert.equal(await svc.inviteUsable(invite.code), false);
+  });
+
+  let owner = `swarmaa_owner=${ownerToken}`;
+  await t.test('credential lookup, owner sessions and passkey management resolve the invited tenant', async () => {
+    const login = await post('/account/passkeys/login/options', {}, binding);
+    const challenge = ((await login.json()) as { options: { challenge: string } }).options.challenge;
+    assert.equal((await pool.query('SELECT tenant_id FROM webauthn_challenges WHERE challenge=$1', [challenge])).rows[0].tenant_id, null);
+    const signedIn = await post('/account/passkeys/login/verify', { response: device.assert(challenge) }, binding);
+    assert.equal(signedIn.status, 200);
+    ownerToken = sessionFrom(signedIn); owner = `swarmaa_owner=${ownerToken}`;
+    assert.equal((await svc.session(ownerToken))?.tenantId, invite.tenantId);
+    assert.equal((await pool.query('SELECT tenant_id FROM webauthn_challenges WHERE challenge=$1', [challenge])).rows[0].tenant_id, invite.tenantId);
+    const second = new SoftAuthenticator();
+    const o = await options(secondInvite.code, `${binding}; ${owner}`);
+    assert.equal(o.excludeCredentials.length, 1);
+    const added = await post('/account/passkeys/register/verify', { code: secondInvite.code, response: second.register(o.challenge), name: '<Phone>' }, `${binding}; ${owner}`);
+    assert.equal(added.status, 200);
+    assert.equal((await svc.session(sessionFrom(added)))?.tenantId, invite.tenantId);
+    assert.equal(await svc.inviteUsable(secondInvite.code), true, 'an owner session wins and does not consume another invite');
+    const mine = await svc.list(ownerToken), theirs = await svc.list(personalOwner);
+    assert.equal(mine.length, 2); assert.equal(theirs.length, 1);
+    const page = await (await fetch(`${base}/account`, { headers: { cookie: owner } })).text();
+    assert.ok(page.includes('&lt;Phone&gt;') && page.includes('Add a worker Mac') && !page.includes(theirs[0]!.id));
+    await svc.remove(ownerToken, theirs[0]!.id);
+    assert.equal((await svc.list(personalOwner)).length, 1, 'foreign passkey is untouched');
+    await svc.remove(ownerToken, mine.find(p => p.name === '<Phone>')!.id);
+    await assert.rejects(svc.remove(ownerToken, mine[0]!.id), { code: 'last_passkey' });
+    const forged = randomBytes(32).toString('base64url');
+    assert.equal(await svc.session(forged), null);
+  });
+
+  const registered = await oauth.registerClient({ client_name: 'New <App>', redirect_uris: ['https://grok.example/callback'] });
+  const verifier = randomBytes(48).toString('base64url');
+  const query = new URLSearchParams({ client_id: String(registered.client_id), response_type: 'code', redirect_uri: 'https://grok.example/callback', resource: `${ORIGIN}/mcp`, state: 'gateway-state', code_challenge_method: 'S256', code_challenge: pkceChallenge(verifier) });
+  const authorizePath = `/oauth/authorize?${query}`;
+  const start = async (cookie = '') => {
+    const res = await fetchGateway(`${base}${authorizePath}`, { headers: { ...headers(), cookie } });
+    assert.equal(res.status, 200);
+    const html = await res.text();
+    return {
+      html, jar: `${cookie}; collective_oauth_browser=${/collective_oauth_browser=([^;]+)/u.exec(res.headers.get('set-cookie') ?? '')![1]}`,
+      form: { request_id: /name="request_id" value="([^"]+)"/u.exec(html)![1]!, csrf: /name="csrf" value="([^"]+)"/u.exec(html)![1]! },
+    };
+  };
+  const consent = (cookie: string, fields: Record<string, string>, origin: string | null = ORIGIN) => fetchGateway(`${base}/oauth/authorize`, {
+    method: 'POST', redirect: 'manual', headers: { ...headers(), cookie, 'content-type': 'application/x-www-form-urlencoded', ...(origin ? { origin } : {}) }, body: new URLSearchParams(fields),
+  });
+  let frontend: import('../src/types.js').Principal;
+  await t.test('signup returns to consent, which creates exactly one frontend after explicit approval', async () => {
+    const guest = await start();
+    assert.ok(guest.html.includes(escapeHtml(INVITE_ONLY)) && guest.html.includes('Have an invite?'));
+    for (const action of ['approve', 'create_first']) assert.ok((await consent(guest.jar, { ...guest.form, action })).status >= 400);
+    const signupUrl = /href="(\/account\?[^"]+)"/u.exec(guest.html)![1]!.replaceAll('&amp;', '&');
+    assert.equal(new URL(signupUrl, ORIGIN).searchParams.get('next'), authorizePath);
+    const signupPage = await (await fetch(`${base}${signupUrl}&code=${secondInvite.code}`)).text();
+    assert.ok(signupPage.includes(`data-next="${escapeHtml(authorizePath)}"`) && signupPage.includes('data-pk="register"'));
+    const resume = await fetch(`${base}${signupUrl}`, { headers: { cookie: owner }, redirect: 'manual' });
+    assert.equal(resume.status, 303); assert.equal(resume.headers.get('location'), authorizePath);
+    const unsafe = await fetch(`${base}/account?next=${encodeURIComponent('//evil.example')}`, { headers: { cookie: owner }, redirect: 'manual' });
+    assert.equal(unsafe.status, 200); assert.equal(unsafe.headers.get('location'), null);
+    const pending = await start(owner), concurrent = await start(owner);
+    assert.ok(pending.html.includes('Create identity and approve connection') && pending.html.includes('New &lt;App&gt;'));
+    assert.ok(pending.html.includes('project:general'));
+    for (const permission of ROLE_PERMISSIONS.frontend) assert.ok(pending.html.includes(permission));
+    const body = { ...pending.form, action: 'create_first' };
+    assert.equal((await consent(pending.jar, body, null)).status, 403);
+    assert.equal((await consent(pending.jar, { ...body, csrf: 'bad' })).status, 403);
+    assert.equal((await consent(owner, body)).status, 403);
+    assert.equal((await consent(pending.jar.replace(owner, personal), body)).status, 403);
+    assert.equal((await consent(pending.jar.replace(owner, ''), body)).status, 403);
+    assert.equal((await pool.query('SELECT id FROM principals WHERE tenant_id=$1', [invite.tenantId])).rows.length, 0, 'no mutation before valid consent');
+    const approvals = await Promise.all([consent(pending.jar, body), consent(concurrent.jar, { ...concurrent.form, action: 'create_first' })]);
+    assert.deepEqual(approvals.map(r => r.status).sort(), [303, 409]);
+    const approved = approvals.find(r => r.status === 303)!;
+    const callback = new URL(approved.headers.get('location')!);
+    assert.equal(callback.searchParams.get('state'), 'gateway-state');
+    const issued = await oauth.exchangeToken(new URLSearchParams({ grant_type: 'authorization_code', client_id: String(registered.client_id), code: callback.searchParams.get('code')!, redirect_uri: 'https://grok.example/callback', resource: `${ORIGIN}/mcp`, code_verifier: verifier }));
+    secrets.push(String(issued.access_token), String(issued.refresh_token));
+    frontend = (await oauth.authenticate(String(issued.access_token)))!;
+    assert.equal(frontend.tenantId, invite.tenantId);
+    assert.equal(frontend.role, 'frontend');
+    assert.deepEqual(frontend.scopes, ['project:general']);
+    assert.deepEqual(frontend.permissions, ROLE_PERMISSIONS.frontend);
+    assert.equal((await pool.query("SELECT id FROM principals WHERE tenant_id=$1 AND role='frontend'", [invite.tenantId])).rows.length, 1);
+    assert.ok((await consent(pending.jar, body)).status >= 400, 'cannot replay creation');
+    const existing = await start(owner);
+    assert.ok(existing.html.includes('identify_owner') && !existing.html.includes('value="create_first"'));
+    const identified = await consent(existing.jar, { ...existing.form, action: 'identify_owner', principal_id: frontend.id });
+    assert.equal(identified.status, 200);
+    const review = await identified.text();
+    const approve = { request_id: existing.form.request_id, csrf: /name="csrf" value="([^"]+)"/u.exec(review)![1]!, action: 'approve' };
+    assert.equal((await consent(existing.jar.replace(owner, personal), approve)).status, 403, 'owner cannot change between review and approval');
+    assert.equal((await consent(existing.jar.replace(owner, ''), approve)).status, 403, 'review requires owner to remain signed in');
+    assert.equal((await consent(existing.jar, approve)).status, 303);
+    const emptyPersonal = await start(personal);
+    assert.ok(!emptyPersonal.html.includes('value="create_first"') && emptyPersonal.html.includes('npm run admin -- create'));
+  });
+
+  let worker: import('../src/types.js').Principal, workerToken = '';
+  await t.test('owner worker minting enforces origin, session, input, cookie and one-time output protections', async () => {
+    const path = '/account/workers';
+    assert.equal((await post(path, { name: 'worker-mac' })).status, 403);
+    assert.equal((await post(path, { name: 'worker-mac' }, owner, null)).status, 403);
+    assert.equal((await post(path, { name: 'worker-mac' }, owner, 'https://evil.example')).status, 403);
+    assert.equal((await post(path, { name: 'worker-mac' }, owner, ORIGIN, { 'content-type': 'text/plain' })).status, 415);
+    for (const body of [{ name: '<script>' }, { name: 'x'.repeat(101) }, { name: 'worker-mac', tenant: 'personal' }, { name: 'worker-mac', scopes: ['*'] }, { name: 'worker-mac', permissions: ['admin'] }]) {
+      assert.equal((await post(path, body, owner)).status, 400);
+    }
+    const res = await post(path, { name: 'worker-mac' }, owner);
+    assert.equal(res.status, 201); assert.equal(res.headers.get('cache-control'), 'no-store');
+    const minted = await res.json() as { id: string; token: string; scopes: string[]; bridge: unknown };
+    secrets.push(minted.token);
+    workerToken = minted.token;
+    assert.equal(parseBridgeConfig(minted.bridge).service_url, ORIGIN);
+    worker = (await auth.authenticate(minted.token))!;
+    assert.equal(worker.tenantId, invite.tenantId); assert.equal(worker.role, 'worker');
+    assert.deepEqual(worker.scopes, frontend.scopes);
+    assert.deepEqual(worker.permissions, ROLE_PERMISSIONS.worker);
+    assert.equal((await pool.query('SELECT token_hash FROM principals WHERE id=$1', [minted.id])).rows[0].token_hash, tokenHash(minted.token));
+    const reload = await (await fetch(`${base}/account`, { headers: { cookie: owner } })).text();
+    assert.ok(!reload.includes(minted.token), 'no redisplay on reload');
+    assert.equal((await post(path, { name: 'worker-mac' }, owner)).status, 409);
+    const rateHeaders = { 'cf-connecting-ip': '198.51.100.1' };
+    for (let n = 0; n < 5; n++) assert.equal((await post(path, { name: 'worker-mac' }, owner, ORIGIN, rateHeaders)).status, 409);
+    assert.equal((await post(path, { name: 'worker-mac' }, owner, ORIGIN, rateHeaders)).status, 429);
+  });
+
+  await t.test('invited identities cannot list, read or claim personal tasks, memories, sessions or identities', async () => {
+    const id = randomUUID();
+    await pool.query("INSERT INTO principals(id,tenant_id,name,role,scopes,permissions,token_hash) VALUES($1,'personal','private-personal','frontend',$2,$3,$4)", [id, ['project:general', 'project:private'], ROLE_PERMISSIONS.frontend, tokenHash(randomUUID())]);
+    const personalFront = (await auth.getPrincipal(id))!;
+    const call = (p: import('../src/types.js').Principal, name: string, args: Record<string, unknown>) => backend.call(p, name, args) as Promise<Record<string, any>>;
+    const submission = { scope: 'project:general', kind: 'research', objective: 'Read the project.', constraints: ['Read only.'], acceptance_criteria: ['Return a summary.'], required_capability: 'codex.read', idempotency_key: 'same-task-key' };
+    const personalTask = (await call(personalFront, 'task_submit', submission)).task;
+    const memory = (await call(personalFront, 'memory_propose', { scope: 'project:general', kind: 'note', key: 'same-memory-key', content: 'Private personal memory', source: { type: 'agent', reference: 'test://gateway' } })).memory;
+    const session = (await call(personalFront, 'session_record', { harness: 'codex', session_id: 'same-session-key', scope: 'project:general', turns: [{ role: 'user', text: 'Private personal conversation' }] })).session;
+    for (const p of [frontend, worker]) {
+      for (const [name, args] of [['task_get', { task_id: personalTask.id }], ['memory_get', { memory_id: memory.id }], ['session_get', { id: session.id }]] as const) await assert.rejects(call(p, name, args), { code: 'not_found' });
+      assert.deepEqual((await call(p, 'task_list', { scope: 'project:general' })).tasks, []);
+      assert.deepEqual((await call(p, 'memory_search', { scope: 'project:general' })).memories, []);
+      assert.deepEqual((await call(p, 'session_list', {})).sessions, []);
+    }
+    const claimArgs = { scope: 'project:general', capabilities: ['codex.read'], lease_seconds: 30 };
+    const claim = async () => {
+      const res = await post('/api/tools/task_claim', claimArgs, '', ORIGIN, { authorization: `Bearer ${workerToken}` });
+      assert.equal(res.status, 200);
+      return ((await res.json()) as { result: { task: { id: string } | null } }).result;
+    };
+    assert.equal((await claim()).task, null, 'never claims a personal task, even with matching capability and scope');
+    const mine = (await call(frontend, 'task_submit', submission)).task;
+    assert.notEqual(mine.id, personalTask.id);
+    assert.equal((await claim()).task?.id, mine.id);
+    assert.equal((await call(personalFront, 'task_get', { task_id: personalTask.id })).task.status, 'queued');
+    await assert.rejects(call(personalFront, 'task_get', { task_id: mine.id }), { code: 'not_found' });
+    const selection = await start(owner);
+    assert.ok(!selection.html.includes(id) && !selection.html.includes('private-personal'));
+    assert.equal((await consent(selection.jar, { ...selection.form, action: 'identify_owner', principal_id: id })).status, 403);
+    const ownSelection = await start(personal);
+    assert.ok(ownSelection.html.includes(id) && !ownSelection.html.includes(frontend.id));
+    assert.equal((await pool.query('SELECT tenant_id FROM principals WHERE id=$1', [worker.id])).rows[0].tenant_id, invite.tenantId);
+    const personalWorker = await svc.createWorker(personalOwner, 'worker-mac'); secrets.push(personalWorker.token);
+    assert.deepEqual(personalWorker.scopes, ['project:general', 'project:private']);
+    assert.equal((await auth.authenticate(personalWorker.token))?.tenantId, 'personal');
+  });
   for (const secret of secrets) for (const line of logged) assert.ok(!line.includes(secret), 'secret appeared in console output');
 });
