@@ -19,7 +19,7 @@ test('slugScopes normalizes basenames and suffixes collisions', () => {
 test('plist escapes strings and sets launchd keys', () => {
   const x = plist('com.swarma.t', ['/bin/node', 'a&b<c>"\''], { workingDirectory: '/r', env: { PATH: '/a:/b', HOME: '/h' }, stdout: '/l/o.log', stderr: '/l/o.log' });
   assert.match(x, /a&amp;b&lt;c&gt;&quot;&apos;/);
-  for (const k of ['RunAtLoad', 'KeepAlive', 'ThrottleInterval', 'ProcessType', 'Background', 'WorkingDirectory', 'StandardOutPath']) assert.ok(x.includes(k), k);
+  for (const k of ['RunAtLoad', 'KeepAlive', 'ThrottleInterval', 'ProcessType', 'Standard', 'WorkingDirectory', 'StandardOutPath']) assert.ok(x.includes(k), k);
   assert.ok(!x.includes('a&b<'));
   assert.ok(!plist('l', ['x']).includes('EnvironmentVariables'));
 });

@@ -100,7 +100,9 @@ export function plist(label: string, programArguments: string[], opts: PlistOpti
     + (opts.startInterval !== undefined ? int('StartInterval', opts.startInterval) : '')
     + (opts.calendar ? `\t<key>StartCalendarInterval</key>\n\t<dict>\n\t\t<key>Hour</key>\n\t\t<integer>${Math.trunc(opts.calendar.hour)}</integer>\n\t\t<key>Minute</key>\n\t\t<integer>${Math.trunc(opts.calendar.minute)}</integer>\n\t</dict>\n` : '')
     + (oneShot ? '' : '\t<key>ThrottleInterval</key>\n\t<integer>10</integer>\n')
-    + str('ProcessType', 'Background')
+    // Background puts a job in the lowest macOS tier (priority 4, throttled disk), which starved Postgres and the
+    // service whenever a build or agents were busy. Long-running jobs get the normal tier; one-shot chores stay low.
+    + str('ProcessType', oneShot ? 'Background' : 'Standard')
     + (opts.stdout ? str('StandardOutPath', opts.stdout) : '')
     + (opts.stderr ? str('StandardErrorPath', opts.stderr) : '')
     + '</dict>\n</plist>\n';
