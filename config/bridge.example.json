@@ -1,5 +1,5 @@
 {
-  "service_url": "https://collective.example.com",
+  "service_url": "https://swarmaa.example.com",
   "token_env": "COLLECTIVE_WORKER_TOKEN",
   "poll_seconds": 5,
   "lease_seconds": 120,

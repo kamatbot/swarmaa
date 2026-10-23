@@ -38,7 +38,7 @@ function amount(a: unknown): number | undefined {
   return m === undefined ? undefined : m / 10 ** (num(a.exponent) ?? 2);
 }
 
-/** Pure: map GET /api/oauth/usage to windows. Mirrors NotchTrader's UsageResponse.limitWindows (limits[] preferred, named windows merged in, spend as 'spend'). */
+/** Pure: map GET /api/oauth/usage to windows (limits[] preferred, named windows merged in, spend as 'spend'). */
 export function parseClaudeUsage(json: unknown, now: Date = new Date()): UsageWindow[] {
   if (!isObj(json)) return [];
   const out = new Map<string, UsageWindow>();

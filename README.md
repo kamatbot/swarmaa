@@ -1,58 +1,54 @@
 # Swarmaa
 
-Shared memory, task routing and MCP access for Claude Code, Codex, Antigravity, Dot and Grok. Start with `npm run setup` and [docs/SWARMA.md](docs/SWARMA.md); the sections below describe the underlying companion service.
+**One shared memory and quota-aware task queue for all your coding and chat agents—running locally on your Mac.**
 
-Shared project memory and durable tasks for **Dot and Grok Bot as equal entrypoints**, with Claude, Codex and Antigravity connected to the same records.
+Swarmaa connects **Claude Code**, **Codex**, **Antigravity**, **Dot**, and **Grok Bot** to a single PostgreSQL-backed service over MCP and REST. Any agent can read and propose scoped project memories, hand off durable tasks, and resume work another agent started—while background workers automatically route tasks to whichever provider has the most quota headroom left.
 
-This is a source implementation of a small, self-hosted network. PostgreSQL owns the memory, tasks, leases, event outbox and text artifacts. MCP and REST expose the same authorization checks. A bridge on your Mac runs a configured Claude or Codex CLI against a fixed project directory. Reason Network remains an optional peer messaging layer.
+---
 
-**Release state:** source authored and reviewed; dependencies, build, tests, migrations, servers and real provider connections were not executed in the authoring session. Read [docs/STATUS.md](docs/STATUS.md) before setup. This is a starting implementation to validate locally, not a certified deployment.
+## What It Is
 
-## Open in Claude
+- **Shared project memory (`project:<name>`):** Sourced notes, observations, and owner-reviewed decisions/preferences/procedures with optimistic version checks, conflict preservation, and live-store retraction.
+- **Quota-aware task routing (`auto.read` / `auto.patch`):** Workers report 5-hour and weekly quota windows (`usage_report`). Swarmaa routes review, research, and patch tasks by your priority policy and remaining quota headroom.
+- **Sandboxed background workers:** Local macOS worker bridges run Claude Code, Codex, and Antigravity headlessly with bounded execution time/output, database lease fencing, and Seatbelt credential-directory protection.
+- **Isolated git worktree patches:** When edits are opted into, patch tasks run in isolated git worktrees (`~/.swarma/worktrees/`), commit to local `swarmaa/<provider>/<id>` branches, upload a diff artifact, and never push.
+- **Cross-harness session journal & distilled lessons:** Hooks and a read-only local poller capture chat turns from Claude Code, Codex, Antigravity, Cursor, OpenCode, GitHub Copilot CLI, Cline, Roo Code, Devin CLI, Hermes, Factory, Pi, Kiro, Windsurf, and Qwen Code—and distill reusable project lessons for owner review.
 
-Unzip the archive, open a terminal in this directory, start Claude Code, and ask it to read [CLAUDE_HANDOFF.md](CLAUDE_HANDOFF.md). The repository includes [CLAUDE.md](CLAUDE.md), which explains the implementation boundaries and source-only authoring state.
+---
 
-A normal Claude chat can review uploaded files, but uploading this ZIP does not install a service, import credentials, or connect accounts. Use Claude Code with access to the extracted folder for installation and local verification. If a chat cannot accept ZIP files, attach the handoff and the individual files it needs.
+## Quick Start
 
-## Architecture
+### Prerequisites
 
-```mermaid
-flowchart TD
-    Dot[Dot] --> MCP[MCP and OAuth]
-    Grok[Grok Bot] --> MCP
-    Interactive[Claude, Codex and Antigravity clients] --> MCP
-    MCP --> Core[Memory and task service]
-    Core <--> DB[(PostgreSQL)]
-    Bridge[Mac worker bridge] <--> Core
-    Bridge --> Workers[Claude or Codex CLI]
-    Bridge -. optional notification .-> Reason[Reason Network peers]
-    DB --> Events[Event delivery]
-    Events --> Dot
-    Events -. configured receiver .-> Grok
+- **macOS** (for Seatbelt worker sandboxing, Keychain launchers, and LaunchAgent autostart)
+- **Node.js 24.x** (`.nvmrc` specifies `24`) and `npm`
+- **PostgreSQL 17** (`brew install postgresql@17` for automatic local cluster provisioning via `npm run setup`, or Docker / an existing PostgreSQL 16+ instance)
+
+### One-Command Local Setup
+
+```bash
+git clone https://github.com/kamatbot/swarmaa.git
+cd swarmaa
+npm install
+npm run setup
 ```
 
-One project scope, such as `project:demo`, identifies a shared workspace in the service. Every connection has a separate identity and an explicit list of scopes. A worker's local config maps each scope to an absolute directory on that machine. Task text cannot choose a command or directory.
+`npm run setup` launches a local browser onboarding wizard (use `npm run setup -- --cli` for terminal prompts, or `npm run setup -- --dry-run` to preview actions without modifying files). It:
 
-The service shares explicit facts, decisions, task state and artifacts. It does not read or merge the private internal memory stores of Claude, ChatGPT, Grok or Antigravity. Each client retrieves the shared context it needs through tools.
+1. Initializes a local PostgreSQL 17 cluster in `.local/pg` on `127.0.0.1:54329` and applies all schema migrations.
+2. Generates `.env` with random local credentials and creates one scoped identity per connected client in `.local/<name>.json` (`chmod 600`).
+3. Registers the `swarma` MCP server in **Claude Code**, **Codex**, and **Antigravity** using `clients/macos/swarma-mcp.sh` (tokens stay in `.local/*.json` and never appear in client configs or process arguments).
+4. Configures read-only background worker bridges (`.local/bridge-<agent>.json`) and optional macOS `LaunchAgents` (`com.swarma.postgres`, `com.swarma.service`, `com.swarma.bridge.<agent>`).
 
-## What is included
+Once connected, type `/swarm` inside Claude Code or Antigravity (or `$swarm` in Codex, after `npx tsx scripts/hooks-install.ts`) to inspect live workers, provider quota headroom, and recent swarm runs.
 
-| Component | Implementation |
-|---|---|
-| Collective memory | Sourced records, revisions, proposed decisions, conflict records, owner promotion, expiration and live-store retraction |
-| Durable work | Idempotent submission, continuation with expected versions, leases, heartbeats, checkpoints, bounded attempts and worker-result artifacts |
-| Common access | REST tools, HTTP MCP, a local stdio proxy, opaque connection tokens and OAuth public-client PKCE |
-| Notifications | Persistent MCP event subscriptions, signed callback verification and delivery, retries, revocation binding and owner-configured generic sinks |
-| Mac execution | Fixed project mapping, one local task at a time, bounded subprocess output/time, lease-loss shutdown and restricted provider settings |
-| Client setup | Claude, Codex, Antigravity, Dot and Grok instructions; macOS Keychain launcher examples |
-| Upstream | Pinned Reason Network source with original license notices, as an optional component |
-| Handoff | Local validation guide, operational instructions, authored tests and an earlier architecture report |
+See [docs/SWARMA.md](docs/SWARMA.md) for day-to-day commands, `/swarm` usage, chat capture, and lesson distillation.
 
-## Local setup
+---
 
-Use a disposable demo project first. You need Node.js 24 (24.x only), npm, and PostgreSQL 16+; the supplied Compose file uses PostgreSQL 17. Docker is optional if you already administer PostgreSQL. Claude/Codex CLIs are needed only when you start their worker adapters.
+## Self-Host & Manual Setup
 
-The commands below are for your local machine. They were not run while creating this source bundle. If your current Claude session is under a code-only policy, explicitly authorize local installation/build/test execution before asking it to run them.
+If you prefer to manage PostgreSQL and identities manually (or run PostgreSQL in Docker):
 
 ```bash
 npm install
@@ -64,70 +60,112 @@ npm test
 npm run build
 ```
 
-`npm install` creates the first `package-lock.json`. Review and retain it; the archive does not contain a fabricated lockfile. Later installs should use `npm ci`. `.env` is created once with random credentials and restrictive local permissions. The initializer refuses to overwrite an existing file.
-
-Create separate connections. `init:local` creates the `.local` directory used below:
+Provision separate scoped identities for each client and worker (keep the `owner` admin credential out of all model clients and worker environments):
 
 ```bash
 npm run admin -- create --name owner --role admin --scopes '*' --out .local/owner.json
 npm run admin -- create --name dot --role frontend --scopes project:demo --out .local/dot.json
 npm run admin -- create --name grok --role frontend --scopes project:demo --out .local/grok.json
-npm run admin -- create --name demo-worker --role worker --scopes project:demo --out .local/demo-worker.json
-npm run admin -- create --name macmini --role worker --scopes project:demo --out .local/macmini.json
 npm run admin -- create --name claude-interactive --role frontend --scopes project:demo --out .local/claude.json
 npm run admin -- create --name codex-interactive --role frontend --scopes project:demo --out .local/codex.json
 npm run admin -- create --name antigravity-interactive --role frontend --scopes project:demo --out .local/antigravity.json
+npm run admin -- create --name worker-1 --role worker --scopes project:demo --out .local/worker-1.json
 ```
 
-Keep the owner credential outside all model clients and worker environments. Only the owner can promote/retract shared directives. The token files contain real secrets after you create them; do not upload them into a chat or commit them.
-
-Start the service in one terminal:
+Start the service and verify the end-to-end flow with the local demo script:
 
 ```bash
 npm run dev
-```
-
-In a second terminal, demonstrate cross-entrypoint service access without calling a model:
-
-```bash
+# In a second terminal:
 node --env-file=.env --import tsx scripts/demo.ts
 ```
 
-The demo uses the Dot identity to create a memory and task, reads them with the Grok identity, completes the task with the dedicated demo worker, and reads the result with Grok. It creates clearly labeled demonstration data. It does not prove that either vendor's app has connected; that is a separate client acceptance step.
+### Connecting Hosted Agents (Dot & Grok Bot)
 
-## Connect your agents
+Interactive desktop CLIs talk to `http://127.0.0.1:8787` over the local stdio proxy. Hosted cloud agents (**Dot**, **Grok Bot**, or remote connectors) require an HTTPS endpoint with OAuth PKCE:
 
-Read [docs/AGENT_SETUP.md](docs/AGENT_SETUP.md) for each client and the bridge. Start with the local stdio proxy for desktop clients. Dot and cloud Grok access require the service to be reachable over HTTPS. [docs/OPERATIONS.md](docs/OPERATIONS.md) describes the public origin, proxy, OAuth redirects, event callback allowlist and credential rotation.
+- **Tailscale (personal devices):** `tailscale serve --bg 8787`
+- **Cloudflare Tunnel (hosted agents):** `npm run tunnel` (or configure `cloudflared` to route your domain to `http://127.0.0.1:8787`), set `PUBLIC_URL=https://<your-host>` and `OAUTH_REDIRECT_HOSTS` in `.env`, and restart the service.
 
-Read tasks run as `<provider>.read` or `auto.read`; edit tasks as `<provider>.patch` or `auto.patch`. Edits are an explicit per-install opt-in (setup's "Allow edits", default read-only): the worker gets the `task:patch` grant and `enable_patch`/`allow_patch` together. Edit tasks run in sandboxed git worktrees with commands allowed, commit to the local branch `swarma/<provider>/<id>` and never push. Antigravity does review and in-project edits, not research. The routing policy picks the provider by order and quota. Interactive Antigravity use over MCP is unchanged.
+Detailed guides: [Agent & Worker Setup](docs/AGENT_SETUP.md), [Operations & HTTPS/OAuth](docs/OPERATIONS.md), and [Transport & MCP Spec](docs/TRANSPORT.md).
 
-## Example work request
+---
 
-After connecting Dot or Grok, use:
+## Architecture
 
-> In `project:demo`, find any existing task for reviewing this project. Read the shared context. If there is no matching task, submit a review for the configured `claude.read` worker. Ask it to identify the three most useful improvements, cite local files and return a report. Use a stable idempotency key. Save the task ID so I can continue it from the other entrypoint. Do not submit a patch task.
+```mermaid
+flowchart TD
+    Dot[Dot] --> MCP[MCP / REST & OAuth PKCE]
+    Grok[Grok Bot] --> MCP
+    Interactive[Claude Code, Codex & Antigravity] --> MCP
+    MCP --> Core[Swarmaa Core Service]
+    Core <--> DB[(PostgreSQL 17)]
+    Bridge[macOS Worker Bridge] <--> Core
+    Bridge --> Workers[Sandboxed Claude, Codex & Antigravity CLIs]
+    Bridge -. optional peer notification .-> Reason[Reason Network]
+    DB --> Events[Signed Event Outbox]
+    Events --> Dot
+    Events -. configured webhook sink .-> Grok
+```
 
-Then ask the other entrypoint:
-
-> Read task `<task-id>` in `project:demo`, retrieve its artifacts when complete, and explain the result. Preserve uncertainty and show any unresolved memory conflicts.
-
-Use the capability strings from [docs/AGENT_SETUP.md](docs/AGENT_SETUP.md); they must exactly match your configured adapter IDs.
-
-## Project map
+### Repository Map
 
 | Path | Purpose |
 |---|---|
-| `src/core/` | Memory, tasks, artifacts and tool schemas |
-| `src/http.ts`, `src/mcp.ts`, `src/oauth.ts` | HTTP/MCP routing and public-client OAuth |
-| `src/events.ts`, `src/webhook.ts` | Durable event delivery and callback controls |
-| `src/bridge/`, `src/bridge.ts` | Mac worker orchestration |
-| `src/stdio-proxy.ts` | Local MCP proxy for desktop clients |
-| `db/migrations/` | Four ordered PostgreSQL migrations |
-| `scripts/` | Initialization, migration, identity administration and demo |
-| `clients/` | Client configurations, instructions and Keychain launchers |
-| `tests/` | Authored unit and PostgreSQL integration tests |
-| `vendor/reason-network/` | Optional upstream source at the pinned commit |
+| `src/core/` | Scoped memory, durable tasks/leases, quota-aware routing, sessions, lessons, and MCP tool schemas |
+| `src/http.ts`, `src/mcp.ts`, `src/oauth.ts`, `src/passkeys.ts` | HTTP/MCP protocol framing, OAuth 2.1 S256 PKCE, and WebAuthn passkey sign-in |
+| `src/events.ts`, `src/webhook.ts` | Transactional event outbox, subscriptions, and signed webhook delivery with DNS/IP pinning |
+| `src/bridge/`, `src/bridge.ts` | macOS worker orchestration, CLI adapters, Seatbelt profiles, and git worktree management |
+| `src/capture/`, `src/safety/`, `src/usage/` | Local chat transcript capture, secret redaction/safety linting, and provider quota parsers |
+| `src/stdio-proxy.ts` | Local stdio-to-HTTP MCP proxy for desktop agent clients |
+| `db/migrations/` | Ordered PostgreSQL schema migrations |
+| `scripts/` | Interactive setup wizard, identity administration, migrations, tunnel, distillation, and smoke tests |
+| `clients/` | Client config templates, `/swarm` command skill, journal hooks, and macOS Keychain launchers |
+| `tests/` | Unit tests (`npm test`) and PostgreSQL integration suites (`npm run test:integration`) |
+| `vendor/reason-network/` | Optional pinned upstream Reason Network source snapshot |
 
-Further reading: [API](docs/API.md), [transport](docs/TRANSPORT.md), [security boundaries](docs/SECURITY.md), [validation](docs/VALIDATION.md), [status](docs/STATUS.md), [sources](docs/SOURCES.md).
+Further documentation: [Core API](docs/API.md) · [Swarmaa Guide](docs/SWARMA.md) · [Agent Setup](docs/AGENT_SETUP.md) · [Transport & OAuth](docs/TRANSPORT.md) · [Operations](docs/OPERATIONS.md) · [Validation](docs/VALIDATION.md) · [Release Status](docs/STATUS.md) · [Sources](docs/SOURCES.md) · [Contributor Guide](CONTRIBUTING.md) · [Agent Invariants](AGENTS.md).
 
-Tests and builds were not run. Local Codex should validate the changes before integration. The same validation guide is supplied for your Claude Code handoff.
+---
+
+## Security
+
+Swarmaa is designed around explicit trust boundaries:
+
+- **Per-client scoped credentials:** Provisioned tokens are stored only as SHA-256 digests. Every request is checked against tenant, role (`frontend`, `worker`, `admin`), and exact project scopes (`project:<name>`) in `CoreService`.
+- **Untrusted memory & transcripts:** Memories, task objectives, chat transcripts, and artifacts are treated strictly as data—never as execution grants or tool permissions. Shared decisions, preferences, and procedures stay `proposed` until promoted by an `admin` credential.
+- **Read-only by default, isolated worktrees for edits:** Workers default to read-only review/research. Edit tasks (`<provider>.patch` / `auto.patch`) require explicit opt-in (`task:patch` grant plus local bridge config), execute inside isolated git worktrees, commit to local `swarmaa/<provider>/<id>` branches, and never push or deploy.
+- **Credential scrubbing & Seatbelt sandboxing:** The worker bridge strips service tokens (`COLLECTIVE_*` / `SWARMAA_*`) from model subprocesses and wraps workers in a macOS Seatbelt profile that blocks access to sensitive credential directories (`~/.ssh`, `~/.aws`, `~/.config/gh`, etc.).
+- **SSRF-guarded webhooks:** Outbound event deliveries validate public DNS hostnames, reject private/loopback IP ranges, pin the validated IP for the connection, reject HTTP redirects, and sign payloads with Standard Webhooks HMAC.
+
+Read [SECURITY.md](SECURITY.md) for vulnerability disclosure instructions (`mayur@kamatbot.com`) and [docs/SECURITY.md](docs/SECURITY.md) for the full threat model and operator checklist.
+
+---
+
+## Acknowledgements & Trademarks
+
+Swarmaa builds upon and integrates with open-source work from the community:
+
+- **[agent-beacon](https://github.com/asymptote-labs/agent-beacon) by Asymptote Labs** (MIT License) — Local chat-history readers in `src/capture/` and single-event safety lint rules in `src/safety/lint.ts` and `tests/fixtures/beacon-lint-fixtures.json` are adapted from `agent-beacon`.
+- **[Reason Network](https://github.com/reason-machines/reason-network) by Reason Machines, Inc. and the tincan contributors** (MIT OR Apache-2.0) — Vendored under `vendor/reason-network` as an optional peer-discovery and notification layer.
+- **IBM Plex** (Copyright © 2017 IBM Corp.) and **Stardos Stencil** (Copyright © 2010 Vernon Adams) — Web fonts distributed under the SIL Open Font License 1.1 (`site/public/fonts/`).
+
+See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for complete copyright notices and license texts.
+
+### Trademark Disclaimer
+
+Swarmaa is an independent open-source project and is not affiliated with, endorsed by, or sponsored by any of the following companies:
+
+- **Claude** and **Claude Code** are trademarks of **Anthropic, PBC**.
+- **Codex**, **ChatGPT**, and **Dot** are trademarks of **OpenAI**.
+- **Antigravity** and **Gemini** are trademarks of **Google LLC**.
+- **Cursor** is a trademark of **Anysphere, Inc.**
+- **Grok** is a trademark of **xAI Corp.**
+
+All other product and company names mentioned in this repository are trademarks or registered trademarks of their respective holders and are used solely to describe interoperability.
+
+---
+
+## License
+
+Released under the [MIT License](LICENSE). Copyright (c) 2026 Mayur Kamat.

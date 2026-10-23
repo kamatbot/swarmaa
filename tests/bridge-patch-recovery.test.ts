@@ -12,7 +12,8 @@ import { ARTIFACT_MAX_BYTES } from '../src/types.js';
 const git = (cwd: string, ...a: string[]) => execFileSync('git', ['-C', cwd, ...a], { encoding: 'utf8', env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null' } }).trim();
 const ok: ProcessResult = { exit_code: 0, signal: null, stdout: '{"type":"turn.completed"}', stderr: '', duration_ms: 1, stop_reason: null };
 const ID = '12345678-1111-4111-8111-111111111111';
-const BRANCH = 'swarma/codex/12345678';
+const BRANCH = 'swarmaa/codex/12345678';
+const LEGACY_BRANCH = 'swarma/codex/12345678';
 
 function setup() {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'patchrec-')));
@@ -111,5 +112,22 @@ test('finalization failure fails the task, keeps the worktree and reports recove
     assert.equal(r.result.execution_completed, false);
     assert.ok(existsSync(join(r.result.worktree_path, 'x.txt')));
     assert.equal(r.result.recovery, `edits kept in ${r.result.worktree_path} on branch ${BRANCH}; commit or remove manually`);
+  } finally { rmSync(s.dir, { recursive: true, force: true }); }
+});
+
+test('recovery accepts legacy swarma/<provider>/<id> branch prefix', async () => {
+  const s = setup();
+  try {
+    git(s.root, 'checkout', '-qb', LEGACY_BRANCH);
+    writeFileSync(join(s.root, 'legacy.txt'), 'old\n');
+    git(s.root, 'add', '-A');
+    git(s.root, 'commit', '-qm', 'legacy');
+    git(s.root, 'checkout', '-q', 'main');
+    const r = await s.attempt(cwd => writeFileSync(join(cwd, 'new.txt'), 'n\n'));
+    assert.equal(r.finish.outcome, 'completed');
+    assert.equal(r.result.continued, true);
+    assert.equal(r.result.branch, LEGACY_BRANCH);
+    assert.equal(git(s.root, 'show', `${LEGACY_BRANCH}:legacy.txt`), 'old');
+    assert.equal(git(s.root, 'show', `${LEGACY_BRANCH}:new.txt`), 'n');
   } finally { rmSync(s.dir, { recursive: true, force: true }); }
 });

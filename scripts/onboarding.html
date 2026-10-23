@@ -202,7 +202,7 @@ function buildServices() {
     const rec = { card, connect, s };
     const sub = h('div', { class: 'sub' });
     if (s.worker) { const r = subRow(`w-${s.key}`, 'Run background worker', 'Read-only: picks up review and research tasks. It cannot change your files.', !!(st.workers || []).includes(s.key)); rec.worker = r.input; sub.append(r.row);
-      const e = subRow(`e-${s.key}`, 'Allow edits (off = read-only)', 'Opt in: edits files and runs commands in sandboxed git worktrees, commits to local swarma/' + s.key + '/<id> branches, never pushes.', !!(st.edits || []).includes(s.key)); rec.edit = e.input; sub.append(e.row); }
+      const e = subRow(`e-${s.key}`, 'Allow edits (off = read-only)', 'Opt in: edits files and runs commands in sandboxed git worktrees, commits to local swarmaa/' + s.key + '/<id> branches, never pushes.', !!(st.edits || []).includes(s.key)); rec.edit = e.input; sub.append(e.row); }
     if (s.share) { const r = subRow(`s-${s.key}`, 'Share chats across harnesses', 'Records this tool’s chats so your other agents can recall them.', st.sharing ? st.sharing.includes(s.key) : true); rec.share = r.input; sub.append(r.row); }
     if (sub.children.length) { card.append(sub); rec.sub = sub; }
     sv[s.key] = rec; $('services').append(card);

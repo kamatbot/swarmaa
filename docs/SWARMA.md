@@ -3,7 +3,7 @@
 Swarmaa connects your agent CLIs and chat agents to one shared memory and task queue. Claude Code,
 Codex and Antigravity read and write the same project memory over MCP. Claude, Codex and Antigravity can also
 run as background workers that pick up read-only review/research tasks. Dot and Grok use the same
-service over HTTPS. NotchTrader shows the agents and swarms in the notch.
+service over HTTPS. The Swarmaa macOS app shows the agents and swarms in the notch.
 
 ## First launch
 
@@ -13,7 +13,7 @@ npm run setup
 ```
 
 `npm run setup` opens a one-page onboarding in your browser (`-- --cli` for terminal prompts). It asks which project folders the swarm may read, which installed CLIs to connect, which
-ones to run as background workers, whether to show Swarmaa in NotchTrader, and whether to start
+ones to run as background workers, whether to show Swarmaa in the macOS notch app, and whether to start
 everything at login. It is safe to re-run; answers are remembered in `.local/setup.json`.
 `npm run setup -- --dry-run` prints every action without changing anything.
 
@@ -88,7 +88,7 @@ Name a provider (`codex.patch`, `claude.read`, ...) when the user asks for one; 
 or `auto.patch` (edits) and the service routes by the Routing rules and quota. `auto.read` rejects patch tasks and
 `auto.patch` rejects review/research. Patch tasks need only `task:submit`; `resource_key` is optional (set it to
 serialize work on one resource) and `base_ref` (patch only, a git ref) picks the starting commit. Each patch runs in an
-isolated git worktree and returns a local branch `swarma/<provider>/<task id>` plus a diff artifact; the result carries
+isolated git worktree and returns a local branch `swarmaa/<provider>/<task id>` plus a diff artifact; the result carries
 `branch`, `base_ref`, `base_commit`, `head_commit`, `changed_files`, `diffstat`, `commands_allowed`. Review, then merge;
 nothing is pushed.
 
@@ -142,11 +142,11 @@ Finished chats become reviewed, reusable guidance: distill, review, reuse.
 
 Run `npm run migrate` (migration `008_lessons.sql`) before restarting the service.
 
-## NotchTrader
+## macOS notch view
 
-With the Swarmaa view enabled, NotchTrader shows one cell per worker (quota ring, current task or
-idle/offline) and one per swarm (running, queued, done today) in place of the stock tickers. It uses
-the `notchtrader` identity from `.local/notchtrader.json` and `http://127.0.0.1:8787`.
+With the Swarmaa view enabled, the macOS notch app shows one cell per worker (quota ring, current task or
+idle/offline) and one per swarm (running, queued, done today). It uses its dedicated local frontend
+identity and `http://127.0.0.1:8787`.
 
 ## Reaching Swarmaa from other devices and hosted agents
 

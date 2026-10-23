@@ -59,14 +59,14 @@ test('patch task: own branch + commit, worktree removed, user checkout untouched
     const head = git(s.root, 'rev-parse', 'HEAD');
     const r = s.finish.result as Record<string, unknown>;
     assert.equal(s.finish.outcome, 'completed');
-    assert.equal(r.branch, 'swarma/codex/12345678');
+    assert.equal(r.branch, 'swarmaa/codex/12345678');
     assert.equal(r.commands_allowed, true);
     assert.equal(r.base_commit, head);
     assert.equal(r.base_ref, 'HEAD');
     assert.equal(r.changed_files, 1);
-    assert.equal(r.head_commit, git(s.root, 'rev-parse', 'swarma/codex/12345678'));
-    assert.equal(git(s.root, 'log', '-1', '--format=%s|%an|%ae', 'swarma/codex/12345678'), 'swarma(codex): Add b file|Swarmaa codex|noreply@swarmaa.com');
-    assert.equal(git(s.root, 'show', 'swarma/codex/12345678:b.txt'), 'new');
+    assert.equal(r.head_commit, git(s.root, 'rev-parse', 'swarmaa/codex/12345678'));
+    assert.equal(git(s.root, 'log', '-1', '--format=%s|%an|%ae', 'swarmaa/codex/12345678'), 'swarma(codex): Add b file|Swarmaa codex|noreply@swarmaa.com');
+    assert.equal(git(s.root, 'show', 'swarmaa/codex/12345678:b.txt'), 'new');
     assert.equal(git(s.root, 'branch', '--show-current'), 'main');
     assert.equal(git(s.root, 'status', '--porcelain'), '?? dirty.txt');
     assert.ok(!existsSync(join(s.seen!.cwd)));
@@ -79,7 +79,7 @@ test('patch task: own branch + commit, worktree removed, user checkout untouched
     const rec = s.calls.find(c => c.name === 'session_record')!.args as { harness: string; cwd: string; turns: { text: string }[] };
     assert.equal(rec.harness, 'codex');
     assert.equal(rec.cwd, s.root);
-    assert.equal(rec.turns.at(-1)!.text.split('\n').at(-1), `Branch: swarma/codex/12345678 @ ${String(r.head_commit).slice(0, 7)} (1 files)`);
+    assert.equal(rec.turns.at(-1)!.text.split('\n').at(-1), `Branch: swarmaa/codex/12345678 @ ${String(r.head_commit).slice(0, 7)} (1 files)`);
   } finally { rmSync(s.dir, { recursive: true, force: true }); }
 });
 
@@ -88,7 +88,7 @@ test('patch task honors base_ref', async () => {
   try {
     const r = s.finish.result as Record<string, unknown>;
     assert.equal(r.base_commit, s.first);
-    assert.equal(git(s.root, 'merge-base', '--is-ancestor', s.first, 'swarma/codex/12345678') || 'ok', 'ok');
+    assert.equal(git(s.root, 'merge-base', '--is-ancestor', s.first, 'swarmaa/codex/12345678') || 'ok', 'ok');
     assert.equal(s.finish.outcome, 'completed');
   } finally { rmSync(s.dir, { recursive: true, force: true }); }
 });

@@ -26,9 +26,9 @@ One brain, every agent. Swarmaa is not another agent: it is the shared memory an
 
 - Runs locally: PostgreSQL + a small Node service on the developer's Mac, started at login; `npm run setup` connects the CLIs.
 - Interactive clients connect over MCP (Claude Code, Codex, Antigravity); hosted agents (Dot, Grok) connect over HTTPS through a tunnel.
-- Background workers (Claude, Codex, Antigravity) take read tasks (`<provider>.read`/`auto.read`) by default; edit tasks (`<provider>.patch`/`auto.patch`) are an explicit opt-in per install and run in sandboxed git worktrees, committed to local `swarma/<provider>/<id>` branches, never pushed. Antigravity: review and in-project edits, no research. Leases, checkpoints and retries throughout.
+- Background workers (Claude, Codex, Antigravity) take read tasks (`<provider>.read`/`auto.read`) by default; edit tasks (`<provider>.patch`/`auto.patch`) are an explicit opt-in per install and run in sandboxed git worktrees, committed to local `swarmaa/<provider>/<id>` branches, never pushed. Antigravity: review and in-project edits, no research. Leases, checkpoints and retries throughout.
 - Workers report each provider's quota windows and reset times; `auto.read` tasks go to the live provider with most headroom.
-- NotchTrader (macOS notch app) shows agents and swarms; a web portal at swarmaa.com is planned.
+- The Swarmaa macOS notch app shows agents and swarms; a web portal at swarmaa.com is planned.
 
 ## Capabilities and Constraints
 

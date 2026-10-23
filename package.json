@@ -1,9 +1,14 @@
 {
-  "name": "swarma",
+  "name": "swarmaa",
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Scoped collective memory, durable tasks and MCP access for Dot, Grok, Claude, Codex and Antigravity.",
+  "description": "Swarmaa: scoped shared memory, quota-aware durable tasks and MCP access for Claude Code, Codex, Antigravity, Dot and Grok.",
+  "homepage": "https://swarmaa.com",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/kamatbot/swarmaa.git"
+  },
   "license": "MIT",
   "engines": {
     "node": ">=24 <25"

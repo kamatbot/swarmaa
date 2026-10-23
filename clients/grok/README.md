@@ -53,16 +53,16 @@ If you operate your own bot backend, `rest-client.mjs` forwards authorized front
 the REST API. It is an alternative integration component, not a requirement for native Grok Bot.
 Set these variables privately in that backend:
 
-- `COLLECTIVE_URL`: the HTTPS service origin, such as `https://api.swarmaa.com`, without `/mcp`.
-- `COLLECTIVE_GROK_TOKEN`: the provisioned token for that backend's scoped frontend principal.
+- `SWARMAA_URL` (or `COLLECTIVE_URL`): the HTTPS service origin, such as `https://api.swarmaa.com`, without `/mcp`.
+- `SWARMAA_GROK_TOKEN` (or `COLLECTIVE_GROK_TOKEN`): the provisioned token for that backend's scoped frontend principal.
 
 OAuth-issued access tokens cannot authenticate these REST routes. Keep the provisioned token
 out of system prompts, browser JavaScript and source control. If the native Bot and custom backend
 are both used, provision separate identities so they can be revoked independently.
 
 ```js
-import { callCollective } from './rest-client.mjs';
-const result = await callCollective('context_get', {scope: 'project:demo'});
+import { callSwarmaa } from './rest-client.mjs';
+const result = await callSwarmaa('context_get', {scope: 'project:demo'});
 ```
 
 Send the returned data to the model as tool output. The wrapper permits frontend operations;

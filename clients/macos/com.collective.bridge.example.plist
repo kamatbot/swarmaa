@@ -6,7 +6,7 @@
   <key>ProgramArguments</key>
   <array>
     <string>/bin/sh</string>
-    <string>/ABSOLUTE/PATH/collective-network/clients/macos/bridge-keychain-launcher.sh</string>
+    <string>/ABSOLUTE/PATH/swarmaa/clients/macos/bridge-keychain-launcher.sh</string>
   </array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>

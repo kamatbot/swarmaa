@@ -1,7 +1,7 @@
 # Brief: let one Swarmaa service run hundreds of swarms
 
-**Repo:** `~/Projects/swarma` (Node 24 + TypeScript + PostgreSQL 17; service `src/`, worker bridge `src/bridge/`, migrations `db/migrations/`).
-**Goal:** hundreds of tasks queued or running across many projects, with many notches and agents polling, on one Mac Studio without 429s, 503s or lock waits.
+**Repo:** `~/Projects/swarmaa` (Node 24 + TypeScript + PostgreSQL 17; service `src/`, worker bridge `src/bridge/`, migrations `db/migrations/`).
+**Goal:** hundreds of tasks queued or running across many projects, with many notches and agents polling, on one worker Mac without 429s, 503s or lock waits.
 **Out of scope:** how many agents can run at once. That's bounded by the Mac (32 GB, 10 cores, about 150 MB per idle agent CLI) and by provider quotas. More running at once means adding worker Macs, which already works.
 
 ## Measured (2026-10-23)
