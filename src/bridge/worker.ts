@@ -16,6 +16,11 @@ function errorCode(error: unknown): string {
   if (error && typeof error === 'object' && 'code' in error && typeof error.code === 'string' && /^[a-z0-9_]+$/u.test(error.code)) return error.code;
   return 'worker_operation_failed';
 }
+/** No answer, a timeout, 429 or 5xx: the service may still hold the lease. Any other refusal is final. */
+function transient(error: unknown): boolean {
+  const status = error && typeof error === 'object' && 'status' in error && typeof error.status === 'number' ? error.status : undefined;
+  return status === undefined || status === 408 || status === 429 || status >= 500;
+}
 /** headroom: provider -> percent of quota left, from the latest local usage reading. */
 function validateClaim(claim: Claim, project: ProjectConfig, agents: AgentConfig[], headroom: ReadonlyMap<string, number> = new Map()): { task: Task; lease: Lease; agent: AgentConfig } | null {
   if (!claim.task) return null;
@@ -175,11 +180,12 @@ export class BridgeWorker {
           if (leaseLost) return;
           if (!finished) await this.client.call('task_checkpoint', { ...lease, checkpoint: checkpoint('running') });
         } catch (error) {
-          if (!finished) {
-            // Ambiguous renewal is treated as loss. Never continue writing local files on faith.
-            loseLease(errorCode(error));
-          }
-          return;
+          if (finished) return;
+          // A refusal is final. An ambiguous failure (slow service, restart, dropped connection) is retried on the
+          // next beat: the local deadline armed by the last successful renewal still stops the process before the
+          // service's lease can lapse, so files are never written past a lease the service may have reassigned.
+          if (!transient(error)) { loseLease(errorCode(error)); return; }
+          this.logger('heartbeat_retry', { task_id: task.id, code: errorCode(error) });
         }
       }
     })();

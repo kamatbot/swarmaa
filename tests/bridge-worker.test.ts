@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { BridgeWorker } from '../src/bridge/worker.js';
 import { parseBridgeConfig } from '../src/bridge/config.js';
+import { RemoteError } from '../src/bridge/client.js';
 import type { ProcessResult, Task, ToolClient } from '../src/bridge/types.js';
 
 const config = () => parseBridgeConfig({ service_url:'http://localhost:8080', agents:[{id:'claude',provider:'claude',binary:'/bin/claude',sandbox:false}], projects:[{scope:'project:demo',root:'/projects/demo',agents:['claude']}] });
@@ -33,7 +34,7 @@ test('heartbeat rejection aborts provider and prevents stale completion/artifact
   const client: ToolClient = { async call<T>(name:string):Promise<T> {
     calls.push(name);
     if(name==='task_claim') return {task,lease_token:'lease-secret',lease_generation:1} as T;
-    if(name==='task_heartbeat') throw new Error('lease expired');
+    if(name==='task_heartbeat') throw new RemoteError(409,'lease_lost');
     if(name==='context_get') return {scope:task.scope,memories:[],conflicts:[]} as T;
     return {task} as T;
   } };
@@ -50,6 +51,42 @@ test('heartbeat rejection aborts provider and prevents stale completion/artifact
   assert.ok(calls.includes('task_heartbeat'));
   assert.ok(!calls.includes('task_finish'));
   assert.ok(!calls.includes('artifact_put'));
+});
+
+test('transient heartbeat failures are retried and the task still completes', async () => {
+  const calls: string[] = []; let beats = 0;
+  const client: ToolClient = { async call<T>(name:string):Promise<T> {
+    calls.push(name);
+    if(name==='task_claim') return {task,lease_token:'lease-secret',lease_generation:1} as T;
+    if(name==='task_heartbeat' && ++beats<=2) throw beats===1 ? new Error('fetch failed') : new RemoteError(503,'internal_error');
+    if(name==='context_get') return {scope:task.scope,memories:[],conflicts:[]} as T;
+    if(name==='artifact_put') return {artifact:{id:'22222222-2222-4222-8222-222222222222'}} as T;
+    return {task} as T;
+  } };
+  const cfg = config(); cfg.heartbeat_seconds = 0.01;
+  const worker = new BridgeWorker(cfg,client,()=>{},async () => { await new Promise(r=>setTimeout(r,120)); return result; });
+  await worker.claimAndRun(cfg.projects[0]!,new AbortController().signal);
+  assert.ok(beats>=3);
+  assert.ok(calls.includes('task_finish'));
+});
+
+test('heartbeats failing until the local lease deadline stop the provider', async () => {
+  const calls: string[] = []; let sawAbort = false;
+  const client: ToolClient = { async call<T>(name:string):Promise<T> {
+    calls.push(name);
+    if(name==='task_claim') return {task,lease_token:'lease-secret',lease_generation:1} as T;
+    if(name==='task_heartbeat') throw new Error('fetch failed');
+    if(name==='context_get') return {scope:task.scope,memories:[],conflicts:[]} as T;
+    return {task} as T;
+  } };
+  const cfg = config(); cfg.heartbeat_seconds = 0.01; cfg.lease_seconds = 4.2; // deadline = lease - 4 s grace = 200 ms
+  const worker = new BridgeWorker(cfg,client,()=>{},async request => {
+    await new Promise<void>(resolve=>{ if(request.signal?.aborted) resolve(); else request.signal?.addEventListener('abort',()=>resolve(),{once:true}); });
+    sawAbort=true; return {...result,stop_reason:'aborted'};
+  });
+  await worker.claimAndRun(cfg.projects[0]!,new AbortController().signal);
+  assert.equal(sawAbort,true);
+  assert.ok(!calls.includes('task_finish'));
 });
 
 test('wrong-scope claims never invoke a provider', async () => {
