@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en" data-resolution="landscape">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1920, height=1080" />
+    <script src="assets/vendor/gsap.min.js"></script>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { margin: 0; width: 1920px; height: 1080px; overflow: hidden; background: #F4EFE6; }
+      #root { position: relative; width: 100%; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <!-- Scene slots sit on the music's bars (SPEC.md TIME): entrance 6.489, final chord 37.311. -->
+    <div id="root" data-composition-id="main" data-start="0" data-duration="40" data-width="1920" data-height="1080">
+      <div id="s1-juggle" data-composition-id="s1-juggle" data-composition-src="compositions/s1-juggle.html" data-start="0" data-duration="6.489" data-track-index="1" data-track-kind="graphics" data-width="1920" data-height="1080"></div>
+      <div id="s2-reveal" data-composition-id="s2-reveal" data-composition-src="compositions/s2-reveal.html" data-start="6.489" data-duration="6.164" data-track-index="1" data-track-kind="graphics" data-width="1920" data-height="1080"></div>
+      <div id="s3-route" data-composition-id="s3-route" data-composition-src="compositions/s3-route.html" data-start="12.653" data-duration="6.165" data-track-index="1" data-track-kind="graphics" data-width="1920" data-height="1080"></div>
+      <div id="s4-quota" data-composition-id="s4-quota" data-composition-src="compositions/s4-quota.html" data-start="18.818" data-duration="6.164" data-track-index="1" data-track-kind="graphics" data-width="1920" data-height="1080"></div>
+      <div id="s5-memory" data-composition-id="s5-memory" data-composition-src="compositions/s5-memory.html" data-start="24.982" data-duration="6.165" data-track-index="1" data-track-kind="graphics" data-width="1920" data-height="1080"></div>
+      <div id="s6-notch" data-composition-id="s6-notch" data-composition-src="compositions/s6-notch.html" data-start="31.147" data-duration="4.109" data-track-index="1" data-track-kind="graphics" data-width="1920" data-height="1080"></div>
+      <div id="s7-end" data-composition-id="s7-end" data-composition-src="compositions/s7-end.html" data-start="35.256" data-duration="4.744" data-track-index="1" data-track-kind="graphics" data-width="1920" data-height="1080"></div>
+      <audio id="music" class="clip" src="assets/audio/music.mp3" data-start="0" data-duration="40" data-volume="1" data-track-index="2"></audio>
+    </div>
+    <script>
+      window.__timelines = window.__timelines || {};
+      window.__timelines["main"] = gsap.timeline({ paused: true });
+    </script>
+  </body>
+</html>

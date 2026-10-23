@@ -1,0 +1,44 @@
+<template>
+  <style>
+    @font-face { font-family: "Stardos Stencil"; src: url("assets/fonts/stardos-stencil-700.woff2") format("woff2"); font-weight: 700; }
+    @font-face { font-family: "IBM Plex Sans Condensed"; src: url("assets/fonts/ibm-plex-sans-condensed-500.woff2") format("woff2"); font-weight: 500; }
+    @font-face { font-family: "IBM Plex Sans Condensed"; src: url("assets/fonts/ibm-plex-sans-condensed-700.woff2") format("woff2"); font-weight: 700; }
+    @font-face { font-family: "IBM Plex Mono"; src: url("assets/fonts/ibm-plex-mono-500.woff2") format("woff2"); font-weight: 500; }
+    #root { position: absolute; inset: 0; background: #15111F; overflow: hidden; font-family: "IBM Plex Sans Condensed", sans-serif; color: #F4EFE6; }
+    #s7-kicker { position: absolute; left: 0; width: 1920px; top: 130px; text-align: center; font: 700 44px/1 "IBM Plex Sans Condensed", sans-serif; letter-spacing: 0.06em; opacity: 0; }
+    #s7-lock { position: absolute; left: 0; width: 1920px; top: 250px; height: 380px; display: flex; justify-content: center; align-items: center; gap: 0; }
+    #s7-logo { width: 360px; height: 360px; }
+    #s7-logo img { width: 360px; height: 360px; display: block; }
+    #s7-word { margin-left: -40px; font: 700 150px/1 "Stardos Stencil", serif; letter-spacing: 0.01em; white-space: nowrap; color: #F4EFE6; clip-path: inset(0 100% 0 0); }
+    #s7-word b { color: #D4FF3A; font-weight: 700; }
+    #s7-btn { position: absolute; left: 700px; top: 720px; width: 520px; height: 112px; box-sizing: border-box; background: #D4FF3A; border: 6px solid #000; border-radius: 24px; box-shadow: 8px 8px 0 #000; display: flex; align-items: center; justify-content: center; color: #15111F; font: 700 40px/1 "IBM Plex Sans Condensed", sans-serif; opacity: 0; }
+    #s7-url { position: absolute; left: 0; width: 1920px; top: 890px; text-align: center; font: 500 34px/1 "IBM Plex Mono", monospace; opacity: 0; }
+    #s7-claim { position: absolute; left: 0; width: 1920px; top: 360px; text-align: center; font: 700 150px/0.95 "Stardos Stencil", serif; text-transform: uppercase; letter-spacing: 0.01em; color: #F4EFE6; }
+    #s7-claim .w { display: inline-block; opacity: 0; }
+    #s7-claim .hl { color: #D4FF3A; }
+    #s7-cover { position: absolute; left: 0; top: 0; width: 1920px; height: 1080px; background: #000; }
+  </style>
+  <div id="root" data-composition-id="s7-end" data-width="1920" data-height="1080" data-layout-allow-overlap>
+    <div id="s7-claim"><span class="w hl">Free</span> <span class="w">&amp;</span> <span class="w">open</span><br><span class="w">source.</span></div>
+    <div id="s7-kicker">FREE &amp; OPEN SOURCE</div>
+    <div id="s7-lock"><div id="s7-logo"><img src="assets/favicon.svg" alt="Swarmaa"></div><div id="s7-word">SWARM<b>AA</b></div></div>
+    <div id="s7-btn">Download for Mac</div>
+    <div id="s7-url">swarmaa.com</div>
+    <div id="s7-cover"></div>
+  </div>
+  <script>
+    const tl = gsap.timeline({ paused: true });
+    tl.fromTo("#s7-cover", { opacity: 1 }, { opacity: 0, duration: 0.3, ease: "power2.out" }, 0);
+    tl.fromTo("#s7-claim .w", { opacity: 0, filter: "blur(6px)" }, { opacity: 1, filter: "blur(0px)", duration: 0.13, stagger: 0.07, ease: "power2.out" }, 0.3);
+    tl.to("#s7-claim .w", { opacity: 0, filter: "blur(8px)", duration: 0.18, stagger: 0.03, ease: "power3.in" }, 1.5);
+    tl.fromTo("#s7-kicker", { opacity: 0, filter: "blur(6px)" }, { opacity: 1, filter: "blur(0px)", duration: 0.2, ease: "power2.out" }, 2.3);
+    // Logo drops and lands on the final chord (2.055 s), squashing.
+    tl.fromTo("#s7-logo", { y: -800, scaleX: 1, scaleY: 1, transformOrigin: "50% 100%" }, { y: 0, duration: 0.5, ease: "power2.in" }, 1.555);
+    tl.to("#s7-logo", { scaleX: 1.14, scaleY: 0.82, duration: 0.07, ease: "power2.out" }, 2.055);
+    tl.to("#s7-logo", { scaleX: 1, scaleY: 1, duration: 0.3, ease: "back.out(1.6)" }, 2.125);
+    tl.fromTo("#s7-word", { clipPath: "inset(0 100% 0 0)" }, { clipPath: "inset(0 0% 0 0)", duration: 0.35, ease: "power2.out" }, 2.15);
+    tl.fromTo("#s7-btn", { scale: 0.85, opacity: 0 }, { scale: 1, opacity: 1, duration: 0.45, ease: "back.out(1.6)" }, 2.35);
+    tl.fromTo("#s7-url", { opacity: 0, filter: "blur(6px)" }, { opacity: 1, filter: "blur(0px)", duration: 0.2, ease: "power2.out" }, 2.45);
+    window.__timelines["s7-end"] = tl;
+  </script>
+</template>

@@ -83,6 +83,12 @@ svg{display:block}
 /* Hero visual: tilted chat + floating cards */
 .hero-right{position:relative;align-self:stretch;display:grid;grid-template-columns:minmax(0,1fr);place-items:center;min-width:0}
 .hero-visual{position:relative;width:100%;height:100%;min-height:640px;display:grid;grid-template-columns:minmax(0,1fr);place-items:center}
+.hero-film{position:relative;width:100%;max-width:880px;aspect-ratio:16/9;border:3px solid var(--ink);border-radius:26px;overflow:hidden;background:var(--paper);box-shadow:10px 10px 0 var(--ink)}
+.hero-film hyperframes-player{display:block;width:100%;height:100%}
+.film-sound{position:absolute;right:14px;bottom:14px;display:inline-flex;align-items:center;gap:8px;padding:9px 14px;border:2px solid var(--ink);border-radius:999px;background:var(--lime);color:var(--ink);font:700 14px/1 var(--body);cursor:pointer;box-shadow:3px 3px 0 var(--ink)}
+.film-sound svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.film-sound svg path:first-child{fill:currentColor}
+.film-sound .on{display:none}.film-sound[aria-pressed=true] .on{display:inline}.film-sound[aria-pressed=true] .off{display:none}
 .hv-glow{position:absolute;z-index:0;width:72%;aspect-ratio:1;right:-4%;top:14%;border-radius:50%;background:radial-gradient(circle,rgba(212,255,58,.7) 0%,rgba(212,255,58,.3) 38%,rgba(212,255,58,0) 70%);filter:blur(30px)}
 .hv-dots{position:absolute;z-index:0;width:92px;height:70px;background-image:radial-gradient(circle,rgba(21,17,31,.25) 1.6px,transparent 2px);background-size:23px 23px}
 .hv-dots--a{top:6%;left:22%}.hv-dots--b{bottom:12%;right:2%}
@@ -365,45 +371,9 @@ svg{display:block}
 
   <div class="hero-right">
     <div class="hero-visual">
-      <span class="hv-glow" aria-hidden="true"></span>
-      <span class="hv-dots hv-dots--a" aria-hidden="true"></span>
-      <span class="hv-dots hv-dots--b" aria-hidden="true"></span>
-      <div class="chat-stage">
-        <section class="chat" aria-label="Demo chat with Swarmaa">
-          <header class="chat-head">
-            <span class="chat-avatar">{{MARK}}</span>
-            <div class="chat-who"><div class="chat-name">Swarmaa</div><div class="chat-status">3 workers live · 5 agents · 1 memory</div></div>
-            <span class="chat-tag">Demo</span>
-          </header>
-          <div class="chat-log" id="chatLog" role="log" aria-live="polite"></div>
-          <div class="chat-suggest" id="chatSuggest" hidden>
-            <button class="chip" type="button">Who has quota?</button>
-            <button class="chip" type="button">Review with Antigravity</button>
-            <button class="chip" type="button">What do we know?</button>
-          </div>
-          <form class="composer" id="chatForm" autocomplete="off">
-            <label for="chatInput" class="sr-only">Ask the swarm</label>
-            <input id="chatInput" placeholder="Ask the swarm…">
-            <button class="send lime-fill" type="submit">Send<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg></button>
-          </form>
-        </section>
-      </div>
-      <div class="float-card fc-route" aria-hidden="true">
-        <div class="fl-inner">
-          <span class="fl-label">Next task goes to</span>
-          <div class="fl-row"><b class="fl-big">Codex</b><span class="fl-up">88% left</span></div>
-          <svg class="fl-spark" viewBox="0 0 150 50"><line x1="0" y1="10" x2="150" y2="10"/><path d="M3 46 C 22 40, 30 34, 46 30 S 72 18, 90 12 L 100 40 C 112 42, 128 38, 146 36"/><circle cx="146" cy="36" r="4.5"/></svg>
-        </div>
-      </div>
-      <div class="float-card fc-land" aria-hidden="true">
-        <div class="fl-inner">
-          <span class="fl-title">Landed on branches</span>
-          <ul class="fl-list">
-            <li><i style="background:var(--sun)"></i>swarma/claude/3511a624</li>
-            <li><i style="background:var(--blue)"></i>swarma/codex/8855687b</li>
-            <li><i style="background:var(--pink)"></i>antigravity · review ✓</li>
-          </ul>
-        </div>
+      <div class="hero-film">
+        <hyperframes-player id="heroFilm" src="/film/" runtime-src="/film/vendor/hyperframe.runtime.iife.js" poster="/film/poster.jpg" width="1920" height="1080" muted loop low-power-idle disable-click-to-play assets-loading-ui="none" aria-label="Swarmaa launch film: one swarm routes work across Claude, Codex, Gemini and Grok"></hyperframes-player>
+        <button class="film-sound" id="filmSound" type="button" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9H4z"/><path class="on" d="M16 9a4 4 0 0 1 0 6M18.5 6.5a8 8 0 0 1 0 11"/><path class="off" d="M16 9l5 6M21 9l-5 6"/></svg><span>Sound</span></button>
       </div>
     </div>
   </div>
@@ -533,61 +503,19 @@ svg{display:block}
   'use strict';
   var REDUCED = matchMedia('(prefers-reduced-motion: reduce)').matches, IO = 'IntersectionObserver' in window;
   if (!IO) document.documentElement.classList.add('no-io');
-  var MARK = {{MARK_JS}};
 
-  /* Chat demo: scripted, then answers a few questions from canned replies. */
-  var log = document.getElementById('chatLog'), form = document.getElementById('chatForm'), input = document.getElementById('chatInput'), suggest = document.getElementById('chatSuggest');
-  var busy = true, lastStamp = '';
-  var QUOTA = '<div class="quota" role="img" aria-label="5-hour quota used: Claude 92 percent, Codex 12 percent, Antigravity 8 percent; the switch-away ceiling is 90 percent.">' +
-    '<div class="quota-head"><span>5-hour window used</span><span>ceiling 90%</span></div>' +
-    [['Claude', 92, '#FFE08A'], ['Codex', 12, '#9CC8FF'], ['Antigravity', 8, '#FFB8D9']].map(function (r) {
-      return '<div class="quota-row"><span>' + r[0] + '</span><span class="qbar"><i style="--w:' + r[1] + '%;--c:' + r[2] + '"></i></span><b>' + r[1] + '%</b></div>';
-    }).join('') + '</div>';
-  var script = [
-    { who: 'ai', html: 'Hi, I’m the swarm. Ask any agent here and I’ll route the work, share what we know, and hand back branches.' },
-    { who: 'you', text: 'Fan this out: Claude fixes the login bug, Codex writes the tests.' },
-    { who: 'ai', html: 'Sent. <code>claude.patch</code> → task 3511a624, <code>codex.patch</code> → task 8855687b. Claude is close to its ceiling, so anything else goes to Codex.' + QUOTA },
-    { who: 'you', text: 'Status?' },
-    { who: 'ai', html: 'Both done. <b>swarma/claude/3511a624</b> (2 files, tests pass) and <b>swarma/codex/8855687b</b> (1 file). Nothing pushed: review and merge when you’re ready.' }
-  ];
-  var rules = [
-    [/quota|left|who/i, 'Codex has the most headroom: <b>88%</b> of its 5-hour window left. Claude is at 92%, past your 90% ceiling, so it rests until the window resets.'],
-    [/review|antigravity/i, 'Sent to Antigravity as <code>antigravity.read</code>. It reviews inside the project only, so it’s a good fit for diffs. Its notes come back in the same chat.'],
-    [/know|memory|remember/i, 'From shared memory: “grading tolerances live in grader/config.ts” (saved by Codex), and the math-path rollout is waiting on your review.'],
-    [/merge|push|deploy/i, 'I never push, merge or deploy. Each run leaves a local branch for you: <code>git merge swarma/codex/8855687b</code> when you’re happy.']
-  ];
-  var fallback = ['This is a demo, so my answers here are canned. Get it from GitHub to run the real swarm on your Mac.', 'Try “who has quota?” or “review with Antigravity”.'];
-  var f = 0;
-  function reply(q) { for (var k = 0; k < rules.length; k++) if (rules[k][0].test(q)) return rules[k][1]; return fallback[f++ % fallback.length]; }
-  function stamp() { var d = new Date(), t = d.getHours() + ':' + String(d.getMinutes()).padStart(2, '0'); if (t === lastStamp) return ''; lastStamp = t; return t; }
-  function add(who, content, isHtml) {
-    var row = document.createElement('div'); row.className = 'msg from-' + who + (REDUCED ? '' : ' is-new');
-    var wrap = document.createElement('div'); wrap.className = 'bubble-wrap';
-    var b = document.createElement('div'); b.className = 'bubble' + (who === 'you' ? ' lime-fill' : '');
-    if (isHtml) b.innerHTML = content; else b.textContent = content;
-    wrap.appendChild(b);
-    var t = stamp(); if (t) { var s = document.createElement('span'); s.className = 'stamp'; s.textContent = (who === 'ai' ? 'Swarmaa · ' : 'You · ') + t; wrap.appendChild(s); }
-    if (who === 'ai') { var av = document.createElement('span'); av.className = 'chat-avatar'; av.innerHTML = MARK; row.appendChild(av); }
-    row.appendChild(wrap); log.appendChild(row); log.scrollTop = log.scrollHeight;
+  /* Launch film: autoplays muted (browsers allow nothing else), never for reduced motion; the button toggles sound. */
+  var film = document.getElementById('heroFilm'), sound = document.getElementById('filmSound');
+  if (film) {
+    if (!REDUCED) film.setAttribute('autoplay', '');
+    else film.setAttribute('controls', '');
+    sound.addEventListener('click', function () {
+      var on = film.hasAttribute('muted');
+      if (on) film.removeAttribute('muted'); else film.setAttribute('muted', '');
+      sound.setAttribute('aria-pressed', String(on));
+      if (on && film.play) film.play();
+    });
   }
-  function aiSays(html, then) {
-    var row = document.createElement('div'); row.className = 'msg from-ai';
-    row.innerHTML = '<span class="chat-avatar">' + MARK + '</span><div class="bubble-wrap"><div class="bubble typing" aria-label="Swarmaa is typing"><i></i><i></i><i></i></div></div>';
-    log.appendChild(row); log.scrollTop = log.scrollHeight;
-    setTimeout(function () { row.remove(); add('ai', html, true); if (then) then(); }, REDUCED ? 0 : 900 + Math.random() * 600);
-  }
-  function ask(text) { text = text.trim(); if (!text || busy) return; busy = true; add('you', text, false); setTimeout(function () { aiSays(reply(text), function () { busy = false; }); }, 300); }
-  form.addEventListener('submit', function (e) { e.preventDefault(); var v = input.value; input.value = ''; ask(v); });
-  suggest.addEventListener('click', function (e) { var c = e.target.closest('.chip'); if (c) ask(c.textContent); });
-  function play(n) {
-    if (n >= script.length) { busy = false; suggest.hidden = false; return; }
-    var line = script[n];
-    if (line.who === 'ai') aiSays(line.html, function () { setTimeout(function () { play(n + 1); }, REDUCED ? 0 : 700); });
-    else { add('you', line.text, false); setTimeout(function () { play(n + 1); }, REDUCED ? 0 : 450); }
-  }
-  /* Start the demo once the chat is on screen. */
-  if (IO && !REDUCED) new IntersectionObserver(function (es, o) { if (es[0].isIntersecting) { o.disconnect(); setTimeout(function () { play(0); }, 600); } }, { threshold: .3 }).observe(log);
-  else play(0);
 
   /* Reveal on scroll; metric instruments fill and numbers count up. */
   var rv = document.querySelectorAll('.rv'), metrics = document.querySelectorAll('.metric');
@@ -615,5 +543,6 @@ svg{display:block}
 
 })();
 </script>
+<script defer src="/film/vendor/hyperframes-player.global.js"></script>
 </body>
 </html>

@@ -1,0 +1,70 @@
+<template>
+  <style>
+    @font-face { font-family: "Stardos Stencil"; src: url("assets/fonts/stardos-stencil-700.woff2") format("woff2"); font-weight: 700; }
+    @font-face { font-family: "IBM Plex Sans Condensed"; src: url("assets/fonts/ibm-plex-sans-condensed-500.woff2") format("woff2"); font-weight: 500; }
+    @font-face { font-family: "IBM Plex Sans Condensed"; src: url("assets/fonts/ibm-plex-sans-condensed-700.woff2") format("woff2"); font-weight: 700; }
+    @font-face { font-family: "IBM Plex Mono"; src: url("assets/fonts/ibm-plex-mono-500.woff2") format("woff2"); font-weight: 500; }
+    #root { position: absolute; inset: 0; background: #F4EFE6; overflow: hidden; font-family: "IBM Plex Sans Condensed", sans-serif; color: #15111F; }
+    .s1-win { position: absolute; width: 760px; height: 360px; background: #FFFFFF; border: 6px solid #15111F; border-radius: 24px; box-shadow: 10px 10px 0 #15111F; overflow: hidden; }
+    .s1-bar { height: 64px; display: flex; align-items: center; gap: 14px; padding: 0 22px; border-bottom: 6px solid #15111F; font: 700 32px/1 "IBM Plex Mono", monospace; }
+    .s1-dot { width: 22px; height: 22px; border-radius: 50%; border: 4px solid #15111F; }
+    .s1-body { padding: 24px 26px; font: 500 28px/1.45 "IBM Plex Mono", monospace; }
+    .s1-body .s1-p { color: #15111F; opacity: 0.55; }
+    .s1-warn { color: #FF5A3C; font-weight: 500; opacity: 0; }
+    #s1-chip { position: absolute; left: 0; top: 0; padding: 14px 22px; background: #FFE08A; border: 5px solid #15111F; border-radius: 16px; box-shadow: 6px 6px 0 #15111F; font: 500 28px/1 "IBM Plex Mono", monospace; white-space: nowrap; }
+    #s1-cursor { position: absolute; left: 0; top: 0; width: 70px; height: 70px; }
+    #s1-band { position: absolute; left: 96px; top: 60px; padding: 26px 40px 22px; background: #F4EFE6; border: 6px solid #15111F; border-radius: 26px; box-shadow: 10px 10px 0 #15111F; }
+    #s1-title { font: 700 112px/0.92 "Stardos Stencil", serif; text-transform: uppercase; letter-spacing: 0.01em; }
+    #s1-title .w { display: inline-block; opacity: 0; }
+    #s1-title .hl { color: #F0361A; }
+  </style>
+  <div id="root" data-composition-id="s1-juggle" data-width="1920" data-height="1080" data-layout-allow-overlap>
+    <!-- Four agent windows, 2x2, overlapping like a cluttered desktop. -->
+    <div id="s1-claude" class="s1-win" style="left:150px;top:360px">
+      <div class="s1-bar" style="background:#FF5A3C"><span class="s1-dot" style="background:#F4EFE6"></span>claude</div>
+      <div class="s1-body"><div class="s1-p">&gt; fix the login redirect</div><div class="s1-p">  reading src/auth/…</div><div id="s1-warn" class="s1-warn">⚠ 5-hour limit reached</div></div>
+    </div>
+    <div id="s1-codex" class="s1-win" style="left:1040px;top:340px">
+      <div class="s1-bar" style="background:#D4FF3A"><span class="s1-dot" style="background:#F4EFE6"></span>codex</div>
+      <div class="s1-body"><div class="s1-p">&gt; write tests for auth</div><div class="s1-p">  which file has the bug?</div></div>
+    </div>
+    <div id="s1-gemini" class="s1-win" style="left:250px;top:660px">
+      <div class="s1-bar" style="background:#CBA8FF"><span class="s1-dot" style="background:#F4EFE6"></span>gemini</div>
+      <div class="s1-body"><div class="s1-p">&gt; review the PR</div><div class="s1-p">  paste the context again?</div></div>
+    </div>
+    <div id="s1-grok" class="s1-win" style="left:1080px;top:640px">
+      <div class="s1-bar" style="background:#9CC8FF"><span class="s1-dot" style="background:#F4EFE6"></span>grok</div>
+      <div class="s1-body"><div class="s1-p">&gt; summarise the issue</div><div class="s1-p">  what were we doing?</div></div>
+    </div>
+    <div id="s1-chip">“…the auth bug is in session.ts”</div>
+    <svg id="s1-cursor" viewBox="0 0 70 70"><path d="M8 6 L8 58 L22 45 L32 66 L42 61 L32 41 L52 41 Z" fill="#15111F" stroke="#F4EFE6" stroke-width="4" stroke-linejoin="round"/></svg>
+    <div id="s1-band"><h1 id="s1-title"><span class="w">Stop</span> <span class="w hl">juggling</span><br><span class="w">your</span> <span class="w">AI</span> <span class="w">agents.</span></h1></div>
+  </div>
+  <script>
+    const tl = gsap.timeline({ paused: true });
+    // Windows arrive already cluttered, each a beat apart (stickers slapped down).
+    const wins = ["#s1-claude", "#s1-codex", "#s1-gemini", "#s1-grok"];
+    wins.forEach((w, i) => tl.fromTo(w, { scale: 0.94 }, { scale: 1, duration: 0.45, ease: "back.out(1.6)" }, i * 0.06));
+    tl.fromTo("#s1-band", { scale: 0.9, opacity: 0 }, { scale: 1, opacity: 1, duration: 0.5, ease: "expo.out" }, 0.9);
+    tl.fromTo("#s1-title .w", { opacity: 0, filter: "blur(6px)" }, { opacity: 1, filter: "blur(0px)", duration: 0.13, stagger: 0.07, ease: "power2.out" }, 1.2);
+    // The cursor drags the same context chip between agents: copy here, paste there, four times.
+    const hops = [[560, 500], [1440, 480], [650, 800], [1480, 780], [700, 500]];
+    tl.fromTo("#s1-cursor", { x: 1980, y: 1000 }, { x: hops[0][0] + 120, y: hops[0][1] + 20, duration: 0.5, ease: "power2.inOut" }, 0.2);
+    tl.fromTo("#s1-chip", { x: hops[0][0] - 120, y: hops[0][1] - 60, scale: 0, opacity: 0 }, { scale: 1, opacity: 1, duration: 0.3, ease: "back.out(1.6)" }, 0.7);
+    for (let i = 1; i < hops.length; i++) {
+      const t = 0.9 + (i - 1) * 0.72;
+      tl.to("#s1-chip", { x: hops[i][0] - 120, y: hops[i][1] - 60, duration: 0.5, ease: "power2.inOut" }, t);
+      tl.to("#s1-cursor", { x: hops[i][0] + 120, y: hops[i][1] + 20, duration: 0.5, ease: "power2.inOut" }, t);
+      // Paste: the chip squashes into the window, which jolts.
+      tl.to("#s1-chip", { scaleY: 0.82, scaleX: 1.08, duration: 0.08, ease: "power2.out", yoyo: true, repeat: 1 }, t + 0.5);
+      tl.to(wins[(i - 1 + 1) % 4], { x: i % 2 ? 14 : -14, duration: 0.08, ease: "power2.out", yoyo: true, repeat: 1 }, t + 0.5);
+    }
+    // Claude runs out mid-juggle.
+    tl.fromTo("#s1-warn", { opacity: 0 }, { opacity: 1, duration: 0.1, ease: "none" }, 3.8);
+    tl.to("#s1-claude", { x: -10, duration: 0.05, ease: "power2.out", yoyo: true, repeat: 3 }, 3.8);
+    // Hand off to s2: windows start pulling toward the centre just before the music's entrance.
+    wins.forEach((w, i) => tl.to(w, { x: [400, -330, 330, -360][i], y: [-30, 0, -280, -260][i], scale: 0.3, duration: 0.35, ease: "power3.in" }, 6.12 + i * 0.01));
+    tl.to(["#s1-band", "#s1-chip", "#s1-cursor"], { opacity: 0, duration: 0.2, ease: "power3.in" }, 6.1);
+    window.__timelines["s1-juggle"] = tl;
+  </script>
+</template>

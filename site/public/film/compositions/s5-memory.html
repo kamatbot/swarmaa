@@ -1,0 +1,69 @@
+<template>
+  <style>
+    @font-face { font-family: "Stardos Stencil"; src: url("assets/fonts/stardos-stencil-700.woff2") format("woff2"); font-weight: 700; }
+    @font-face { font-family: "IBM Plex Sans Condensed"; src: url("assets/fonts/ibm-plex-sans-condensed-500.woff2") format("woff2"); font-weight: 500; }
+    @font-face { font-family: "IBM Plex Sans Condensed"; src: url("assets/fonts/ibm-plex-sans-condensed-700.woff2") format("woff2"); font-weight: 700; }
+    @font-face { font-family: "IBM Plex Mono"; src: url("assets/fonts/ibm-plex-mono-500.woff2") format("woff2"); font-weight: 500; }
+    #root { position: absolute; inset: 0; background: #D4FF3A; overflow: hidden; font-family: "IBM Plex Sans Condensed", sans-serif; color: #15111F; }
+    #s5-title { position: absolute; left: 96px; top: 64px; font: 700 112px/0.92 "Stardos Stencil", serif; text-transform: uppercase; letter-spacing: 0.01em; }
+    #s5-title .w { display: inline-block; opacity: 0; }
+    #s5-title .hl { color: #D92E10; }
+    .s5-agent { position: absolute; top: 540px; width: 300px; height: 300px; }
+    .s5-agent .eye { transform-box: fill-box; transform-origin: center; }
+    #s5-claude { left: 110px; }
+    #s5-codex { left: 1500px; }
+    #s5-board { position: absolute; left: 560px; top: 400px; width: 660px; height: 440px; background: #F4EFE6; border: 6px solid #15111F; border-radius: 24px; box-shadow: 10px 10px 0 #15111F; }
+    #s5-board-h { position: absolute; left: 32px; top: 24px; font: 700 42px/1 "IBM Plex Sans Condensed", sans-serif; }
+    #s5-slot { position: absolute; left: 64px; top: 300px; width: 524px; height: 92px; border: 5px dashed #15111F; border-radius: 18px; opacity: 0.35; }
+    #s5-note { position: absolute; left: 630px; top: 500px; width: 520px; height: 180px; background: #FFE08A; border: 6px solid #15111F; border-radius: 24px; box-shadow: 10px 10px 0 #15111F; padding: 38px 28px 0; }
+    #s5-note .tag { font: 500 28px/1 "IBM Plex Mono", monospace; opacity: 0.7; }
+    #s5-note .txt { margin-top: 14px; font: 700 40px/1.05 "IBM Plex Sans Condensed", sans-serif; }
+    #s5-pin { position: absolute; left: 226px; top: -20px; width: 40px; height: 40px; background: #FF5A3C; border: 5px solid #15111F; border-radius: 50%; }
+    #s5-lineclip { position: absolute; left: 0; top: 0; width: 1920px; height: 1080px; clip-path: inset(0 100% 0 0); }
+    #s5-bubble { position: absolute; left: 1250px; top: 330px; padding: 26px 34px; background: #F4EFE6; border: 6px solid #15111F; border-radius: 28px; box-shadow: 10px 10px 0 #15111F; font: 700 38px/1 "IBM Plex Sans Condensed", sans-serif; white-space: nowrap; transform-origin: 85% 100%; }
+    #s5-tail { position: absolute; right: 80px; bottom: -26px; width: 36px; height: 36px; background: #F4EFE6; border-right: 6px solid #15111F; border-bottom: 6px solid #15111F; transform: rotate(45deg) skew(8deg,8deg); }
+    #s5-clip { position: absolute; left: 610px; top: 890px; width: 400px; height: 120px; background: #F4EFE6; border: 6px solid #15111F; border-radius: 24px; box-shadow: 10px 10px 0 #15111F; display: flex; align-items: center; justify-content: center; font: 700 44px/1 "IBM Plex Sans Condensed", sans-serif; }
+    #s5-clip .t { text-decoration: line-through; text-decoration-thickness: 5px; text-decoration-color: #15111F; }
+    #s5-clip .c { position: absolute; left: 150px; top: -22px; width: 100px; height: 36px; background: #FFE08A; border: 6px solid #15111F; border-radius: 12px; }
+    #s5-clip .x { position: absolute; left: 20px; top: 52px; width: 360px; height: 12px; background: #FF5A3C; border: 4px solid #15111F; border-radius: 8px; transform: rotate(-9deg); }
+  </style>
+  <div id="root" data-composition-id="s5-memory" data-width="1920" data-height="1080" data-layout-allow-overlap>
+    <h1 id="s5-title"><span class="w">Shared</span> <span class="w">memory.</span><br><span class="w">No</span> <span class="w">more</span> <span class="w hl">copy-paste.</span></h1>
+
+    <div id="s5-board"><div id="s5-board-h">shared memory</div><div id="s5-slot"></div></div>
+    <div id="s5-clip"><div class="c"></div><span class="t">copy / paste</span><div class="x"></div></div>
+    <div id="s5-claude" class="s5-agent" data-c="#FF5A3C" data-d="1"></div>
+    <div id="s5-codex" class="s5-agent" data-c="#D4FF3A" data-b="1"></div>
+    <div id="s5-note"><div id="s5-pin"></div><div class="tag">memory_propose</div><div class="txt">Checkout uses Stripe test mode</div></div>
+    <div id="s5-lineclip"><svg width="1920" height="1080" viewBox="0 0 1920 1080"><path d="M1170 600 C1300 540 1390 700 1500 680" fill="none" stroke="#15111F" stroke-width="8" stroke-linecap="round" stroke-dasharray="1 20"/></svg></div>
+    <div id="s5-bubble">got it — building API on that<div id="s5-tail"></div></div>
+  </div>
+  <script>
+    document.querySelectorAll(".s5-agent").forEach((el) => {
+      const body = el.dataset.d
+        ? '<rect x="50" y="50" width="100" height="100" rx="26" transform="rotate(45 100 100)"'
+        : '<rect x="22" y="22" width="156" height="156" rx="46"';
+      const fill = el.dataset.b ? "#F4EFE6" : el.dataset.c;
+      el.innerHTML = '<svg viewBox="0 0 200 200" width="300" height="300">' + body + ' fill="' + (el.dataset.b ? "#D4FF3A" : el.dataset.c) + '" stroke="#15111F" stroke-width="7"/><ellipse class="eye" cx="76" cy="100" rx="11" ry="16" fill="#15111F"/><ellipse class="eye" cx="124" cy="100" rx="11" ry="16" fill="#15111F"/></svg>';
+    });
+    const tl = gsap.timeline({ paused: true });
+    tl.fromTo("#s5-title .w", { opacity: 0, filter: "blur(6px)" }, { opacity: 1, filter: "blur(0px)", duration: 0.13, stagger: 0.07, ease: "power2.out" }, 0.3);
+    tl.fromTo("#s5-board", { scale: 0.9, opacity: 0 }, { scale: 1, opacity: 1, duration: 0.5, ease: "expo.out" }, 0.1);
+    tl.fromTo("#s5-claude", { scale: 0.7, opacity: 0 }, { scale: 1, opacity: 1, duration: 0.5, ease: "back.out(1.6)" }, 0.15);
+    tl.fromTo("#s5-codex", { scale: 0.7, opacity: 0 }, { scale: 1, opacity: 1, duration: 0.5, ease: "back.out(1.6)" }, 0.25);
+    tl.fromTo("#s5-clip", { scale: 0.85, opacity: 0 }, { scale: 1, opacity: 1, duration: 0.45, ease: "back.out(1.6)" }, 0.4);
+    // Claude pins a note (memory_propose); eyes look at the board.
+    tl.to("#s5-claude .eye", { x: 8, duration: 0.15, ease: "power2.out" }, 0.6);
+    tl.fromTo("#s5-note", { x: -300, y: 120, scale: 0.4, opacity: 0 }, { x: 0, y: 0, scale: 1, opacity: 1, duration: 0.6, ease: "back.out(1.6)" }, 0.8);
+    // Codex looks, a dotted line connects, Codex answers.
+    tl.to("#s5-codex .eye", { x: -8, duration: 0.15, ease: "power2.out" }, 1.4);
+    tl.fromTo("#s5-lineclip", { clipPath: "inset(0 100% 0 0)" }, { clipPath: "inset(0 0% 0 0)", duration: 0.5, ease: "power2.inOut" }, 1.5);
+    tl.fromTo("#s5-bubble", { scale: 0.6, opacity: 0 }, { scale: 1, opacity: 1, duration: 0.5, ease: "back.out(1.6)" }, 2.0);
+    // copy / paste is gone.
+    tl.to("#s5-clip", { x: -1200, rotate: -10, duration: 0.3, ease: "power3.in" }, 2.6);
+    // Blinks.
+    tl.to("#s5-claude .eye", { scaleY: 0.1, duration: 0.05, ease: "power2.inOut", yoyo: true, repeat: 1 }, 1.9);
+    tl.to("#s5-codex .eye", { scaleY: 0.1, duration: 0.05, ease: "power2.inOut", yoyo: true, repeat: 1 }, 3.3);
+    window.__timelines["s5-memory"] = tl;
+  </script>
+</template>
