@@ -268,7 +268,7 @@ svg{display:block}
 .br-badge{position:absolute;right:0;top:-15px;font:600 10px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;padding:4px 7px;border-radius:999px;background:var(--lime);border:1.5px solid var(--ink)}
 .br-foot{display:flex;justify-content:space-between;font:500 11px/1 var(--mono);color:var(--muted);padding-top:6px}
 
-/* Finale: waitlist on ink + footer */
+/* Finale: GitHub CTA on ink + footer */
 .finale{position:relative;overflow:hidden;margin-top:20px;padding:130px var(--gutter) 0;background:var(--ink);border-radius:56px 56px 0 0;color:var(--paper)}
 .finale-grid{position:absolute;inset:0;pointer-events:none;background-image:linear-gradient(rgba(255,255,255,.05) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.05) 1px,transparent 1px);background-size:64px 64px;-webkit-mask-image:radial-gradient(70% 55% at 50% 22%,#000 0%,transparent 75%);mask-image:radial-gradient(70% 55% at 50% 22%,#000 0%,transparent 75%)}
 .finale-glow{position:absolute;left:50%;top:-260px;width:900px;height:600px;transform:translateX(-50%);background:radial-gradient(closest-side,rgba(212,255,58,.28),rgba(212,255,58,.07) 55%,transparent);pointer-events:none}
@@ -277,16 +277,8 @@ svg{display:block}
 .finale h2{font-size:clamp(52px,7.6vw,120px);margin-bottom:26px}
 .finale h2 .hl{color:var(--lime)}
 .finale-card>p{font-size:18px;color:var(--on-ink-muted);max-width:620px;margin:0 auto 36px}
-.cta-form{display:flex;align-items:center;gap:8px;max-width:720px;margin:0 auto;padding:8px 8px 8px 22px;border-radius:999px;background:rgba(255,255,255,.06);border:2px solid rgba(255,255,255,.18);transition:border-color .2s}
-.cta-form:focus-within{border-color:var(--lime)}
-.cta-form input{flex:1;min-width:0;border:0;outline:0;background:transparent;font:500 17px/1 var(--body);color:#fff;padding:12px 0}
-.cta-form input::placeholder{color:rgba(255,255,255,.5)}
-.cta-form .sep{width:2px;align-self:stretch;margin:8px 6px;background:rgba(255,255,255,.14)}
-.cta-form input.invite{flex:0 1 150px}
-.cta-form .btn{box-shadow:5px 5px 0 var(--lime);border-color:var(--lime)}
-.cta-form .btn:hover{box-shadow:7px 7px 0 var(--lime)}
-.cta-note{margin:18px auto 0;min-height:1.4em;font:500 12px/1.4 var(--mono);letter-spacing:.08em;text-transform:uppercase;color:rgba(255,255,255,.6)}
-.cta-note.ok{color:var(--lime)}.cta-note.err{color:#FF8A70}
+.finale-cta .btn{box-shadow:5px 5px 0 var(--lime);border-color:var(--lime)}
+.finale-cta .btn:hover{box-shadow:7px 7px 0 var(--lime)}
 .finale-rule{position:relative;z-index:2;display:flex;align-items:center;margin:110px 0 0}
 .finale-rule span{flex:1;height:1px;background-image:repeating-linear-gradient(90deg,rgba(255,255,255,.28) 0 2px,transparent 2px 6px)}
 .finale-rule i{width:7px;height:7px;border-radius:50%;background:rgba(255,255,255,.6);flex:none}
@@ -325,9 +317,6 @@ svg{display:block}
   .float-card,.hv-dots{display:none}
   .metric-grid{grid-template-columns:minmax(0,1fr)}.metric{min-height:260px}
   .finale{border-radius:36px 36px 0 0;padding-top:96px}
-  .cta-form{flex-direction:column;align-items:stretch;padding:12px;border-radius:26px}
-  .cta-form input{padding:12px;text-align:center}.cta-form input.invite{flex:1 1 auto}.cta-form .sep{display:none}
-  .cta-form .btn{justify-content:center}
   .finale-rule{margin-top:72px}
   .agent{font-size:24px}.agent span{width:48px;height:48px}
 }
@@ -361,14 +350,15 @@ svg{display:block}
     <nav class="header-nav" aria-label="Primary">
       <a href="#how">How it works</a>
       <a href="/guide">Guide</a>
+      <a href="https://github.com/kamatbot/swarmaa">GitHub</a>
       <a href="https://api.swarmaa.com/account">Sign in</a>
     </nav>
-    <a class="nav-cta lime-fill" href="#waitlist">Join the waitlist</a>
+    <a class="nav-cta lime-fill" href="https://github.com/kamatbot/swarmaa">View on GitHub</a>
   </div>
 </header>
 
 <main class="hero" id="main">
-  <span class="glass glass--tab" aria-hidden="true"><i class="live-dot"></i><span>Private beta · macOS</span></span>
+  <span class="glass glass--tab" aria-hidden="true"><i class="live-dot"></i><span>Open source · macOS</span></span>
   <div class="hero-left">
     <p class="hero-eyebrow">One memory · every agent</p>
     <h1 class="hero-title disp">
@@ -378,7 +368,7 @@ svg{display:block}
     </h1>
     <p class="hero-desc">Swarmaa gives Claude Code, Codex, Antigravity, Dot and Grok one shared memory and one task queue, and sends each task to whichever agent has the most quota left.</p>
     <div class="hero-ctas">
-      <a class="btn lime-fill" href="#waitlist">Join the waitlist<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg></a>
+      <a class="btn lime-fill" href="https://github.com/kamatbot/swarmaa">View on GitHub<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg></a>
       <a class="btn btn-ghost" href="/guide">Read the guide</a>
     </div>
     <ul class="hero-trust">
@@ -521,22 +511,14 @@ svg{display:block}
   </div>
 </section>
 
-<section class="finale" id="waitlist">
+<section class="finale" id="get-started">
   <span class="finale-grid" aria-hidden="true"></span>
   <span class="finale-glow" aria-hidden="true"></span>
   <div class="finale-card">
-    <span class="finale-kicker"><i class="live-dot"></i>Private beta · macOS</span>
+    <span class="finale-kicker"><i class="live-dot"></i>Open source · macOS</span>
     <h2 class="disp">Every agent, <span class="hl">one swarm.</span></h2>
-    <p>Join the waitlist and we’ll invite you when the portal opens. You’ll need an invite code.</p>
-    <form class="cta-form" id="join" novalidate>
-      <label for="email" class="sr-only">Email</label>
-      <input id="email" name="email" type="email" placeholder="you@company.com" autocomplete="email">
-      <span class="sep" aria-hidden="true"></span>
-      <label for="invite" class="sr-only">Invite code</label>
-      <input id="invite" name="invite" class="invite" type="text" placeholder="Invite code" autocomplete="off" spellcheck="false">
-      <button class="btn lime-fill" type="submit">Join<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg></button>
-    </form>
-    <p class="cta-note" id="msg" role="status">We store only your email, and only to invite you. No tracking scripts.</p>
+    <p>Swarmaa is open source. Clone the repo and follow the README to get started.</p>
+    <div class="finale-cta"><a class="btn lime-fill" href="https://github.com/kamatbot/swarmaa">Get started on GitHub<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg></a></div>
   </div>
   <div class="finale-rule" aria-hidden="true"><i></i><span></span><i></i></div>
   <footer class="site-footer">
@@ -544,10 +526,10 @@ svg{display:block}
       <div class="footer-brand">
         <div class="f-logo"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" aria-hidden="true"><style>.sw-pop{animation:sw-pop 4.5s cubic-bezier(.34,1.56,.64,1) infinite}.sw-bob{animation:sw-bob 2.2s ease-in-out infinite}.sw-eyes{animation:sw-look 5s ease-in-out infinite}.sw-eyes ellipse{transform-box:fill-box;transform-origin:center;animation:sw-blink 4s infinite}.sw-a2 .sw-pop{animation-delay:-3s}.sw-a2 .sw-bob{animation-delay:-.7s}.sw-a2 .sw-eyes ellipse{animation-delay:-1.3s}.sw-a3 .sw-pop{animation-delay:-1.5s}.sw-a3 .sw-bob{animation-delay:-1.4s}.sw-a3 .sw-eyes ellipse{animation-delay:-2.6s}.sw-a3 .sw-eyes{animation-delay:-2s}@keyframes sw-pop{0%,26%,100%{transform:translateY(0)}9%{transform:translateY(-14px)}17%{transform:translateY(1px)}}@keyframes sw-bob{0%,100%{transform:translateY(0)}50%{transform:translateY(-2.5px)}}@keyframes sw-look{0%,40%,100%{transform:translateX(0)}50%,85%{transform:translateX(2px)}}@keyframes sw-blink{0%,93%,100%{transform:scaleY(1)}96%{transform:scaleY(.12)}}@media (prefers-reduced-motion:reduce){[class^=sw-],.sw-eyes ellipse{animation:none!important}}</style><g stroke="#15111F" stroke-width="6.5" stroke-linejoin="round" stroke-linecap="round"><path d="M33 62 Q100 22 167 62 L118 178 Q112 188 100 186 L76 181 Q64 177 61 166 Z" fill="#F7E3C1"/><path d="M45 68 Q100 40 155 68 L150 96 L50 96 Z" fill="#15111F" stroke="none"/><g class="sw-a1"><g class="sw-pop"><g class="sw-bob"><rect x="46" y="46" width="48" height="70" rx="12" fill="#D4FF3A" transform="rotate(-9 70 81)"/><g class="sw-eyes" fill="#15111F" stroke="none"><ellipse cx="62" cy="67" rx="3.8" ry="5.8"/><ellipse cx="75.5" cy="65" rx="3.6" ry="5.4"/></g></g></g></g><g class="sw-a2"><g class="sw-pop"><g class="sw-bob"><rect x="79" y="24" width="46" height="46" rx="10" fill="#FF5A3C" transform="rotate(45 102 47)"/><g class="sw-eyes" fill="#15111F" stroke="none"><ellipse cx="95.5" cy="44" rx="3.8" ry="5.6"/><ellipse cx="108.5" cy="44" rx="3.8" ry="5.6"/></g></g></g></g><g class="sw-a3"><g class="sw-pop"><g class="sw-bob"><rect x="107" y="48" width="48" height="70" rx="12" fill="#CBA8FF" transform="rotate(11 131 83)"/><g class="sw-eyes" fill="#15111F" stroke="none"><ellipse cx="124" cy="68" rx="3.8" ry="5.8"/><ellipse cx="137.5" cy="70.5" rx="3.6" ry="5.4"/></g></g></g></g><path d="M36 72 Q64 90 96 95 Q130 88 164 70 L118 178 Q112 188 100 186 L76 181 Q64 177 61 166 Z" fill="#FBEBD0"/><path d="M160 82 Q140 104 127 134 L131 146 Z" fill="#EFD0A0" stroke="none"/><path d="M49 116 C80 124 108 138 118 156 L112 178 Q107 188 99 186 L76 181 Q64 177 61 166 Z" fill="#FF5A3C"/><path d="M98 94 C78 99 70 109 84 115 C108 124 132 130 127 146 C125 154 120 162 117 170" fill="none"/></g></svg>Swarmaa</div>
         <p>One brain, every agent. Shared memory and quota-aware routing for the AI agents you already use.</p>
-        <span class="f-status"><i class="live-dot"></i>Private beta on macOS</span>
+        <span class="f-status"><i class="live-dot"></i>Open source on macOS</span>
       </div>
       <div class="footer-cols">
-        <div class="footer-col"><p class="fh">Product</p><a href="#how">How it works</a><a href="/guide">Guide</a><a href="#waitlist">Waitlist</a></div>
+        <div class="footer-col"><p class="fh">Product</p><a href="#how">How it works</a><a href="/guide">Guide</a><a href="https://github.com/kamatbot/swarmaa">GitHub</a></div>
         <div class="footer-col"><p class="fh">Account</p><a href="https://api.swarmaa.com/account">Sign in</a><a href="/guide#grok">Connect Grok</a></div>
       </div>
     </div>
@@ -584,7 +566,7 @@ svg{display:block}
     [/know|memory|remember/i, 'From shared memory: “grading tolerances live in grader/config.ts” (saved by Codex), and the math-path rollout is waiting on your review.'],
     [/merge|push|deploy/i, 'I never push, merge or deploy. Each run leaves a local branch for you: <code>git merge swarma/codex/8855687b</code> when you’re happy.']
   ];
-  var fallback = ['This is a demo, so my answers here are canned. Join the waitlist to run the real swarm on your Mac.', 'Try “who has quota?” or “review with Antigravity”.'];
+  var fallback = ['This is a demo, so my answers here are canned. Get it from GitHub to run the real swarm on your Mac.', 'Try “who has quota?” or “review with Antigravity”.'];
   var f = 0;
   function reply(q) { for (var k = 0; k < rules.length; k++) if (rules[k][0].test(q)) return rules[k][1]; return fallback[f++ % fallback.length]; }
   function stamp() { var d = new Date(), t = d.getHours() + ':' + String(d.getMinutes()).padStart(2, '0'); if (t === lastStamp) return ''; lastStamp = t; return t; }
@@ -641,24 +623,6 @@ svg{display:block}
     rv.forEach(function (el) { io.observe(el); });
   } else rv.forEach(function (el) { el.classList.add('in'); });
 
-  /* Waitlist */
-  var j = document.getElementById('join'), msg = document.getElementById('msg');
-  j.addEventListener('submit', function (e) {
-    e.preventDefault();
-    var email = j.email.value.trim(), invite = j.invite.value.trim(), btn = j.querySelector('button');
-    msg.className = 'cta-note err';
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) { msg.textContent = 'Enter a valid email address.'; j.email.focus(); return; }
-    if (!invite) { msg.textContent = 'Enter your invite code.'; j.invite.focus(); return; }
-    btn.disabled = true; msg.className = 'cta-note'; msg.textContent = 'Joining…';
-    fetch('/api/waitlist', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: email, invite: invite }) })
-      .then(function (r) { return r.json().catch(function () { return { ok: false }; }); })
-      .then(function (d) {
-        if (d.ok) { msg.className = 'cta-note ok'; msg.textContent = 'You’re on the list. We’ll email you when your invite is ready.'; j.reset(); }
-        else { msg.className = 'cta-note err'; msg.textContent = d.error === 'invalid_invite' ? 'That invite code isn’t valid.' : d.error === 'invalid_email' ? 'Enter a valid email address.' : 'Something went wrong. Try again.'; }
-      })
-      .catch(function () { msg.className = 'cta-note err'; msg.textContent = 'Network error. Try again.'; })
-      .finally(function () { btn.disabled = false; });
-  });
 })();
 </script>
 </body>
