@@ -407,24 +407,40 @@ export class OAuthService {
     const reply = await transaction(this.pool, async client => {
       const result = await client.query<{
         id: string; client_id: string; principal_id: string; resource: string;
-        grant_snapshot: Principal; used_at: Date | null; revoked_at: Date | null; live: boolean;
+        grant_snapshot: Principal; used_at: Date | null; revoked_at: Date | null; live: boolean; abandoned: boolean;
       }>(
-        'SELECT g.*, r.used_at, (g.expires_at>now() AND r.expires_at>now()) AS live FROM oauth_refresh_tokens r JOIN oauth_grants g ON g.id=r.grant_id WHERE r.token_hash=$1 FOR UPDATE OF g, r',
+        "SELECT g.*, r.used_at, (g.expires_at>now() AND r.expires_at>now()) AS live, r.expires_at='-infinity'::timestamptz AS abandoned FROM oauth_refresh_tokens r JOIN oauth_grants g ON g.id=r.grant_id WHERE r.token_hash=$1 FOR UPDATE OF g, r",
         [tokenHash(refreshToken)],
       );
       const row = result.rows[0];
-      if (!row || row.client_id !== clientId || row.resource !== resource || !row.live || row.revoked_at) return null;
-      if (row.used_at) {
-        // Commit revocation before returning invalid_grant: throwing here would roll it back.
+      if (row && row.client_id === clientId && row.resource === resource && row.abandoned && !row.revoked_at) {
+        // A reply given up as lost (below) has turned up after all: someone else holds this family. Revoke it.
         await client.query('UPDATE oauth_grants SET revoked_at=now() WHERE id=$1', [row.id]);
         return null;
+      }
+      if (!row || row.client_id !== clientId || row.resource !== resource || !row.live || row.revoked_at) return null;
+      if (row.used_at) {
+        // A lost reply (a laptop sleeping mid-refresh, dropped Wi-Fi) leaves the client holding the token it just
+        // spent. If that is the token right before the newest one and the newest was never used, the client never
+        // saw it: abandon that pair and issue a new one. The abandoned token is marked, so if it shows up later
+        // (a thief replaying the old token got here first) the family is still revoked.
+        const next = await client.query<{ token_hash: string }>(
+          "SELECT n.token_hash FROM oauth_refresh_tokens n, oauth_refresh_tokens r WHERE r.token_hash=$1 AND n.grant_id=r.grant_id AND n.created_at=r.used_at AND n.used_at IS NULL AND n.expires_at>now() AND r.used_at>now()-interval '1 day'",
+          [tokenHash(refreshToken)]);
+        if (!next.rows[0]) {
+          // Commit revocation before returning invalid_grant: throwing here would roll it back.
+          await client.query('UPDATE oauth_grants SET revoked_at=now() WHERE id=$1', [row.id]);
+          return null;
+        }
+        await client.query("UPDATE oauth_refresh_tokens SET expires_at='-infinity' WHERE token_hash=$1", [next.rows[0].token_hash]);
+        await client.query('UPDATE oauth_access_tokens SET expires_at=now() WHERE grant_id=$1 AND created_at=(SELECT used_at FROM oauth_refresh_tokens WHERE token_hash=$2)', [row.id, tokenHash(refreshToken)]);
       }
       const principal = narrowGrant(row.grant_snapshot, await this.auth.getPrincipal(row.principal_id));
       if (!principal) {
         await client.query('UPDATE oauth_grants SET revoked_at=now() WHERE id=$1', [row.id]);
         return null;
       }
-      await client.query('UPDATE oauth_refresh_tokens SET used_at=now() WHERE token_hash=$1', [tokenHash(refreshToken)]);
+      await client.query('UPDATE oauth_refresh_tokens SET used_at=now() WHERE token_hash=$1 AND used_at IS NULL', [tokenHash(refreshToken)]);
       // Persist narrowing: a removed permission cannot reappear later in this family.
       await client.query('UPDATE oauth_grants SET grant_snapshot=$2::jsonb WHERE id=$1', [row.id, JSON.stringify(principal)]);
       return this.issueTokens(client, row.id);

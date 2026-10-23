@@ -94,9 +94,20 @@ test('OAuth authorization, PKCE, code single-use, refresh replay and revocation'
   const rotated = await service.exchangeToken(refreshParams(issued.refresh_token));
   current = { ...base }; // Restoring permissions cannot widen the refresh snapshot.
   assert.deepEqual((await service.authenticate(String(rotated.access_token)))?.permissions, ['memory:read']);
-  await assert.rejects(service.exchangeToken(refreshParams(issued.refresh_token)), OAuthError);
+  // A lost reply: the client retries the token it just spent and gets a new pair; the pair it never saw is abandoned.
+  const retried = await service.exchangeToken(refreshParams(issued.refresh_token));
   assert.equal(await service.authenticate(String(rotated.access_token)), null);
+  assert.ok(await service.authenticate(String(retried.access_token)));
+  // The abandoned token turning up later is real replay: the whole family goes.
   await assert.rejects(service.exchangeToken(refreshParams(rotated.refresh_token)), OAuthError);
+  assert.equal(await service.authenticate(String(retried.access_token)), null);
+  await assert.rejects(service.exchangeToken(refreshParams(retried.refresh_token)), OAuthError);
+  // A token older than the one before the newest is always replay.
+  const chain = await service.exchangeToken(exchange(await getCode()));
+  const step1 = await service.exchangeToken(refreshParams(chain.refresh_token));
+  const step2 = await service.exchangeToken(refreshParams(step1.refresh_token));
+  await assert.rejects(service.exchangeToken(refreshParams(chain.refresh_token)), OAuthError);
+  assert.equal(await service.authenticate(String(step2.access_token)), null);
 
   const second = await service.exchangeToken(exchange(await getCode()));
   await service.revokeToken(new URLSearchParams({ client_id: clientId, token: String(second.access_token) }));
