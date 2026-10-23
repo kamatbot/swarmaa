@@ -6,6 +6,8 @@
 
 <p align="center"><strong>One shared memory and quota-aware task queue for all your coding and chat agents—running locally on your Mac.</strong></p>
 
+<p align="center"><a href="https://github.com/kamatbot/swarmaa/releases/latest/download/Swarmaa.zip"><strong>Download Swarmaa for Mac</strong></a> · macOS 15+ · Apple silicon · open it, choose <em>Set up Swarmaa on this Mac</em>, paste the starter prompt into your agent</p>
+
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-15111F" alt="MIT license"></a>
   <img src="https://img.shields.io/badge/node-24-FF5A3C" alt="Node 24">
