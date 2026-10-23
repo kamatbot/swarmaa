@@ -8,7 +8,7 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { parseBridgeConfig } from '../src/bridge/config.js';
 import { projectCapabilities } from '../src/bridge/adapters.js';
-import { createOnboarding, runSetup, type Detected, type SetupSummary } from '../scripts/setup.js';
+import { createOnboarding, notchAppInstalled, runSetup, type Detected, type SetupSummary } from '../scripts/setup.js';
 import { AGY_TOOLS, DEFAULT_HOSTNAME, GENERAL_SCOPE, PlanError, WORKER_HARNESSES, bridgeConfig, identityScopes, mergeAgyPermissions, parseEnv, plist, slugScopes, stateFile, validHostname, validatePlan, yes } from '../scripts/setup-lib.js';
 import { setupTunnel, validHostname as validTunnelHostname } from '../scripts/tunnel.js';
 
@@ -390,4 +390,12 @@ test('demo project is planned as a standalone git repo', async () => {
   await runSetup(validatePlan({ harnesses: {}, folders: [], autostart: false }), { dry: true, log: l => lines.push(l), root: realpathSync(mkdtempSync(join(tmpdir(), 'swarmaa-root-'))), detected: fakeDetected() });
   assert.ok(lines.some(l => /git -C \S*demo-project init -q -b main/.test(l)));
   assert.ok(lines.some(l => /demo-project -c commit\.gpgsign=false commit/.test(l)));
+});
+
+test('the notch app counts as installed when setup runs from inside it or it is in Applications', () => {
+  const none = () => false;
+  assert.equal(notchAppInstalled('/Users/u/Downloads/Swarmaa.app/Contents/Resources/runtime', '/Users/u', none), true);
+  assert.equal(notchAppInstalled('/Users/u/code/swarmaa', '/Users/u', p => p === '/Users/u/Applications/Swarmaa.app'), true);
+  assert.equal(notchAppInstalled('/Users/u/code/swarmaa', '/Users/u', p => p === '/Applications/NotchTrader.app'), true);
+  assert.equal(notchAppInstalled('/Users/u/code/swarmaa', '/Users/u', none), false);
 });

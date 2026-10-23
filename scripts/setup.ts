@@ -22,6 +22,12 @@ import {
 import { setupTunnel } from './tunnel.js';
 
 export const ROOT = packageRoot(dirname(fileURLToPath(import.meta.url)));
+/** The notch app is installed when this setup runs from the runtime inside it, or it sits in an Applications folder
+ * under its current or former name. Checking only /Applications/NotchTrader.app skipped the notch on every fresh download. */
+export function notchAppInstalled(root = ROOT, home = homedir(), exists: (p: string) => boolean = existsSync): boolean {
+  return /\.app\/Contents\/Resources\/runtime\/?$/u.test(root)
+    || ['/Applications', join(home, 'Applications')].some(dir => ['Swarmaa.app', 'NotchTrader.app'].some(app => exists(join(dir, app))));
+}
 const HOME = homedir();
 // Prefer a stable Homebrew symlink to this same Node so LaunchAgents survive `brew upgrade` (node@24 keg, then plain node).
 const NODE = (() => {
@@ -38,7 +44,7 @@ const META: Record<HarnessKey, { label: string; ident: string; stem: string; mod
   agy: { label: 'Antigravity', ident: 'antigravity-interactive', stem: 'antigravity', agent: 'antigravity' },
   grok: { label: 'Grok', ident: 'grok', stem: 'grok' },
   dot: { label: 'Dot', ident: 'dot', stem: 'dot' },
-  notchtrader: { label: 'NotchTrader', ident: 'notchtrader', stem: 'notchtrader' },
+  notchtrader: { label: 'Swarmaa notch', ident: 'notchtrader', stem: 'notchtrader' },
 };
 const HOOK_APPS: Record<HookAppKey, { label: string; marks: (home: string, env: NodeJS.ProcessEnv) => string[]; bin: string }> = {
   kiro: { label: 'Kiro', bin: 'kiro', marks: (h, e) => [e.KIRO_HOME?.trim() || join(h, '.kiro'), '/Applications/Kiro.app', join(h, 'Applications/Kiro.app')] },
@@ -85,7 +91,7 @@ export async function detect(root = ROOT): Promise<Detected> {
   let reachable = false;
   if (url) { const c = await pgConnect(url); reachable = !!c; await c?.end(); }
   const hookApps = HOOK_APP_KEYS.filter(k => HOOK_APPS[k].marks(HOME, process.env).some(existsSync) || !!findCli(HOOK_APPS[k].bin));
-  return { clis, notchtrader: existsSync('/Applications/NotchTrader.app'), postgres: { found: reachable || !!findPgBin(), reachable }, envExists, state, captureSources: detectSources(), hookApps };
+  return { clis, notchtrader: notchAppInstalled(), postgres: { found: reachable || !!findPgBin(), reachable }, envExists, state, captureSources: detectSources(), hookApps };
 }
 
 // ---------------------------------------------------------------- the setup engine
@@ -265,7 +271,7 @@ export async function runSetup(plan: SetupPlan, opts: RunOpts): Promise<SetupSum
         if ((HOSTED as readonly string[]).includes(key) && !remote) return { skipped: 'local-only; enable remote access with your domain to connect' };
         const cli = (CLI_KEYS as readonly string[]).includes(key) ? det.clis[key as typeof CLI_KEYS[number]] : undefined;
         if ((CLI_KEYS as readonly string[]).includes(key) && !cli) return { skipped: `${m.label} was not found on this Mac` };
-        if (key === 'notchtrader' && !det.notchtrader) return { skipped: 'NotchTrader.app is not installed' };
+        if (key === 'notchtrader' && !det.notchtrader) return { skipped: 'the Swarmaa notch app is not installed' };
         if (cli && !existsSync(join(root, 'dist/src/stdio-proxy.js'))) build();
         if (!ensureIdentity(m.ident, 'frontend', join(root, `.local/${m.stem}.json`), interactive)) throw new Error(`could not create or update the ${m.ident} identity`);
         if (key === 'claude') { run(cli!, ['mcp', 'remove', '-s', 'user', 'swarma']); run(cli!, ['mcp', 'add', '-s', 'user', 'swarma', '--', '/bin/sh', LAUNCHER, m.stem]); }
