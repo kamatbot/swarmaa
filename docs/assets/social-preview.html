@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Swarmaa social preview</title>
+  <style>
+    @font-face {
+      font-family: "Stardos Stencil";
+      src: url("../../site/public/fonts/stardos-stencil-700.woff2") format("woff2");
+      font-style: normal;
+      font-weight: 700;
+    }
+    @font-face {
+      font-family: "IBM Plex Mono";
+      src: url("../../site/public/fonts/ibm-plex-mono-500.woff2") format("woff2");
+      font-style: normal;
+      font-weight: 500;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; width: 1280px; height: 640px; }
+    body {
+      display: grid;
+      place-items: center;
+      background: #15111F;
+      color: #F4EFE6;
+    }
+    main { display: flex; align-items: center; gap: 64px; }
+    img { display: block; width: 300px; height: 300px; }
+    h1 {
+      margin: 0;
+      font: 700 116px/1.1 "Stardos Stencil", serif;
+      letter-spacing: 1px;
+    }
+    h1 span { color: #D4FF3A; }
+    p {
+      margin: 24px 0 0;
+      color: #CFC6E8;
+      font: 500 22px/1.5 "IBM Plex Mono", monospace;
+      white-space: nowrap;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <img src="swarmaa-mark-still.svg" alt="Swarmaa agent-filled wrap">
+    <div>
+      <h1>SWARM<span>AA</span></h1>
+      <p>One swarm for all your coding agents</p>
+    </div>
+  </main>
+</body>
+</html>

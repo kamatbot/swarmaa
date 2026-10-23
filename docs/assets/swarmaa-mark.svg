@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" role="img" aria-label="Swarmaa">
+  <!-- A shawarma wrap stuffed with agents. They take turns popping up (being sent out), bob, blink and look around. -->
+  <style>
+    .pop{animation:pop 4.5s cubic-bezier(.34,1.56,.64,1) infinite}
+    .bob{animation:bob 2.2s ease-in-out infinite}
+    .eyes{animation:look 5s ease-in-out infinite}
+    .eyes ellipse{transform-box:fill-box;transform-origin:center;animation:blink 4s infinite}
+    .a2 .pop{animation-delay:-3s}.a2 .bob{animation-delay:-.7s}.a2 .eyes ellipse{animation-delay:-1.3s}
+    .a3 .pop{animation-delay:-1.5s}.a3 .bob{animation-delay:-1.4s}.a3 .eyes ellipse{animation-delay:-2.6s}.a3 .eyes{animation-delay:-2s}
+    @keyframes pop{0%,26%,100%{transform:translateY(0)}9%{transform:translateY(-14px)}17%{transform:translateY(1px)}}
+    @keyframes bob{0%,100%{transform:translateY(0)}50%{transform:translateY(-2.5px)}}
+    @keyframes look{0%,40%,100%{transform:translateX(0)}50%,85%{transform:translateX(2px)}}
+    @keyframes blink{0%,93%,100%{transform:scaleY(1)}96%{transform:scaleY(.12)}}
+    @media (prefers-reduced-motion:reduce){*{animation:none!important}}
+  </style>
+  <g stroke="#15111F" stroke-width="6.5" stroke-linejoin="round" stroke-linecap="round">
+    <!-- back of the wrap and its dark opening -->
+    <path d="M33 62 Q100 22 167 62 L118 178 Q112 188 100 186 L76 181 Q64 177 61 166 Z" fill="#F7E3C1"/>
+    <path d="M45 68 Q100 40 155 68 L150 96 L50 96 Z" fill="#15111F" stroke="none"/>
+
+    <!-- agents: tall bodies, so popping up never shows their bottoms above the wrap -->
+    <g class="a1"><g class="pop"><g class="bob">
+      <rect x="46" y="46" width="48" height="70" rx="12" fill="#D4FF3A" transform="rotate(-9 70 81)"/>
+      <g class="eyes" fill="#15111F" stroke="none"><ellipse cx="62" cy="67" rx="3.8" ry="5.8"/><ellipse cx="75.5" cy="65" rx="3.6" ry="5.4"/></g>
+    </g></g></g>
+    <g class="a2"><g class="pop"><g class="bob">
+      <rect x="79" y="24" width="46" height="46" rx="10" fill="#FF5A3C" transform="rotate(45 102 47)"/>
+      <g class="eyes" fill="#15111F" stroke="none"><ellipse cx="95.5" cy="44" rx="3.8" ry="5.6"/><ellipse cx="108.5" cy="44" rx="3.8" ry="5.6"/></g>
+    </g></g></g>
+    <g class="a3"><g class="pop"><g class="bob">
+      <rect x="107" y="48" width="48" height="70" rx="12" fill="#CBA8FF" transform="rotate(11 131 83)"/>
+      <g class="eyes" fill="#15111F" stroke="none"><ellipse cx="124" cy="68" rx="3.8" ry="5.8"/><ellipse cx="137.5" cy="70.5" rx="3.6" ry="5.4"/></g>
+    </g></g></g>
+
+    <!-- front of the wrap: cream tortilla, shaded right side, flame paper sleeve, and the S fold -->
+    <path d="M36 72 Q64 90 96 95 Q130 88 164 70 L118 178 Q112 188 100 186 L76 181 Q64 177 61 166 Z" fill="#FBEBD0"/>
+    <path d="M160 82 Q140 104 127 134 L131 146 Z" fill="#EFD0A0" stroke="none"/>
+    <path d="M49 116 C80 124 108 138 118 156 L112 178 Q107 188 99 186 L76 181 Q64 177 61 166 Z" fill="#FF5A3C"/>
+    <path d="M98 94 C78 99 70 109 84 115 C108 124 132 130 127 146 C125 154 120 162 117 170" fill="none"/>
+  </g>
+</svg>
