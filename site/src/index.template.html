@@ -83,7 +83,7 @@ svg{display:block}
 /* Hero visual: tilted chat + floating cards */
 .hero-right{position:relative;align-self:stretch;display:grid;grid-template-columns:minmax(0,1fr);place-items:center;min-width:0}
 .hero-visual{position:relative;width:100%;height:100%;min-height:640px;display:grid;grid-template-columns:minmax(0,1fr);place-items:center}
-.hero-film{position:relative;width:100%;max-width:880px;aspect-ratio:16/9;border:3px solid var(--ink);border-radius:26px;overflow:hidden;background:var(--paper);box-shadow:10px 10px 0 var(--ink)}
+.hero-film{position:relative;width:100%;aspect-ratio:16/9;border:3px solid var(--ink);border-radius:26px;overflow:hidden;background:var(--paper);box-shadow:10px 10px 0 var(--ink)}
 .hero-film hyperframes-player{display:block;width:100%;height:100%}
 .film-sound{position:absolute;right:14px;bottom:14px;display:inline-flex;align-items:center;gap:8px;padding:9px 14px;border:2px solid var(--ink);border-radius:999px;background:var(--lime);color:var(--ink);font:700 14px/1 var(--body);cursor:pointer;box-shadow:3px 3px 0 var(--ink)}
 .film-sound svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
@@ -303,6 +303,8 @@ svg{display:block}
 .rv.in{opacity:1;transform:none}
 .no-io .rv{opacity:1;transform:none}
 
+/* Two-column hero: the film is 10% wider than its column, spilling into the gap and the card padding. */
+@media (min-width:1101px){.hero-film{width:110%;justify-self:start;margin-left:-15px}}
 @media (max-width:1400px){.chat-stage{max-width:430px;margin-left:18%}.float-card{scale:.86}.fc-route{left:-6%;top:8%}.fc-land{left:-8%;top:58%}}
 @media (max-width:1100px){
   .hero{grid-template-columns:minmax(0,1fr);gap:56px;min-height:0;padding-top:84px}
