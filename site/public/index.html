@@ -91,8 +91,9 @@ svg{display:block}
 /* Hero visual: tilted chat + floating cards */
 .hero-right{position:relative;align-self:stretch;display:grid;grid-template-columns:minmax(0,1fr);place-items:center;min-width:0}
 .hero-visual{position:relative;width:100%;height:100%;min-height:640px;display:grid;grid-template-columns:minmax(0,1fr);place-items:center}
-.hero-film{position:relative;width:100%;aspect-ratio:16/9;border:3px solid var(--ink);border-radius:26px;overflow:hidden;background:var(--paper);box-shadow:10px 10px 0 var(--ink)}
-.hero-film hyperframes-player{display:block;width:100%;height:100%}
+.hero-film{position:relative;width:100%;aspect-ratio:16/9;border:3px solid var(--ink);border-radius:26px;overflow:hidden;background:var(--paper) url(/film/poster.jpg) center/cover;box-shadow:10px 10px 0 var(--ink)}
+.hero-film hyperframes-player{display:block;width:100%;height:100%;opacity:0;transition:opacity .2s}
+.hero-film.painted hyperframes-player{opacity:1}
 .film-sound{position:absolute;right:14px;bottom:14px;display:inline-flex;align-items:center;gap:8px;padding:9px 14px;border:2px solid var(--ink);border-radius:999px;background:var(--lime);color:var(--ink);font:700 14px/1 var(--body);cursor:pointer;box-shadow:3px 3px 0 var(--ink)}
 .film-sound svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
 .film-sound svg path:first-child{fill:currentColor}
@@ -394,7 +395,7 @@ svg{display:block}
   <div class="hero-right">
     <div class="hero-visual">
       <div class="hero-film">
-        <hyperframes-player id="heroFilm" src="/film/" runtime-src="/film/vendor/hyperframe.runtime.iife.js" poster="/film/poster.jpg" width="1920" height="1080" muted loop low-power-idle disable-click-to-play assets-loading-ui="none" aria-label="Swarmaa launch film: one swarm routes work across Claude, Codex, Gemini and Grok"></hyperframes-player>
+        <hyperframes-player id="heroFilm" src="/film/" runtime-src="/film/vendor/hyperframe.runtime.iife.js" width="1920" height="1080" muted loop low-power-idle disable-click-to-play assets-loading-ui="none" aria-label="Swarmaa launch film: one swarm routes work across Claude, Codex, Gemini and Grok"></hyperframes-player>
         <button class="film-sound" id="filmSound" type="button" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9H4z"/><path class="on" d="M16 9a4 4 0 0 1 0 6M18.5 6.5a8 8 0 0 1 0 11"/><path class="off" d="M16 9l5 6M21 9l-5 6"/></svg><span>Sound</span></button>
       </div>
     </div>
@@ -529,6 +530,10 @@ svg{display:block}
   /* Launch film: autoplays muted (browsers allow nothing else), never for reduced motion; the button toggles sound. */
   var film = document.getElementById('heroFilm'), sound = document.getElementById('filmSound');
   if (film) {
+    // The frame's background is the film's first frame; the player fades in once it has painted that frame itself.
+    var shown = function () { film.parentNode.classList.add('painted'); };
+    film.addEventListener('painted', shown, { once: true });
+    film.addEventListener('play', shown, { once: true });
     if (!REDUCED) film.setAttribute('autoplay', '');
     else film.setAttribute('controls', '');
     sound.addEventListener('click', function () {
