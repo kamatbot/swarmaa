@@ -306,8 +306,13 @@ describe('core transactional invariants', {skip:!connectionString,concurrency:fa
     const privateMemory = await call(f.otherScope,'memory_propose',{...note('foreign-ref'),scope:'project:b'});
     await rejects(f.front,'task_submit',{...submission(),context_refs:[privateMemory.memory.id]},'invalid_context_refs');
     await rejects(f.otherTenant,'task_get',{task_id:a.task.id},'not_found');
-    const events = await call(f.front,'events_poll',{scope:'project:a'});
-    assert.equal(events.events.filter((e:Record<string,any>) => e.payload.action === 'submitted').length,1);
+    // Events appear once every older transaction has finished (other suites share this cluster), so poll like a client does.
+    let submitted = 0;
+    for (let i = 0; i < 50 && !submitted; i++) {
+      submitted = (await call(f.front,'events_poll',{scope:'project:a'})).events.filter((e:Record<string,any>) => e.payload.action === 'submitted').length;
+      if (!submitted) await new Promise(r => setTimeout(r,100));
+    }
+    assert.equal(submitted,1);
   });
 
   it('gives concurrent workers one lease, resumes checkpoints and fences every stale mutation',async () => {
