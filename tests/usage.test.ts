@@ -14,7 +14,7 @@ const ctxWith = (fetcher: typeof fetch, now: Date = NOW): Ctx => ({ fetcher, now
 const json = (body: unknown, status = 200, headers: Record<string, string> = {}) => new Response(JSON.stringify(body), { status, headers });
 const near = (a: number, b: number, eps = 0.01) => assert.ok(Math.abs(a - b) <= eps, `${a} !~ ${b}`);
 
-// ---- fixtures: copied from NotchTrader Tests (UsageResponseTests, CodexUsageTests, GrokUsageTests, AntigravityTests) ----
+// ---- fixtures: provider usage test payloads (UsageResponseTests, CodexUsageTests, GrokUsageTests, AntigravityTests) ----
 const CLAUDE_LIVE = { five_hour: { utilization: 52.0, resets_at: '2026-08-28T09:50:00.316290+00:00', limit_dollars: null }, seven_day: { utilization: 17.0, resets_at: '2026-09-02T17:00:00.316321+00:00' }, seven_day_opus: null,
   nimbus_quill: { utilization: 0.0, resets_at: null },
   limits: [{ kind: 'session', group: 'session', percent: 52, resets_at: '2026-08-28T09:50:00.316290+00:00', scope: null }, { kind: 'weekly_all', group: 'weekly', percent: 17, resets_at: '2026-09-02T17:00:00.316321+00:00', scope: null }] };

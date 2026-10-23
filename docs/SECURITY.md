@@ -14,7 +14,7 @@ The shared principal is a service identity, not proof of a particular human mess
 
 Memory content, proposed changes, task objectives, source files, provider output and event metadata are data. No field authorizes a shell command, credential access, publication or broader project scope. The source reference records what the writer claims; it does not independently authenticate an external document or human quote.
 
-Decisions, preferences and procedures are proposed until the owner promotes them. Optimistic version checks preserve competing proposals instead of silently replacing a reviewed head. Notes and observations can be active while explicitly remaining agent-reported. Retraction has defined live-database limits; avoid putting credentials into collective memory at all.
+Decisions, preferences and procedures are proposed until the owner promotes them. Optimistic version checks preserve competing proposals instead of silently replacing a reviewed head. Notes and observations can be active while explicitly remaining agent-reported. Retraction has defined live-database limits; avoid putting credentials into shared memory at all.
 
 ## Tasks and the filesystem
 
@@ -24,7 +24,7 @@ Resource keys coordinate known shared resources; callers must use a consistent k
 
 Read-only defaults use provider restrictions. Claude's allowed tool set excludes shells and external MCP; Codex runs under its read-only sandbox configuration. The bridge rejects unsupported provider modes. These settings must be verified against the installed CLIs and managed policy. A read-only sandbox can still read sensitive files accessible to its OS account. The service does not isolate the user's home directory or create a separate OS account.
 
-Use a dedicated worker account or isolated worktree with the least filesystem access it needs. Keep `.env`, connection tokens, Keychain privileges and provider credentials outside the project directory exposed to a worker. The parent process removes the collective-service token and unrelated environment entries from model subprocesses, but an agent that can read arbitrary files available to its OS account may still find secrets stored there.
+Use a dedicated worker account or isolated worktree with the least filesystem access it needs. Keep `.env`, connection tokens, Keychain privileges and provider credentials outside the project directory exposed to a worker. The parent process removes the Swarmaa service token and unrelated environment entries from model subprocesses, but an agent that can read arbitrary files available to its OS account may still find secrets stored there.
 
 ## Network and callbacks
 

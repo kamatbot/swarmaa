@@ -39,7 +39,7 @@ export function serviceUrl(value: unknown): string {
 export function parseBridgeConfig(value: unknown): BridgeConfig {
   const raw = record(value, 'config');
   const token_env = text(raw.token_env ?? 'COLLECTIVE_WORKER_TOKEN', 'token_env', 100);
-  if (!/^COLLECTIVE_[A-Z0-9_]+$/u.test(token_env)) throw new Error('token_env must be a COLLECTIVE_ environment variable name');
+  if (!/^(?:COLLECTIVE|SWARMAA)_[A-Z0-9_]+$/u.test(token_env)) throw new Error('token_env must be a COLLECTIVE_ or SWARMAA_ environment variable name');
   if (!Array.isArray(raw.agents) || raw.agents.length < 1 || raw.agents.length > 15) throw new Error('agents requires 1–15 entries');
   const agents: AgentConfig[] = raw.agents.map((entry, index) => {
     const a = record(entry, `agents[${index}]`);

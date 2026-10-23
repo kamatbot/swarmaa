@@ -4,7 +4,7 @@ These commands are provided for your local environment and were not executed whi
 
 ## One authoritative service
 
-Run one PostgreSQL-backed service as the initial authority. Both entrypoints connect to its `/mcp` URL; desktop agents and the Mac bridge connect to the same origin. Do not run separate databases on the Mac mini and Mac Studio and try to merge their memory tables. A second Mac is another worker with its own credential and local project registry.
+Run one PostgreSQL-backed service as the initial authority. Both entrypoints connect to its `/mcp` URL; desktop agents and the Mac bridge connect to the same origin. Do not run separate databases on multiple worker Macs and try to merge their memory tables. A second Mac is another worker with its own credential and local project registry.
 
 For local development use the README flow: install dependencies, generate `.env`, start the database, apply migrations and run the service. `HOST=127.0.0.1` is the default. The database Compose port is also bound to loopback. Stopping containers without deleting their volume preserves state:
 
@@ -20,9 +20,9 @@ Never use `docker compose down -v` on a database whose contents you want to keep
 Choose a private deployment host or an authenticated network arrangement that your actual clients can reach. The application itself speaks HTTP; a reverse proxy terminates public HTTPS. Configure:
 
 ```dotenv
-PUBLIC_URL=https://collective.example.com
+PUBLIC_URL=https://swarmaa.example.com
 ALLOW_INSECURE_LOCALHOST=false
-ALLOWED_ORIGINS=https://collective.example.com
+ALLOWED_ORIGINS=https://swarmaa.example.com
 OAUTH_ENABLED=true
 OAUTH_REDIRECT_HOSTS=EXACT_CLIENT_REDIRECT_HOSTNAMES
 EVENT_CALLBACK_HOSTS=EXACT_INTENDED_RECEIVER_HOSTNAMES
@@ -53,9 +53,9 @@ Provision one identity per client or independently revocable worker. The CLI req
 
 ```bash
 npm run admin -- list
-npm run admin -- create --name macstudio --role worker --scopes project:demo --out .local/macstudio.json
+npm run admin -- create --name worker-2 --role worker --scopes project:demo --out .local/worker-2.json
 npm run admin -- rotate --name grok --out .local/grok-rotated.json
-npm run admin -- revoke --name macstudio
+npm run admin -- revoke --name worker-2
 ```
 
 Output files must be new paths; the CLI reserves them before changing credentials. After rotation update the client's private secret and reconnect OAuth. Rotation revokes derived grants and stops that identity's subscriptions. Revocation disables the identity; provision a new named connection to restore access. In-flight operations already authorized before revocation may finish, and a process already running on a worker stops when it observes lease loss.

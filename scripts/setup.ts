@@ -606,7 +606,7 @@ async function cliMain(dry: boolean): Promise<number> {
       const q = k === 'notchtrader' ? 'Show Swarmaa agents and swarms in NotchTrader?' : (HOSTED as readonly string[]).includes(k) ? `Connect ${m.label} (hosted; needs remote access)?` : `Connect ${m.label} to Swarmaa shared memory?`;
       if (!await askYes(q, k === 'notchtrader' ? true : was)) continue;
       const worker = WORKER_HARNESSES.includes(k) && await askYes(`Run ${k} as a background worker (read-only review/research${k === 'agy' ? ', sandboxed' : ''})?`, state.workers?.includes(k) ?? false);
-      const edit = worker && await askYes(`Let the ${k} worker EDIT files and run commands in sandboxed git worktrees (commits to local swarma/${k}/<id> branches, never pushes)?`, state.edits?.includes(k) ?? false);
+      const edit = worker && await askYes(`Let the ${k} worker EDIT files and run commands in sandboxed git worktrees (commits to local swarmaa/${k}/<id> branches, never pushes)?`, state.edits?.includes(k) ?? false);
       const share = SHARING_HARNESSES.includes(k) && await askYes(`Share ${m.label} chats across harnesses?`, state.sharing ? state.sharing.includes(k) : true);
       harnesses[k] = { connect: true, worker, edit, share };
     }

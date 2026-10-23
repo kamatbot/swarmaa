@@ -36,7 +36,7 @@ export function windowName(seconds: number | undefined, fallback: string): strin
 /**
  * Pure: map /wham/usage to windows. Main rate_limit pair only (Spark / code-review extras are separate pools and would
  * distort headroom); credit seats with no rolling windows fall back to spend_control as 'credits'. A window with a null
- * used_percent is skipped without discarding its sibling, as in NotchTrader.
+ * used_percent is skipped without discarding its sibling.
  */
 export function parseCodexUsage(json: unknown, now: Date = new Date()): { windows: UsageWindow[]; plan?: string } {
   if (!isObj(json)) return { windows: [] };

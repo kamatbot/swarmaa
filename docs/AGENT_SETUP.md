@@ -1,9 +1,7 @@
 # Connect your agents and run the Mac bridge
 
-This guide connects installed agent clients to the companion service. The ZIP is source code
-and a handoff package; uploading it to Claude does not install a cloud service or connect your
-accounts. Start with the repository README and Claude handoff instructions, then use this guide
-after the service is reachable. Nothing in these templates has been installed on your Macs.
+This guide connects installed agent clients to the Swarmaa service. Start with the repository
+README and [docs/SWARMA.md](SWARMA.md), then use this guide after the service is reachable.
 
 ## 1. Give each client its own identity
 
@@ -20,12 +18,12 @@ npm run admin -- create --name grok --role frontend --scopes project:demo --out 
 npm run admin -- create --name claude-interactive --role frontend --scopes project:demo --out .local/claude.json
 npm run admin -- create --name codex-interactive --role frontend --scopes project:demo --out .local/codex.json
 npm run admin -- create --name antigravity-interactive --role frontend --scopes project:demo --out .local/antigravity.json
-npm run admin -- create --name macmini --role worker --scopes project:demo --out .local/macmini.json
+npm run admin -- create --name worker-1 --role worker --scopes project:demo --out .local/worker-1.json
 ```
 
 These commands write each new token to its named private file; the output path must not already
 exist. Store the token in a password manager or macOS Keychain. Use a different worker principal
-on the Mac Studio. Tokens identify the authenticated
+on any additional worker machine. Tokens identify the authenticated
 principal; caller-supplied names cannot impersonate another worker. Start interactive clients
 with the frontend role for memory, dispatch and result access. Give a distinct worker identity
 only to an interactive client that must manually claim/checkpoint/finish tasks.
@@ -43,7 +41,7 @@ The package provides a small stdio-to-HTTP MCP proxy at `dist/src/stdio-proxy.js
 build. Its stdout contains only JSON-RPC messages; startup errors go to stderr. It accepts:
 
 ```sh
-node dist/src/stdio-proxy.js --url https://collective.example.com --token-env COLLECTIVE_CLAUDE_TOKEN
+node dist/src/stdio-proxy.js --url https://swarmaa.example.com --token-env COLLECTIVE_CLAUDE_TOKEN
 ```
 
 The named environment variable holds the token. The URL is an origin without `/mcp`; the proxy
@@ -72,19 +70,19 @@ this release has no older-history cursor. Do not treat that subset as a complete
 Replace absolute Node and repository paths. Apple Silicon Homebrew commonly uses
 `/opt/homebrew/bin/node`; select the actual installed binary on your machine. Do not paste token
 values into JSON/TOML files or commit them. Each template expects its own token variable:
-`COLLECTIVE_CLAUDE_TOKEN`, `COLLECTIVE_CODEX_TOKEN` or `COLLECTIVE_ANTIGRAVITY_TOKEN`.
+`COLLECTIVE_CLAUDE_TOKEN`, `COLLECTIVE_CODEX_TOKEN` or `COLLECTIVE_ANTIGRAVITY_TOKEN` (or `SWARMAA_*` aliases).
 
 GUI apps may not inherit the environment of your terminal. For those, add the token in macOS
-Keychain Access as a generic password, for example service name `collective-claude`. Edit the
+Keychain Access as a generic password, for example service name `swarmaa-claude`. Edit the
 absolute paths in `clients/macos/mcp-keychain-launcher.sh`, then set the MCP configuration to:
 
 ```json
 {
   "command": "/bin/sh",
   "args": [
-    "/ABSOLUTE/PATH/collective-network/clients/macos/mcp-keychain-launcher.sh",
-    "collective-claude",
-    "https://collective.example.com",
+    "/ABSOLUTE/PATH/swarmaa/clients/macos/mcp-keychain-launcher.sh",
+    "swarmaa-claude",
+    "https://swarmaa.example.com",
     "COLLECTIVE_CLAUDE_TOKEN"
   ]
 }
@@ -102,7 +100,7 @@ instructions. These instructions guide behavior; service permissions enforce acc
 Claude's remote connector can use the service OAuth flow instead of the local proxy when the
 client supports it. Follow the transport/OAuth guide for redirect allowlists and hosting.
 
-## 3. Configure the Mac mini worker
+## 3. Configure the local Mac worker
 
 Copy `config/bridge.example.json` to a private local configuration file. Set the service origin,
 actual executable paths, and one static project root per scope. Remove uninstalled agents.
@@ -110,14 +108,14 @@ Binary paths and project roots must be absolute; the bridge resolves them at sta
 executability. Remote task messages cannot choose the executable, arguments or working directory.
 
 Sign in to the provider CLIs on the worker machine using their normal login flows first.
-The bridge inherits a small environment allowlist for provider authentication; its Collective
+The bridge inherits a small environment allowlist for provider authentication; its Swarmaa
 token is omitted from provider subprocess environments. It does not pass arbitrary API base URL
 overrides, shell startup hooks or `NODE_OPTIONS`. This is a trusted local runner, not isolation
 from a malicious executable running as the same operating-system user. Prefer a dedicated
 macOS user and project workspaces that do not contain unrelated credentials.
 
-Supply `COLLECTIVE_WORKER_TOKEN` through a private environment or configure
-`clients/macos/bridge-keychain-launcher.sh` to read `collective-worker-mini` from Keychain. The
+Supply `COLLECTIVE_WORKER_TOKEN` (or `SWARMAA_WORKER_TOKEN`) through a private environment or configure
+`clients/macos/bridge-keychain-launcher.sh` to read `swarmaa-worker` from Keychain. The
 bridge startup command, after building locally, is:
 
 ```sh
@@ -190,7 +188,7 @@ file, so the worker has no MCP tools and cannot call Swarmaa. `agy` still needs 
 conversations' `brain/` and `conversations/` are unreadable. Not confined: network access, and the
 read-only guarantee for patch work (Antigravity has no patch mode here). Interactive MCP use of Antigravity is unchanged.
 
-Contract: Read tasks run as `<provider>.read` or `auto.read`; edit tasks as `<provider>.patch` or `auto.patch`. Edits are an explicit per-install opt-in (setup's "Allow edits", default read-only): the worker gets the `task:patch` grant and `enable_patch`/`allow_patch` together. Edit tasks run in sandboxed git worktrees with commands allowed, commit to the local branch `swarma/<provider>/<id>` and never push. Antigravity does review and in-project edits, not research. The routing policy picks the provider by order and quota.
+Contract: Read tasks run as `<provider>.read` or `auto.read`; edit tasks as `<provider>.patch` or `auto.patch`. Edits are an explicit per-install opt-in (setup's "Allow edits", default read-only): the worker gets the `task:patch` grant and `enable_patch`/`allow_patch` together. Edit tasks run in sandboxed git worktrees with commands allowed, commit to the local branch `swarmaa/<provider>/<id>` and never push. Antigravity does review and in-project edits, not research. The routing policy picks the provider by order and quota.
 
 Edits are opt-in. `npm run setup` ("Allow edits") provisions all of the following together and reconciles them on re-run (switching back to read-only revokes the grant). By hand, do all three:
 
@@ -234,8 +232,8 @@ task succeeded. Failure to notify Reason does not erase the durable task result.
 
 `clients/macos/com.collective.bridge.example.plist` is a launch-agent template. Replace every
 absolute path, configure the Keychain launcher, choose log locations, and then install it through
-your normal macOS launch-agent workflow. Do the same on the Mac Studio with a different Keychain
-item and principal token. Start with read-only capabilities on both machines.
+your normal macOS launch-agent workflow. Do the same on any additional worker Mac with a different Keychain
+item and principal token. Start with read-only capabilities on each machine.
 
 The sample log files contain task IDs and operational event codes, not task bodies or tokens.
 Arrange log rotation if you leave the worker running. Stop the bridge cleanly with SIGTERM;

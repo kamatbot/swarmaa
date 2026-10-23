@@ -87,7 +87,7 @@ Perform this concrete handoff in the actual apps:
 5. In Dot, read that continuation and its eventual result.
 6. In Claude, Codex and Antigravity, read the same shared context through MCP.
 
-This is the acceptance target for the user's collective network. REST calls made with principals named `dot` and `grok` do not establish that the real apps connected.
+This is the acceptance target for the user's Swarmaa network. REST calls made with principals named `dot` and `grok` do not establish that the real apps connected.
 
 ## 6. OAuth and events
 

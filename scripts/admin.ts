@@ -65,7 +65,7 @@ function parseScopes(role: Role): string[] {
 try {
   if (command === 'create') {
     const name = string(values.name, 'name', 100);
-    requireCondition(/^[a-z][a-z0-9_.-]+$/.test(name), 400, 'invalid_name', 'Use a stable lowercase connection name, such as claude-macmini.');
+    requireCondition(/^[a-z][a-z0-9_.-]+$/.test(name), 400, 'invalid_name', 'Use a stable lowercase connection name, such as claude-worker.');
     const role: Role = enumValue(values.role, 'role', ['admin', 'frontend', 'worker']);
     const scopes = parseScopes(role);
     const extra = (values.grant ?? []).map(v => enumValue<Permission>(v, 'grant', ['task:patch', 'task:submit', 'task:cancel']));

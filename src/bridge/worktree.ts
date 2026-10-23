@@ -58,7 +58,8 @@ export async function createWorktree(root: string, provider: string, task: Task)
   let baseCommit: string;
   try { baseCommit = (await git(root, ['rev-parse', '--verify', '--quiet', `${baseRef}^{commit}`])).trim(); }
   catch { throw fail('bad_base_ref', 'base_ref does not resolve to a commit'); }
-  const branch = `swarma/${provider}/${task.id.slice(0, 8)}`;
+  const primaryBranch = `swarmaa/${provider}/${task.id.slice(0, 8)}`;
+  const legacyBranch = `swarma/${provider}/${task.id.slice(0, 8)}`;
   const dir = worktreeDir(task.scope, task.id);
   await mkdir(dirname(dir), { recursive: true });
   // Attempt-aware: reuse a surviving worktree (keeps a crashed run's edits), else continue the retained branch, else branch fresh.
@@ -67,17 +68,24 @@ export async function createWorktree(root: string, provider: string, task: Task)
     await git(root, ['worktree', 'prune']);
     const real = (d: string): string => { try { return realpathSync(d); } catch { return d; } };
     const registered = (await git(root, ['worktree', 'list', '--porcelain'])).split('\n').some(l => l.startsWith('worktree ') && real(l.slice(9)) === real(dir));
-    const branchExists = await git(root, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`]).then(() => true, () => false);
+    const hasBranch = (b: string): Promise<boolean> => git(root, ['rev-parse', '--verify', '--quiet', `refs/heads/${b}`]).then(() => true, () => false);
+    const primaryExists = await hasBranch(primaryBranch);
+    const legacyExists = !primaryExists && await hasBranch(legacyBranch);
+    const branch = legacyExists ? legacyBranch : primaryBranch;
+    const branchExists = primaryExists || legacyExists;
     if (existsSync(dir) && !registered) throw fail('worktree_dir_occupied', 'Worktree directory exists but is not a registered worktree of this repository');
     if (registered || branchExists) {
       if (!registered) await git(root, ['worktree', 'add', dir, branch]);
-      const base = (await git(root, ['merge-base', branch, baseCommit])).trim();
+      const activeBranch = registered
+        ? (await git(dir, ['rev-parse', '--abbrev-ref', 'HEAD']).catch(() => branch)).trim() || branch
+        : branch;
+      const base = (await git(root, ['merge-base', activeBranch, baseCommit])).trim();
       await seedDependencies(root, dir);
-      return { dir, gitDir, branch, baseRef, baseCommit: base, continued: true };
+      return { dir, gitDir, branch: activeBranch, baseRef, baseCommit: base, continued: true };
     }
-    await git(root, ['worktree', 'add', '-b', branch, dir, baseCommit]);
+    await git(root, ['worktree', 'add', '-b', primaryBranch, dir, baseCommit]);
     await seedDependencies(root, dir);
-    return { dir, gitDir, branch, baseRef, baseCommit, continued: false };
+    return { dir, gitDir, branch: primaryBranch, baseRef, baseCommit, continued: false };
   });
 }
 

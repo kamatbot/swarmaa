@@ -1,7 +1,7 @@
 # Dot entrypoint
 
 Create a distinct `frontend` principal, for example `dot`, with `project:demo` access.
-Use your deployed `https://collective.example.com/mcp` endpoint in Dot's custom MCP connection
+Use your deployed `https://swarmaa.example.com/mcp` endpoint in Dot's custom MCP connection
 flow. Complete the service OAuth consent using the token provisioned for that principal.
 The exact Dot UI and event callback integration are covered by the service's MCP/event guide.
 

@@ -13,7 +13,7 @@ const run = promisify(execFile);
 const RPC = '/exa.language_server_pb.LanguageServerService/RetrieveUserQuotaSummary';
 const CSRF_HEADER = 'x-codeium-csrf-token';
 
-// ---- parser: port of NotchTrader's AntigravityQuotaParser (server reports what is LEFT; we report what is USED) ----
+// ---- parser: AntigravityQuotaParser (server reports what is LEFT; we report what is USED) ----
 interface Bucket { modelId?: string; bucketId?: string; name?: string; displayName?: string; fraction?: number; used?: number; limit?: number; resetTime?: string; window?: string; disabled?: boolean }
 interface Group { displayName?: string; buckets: Bucket[] }
 

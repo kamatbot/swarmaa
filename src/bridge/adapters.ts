@@ -3,10 +3,10 @@ import { claudeWorkerDir, type NativePlan } from './native-session.js';
 import { wrapCommand } from './sandbox.js';
 import type { AgentConfig, BridgeConfig, ProcessRequest, ProcessResult, ProjectConfig, Task } from './types.js';
 
-/** The user's own environment, as the CLI would see it in their shell, minus every Swarmaa service token (COLLECTIVE_*). */
+/** The user's own environment, as the CLI would see it in their shell, minus every Swarmaa service token (COLLECTIVE_* and SWARMAA_*). */
 export function providerEnvironment(_provider: string, parent: NodeJS.ProcessEnv, tokenEnv: string): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { NO_COLOR: '1', TERM: 'dumb' };
-  for (const [key, value] of Object.entries(parent)) if (key !== tokenEnv && !key.startsWith('COLLECTIVE_')) env[key] = value;
+  for (const [key, value] of Object.entries(parent)) if (key !== tokenEnv && !/^(?:COLLECTIVE|SWARMAA)_/u.test(key)) env[key] = value;
   return env;
 }
 

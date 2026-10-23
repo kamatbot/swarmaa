@@ -62,16 +62,17 @@ export class StdioHttpProxy {
 }
 
 export async function main(args = process.argv.slice(2)): Promise<void> {
-  let origin = process.env.COLLECTIVE_URL;
-  let tokenEnv = 'COLLECTIVE_MCP_TOKEN';
+  let origin = process.env.SWARMAA_URL ?? process.env.COLLECTIVE_URL;
+  let tokenEnv = process.env.SWARMAA_MCP_TOKEN && !process.env.COLLECTIVE_MCP_TOKEN ? 'SWARMAA_MCP_TOKEN' : 'COLLECTIVE_MCP_TOKEN';
   for (let i = 0; i < args.length; i++) {
     const flag = args[i];
     if (flag === '--url') origin = args[++i];
     else if (flag === '--token-env') tokenEnv = args[++i] ?? '';
     else throw new Error('Usage: stdio-proxy --url https://network.example --token-env COLLECTIVE_CLAUDE_TOKEN');
   }
-  if (!origin || !/^COLLECTIVE_[A-Z0-9_]+$/u.test(tokenEnv)) throw new Error('A service origin and COLLECTIVE_ token variable name are required');
-  const proxy = new StdioHttpProxy(origin, process.env[tokenEnv] ?? '');
+  if (!origin || !/^(?:COLLECTIVE|SWARMAA)_[A-Z0-9_]+$/u.test(tokenEnv)) throw new Error('A service origin and COLLECTIVE_ or SWARMAA_ token variable name are required');
+  const fallbackEnv = tokenEnv.startsWith('COLLECTIVE_') ? tokenEnv.replace(/^COLLECTIVE_/u, 'SWARMAA_') : tokenEnv.replace(/^SWARMAA_/u, 'COLLECTIVE_');
+  const proxy = new StdioHttpProxy(origin, process.env[tokenEnv] ?? process.env[fallbackEnv] ?? '');
   // Iterating with backpressure prevents an unbounded promise queue from a noisy client.
   let pending = Buffer.alloc(0);
   const write = async (response: RpcMessage): Promise<void> => {

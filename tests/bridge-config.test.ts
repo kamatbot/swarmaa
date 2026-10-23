@@ -157,4 +157,7 @@ test('workers run the real CLIs headless with auto-approved permissions, wrapped
   assert.equal(claude.env.MY_MCP_KEY, 'k');
   assert.equal(claude.env.COLLECTIVE_MCP_TOKEN, undefined);
   assert.equal(providerEnvironment('codex', { A: '1', T: 'x' }, 'T').T, undefined);
+  // Service tokens never reach a provider under either name; the user's own variables do.
+  const env = providerEnvironment('claude', { HOME: '/h', COLLECTIVE_WORKER_TOKEN: 'a', SWARMAA_WORKER_TOKEN: 'b', SWARMAA_URL: 'c', JAVA_HOME: '/j' }, 'COLLECTIVE_WORKER_TOKEN');
+  assert.deepEqual([env.COLLECTIVE_WORKER_TOKEN, env.SWARMAA_WORKER_TOKEN, env.SWARMAA_URL, env.HOME, env.JAVA_HOME], [undefined, undefined, undefined, '/h', '/j']);
 });

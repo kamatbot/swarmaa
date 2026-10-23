@@ -1,11 +1,11 @@
 {
   "mcpServers": {
-    "collective-network": {
+    "swarma": {
       "type": "stdio",
       "command": "/opt/homebrew/bin/node",
       "args": [
-        "/ABSOLUTE/PATH/collective-network/dist/src/stdio-proxy.js",
-        "--url", "https://collective.example.com",
+        "/ABSOLUTE/PATH/swarmaa/dist/src/stdio-proxy.js",
+        "--url", "https://swarmaa.example.com",
         "--token-env", "COLLECTIVE_CLAUDE_TOKEN"
       ]
     }

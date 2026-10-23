@@ -25,7 +25,7 @@ Prepared 2026-10-21. This is an authored implementation, with source inspection 
 - **Provider result vs acceptance:** a successful provider terminal response is recorded as task completion, with acceptance criteria explicitly unverified. Human or subsequent agent review remains necessary before integration.
 - **No automatic task decomposition/consensus:** entrypoints choose work, can submit multiple bounded tasks and can compare their results. The service is not a universal autonomous planner, voting engine or all-to-all agent conversation loop.
 - **Antigravity workers:** review and in-project edits only, always inside the Seatbelt sandbox; no research tasks.
-- **Edits are opt-in and local:** edit tasks run in sandboxed git worktrees with commands allowed, commit to `swarma/<provider>/<id>` and never push. Deployments and pushes are not task capabilities.
+- **Edits are opt-in and local:** edit tasks run in sandboxed git worktrees with commands allowed, commit to `swarmaa/<provider>/<id>` and never push. Deployments and pushes are not task capabilities.
 - **Hosted entrypoints need HTTPS:** local loopback works for local clients. Dot and a cloud Grok connection require an accessible HTTPS endpoint and account-specific connection setup.
 - **Grok callbacks are generic:** an owner can configure a receiver and its documented auth headers. The bundle does not assume the exact webhook authentication schema or claim a tested Grok routine connection.
 - **Reason is optional:** its peer channel improves notifications; the companion service owns durable memory/tasks. The vendored public source does not include Reason's hosted account/relay backend.
