@@ -166,6 +166,19 @@ addition to the public host. Hosted clients use `https://<host>/mcp` with OAuth;
 A Cloudflare Worker would only be worth it to accept tasks while this Mac is asleep; that means
 moving the PostgreSQL-backed service, which is not needed for a personal swarm.
 
+## Deploying changes
+
+Use Node.js 24 and `npm run deploy:local` to build, drain running bridges with SIGUSR2,
+wait for their replacement PIDs, then restart the service and check its discovery endpoint.
+Never `kickstart -k` a busy bridge: SIGTERM/SIGINT abort its running tasks. A repeated SIGUSR2 is harmless.
+Drain waits indefinitely by default; set `BRIDGE_DRAIN_MAX_SECONDS` in the bridge environment to
+abort remaining tasks after a deadline. Draining bridges keep heartbeating and report zero slots.
+Use `-- --dry-run` to print the plan without building or signaling, `--only claude|codex|agy` for one
+bridge, or `--no-service` to leave the service running. Set `PORT` for a non-default service port
+(default 8787); an optional `COLLECTIVE_TOKEN` adds scoped running-task counts to PID progress.
+The first rollout requires bridges that already handle SIGUSR2; install this version while idle.
+Before rollout, the database's worker-slots constraint must accept 0 (the original migration accepts 1–16).
+
 ## Day to day
 
 ```bash

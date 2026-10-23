@@ -14,10 +14,16 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
   // Child environments are explicit allowlists. Do not print this token or pass it as argv.
   const client = new HttpToolClient(config.service_url, token, config.request_timeout_ms);
   const controller = new AbortController();
+  const worker = new BridgeWorker(config, client);
+  const deadline = process.env.BRIDGE_DRAIN_MAX_SECONDS;
+  const maxSeconds = deadline === undefined ? undefined : Number(deadline);
+  if (maxSeconds !== undefined && (!deadline?.trim() || !Number.isFinite(maxSeconds) || maxSeconds < 0 || maxSeconds * 1000 > 2147483647)) throw new Error('BRIDGE_DRAIN_MAX_SECONDS must be between 0 and 2147483.647');
   const stop = (): void => controller.abort();
+  const drain = (): void => worker.drain(maxSeconds);
   process.once('SIGINT', stop); process.once('SIGTERM', stop);
-  try { await new BridgeWorker(config, client).run(controller.signal, args.includes('--once')); }
-  finally { process.removeListener('SIGINT', stop); process.removeListener('SIGTERM', stop); }
+  process.on('SIGUSR2', drain);
+  try { await worker.run(controller.signal, args.includes('--once')); }
+  finally { process.removeListener('SIGINT', stop); process.removeListener('SIGTERM', stop); process.removeListener('SIGUSR2', drain); }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {

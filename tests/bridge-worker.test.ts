@@ -5,6 +5,12 @@ import { parseBridgeConfig } from '../src/bridge/config.js';
 import { RemoteError } from '../src/bridge/client.js';
 import type { ProcessResult, Task, ToolClient } from '../src/bridge/types.js';
 
+function deferred<T = void>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>(r => { resolve = r; });
+  return { promise, resolve };
+}
+
 const config = () => parseBridgeConfig({ service_url:'http://localhost:8080', agents:[{id:'claude',provider:'claude',binary:'/bin/claude',sandbox:false}], projects:[{scope:'project:demo',root:'/projects/demo',agents:['claude']}] });
 const task: Task = { id:'11111111-1111-4111-8111-111111111111',scope:'project:demo',kind:'review',objective:'Review source',constraints:[],acceptance_criteria:[],resource_key:null,required_capability:'claude.read',checkpoint:null,context_refs:[],version:1 };
 const result: ProcessResult = {exit_code:0,signal:null,stdout:'{"type":"result","subtype":"success","is_error":false}',stderr:'',duration_ms:10,stop_reason:null};
@@ -53,18 +59,22 @@ test('heartbeat rejection aborts provider and prevents stale completion/artifact
   assert.ok(!calls.includes('artifact_put'));
 });
 
-test('transient heartbeat failures are retried and the task still completes', async () => {
+test('transient heartbeat failures are retried and the task still completes', { timeout: 3000 }, async () => {
   const calls: string[] = []; let beats = 0;
+  const renewed = deferred();
   const client: ToolClient = { async call<T>(name:string):Promise<T> {
     calls.push(name);
     if(name==='task_claim') return {task,lease_token:'lease-secret',lease_generation:1} as T;
-    if(name==='task_heartbeat' && ++beats<=2) throw beats===1 ? new Error('fetch failed') : new RemoteError(503,'internal_error');
+    if(name==='task_heartbeat') {
+      if (++beats<=2) throw beats===1 ? new Error('fetch failed') : new RemoteError(503,'internal_error');
+      renewed.resolve();
+    }
     if(name==='context_get') return {scope:task.scope,memories:[],conflicts:[]} as T;
     if(name==='artifact_put') return {artifact:{id:'22222222-2222-4222-8222-222222222222'}} as T;
     return {task} as T;
   } };
   const cfg = config(); cfg.heartbeat_seconds = 0.01;
-  const worker = new BridgeWorker(cfg,client,()=>{},async () => { await new Promise(r=>setTimeout(r,120)); return result; });
+  const worker = new BridgeWorker(cfg,client,()=>{},async () => { await renewed.promise; return result; });
   await worker.claimAndRun(cfg.projects[0]!,new AbortController().signal);
   assert.ok(beats>=3);
   assert.ok(calls.includes('task_finish'));
@@ -252,4 +262,113 @@ test('one worker runs up to max_concurrent tasks at the same time', async () => 
   await worker.run(stop.signal);
   assert.equal(peak,3,'all three tasks ran at once');
   assert.equal(handed,3);
+});
+
+test('drain stops claims, keeps heartbeats and zero-slot reports, and waits for the last finish', { timeout: 3000 }, async () => {
+  const cfg = config(); cfg.max_concurrent = 2; cfg.poll_seconds = 0.01; cfg.usage_seconds = 0.02; cfg.heartbeat_seconds = 0.01;
+  const calls: {name:string;args:Record<string,unknown>}[] = [];
+  const logs: {event:string;metadata:Record<string,unknown>}[] = [];
+  const releases = [deferred(), deferred()];
+  const bothStarted = deferred(), heartbeat = deferred(), reportedTwice = deferred(), firstFinished = deferred();
+  let claims = 0, started = 0, zeroReports = 0, draining = false, resolved = false;
+  const signals: AbortSignal[] = [];
+  const client: ToolClient = { async call<T>(name: string, args: Record<string,unknown>): Promise<T> {
+    calls.push({name,args});
+    if (name === 'task_claim') return {task:{...task,id:`task-${++claims}`},lease_token:'l',lease_generation:1} as T;
+    if (name === 'context_get') return {task,memories:[],conflicts:[]} as T;
+    if (name === 'artifact_put') return {artifact:{id:'artifact'}} as T;
+    if (name === 'session_list') return {sessions:[]} as T;
+    if (name === 'usage_report' && args.slots === 0 && ++zeroReports === 2) reportedTwice.resolve();
+    if (name === 'task_heartbeat' && draining) heartbeat.resolve();
+    if (name === 'task_finish') firstFinished.resolve();
+    return {} as T;
+  } };
+  const worker = new BridgeWorker(cfg,client,(event,metadata) => logs.push({event,metadata:metadata ?? {}}),async request => {
+    signals.push(request.signal!);
+    const release = releases[started++]!;
+    if (started === 2) bothStarted.resolve();
+    await release.promise;
+    return result;
+  },async () => []);
+  const stop = new AbortController();
+  const run = worker.run(stop.signal).then(() => { resolved = true; });
+  try {
+    await bothStarted.promise;
+    const atDrain = calls.length;
+    worker.drain(); worker.drain(0); draining = true;
+    assert.deepEqual(logs.filter(l => l.event === 'bridge_draining'),[{event:'bridge_draining',metadata:{running:2}}]);
+    await Promise.all([heartbeat.promise,reportedTwice.promise]);
+    assert.equal(claims,2);
+    assert.equal(resolved,false);
+    assert.ok(signals.every(s => !s.aborted));
+    assert.equal(await worker.claimAndRun(cfg.projects[0]!,stop.signal),false);
+    releases[0]!.resolve(); await firstFinished.promise;
+    assert.equal(resolved,false);
+    releases[1]!.resolve(); await run;
+    assert.equal(claims,2);
+    assert.deepEqual(calls.filter(c => c.name === 'task_finish').map(c => c.args.outcome),['completed','completed']);
+    assert.ok(calls.slice(atDrain).filter(c => c.name === 'usage_report').every(c => c.args.slots === 0));
+    assert.ok(!logs.some(l => l.event === 'bridge_drain_deadline'));
+  } finally { stop.abort(); releases.forEach(r => r.resolve()); await run; }
+});
+
+test('drain with no running work resolves immediately, including during the polling sleep', { timeout: 1000 }, async () => {
+  const cfg = config(); cfg.usage_seconds = 0; cfg.poll_seconds = 300;
+  const polled = deferred(); let claims = 0;
+  const client: ToolClient = { async call<T>(name: string): Promise<T> { if (name === 'task_claim') { claims++; polled.resolve(); } return {task:null} as T; } };
+  const before = new BridgeWorker(cfg,client,()=>{});
+  before.drain(); await before.run(new AbortController().signal);
+  assert.equal(claims,0);
+  const worker = new BridgeWorker(cfg,client,()=>{});
+  const stop = new AbortController(); const run = worker.run(stop.signal);
+  try {
+    await polled.promise;
+    await new Promise<void>(resolve => setImmediate(resolve));
+    worker.drain(); await run;
+    assert.equal(claims,1);
+  } finally { stop.abort(); await run; }
+});
+
+test('drain preserves a once-mode claim already in flight and reports zero slots with usage disabled', { timeout: 1000 }, async () => {
+  const cfg = config(); cfg.usage_seconds = 0; cfg.poll_seconds = 0.01;
+  const claimed = deferred(), claimResponse = deferred(), reported = deferred();
+  let claims = 0, finished = false;
+  const client: ToolClient = { async call<T>(name: string, args: Record<string,unknown>): Promise<T> {
+    if (name === 'task_claim') { claims++; claimed.resolve(); await claimResponse.promise; return {task,lease_token:'l',lease_generation:1} as T; }
+    if (name === 'usage_report') { assert.equal(args.slots,0); reported.resolve(); }
+    if (name === 'context_get') return {task,memories:[],conflicts:[]} as T;
+    if (name === 'artifact_put') return {artifact:{id:'artifact'}} as T;
+    if (name === 'session_list') return {sessions:[]} as T;
+    if (name === 'task_finish') { assert.equal(args.outcome,'completed'); finished = true; }
+    return {} as T;
+  } };
+  const worker = new BridgeWorker(cfg,client,()=>{},async request => { await reported.promise; assert.equal(request.signal!.aborted,false); return result; });
+  const run = worker.run(new AbortController().signal,true);
+  await claimed.promise; worker.drain(); claimResponse.resolve(); await run;
+  assert.equal(claims,1); assert.equal(finished,true);
+});
+
+test('drain deadline uses the shutdown abort path for running providers', { timeout: 1000 }, async () => {
+  const cfg = config(); cfg.usage_seconds = 0; cfg.poll_seconds = 300;
+  const started = deferred(); const events: string[] = [];
+  let aborted = false, outcome: unknown;
+  const client: ToolClient = { async call<T>(name: string, args: Record<string,unknown>): Promise<T> {
+    if (name === 'task_claim') return {task,lease_token:'l',lease_generation:1} as T;
+    if (name === 'context_get') return {task,memories:[],conflicts:[]} as T;
+    if (name === 'artifact_put') return {artifact:{id:'artifact'}} as T;
+    if (name === 'session_list') return {sessions:[]} as T;
+    if (name === 'task_finish') outcome = args.outcome;
+    return {} as T;
+  } };
+  const worker = new BridgeWorker(cfg,client,event => events.push(event),async request => {
+    started.resolve();
+    await new Promise<void>(resolve => request.signal!.addEventListener('abort',() => resolve(),{once:true}));
+    aborted = true; return {...result,stop_reason:'aborted'};
+  });
+  const stop = new AbortController(); const run = worker.run(stop.signal);
+  try {
+    await started.promise; worker.drain(0.02); await run;
+    assert.equal(aborted,true); assert.equal(outcome,'blocked');
+    assert.equal(events.filter(e => e === 'bridge_drain_deadline').length,1);
+  } finally { stop.abort(); await run; }
 });

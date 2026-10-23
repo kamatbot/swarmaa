@@ -98,6 +98,19 @@ describe('swarm usage routing and status', {skip:!connectionString,concurrency:f
     assert.match(served.message,/^Swarm started: task [0-9a-f]{8} is queued in project:a\. 1 live worker with 1 free slot serve it, so it should start within seconds\./);
   });
 
+  it('a draining worker reports zero slots and stays live with no negative free slots', async () => {
+    const {front,claude} = await fixture();
+    await call(claude,'usage_report',{...report('claude',10),slots:2});
+    await call(front,'task_submit',submit('k-draining'));
+    await call(claude,'task_claim',{scope:'project:a',capabilities:['claude.read','auto.read']});
+    await call(claude,'usage_report',{reports:[],slots:0});
+    const worker = (await call(front,'swarm_status',{})).workers.find((w:any) => w.name === 'worker-claude');
+    assert.equal(worker.live,true);
+    assert.equal(worker.slots,0);
+    assert.equal(worker.running.length,1);
+    assert.equal(worker.free_slots,0);
+  });
+
   it('swarm_status describes running tasks and the branch a finished task landed on', async () => {
     const {front,claude} = await fixture();
     const task = (await call(front,'task_submit',submit('k-act'))).task;
