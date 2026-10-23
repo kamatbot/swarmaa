@@ -31,6 +31,7 @@ export function buildPrompt(task: Task, context: unknown, maxBytes: number): str
     'Preserve the original constraints. Report conflicting information and blockers. Never invent a successful test, connection, deployment or validation.',
     'Do not access credentials or unrelated files. Do not send messages, publish, deploy, commit, push, or change account settings.',
     task.kind === 'patch' ? 'This task allows file edits in the working directory, a git worktree on its own branch. Shell commands, builds and tests are allowed inside it. Do not commit, push, or change branches: the bridge commits your edits. Report what you validated and what still needs validation.' : 'This is a read-only task: do not alter files or external state. Use the project, the supplied context, read-only commands and the web as needed; cite web sources with their URL and retrieval date.',
+    'Headless Chrome/Chromium works here only with --no-sandbox (macOS cannot nest its sandbox inside this one) and a fresh --user-data-dir under $TMPDIR (the default browser profile folder is blocked); wait for the process to exit before checking its output.',
     'The bridge owns task leases and service writes. Do not try to call the service or read its bearer token.',
     'Return a concise result with evidence, unresolved issues and recommended next steps. Provider exit code alone does not prove acceptance criteria passed.'
   ].join('\n');
