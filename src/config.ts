@@ -1,3 +1,4 @@
+import { isIP } from 'node:net';
 import type { ServerConfig } from './types.js';
 
 function flag(value: string | undefined, fallback: boolean): boolean {
@@ -13,6 +14,22 @@ function csv(value: string | undefined): string[] {
 export function isLoopbackHostname(hostname: string): boolean {
   const h = hostname.replace(/^\[|\]$/g, '').toLowerCase();
   return h === 'localhost' || h === '::1' || h === '127.0.0.1';
+}
+
+function parseTrustedProxies(env: NodeJS.ProcessEnv): { trustProxy: boolean; trustedProxies: string[] } {
+  const raw = env.TRUST_PROXY?.trim().toLowerCase();
+  const list = csv(env.TRUSTED_PROXIES);
+  for (const entry of list) {
+    if (entry !== 'loopback' && !isIP(entry)) throw new Error('TRUSTED_PROXIES must contain valid IP addresses or loopback.');
+  }
+  if (raw === undefined || raw === '') return { trustProxy: list.length > 0, trustedProxies: list };
+  if (raw === 'true' || raw === 'loopback' || raw === 'cloudflare') return { trustProxy: true, trustedProxies: list };
+  if (raw === 'false') return { trustProxy: false, trustedProxies: [] };
+  const fromTrustProxy = csv(env.TRUST_PROXY);
+  for (const entry of fromTrustProxy) {
+    if (entry !== 'loopback' && !isIP(entry)) throw new Error('Boolean environment values must be true or false.');
+  }
+  return { trustProxy: fromTrustProxy.length > 0, trustedProxies: [...new Set([...list, ...fromTrustProxy])] };
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
@@ -32,6 +49,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
   const allowedOrigins = csv(env.ALLOWED_ORIGINS);
   if (!allowedOrigins.includes(url.origin)) allowedOrigins.push(url.origin);
   for (const origin of allowedOrigins) if (new URL(origin).origin !== origin) throw new Error('ALLOWED_ORIGINS must contain exact URL origins.');
+  const { trustProxy, trustedProxies } = parseTrustedProxies(env);
   return {
     host, port, publicUrl: url.origin, allowedOrigins, allowInsecureLocalhost,
     maxBodyBytes: 512 * 1024,
@@ -39,5 +57,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     oauthRedirectHosts: csv(env.OAUTH_REDIRECT_HOSTS).map(h => h.toLowerCase()),
     eventCallbackHosts: callbackHosts, eventEncryptionKey,
     passkeyRpId: env.PASSKEY_RP_ID?.trim().toLowerCase() || undefined,
+    trustProxy,
+    trustedProxies,
   };
 }

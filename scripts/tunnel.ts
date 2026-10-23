@@ -76,7 +76,7 @@ export async function setupTunnel(opts: { hostname: string; root: string; dry: b
   const xml = plist(LABEL, [cf, 'tunnel', '--no-autoupdate', '--config', yml, 'run', NAME], { stdout: logFile, stderr: logFile });
   const origins = new Set(envValue(env, 'ALLOWED_ORIGINS').split(',').map(s => s.trim()).filter(Boolean));
   origins.add(`https://${hostname}`);
-  env = setEnv(setEnv(setEnv(env, 'PUBLIC_URL', `https://${hostname}`), 'ALLOWED_ORIGINS', [...origins].join(',')), 'OAUTH_ENABLED', 'true');
+  env = setEnv(setEnv(setEnv(setEnv(env, 'PUBLIC_URL', `https://${hostname}`), 'ALLOWED_ORIGINS', [...origins].join(',')), 'OAUTH_ENABLED', 'true'), 'TRUST_PROXY', 'true');
 
   if (dry) {
     log(`  [dry-run] write ${yml} and ${agent}; set PUBLIC_URL=https://${hostname} in .env; restart the service; start the tunnel`);

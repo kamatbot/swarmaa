@@ -13,16 +13,23 @@ type EventName = typeof EVENT_NAMES[number];
 const DEFAULT_TTL = 24 * 60 * 60 * 1000;
 const MAX_TTL = 7 * DEFAULT_TTL;
 const MAX_ATTEMPTS = 8;
+const DEFAULT_MAX_CONCURRENT = 8;
+const DEFAULT_MAX_PER_HOST = 2;
 const TERMINAL_STATUSES = new Set(['completed', 'failed', 'blocked', 'cancelled']);
 
 interface SubscriptionRow {
   id: string; principal_id: string; oauth_grant_id: string | null; credential_version: number; revision: number; tenant_id: string; scope: string; name: EventName;
   mode: 'mcp' | 'generic'; callback_url: string; secret_ciphertext: string;
   previous_secret_ciphertext: string | null; previous_secret_until: Date | null;
-  verified_until: Date; starts_at: Date; expires_at: Date; active: boolean;
+  verified_until: Date; starts_at: Date; expires_at: Date; active: boolean; last_seq: string;
 }
 interface DeliveryRow {
-  subscription_id: string; event_id: string; attempts: number; lock_token: string;
+  subscription_id: string; event_id: string; attempts: number; lock_token: string; callback_url?: string;
+}
+
+export interface EventServiceOptions {
+  maxConcurrent?: number;
+  maxPerHost?: number;
 }
 
 export function subscriptionId(principal: Principal, mode: string, url: string, name: string, scope: string): string {
@@ -41,13 +48,19 @@ function exactKeys(value: Record<string, unknown>, allowed: string[]): void {
 export class EventService implements EventBackend {
   private readonly box: SecretBox;
   private readonly send: WebhookSender;
+  private readonly maxConcurrent: number;
+  private readonly maxPerHost: number;
   private running = false;
   private timer: NodeJS.Timeout | undefined;
   private activeRun: Promise<void> | undefined;
+  private readonly inFlight = new Set<Promise<void>>();
+  private readonly inFlightByHost = new Map<string, number>();
 
-  constructor(private readonly pool: Pool, private readonly auth: AuthBackend, private readonly config: ServerConfig, sender?: WebhookSender) {
+  constructor(private readonly pool: Pool, private readonly auth: AuthBackend, private readonly config: ServerConfig, sender?: WebhookSender, options?: EventServiceOptions) {
     this.box = new SecretBox(config.eventEncryptionKey);
     this.send = sender ?? createWebhookSender(config.eventCallbackHosts);
+    this.maxConcurrent = Math.max(1, options?.maxConcurrent ?? DEFAULT_MAX_CONCURRENT);
+    this.maxPerHost = Math.max(1, options?.maxPerHost ?? DEFAULT_MAX_PER_HOST);
   }
 
   async handle(principal: Principal, method: string, raw: unknown): Promise<unknown> {
@@ -150,13 +163,15 @@ export class EventService implements EventBackend {
         }
       }
       const saved = await client.query<{ expires_at: Date }>(
-        `INSERT INTO event_subscriptions(id,principal_id,tenant_id,scope,name,mode,callback_url,secret_ciphertext,previous_secret_ciphertext,previous_secret_until,verified_until,expires_at,oauth_grant_id,credential_version)
-         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$13,$12,clock_timestamp()+($10::bigint*interval '1 millisecond'),$11,$14)
+        `INSERT INTO event_subscriptions(id,principal_id,tenant_id,scope,name,mode,callback_url,secret_ciphertext,previous_secret_ciphertext,previous_secret_until,verified_until,expires_at,oauth_grant_id,credential_version,last_seq)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$13,$12,clock_timestamp()+($10::bigint*interval '1 millisecond'),$11,$14,
+           COALESCE((SELECT max(seq) FROM events WHERE tenant_id=$3 AND scope=$4 AND name=$5 AND created_at<clock_timestamp()), 0))
          ON CONFLICT(id) DO UPDATE SET secret_ciphertext=EXCLUDED.secret_ciphertext,
            previous_secret_ciphertext=EXCLUDED.previous_secret_ciphertext,previous_secret_until=EXCLUDED.previous_secret_until,
            verified_until=EXCLUDED.verified_until,expires_at=EXCLUDED.expires_at,oauth_grant_id=EXCLUDED.oauth_grant_id,credential_version=EXCLUDED.credential_version,
            revision=event_subscriptions.revision+1,active=true,updated_at=clock_timestamp(),
-           starts_at=CASE WHEN event_subscriptions.active AND event_subscriptions.expires_at>clock_timestamp() THEN event_subscriptions.starts_at ELSE clock_timestamp() END
+           starts_at=CASE WHEN event_subscriptions.active AND event_subscriptions.expires_at>clock_timestamp() THEN event_subscriptions.starts_at ELSE clock_timestamp() END,
+           last_seq=CASE WHEN event_subscriptions.active AND event_subscriptions.expires_at>clock_timestamp() THEN event_subscriptions.last_seq ELSE EXCLUDED.last_seq END
          RETURNING expires_at`, [input.id, principal.id, principal.tenantId, input.scope, input.name, input.mode, input.url, cipher, oldCipher, input.ttl, principal.oauthGrantId ?? null, input.verifiedUntil, oldUntil, row.credential_version]);
       if (previous && !previous.live) {
         await client.query("UPDATE event_deliveries SET state='skipped',lock_token=NULL,locked_until=NULL WHERE subscription_id=$1 AND state IN ('pending','sending')", [input.id]);
@@ -189,49 +204,96 @@ export class EventService implements EventBackend {
   start(): void {
     if (this.running) return;
     this.running = true;
-    const schedule = () => {
-      if (!this.running) return;
-      this.timer = setTimeout(() => {
-        this.activeRun = this.tick().catch(() => { process.stderr.write('Event delivery cycle failed; retrying.\n'); }).finally(schedule);
-      }, 1000);
-    };
-    schedule();
+    this.schedule(1000);
+  }
+
+  private schedule(delayMs: number): void {
+    if (!this.running) return;
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = setTimeout(() => {
+      this.timer = undefined;
+      if (!this.running || this.activeRun) return;
+      this.activeRun = this.tick()
+        .catch(() => { process.stderr.write('Event delivery cycle failed; retrying.\n'); })
+        .finally(() => {
+          this.activeRun = undefined;
+          if (this.running) this.schedule(1000);
+        });
+    }, delayMs);
   }
 
   async stop(): Promise<void> {
     this.running = false;
     if (this.timer) clearTimeout(this.timer);
     await this.activeRun;
+    await Promise.allSettled([...this.inFlight]);
   }
 
   private async tick(): Promise<void> {
     await this.pool.query(
-      `INSERT INTO event_deliveries(subscription_id,event_id)
-       SELECT s.id,e.id FROM event_subscriptions s JOIN events e ON e.tenant_id=s.tenant_id AND e.scope=s.scope AND e.name=s.name
-       WHERE s.active AND s.expires_at>clock_timestamp() AND e.created_at>=s.starts_at
-         AND NOT EXISTS(SELECT 1 FROM event_deliveries d WHERE d.subscription_id=s.id AND d.event_id=e.id)
-       ORDER BY e.seq LIMIT 200 ON CONFLICT DO NOTHING`);
+      `WITH batch AS (
+         SELECT s.id AS subscription_id, e.id AS event_id, e.seq
+         FROM event_subscriptions s
+         JOIN LATERAL (
+           SELECT e.id, e.seq FROM events e
+           WHERE e.tenant_id = s.tenant_id AND e.scope = s.scope AND e.name = s.name
+             AND e.seq > s.last_seq AND e.created_at >= s.starts_at
+           ORDER BY e.seq LIMIT 200
+         ) e ON true
+         WHERE s.active AND s.expires_at > clock_timestamp()
+       ),
+       inserted AS (
+         INSERT INTO event_deliveries(subscription_id, event_id)
+         SELECT subscription_id, event_id FROM batch
+         ON CONFLICT DO NOTHING
+       )
+       UPDATE event_subscriptions s
+       SET last_seq = GREATEST(s.last_seq, sub.max_seq), updated_at = clock_timestamp()
+       FROM (SELECT subscription_id, max(seq) AS max_seq FROM batch GROUP BY subscription_id) sub
+       WHERE s.id = sub.subscription_id`);
     await this.pool.query("UPDATE event_deliveries SET state='failed',lock_token=NULL,locked_until=NULL,last_error_code='attempt_limit' WHERE attempts >= $1 AND (state='pending' OR (state='sending' AND locked_until<clock_timestamp()))", [MAX_ATTEMPTS]);
-    for (let i = 0; this.running && i < 5; i++) {
-      const delivery = await this.claim();
+    await this.dispatchAvailable();
+  }
+
+  private saturatedHosts(): string[] {
+    const hosts: string[] = [];
+    for (const [host, count] of this.inFlightByHost) if (count >= this.maxPerHost) hosts.push(host);
+    return hosts;
+  }
+
+  private async dispatchAvailable(): Promise<void> {
+    while (this.running && this.inFlight.size < this.maxConcurrent) {
+      const delivery = await this.claim(this.saturatedHosts());
       if (!delivery) break;
-      await this.deliver(delivery);
+      const host = new URL(delivery.callback_url!).hostname.toLowerCase();
+      this.inFlightByHost.set(host, (this.inFlightByHost.get(host) ?? 0) + 1);
+      const task = this.deliver(delivery)
+        .catch(() => { process.stderr.write('Event delivery failed.\n'); })
+        .finally(() => {
+          const remaining = (this.inFlightByHost.get(host) ?? 1) - 1;
+          if (remaining <= 0) this.inFlightByHost.delete(host);
+          else this.inFlightByHost.set(host, remaining);
+          this.inFlight.delete(task);
+          if (this.running && !this.activeRun) this.schedule(10);
+        });
+      this.inFlight.add(task);
     }
   }
 
-  private async claim(): Promise<DeliveryRow | undefined> {
+  private async claim(blockedHosts: string[]): Promise<DeliveryRow | undefined> {
     return transaction(this.pool, async client => {
       const selected = await client.query<DeliveryRow>(
-        `SELECT d.* FROM event_deliveries d JOIN event_subscriptions s ON s.id=d.subscription_id
-         WHERE s.active AND s.expires_at>clock_timestamp() AND d.attempts<$1 AND
-           ((d.state='pending' AND d.next_attempt_at<=clock_timestamp()) OR (d.state='sending' AND d.locked_until<clock_timestamp()))
-         ORDER BY d.next_attempt_at LIMIT 1 FOR UPDATE OF d SKIP LOCKED`, [MAX_ATTEMPTS]);
+        `SELECT d.*, s.callback_url FROM event_deliveries d JOIN event_subscriptions s ON s.id=d.subscription_id
+         WHERE s.active AND s.expires_at>clock_timestamp() AND d.attempts<$1
+           AND NOT (lower(substring(s.callback_url from '^https?://([^/:]+)')) = ANY($2::text[]))
+           AND ((d.state='pending' AND d.next_attempt_at<=clock_timestamp()) OR (d.state='sending' AND d.locked_until<clock_timestamp()))
+         ORDER BY d.next_attempt_at LIMIT 1 FOR UPDATE OF d SKIP LOCKED`, [MAX_ATTEMPTS, blockedHosts]);
       if (!selected.rows[0]) return undefined;
       const row = selected.rows[0];
       const token = randomUUID();
       const updated = await client.query<DeliveryRow>(
         "UPDATE event_deliveries SET state='sending',attempts=attempts+1,lock_token=$3,locked_until=clock_timestamp()+interval '30 seconds',updated_at=clock_timestamp() WHERE subscription_id=$1 AND event_id=$2 RETURNING *", [row.subscription_id, row.event_id, token]);
-      return updated.rows[0];
+      return updated.rows[0] ? { ...updated.rows[0], callback_url: row.callback_url } : undefined;
     });
   }
 

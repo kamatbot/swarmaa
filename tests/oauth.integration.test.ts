@@ -132,4 +132,32 @@ test('OAuth authorization, PKCE, code single-use, refresh replay and revocation'
   const races = await Promise.allSettled([service.exchangeToken(exchange(concurrentCode)), service.exchangeToken(exchange(concurrentCode))]);
   assert.equal(races.filter(result => result.status === 'fulfilled').length, 1);
   assert.equal(races.filter(result => result.status === 'rejected').length, 1);
+
+  // Bounded scheduled cleanup removes expired access/refresh tokens and unused clients while preserving
+  // refresh-replay detection (used and abandoned refresh tokens) for live grant families.
+  const liveChain = await service.exchangeToken(exchange(await getCode()));
+  const liveStep1 = await service.exchangeToken(refreshParams(liveChain.refresh_token));
+  // Retry liveChain.refresh_token to mark liveStep1.refresh_token as abandoned (-infinity) and liveStep1.access_token as expired.
+  const liveRetried = await service.exchangeToken(refreshParams(liveChain.refresh_token));
+  // Artificially age liveChain.refresh_token (already used) so its own expires_at is in the past while the grant remains live.
+  await pool.query("UPDATE oauth_refresh_tokens SET expires_at=now()-interval '1 hour' WHERE token_hash=$1", [tokenHash(String(liveChain.refresh_token))]);
+  // Add an unused registration older than 24h.
+  await pool.query("INSERT INTO oauth_clients(client_id,client_name,redirect_uris,created_at) VALUES ('stale_unused_client','stale','{https://claude.ai/callback}',now()-interval '25 hours')");
+
+  service.start(25);
+  await new Promise(resolve => setTimeout(resolve, 80));
+  await service.stop();
+
+  // Expired access tokens, expired codes, and tokens of expired/revoked grants were cleaned up, along with the stale unused client.
+  assert.equal((await pool.query("SELECT 1 FROM oauth_clients WHERE client_id='stale_unused_client'")).rowCount, 0);
+  assert.equal((await pool.query('SELECT 1 FROM oauth_access_tokens WHERE token_hash=$1', [tokenHash(String(expiryTokens.access_token))])).rowCount, 0);
+  assert.equal((await pool.query('SELECT 1 FROM oauth_refresh_tokens WHERE token_hash=$1', [tokenHash(String(expiryTokens.refresh_token))])).rowCount, 0);
+  assert.equal((await pool.query('SELECT 1 FROM oauth_access_tokens WHERE token_hash=$1', [tokenHash(String(liveStep1.access_token))])).rowCount, 0);
+
+  // Live grant family's spent and abandoned refresh tokens are preserved, and replaying either revokes the live family.
+  assert.equal((await pool.query('SELECT 1 FROM oauth_refresh_tokens WHERE token_hash=$1', [tokenHash(String(liveChain.refresh_token))])).rowCount, 1);
+  assert.equal((await pool.query('SELECT 1 FROM oauth_refresh_tokens WHERE token_hash=$1', [tokenHash(String(liveStep1.refresh_token))])).rowCount, 1);
+  assert.ok(await service.authenticate(String(liveRetried.access_token)));
+  await assert.rejects(service.exchangeToken(refreshParams(liveStep1.refresh_token)), OAuthError);
+  assert.equal(await service.authenticate(String(liveRetried.access_token)), null, 'replaying abandoned refresh token after cleanup revokes live family');
 });

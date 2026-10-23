@@ -41,7 +41,7 @@ test('event lifecycle verifies signatures, refreshes deterministically and stops
     await admin.query(`DROP SCHEMA ${schema} CASCADE`);
     await admin.end();
   });
-  for (const migration of ['001_identity.sql', '003_oauth.sql', '004_events.sql']) {
+  for (const migration of ['001_identity.sql', '003_oauth.sql', '004_events.sql', '014_event_subscription_cursor.sql']) {
     await pool.query(await readFile(new URL(`../db/migrations/${migration}`, import.meta.url), 'utf8'));
   }
 
@@ -155,7 +155,7 @@ test('generic task sinks deliver only terminal states as a small signed summary 
   const pool = new pg.Pool({ connectionString, options: `-c search_path=${schema},public`, max: 8 });
   let service: EventService | undefined;
   t.after(async () => { await service?.stop(); await pool.end(); await admin.query(`DROP SCHEMA ${schema} CASCADE`); await admin.end(); });
-  for (const migration of ['001_identity.sql', '002_core.sql', '003_oauth.sql', '004_events.sql']) {
+  for (const migration of ['001_identity.sql', '002_core.sql', '003_oauth.sql', '004_events.sql', '014_event_subscription_cursor.sql']) {
     await pool.query(await readFile(new URL(`../db/migrations/${migration}`, import.meta.url), 'utf8'));
   }
   const principal: Principal = { id: randomUUID(), tenantId: 'events-generic', name: 'grok', role: 'frontend', credentialVersion: 1,
@@ -185,4 +185,72 @@ test('generic task sinks deliver only terminal states as a small signed summary 
   assert.ok(h['webhook-signature'] && h['webhook-timestamp'], 'Swarmaa signature headers present');
   const skipped = await pool.query("SELECT count(*)::int AS n FROM event_deliveries WHERE state='skipped' AND last_error_code='not_terminal'");
   assert.equal(skipped.rows[0].n, 2);
+  const cursorRow = await pool.query<{ last_seq: string }>('SELECT last_seq::text FROM event_subscriptions LIMIT 1');
+  assert.ok(BigInt(cursorRow.rows[0]!.last_seq) > 0n, 'subscription sequence cursor advances as events are discovered');
+});
+
+test('event delivery is bounded-concurrent with per-host limits so a slow sink does not block another', {
+  skip: !process.env.TEST_DATABASE_URL,
+}, async t => {
+  const connectionString = process.env.TEST_DATABASE_URL!;
+  const schema = `events_conc_${randomBytes(8).toString('hex')}`;
+  const admin = new pg.Pool({ connectionString, max: 1 });
+  await admin.query(`CREATE SCHEMA ${schema}`);
+  const pool = new pg.Pool({ connectionString, options: `-c search_path=${schema},public`, max: 8 });
+  let service: EventService | undefined;
+  t.after(async () => { await service?.stop(); await pool.end(); await admin.query(`DROP SCHEMA ${schema} CASCADE`); await admin.end(); });
+  for (const migration of ['001_identity.sql', '002_core.sql', '003_oauth.sql', '004_events.sql', '014_event_subscription_cursor.sql']) {
+    await pool.query(await readFile(new URL(`../db/migrations/${migration}`, import.meta.url), 'utf8'));
+  }
+  const principal: Principal = {
+    id: randomUUID(), tenantId: 'events-conc', name: 'dot', role: 'frontend', credentialVersion: 1,
+    scopes: ['project:alpha'], permissions: ['events:read', 'task:read', 'memory:read'],
+  };
+  await pool.query('INSERT INTO principals(id,tenant_id,name,role,scopes,permissions,token_hash) VALUES($1,$2,$3,$4,$5,$6,$7)',
+    [principal.id, principal.tenantId, principal.name, principal.role, principal.scopes, principal.permissions, randomBytes(32).toString('hex')]);
+  const config: ServerConfig = {
+    host: '127.0.0.1', port: 8787, publicUrl: 'https://memory.example', allowedOrigins: [], allowInsecureLocalhost: false,
+    maxBodyBytes: 524_288, oauthEnabled: false, oauthRedirectHosts: [],
+    eventCallbackHosts: ['slow.example', 'fast.example'], eventEncryptionKey: randomBytes(32).toString('hex'),
+  };
+  let slowActive = 0;
+  let maxSlowActive = 0;
+  const fastDelivered: string[] = [];
+  let releaseSlow!: () => void;
+  const slowGate = new Promise<void>(resolve => { releaseSlow = resolve; });
+
+  service = new EventService(
+    pool,
+    { authenticate: async () => principal, getPrincipal: async id => id === principal.id ? principal : null },
+    config,
+    async url => {
+      const host = new URL(url).hostname;
+      if (host === 'slow.example') {
+        slowActive++;
+        maxSlowActive = Math.max(maxSlowActive, slowActive);
+        await slowGate;
+        slowActive--;
+        return { status: 204, body: '' };
+      }
+      fastDelivered.push(url);
+      return { status: 204, body: '' };
+    },
+    { maxConcurrent: 6, maxPerHost: 2 },
+  );
+
+  await service.registerGeneric(principal, { scope: 'project:alpha', name: 'memory.changed', url: 'https://slow.example/hook', headers: { Authorization: 'Bearer s' } });
+  await service.registerGeneric(principal, { scope: 'project:alpha', name: 'memory.changed', url: 'https://fast.example/hook', headers: { Authorization: 'Bearer f' } });
+
+  for (let i = 0; i < 4; i++) {
+    await pool.query('INSERT INTO events(id,tenant_id,scope,name,subject_id,payload) VALUES($1,$2,$3,$4,$5,$6::jsonb)',
+      [randomUUID(), principal.tenantId, 'project:alpha', 'memory.changed', randomUUID(), JSON.stringify({ seq: i })]);
+  }
+
+  service.start();
+  await eventually(() => fastDelivered.length === 4 && slowActive === 2, 'fast sink deliveries to finish while slow sink is capped at 2');
+  assert.equal(maxSlowActive, 2, 'per-host concurrency cap must hold for slow.example');
+  assert.equal(fastDelivered.length, 4, 'fast.example completes all 4 events without waiting for slow.example');
+  releaseSlow();
+  await eventually(async () => (await pool.query("SELECT 1 FROM event_deliveries WHERE state <> 'delivered'")).rowCount === 0, 'all deliveries to complete');
+  assert.equal(maxSlowActive, 2);
 });

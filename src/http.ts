@@ -1,6 +1,7 @@
 import { isIP } from 'node:net';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import ipaddr from 'ipaddr.js';
 import { AppError, publicError } from './errors.js';
 import { handleMcp } from './mcp.js';
 import { OAuthError, OAuthService, OAUTH_COOKIE, authorizationHtml, type AuthorizationForm } from './oauth.js';
@@ -133,6 +134,25 @@ function authorizationPage(response: ServerResponse, form: AuthorizationForm, se
   response.end(authorizationHtml({ ...form, passkey: form.principal || form.owner ? undefined : passkey, nonce }));
 }
 
+function normalizeIp(raw: string | undefined): string | null {
+  const trimmed = raw?.trim();
+  if (!trimmed || !isIP(trimmed)) return null;
+  try { return ipaddr.process(trimmed).toString(); } catch { return null; }
+}
+
+function isLoopbackIp(ip: string | null): boolean {
+  if (!ip) return false;
+  try { return ipaddr.process(ip).range() === 'loopback'; } catch { return false; }
+}
+
+function isForwardableClientIp(ip: string | null): ip is string {
+  if (!ip) return false;
+  try {
+    const range = ipaddr.process(ip).range();
+    return range !== 'loopback' && range !== 'unspecified';
+  } catch { return false; }
+}
+
 /** Node's HTTP server is deliberately the only HTTP framework dependency. */
 export function createHttpHandler(dependencies: HttpDependencies): (request: IncomingMessage, response: ServerResponse) => void {
   const { config } = dependencies;
@@ -147,6 +167,18 @@ export function createHttpHandler(dependencies: HttpDependencies): (request: Inc
     const parsed = new URL(origin);
     if (parsed.origin !== origin || !['https:', 'http:'].includes(parsed.protocol)) throw new Error('ALLOWED_ORIGINS must contain exact HTTP(S) origins.');
   }
+  const trustedProxyIps = new Set<string>();
+  const proxyEntries = config.trustedProxies?.length ? config.trustedProxies : (config.trustProxy ? ['loopback'] : []);
+  for (const entry of proxyEntries) {
+    if (entry.toLowerCase() === 'loopback') {
+      trustedProxyIps.add('127.0.0.1');
+      trustedProxyIps.add('::1');
+    } else {
+      const normalized = normalizeIp(entry);
+      if (normalized) trustedProxyIps.add(normalized);
+    }
+  }
+  const proxyEnabled = Boolean(config.trustProxy || trustedProxyIps.size > 0);
   const oauth = config.oauthEnabled ? new OAuthService(dependencies.pool, dependencies.auth, config) : undefined;
   const passkeys = new PasskeyService(dependencies.pool, config);
   const limiter = new RateLimiter();
@@ -253,15 +285,20 @@ export function createHttpHandler(dependencies: HttpDependencies): (request: Inc
     const url = new URL(target, publicUrl);
     const path = url.pathname;
     const host = oneHeader(request, 'host')?.toLowerCase();
-    const socketAddress = request.socket.remoteAddress ?? 'unknown';
-    // Behind the local Cloudflare Tunnel every request arrives from loopback; key limits by the visitor's
-    // address instead. Only trusted from a loopback socket, and only used for rate limiting.
-    const forwarded = oneHeader(request, 'cf-connecting-ip')?.trim();
-    const remote = ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(socketAddress) && forwarded && isIP(forwarded) ? forwarded : socketAddress;
+    const rawSocket = request.socket.remoteAddress ?? 'unknown';
+    const socketIp = normalizeIp(rawSocket);
+    const localHost = localNames.some(name => host === `${name}:${config.port}` || (config.port === 80 && host === name));
+    // Only trust forwarded-IP headers when proxy trust is explicitly configured, the socket belongs to the
+    // configured proxy (Cloudflare Tunnel on loopback or explicit proxy IP), and the request targets the
+    // public origin rather than the direct local loopback fast path.
+    const fromTrustedProxy = proxyEnabled && socketIp !== null && trustedProxyIps.has(socketIp) && !localHost;
+    const cfIp = normalizeIp(oneHeader(request, 'cf-connecting-ip'));
+    const xffIp = normalizeIp(oneHeader(request, 'x-forwarded-for')?.split(',', 1)[0]);
+    const forwardedIp = fromTrustedProxy ? (isForwardableClientIp(cfIp) ? cfIp : isForwardableClientIp(xffIp) ? xffIp : null) : null;
+    const remote = forwardedIp ?? socketIp ?? rawSocket;
     // Same-machine clients (bridges, stdio proxies) keep the fast loopback path when PUBLIC_URL is a
-    // tunnel origin. A literal loopback Host from a loopback socket cannot be a DNS-rebinding name.
-    const loopback = ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(remote) &&
-      localNames.some(name => host === `${name}:${config.port}` || (config.port === 80 && host === name));
+    // tunnel origin. A literal loopback Host from a loopback socket without forwarded IP cannot be DNS-rebound.
+    const loopback = isLoopbackIp(socketIp) && forwardedIp === null && localHost;
     if (host !== publicUrl.host.toLowerCase() && !loopback) throw new AppError(403, 'invalid_host', 'Host is not allowed.');
     const origin = oneHeader(request, 'origin');
     // Cookie pages (consent, account) accept only their own origins. Bearer/PKCE endpoints carry no ambient
