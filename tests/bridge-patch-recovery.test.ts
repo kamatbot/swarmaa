@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -111,5 +111,24 @@ test('finalization failure fails the task, keeps the worktree and reports recove
     assert.equal(r.result.execution_completed, false);
     assert.ok(existsSync(join(r.result.worktree_path, 'x.txt')));
     assert.equal(r.result.recovery, `edits kept in ${r.result.worktree_path} on branch ${BRANCH}; commit or remove manually`);
+  } finally { rmSync(s.dir, { recursive: true, force: true }); }
+});
+
+test('a patch worktree gets a private clone of node_modules that is never committed or shared', async () => {
+  const s = setup();
+  try {
+    writeFileSync(join(s.root, '.gitignore'), 'node_modules/\n'); git(s.root, 'add', '-A'); git(s.root, 'commit', '-qm', 'ignore');
+    mkdirSync(join(s.root, 'node_modules', 'dep'), { recursive: true });
+    writeFileSync(join(s.root, 'node_modules', 'dep', 'index.js'), 'module.exports = 1;\n');
+    let seen = false;
+    const run = await s.attempt(cwd => {
+      seen = existsSync(join(cwd, 'node_modules', 'dep', 'index.js'));
+      writeFileSync(join(cwd, 'node_modules', 'dep', 'index.js'), 'changed by an install\n');
+      writeFileSync(join(cwd, 'b.txt'), 'b\n');
+    });
+    assert.equal(seen, true);
+    assert.equal(run.result.changed_files, 1);
+    assert.equal(readFileSync(join(s.root, 'node_modules', 'dep', 'index.js'), 'utf8'), 'module.exports = 1;\n');
+    assert.ok(!git(s.root, 'ls-tree', '-r', '--name-only', BRANCH).includes('node_modules'));
   } finally { rmSync(s.dir, { recursive: true, force: true }); }
 });

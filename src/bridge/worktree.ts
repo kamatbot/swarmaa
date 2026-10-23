@@ -33,6 +33,21 @@ export function worktreeDir(scope: string, taskId: string): string {
 }
 
 /** Creates the task's own worktree + branch off base_ref (default HEAD). Never touches the user's checkout. */
+/** Gitignored dependency folders a fresh worktree lacks, so agents can build and test without installing. */
+const DEPENDENCY_DIRS = ['node_modules'];
+
+/**
+ * Copy-on-write clones (APFS `cp -c`: near-instant, no extra disk until written) rather than symlinks, so an
+ * agent's `npm install` never writes into the main checkout and `git add -A` never commits a link. Best effort:
+ * a worktree without them still works, it just has to install.
+ */
+async function seedDependencies(root: string, dir: string): Promise<void> {
+  for (const name of DEPENDENCY_DIRS) {
+    if (!existsSync(join(root, name)) || existsSync(join(dir, name))) continue;
+    try { await run('/bin/cp', ['-cR', join(root, name), join(dir, name)], { timeout: 60_000 }); } catch { /* not APFS, or no room */ }
+  }
+}
+
 export async function createWorktree(root: string, provider: string, task: Task): Promise<Worktree> {
   let gitDir: string;
   try { gitDir = (await git(root, ['rev-parse', '--path-format=absolute', '--git-common-dir'])).trim(); }
@@ -57,9 +72,11 @@ export async function createWorktree(root: string, provider: string, task: Task)
     if (registered || branchExists) {
       if (!registered) await git(root, ['worktree', 'add', dir, branch]);
       const base = (await git(root, ['merge-base', branch, baseCommit])).trim();
+      await seedDependencies(root, dir);
       return { dir, gitDir, branch, baseRef, baseCommit: base, continued: true };
     }
     await git(root, ['worktree', 'add', '-b', branch, dir, baseCommit]);
+    await seedDependencies(root, dir);
     return { dir, gitDir, branch, baseRef, baseCommit, continued: false };
   });
 }
