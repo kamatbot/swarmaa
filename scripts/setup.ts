@@ -23,8 +23,12 @@ import { setupTunnel } from './tunnel.js';
 
 export const ROOT = packageRoot(dirname(fileURLToPath(import.meta.url)));
 const HOME = homedir();
-// Prefer the stable Node 24 Homebrew symlink so LaunchAgents survive patch upgrades.
-const NODE = (() => { try { return realpathSync('/opt/homebrew/opt/node@24/bin/node') === realpathSync(process.execPath) ? '/opt/homebrew/opt/node@24/bin/node' : process.execPath; } catch { return process.execPath; } })();
+// Prefer a stable Homebrew symlink to this same Node so LaunchAgents survive `brew upgrade` (node@24 keg, then plain node).
+const NODE = (() => {
+  const real = (p: string) => { try { return realpathSync(p); } catch { return ''; } };
+  const self = real(process.execPath);
+  return ['/opt/homebrew/opt/node@24/bin/node', '/opt/homebrew/bin/node', '/usr/local/opt/node@24/bin/node', '/usr/local/bin/node'].find(p => real(p) === self) ?? process.execPath;
+})();
 const LA = join(HOME, 'Library/LaunchAgents');
 const PGENV = { LC_ALL: 'en_US.UTF-8' };
 
