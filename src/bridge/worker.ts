@@ -89,8 +89,8 @@ export class BridgeWorker {
   }
 
   /**
-   * One polling loop with `max_concurrent` slots: each pass asks every project for work once, and keeps
-   * claiming from a project while it has work and a slot is free. Claimed tasks run in the background, so a
+   * One polling loop with `max_concurrent` slots: each pass asks for work across projects, and keeps
+   * claiming while it has work and a slot is free. Claimed tasks run in the background, so a
    * worker runs up to `max_concurrent` tasks at once without multiplying its requests to the service.
    */
   async run(signal: AbortSignal, once = false): Promise<void> {
@@ -101,13 +101,14 @@ export class BridgeWorker {
     while (!signal.aborted && (!this.draining || running.size)) {
       let claimedAny = false;
       await this.reportUsage(signal);
-      for (const project of this.config.projects) {
+      for (let i = 0; i < this.config.projects.length; i += 64) {
+        const projects = this.config.projects.slice(i, i + 64);
         while (!signal.aborted && !this.draining && !(once && claimedOnce) && inflight < this.config.max_concurrent) {
           let claimed!: () => void;
           const started = new Promise<boolean>(r => { claimed = () => r(true); });
           inflight++;
-          const task = this.claimAndRun(project, signal, claimed)
-            .catch(error => { this.logger('bridge_poll_failed', { scope: project.scope, code: errorCode(error), message: String((error as Error)?.message ?? error).slice(0, 200) }); return false; })
+          const task = this.claimAndRun(projects, signal, claimed)
+            .catch(error => { this.logger('bridge_poll_failed', { scope: projects[0]!.scope, code: errorCode(error), message: String((error as Error)?.message ?? error).slice(0, 200) }); return false; })
             .finally(() => {
               inflight--; running.delete(task);
               if (!running.size) {
@@ -134,16 +135,20 @@ export class BridgeWorker {
     await Promise.allSettled([...running]);
   }
 
-  async claimAndRun(project: ProjectConfig, signal: AbortSignal, onClaimed?: () => void): Promise<boolean> {
+  async claimAndRun(projects: ProjectConfig[], signal: AbortSignal, onClaimed?: () => void): Promise<boolean> {
     if (this.draining || signal.aborted) return false;
-    const capabilities = projectCapabilities(project, this.config.agents);
-    const allowsPatch = capabilities.some(c => c.endsWith('.patch'));
     const claimStarted = performance.now();
     const claim = await this.client.call<Claim>('task_claim', {
-      scope: project.scope, capabilities,
-      kinds: allowsPatch ? ['research', 'review', 'patch'] : ['research', 'review'],
+      projects: projects.map(project => {
+        const capabilities = projectCapabilities(project, this.config.agents);
+        const allowsPatch = capabilities.some(c => c.endsWith('.patch'));
+        return { scope: project.scope, capabilities, kinds: allowsPatch ? ['research', 'review', 'patch'] : ['research', 'review'] };
+      }),
       lease_seconds: this.config.lease_seconds
     }, signal);
+    if (!claim.task) return false;
+    const project = projects.find(p => p.scope === claim.task!.scope);
+    if (!project) throw new Error('Invalid or misrouted task claim');
     let valid: ReturnType<typeof validateClaim>;
     try { valid = validateClaim(claim, project, this.config.agents, this.headroom); }
     catch (error) {

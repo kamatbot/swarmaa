@@ -21,6 +21,14 @@ test('config rejects insecure remote origins, credentials and ambiguous local ma
 
 
 
+test('config accepts hundreds of projects and caps them at 512', () => {
+  const cfg = input();
+  cfg.projects = Array.from({length:512},(_,i) => ({...cfg.projects[0]!,scope:`project:p${i}`}));
+  assert.equal(parseBridgeConfig(cfg).projects.length,512);
+  cfg.projects.push({...cfg.projects[0]!,scope:'project:overflow'});
+  assert.throws(() => parseBridgeConfig(cfg),/1–512/);
+});
+
 test('patch requires explicit project and provider opt-ins; unsupported modes fail closed', () => {
   const config = parseBridgeConfig(input());
   assert.deepEqual(projectCapabilities(config.projects[0]!, config.agents), ['claude.read','auto.read']);

@@ -53,8 +53,8 @@ async function lookupPrincipal() {
 }
 
 function parseScopes(role: Role): string[] {
-  const scopes = [...new Set(string(values.scopes, 'scopes', 4096).split(',').map(s => s.trim()))];
-  requireCondition(scopes.length >= 1 && scopes.length <= 64, 400, 'invalid_scopes', 'Grant between one and 64 explicit scopes.');
+  const scopes = [...new Set(string(values.scopes, 'scopes', 512 * 129).split(',').map(s => s.trim()))];
+  requireCondition(scopes.length >= 1 && scopes.length <= 512, 400, 'invalid_scopes', 'Grant between one and 512 explicit scopes.');
   for (const scope of scopes) {
     if (scope === '*') requireCondition(role === 'admin', 400, 'invalid_scopes', 'Only local owner credentials may have a wildcard scope.');
     else scopeName(scope);

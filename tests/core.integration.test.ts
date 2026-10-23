@@ -22,7 +22,7 @@ describe('core transactional invariants', {skip:!connectionString,concurrency:fa
     control = new pg.Pool({connectionString,max:2});
     await control.query(`CREATE SCHEMA "${schema}"`);
     pool = new pg.Pool({connectionString,max:8,options:`-c search_path=${schema},public`});
-    for (const file of ['001_identity.sql','002_core.sql','005_swarm.sql','006_sessions.sql','008_lessons.sql','010_routing_policy.sql','011_patch_routing.sql','012_session_task.sql','013_worker_slots.sql','016_worker_slots_drain.sql']) {
+    for (const file of ['001_identity.sql','002_core.sql','005_swarm.sql','006_sessions.sql','008_lessons.sql','010_routing_policy.sql','011_patch_routing.sql','012_session_task.sql','013_worker_slots.sql','016_worker_slots_drain.sql','018_events_xid.sql']) {
       await pool.query(await readFile(new URL(`../db/migrations/${file}`,import.meta.url),'utf8'));
     }
     core = new CoreService(pool);
@@ -67,6 +67,77 @@ describe('core transactional invariants', {skip:!connectionString,concurrency:fa
   const claimArgs = {scope:'project:a',capabilities:['claude.read'],lease_seconds:30};
   const lease = (claim:Record<string,any>) => ({task_id:claim.task.id,lease_token:claim.lease_token,lease_generation:claim.lease_generation});
   const expire = (id:string) => pool.query("UPDATE tasks SET lease_expires_at=clock_timestamp()-interval '1 second' WHERE id=$1",[id]);
+
+  it('claims from the second project, then returns no task when neither has work',async () => {
+    const f = await fixture();
+    f.worker.scopes.push('project:b');
+    await pool.query('UPDATE principals SET scopes=$2 WHERE id=$1',[f.worker.id,f.worker.scopes]);
+    const task = (await call(f.otherScope,'task_submit',{...submission(),scope:'project:b'})).task;
+    const projects = ['project:a','project:b'].map(scope => ({scope,capabilities:['claude.read']}));
+    const claimed = await call(f.worker,'task_claim',{projects});
+    assert.equal(claimed.task.id,task.id);
+    assert.equal(claimed.task.scope,'project:b');
+    assert.equal(typeof claimed.lease_token,'string');
+    assert.equal(claimed.lease_generation,1);
+    assert.deepEqual(await call(f.worker,'task_claim',{projects}),{task:null});
+  });
+
+  it('keeps capabilities and patch opt-in local to each claim project',async () => {
+    const f = await fixture();
+    f.worker.scopes.push('project:b');
+    f.worker.permissions.push('task:patch');
+    const task = (await call(f.otherScope,'task_submit',{...submission(),scope:'project:b',kind:'patch',required_capability:'claude.patch'})).task;
+    const projects = [{scope:'project:a',capabilities:['claude.patch'],kinds:['patch']},
+      {scope:'project:b',capabilities:['claude.read']}];
+    assert.equal((await call(f.worker,'task_claim',{projects})).task,null);
+    projects[1]!.capabilities = ['claude.patch'];
+    assert.equal((await call(f.worker,'task_claim',{projects})).task,null);
+    projects[1]!.kinds = ['patch'];
+    assert.equal((await call(f.worker,'task_claim',{projects})).task.id,task.id);
+  });
+
+  it('validates every claim project before leasing any task',async () => {
+    const f = await fixture();
+    const task = (await call(f.front,'task_submit',submission())).task;
+    const first = {scope:'project:a',capabilities:['claude.read']};
+    await rejects(f.worker,'task_claim',{projects:[first,{...first,scope:'project:b'}]},'scope_forbidden');
+    await rejects(f.worker,'task_claim',{...claimArgs,projects:[first]},'invalid_arguments');
+    await rejects(f.worker,'task_claim',{projects:[first,{...first,kinds:['patch']}]},'forbidden');
+    for (const projects of [[],Array(65).fill(first),[null],[{scope:'project:a',capabilities:[]}],
+      [first,{...first,kinds:[]}],[first,{...first,kinds:['delete']}],[first,{...first,extra:true}]]) {
+      await rejects(f.worker,'task_claim',{projects},'invalid_arguments');
+    }
+    for (const args of [{},{projects:[first],capabilities:['claude.read']},{projects:[first],kinds:['review']}])
+      await rejects(f.worker,'task_claim',args,'invalid_arguments');
+    assert.equal((await call(f.front,'task_get',{task_id:task.id})).task.status,'queued');
+    assert.equal((await call(f.worker,'task_claim',{projects:Array(64).fill(first)})).task.id,task.id);
+  });
+
+  it('sweeps expired leases in visited projects before continuing to the next',async () => {
+    const f = await fixture();
+    f.worker.scopes.push('project:b');
+    const first = (await call(f.front,'task_submit',{...submission(),max_attempts:1})).task;
+    await call(f.worker,'task_claim',claimArgs);
+    await expire(first.id);
+    const second = (await call(f.otherScope,'task_submit',{...submission(),scope:'project:b'})).task;
+    const projects = ['project:a','project:b'].map(scope => ({scope,capabilities:['claude.read']}));
+    assert.equal((await call(f.worker,'task_claim',{projects})).task.id,second.id);
+    assert.equal((await call(f.front,'task_get',{task_id:first.id})).task.status,'failed');
+  });
+
+  it('stores identities with 100 and 512 scopes and rejects 513',async () => {
+    const f = await fixture();
+    for (const count of [100,512]) {
+      const scopes = Array.from({length:count},(_,i) => `project:p${i}`);
+      const row = await pool.query(`INSERT INTO principals(id,tenant_id,name,role,scopes,permissions,token_hash)
+        VALUES($1,$2,$3,'worker',$4,$5,$6) RETURNING cardinality(scopes) AS count`,
+        [randomUUID(),f.worker.tenantId,`wide-${count}`,scopes,f.worker.permissions,randomUUID()]);
+      assert.equal(row.rows[0].count,count);
+    }
+    await assert.rejects(() => pool.query('UPDATE principals SET scopes=$2 WHERE id=$1',
+      [f.worker.id,Array.from({length:513},(_,i) => `project:p${i}`)]),
+      (e:any) => e.code === '23514' && e.constraint === 'principals_scopes_check');
+  });
 
   it('rejects a required_capability no worker can advertise',async () => {
     const f = await fixture();
@@ -379,7 +450,10 @@ describe('core transactional invariants', {skip:!connectionString,concurrency:fa
       await pool.query(`INSERT INTO events(id,tenant_id,scope,name,subject_id,payload)
         VALUES($1,$2,'project:a','task.updated',$3,'{"action":"earlier-commit"}')`,[newerId,f.front.tenantId,randomUUID()]);
       // The lower sequence is uncommitted: the poll must not advance over it.
-      await rejects(f.front,'events_poll',{scope:'project:a',after:'0'},'events_busy');
+      const started = performance.now();
+      const pending = await call(f.front,'events_poll',{scope:'project:a',after:'0.0'});
+      assert.ok(performance.now()-started<1000,'poll must not wait for the held insert');
+      assert.deepEqual([pending.events,pending.next_cursor,pending.has_more],[[],'0.0',false]);
       await held.query('COMMIT');
     } finally {
       await held.query('ROLLBACK');
@@ -394,11 +468,99 @@ describe('core transactional invariants', {skip:!connectionString,concurrency:fa
     const second = await call(f.front,'events_poll',{scope:'project:a',after:first.next_cursor,limit:10});
     assert.equal(second.events.length,1);
     assert.equal(second.events[0].id,newerId);
-    assert.ok(BigInt(second.next_cursor)>BigInt(first.next_cursor));
+    assert.ok(BigInt(second.next_cursor.split('.')[0])>BigInt(first.next_cursor.split('.')[0]));
     const empty = await call(f.front,'events_poll',{scope:'project:a',after:second.next_cursor});
     assert.equal(empty.events.length,0);
     assert.equal(empty.next_cursor,second.next_cursor);
     await rejects(f.front,'events_poll',{scope:'project:a',after:'9223372036854775808'},'invalid_arguments');
+  });
+
+  it('delivers a higher-xid lower-seq event exactly once after it commits',{timeout:12000},async () => {
+    const f = await fixture();
+    const early = await pool.connect();
+    const held = await pool.connect();
+    const firstId = randomUUID(), heldId = randomUUID();
+    try {
+      await early.query('BEGIN');
+      const xid = (await early.query('SELECT pg_current_xact_id()::text AS xid')).rows[0].xid;
+      await held.query('BEGIN');
+      const later = await held.query(`INSERT INTO events(id,tenant_id,scope,name,subject_id)
+        VALUES($1,$2,'project:a','task.updated',$1::uuid::text) RETURNING xid::text,seq::text`,[heldId,f.front.tenantId]);
+      const earlier = await early.query(`INSERT INTO events(id,tenant_id,scope,name,subject_id)
+        VALUES($1,$2,'project:a','task.updated',$1::uuid::text) RETURNING xid::text,seq::text`,[firstId,f.front.tenantId]);
+      assert.equal(earlier.rows[0].xid,xid);
+      assert.ok(BigInt(xid)<BigInt(later.rows[0].xid));
+      assert.ok(BigInt(earlier.rows[0].seq)>BigInt(later.rows[0].seq));
+      await early.query('COMMIT');
+      const started = performance.now();
+      const first = await call(f.front,'events_poll',{scope:'project:a',after:'0',limit:1});
+      assert.ok(performance.now()-started<1000,'poll must not wait for the held insert');
+      assert.deepEqual(first.events.map((e:any) => e.id),[firstId]);
+      await held.query('COMMIT');
+      const second = await call(f.front,'events_poll',{scope:'project:a',after:first.next_cursor,limit:1});
+      assert.deepEqual(second.events.map((e:any) => e.id),[heldId]);
+      assert.equal(second.events[0].cursor,second.next_cursor);
+      const empty = await call(f.front,'events_poll',{scope:'project:a',after:second.next_cursor});
+      assert.deepEqual(empty.events,[]);
+      assert.equal(empty.next_cursor,second.next_cursor);
+    } finally {
+      await early.query('ROLLBACK'); early.release();
+      await held.query('ROLLBACK'); held.release();
+    }
+  });
+
+  it('upgrades legacy sequence cursors and paginates events within one xid',async () => {
+    const f = await fixture();
+    const ids = [randomUUID(),randomUUID(),randomUUID()];
+    const inserted = await pool.query(`INSERT INTO events(id,tenant_id,scope,name,subject_id)
+      SELECT id,$2,'project:a','task.updated',id::text FROM unnest($1::uuid[]) AS id RETURNING xid::text,seq::text`,[ids,f.front.tenantId]);
+    const first = await call(f.front,'events_poll',{scope:'project:a',after:inserted.rows[0].seq,limit:1});
+    assert.deepEqual(first.events.map((e:any) => e.id),[ids[1]]);
+    assert.equal(first.next_cursor,`${inserted.rows[1].xid}.${inserted.rows[1].seq}`);
+    assert.equal(first.events[0].cursor,first.next_cursor);
+    assert.equal(first.has_more,true);
+    const second = await call(f.front,'events_poll',{scope:'project:a',after:first.next_cursor,limit:1});
+    assert.deepEqual(second.events.map((e:any) => e.id),[ids[2]]);
+    assert.equal(second.next_cursor,`${inserted.rows[2].xid}.${inserted.rows[2].seq}`);
+    assert.equal(second.has_more,false);
+    const empty = await call(f.front,'events_poll',{scope:'project:a',after:inserted.rows[2].seq});
+    assert.deepEqual(empty.events,[]);
+    assert.match(empty.next_cursor,/^[0-9]+\.0$/);
+    assert.deepEqual((await call(f.front,'events_poll',{scope:'project:a',after:empty.next_cursor})).events,[]);
+  });
+
+  it('upgrades an empty legacy page without skipping an uncommitted event',{timeout:12000},async () => {
+    const f = await fixture();
+    const held = await pool.connect();
+    const id = randomUUID();
+    let cursor:string;
+    try {
+      await held.query('BEGIN');
+      await held.query(`INSERT INTO events(id,tenant_id,scope,name,subject_id)
+        VALUES($1,$2,'project:a','task.updated',$1::uuid::text)`,[id,f.front.tenantId]);
+      const empty = await call(f.front,'events_poll',{scope:'project:a',after:'0'});
+      assert.deepEqual(empty.events,[]);
+      assert.match(empty.next_cursor,/^[0-9]+\.0$/);
+      cursor = empty.next_cursor;
+      await held.query('COMMIT');
+    } finally { await held.query('ROLLBACK'); held.release(); }
+    const next = await call(f.front,'events_poll',{scope:'project:a',after:cursor});
+    assert.deepEqual(next.events.map((e:any) => e.id),[id]);
+  });
+
+  it('bounds both cursor components without losing decimal precision',async () => {
+    const f = await fixture();
+    for (const after of ['-1','1.','1.2.3','1e2','9223372036854775808','18446744073709551616.0',
+      '1.9223372036854775808','000000000000000000001.0','1.00000000000000000000',42])
+      await rejects(f.front,'events_poll',{scope:'project:a',after},'invalid_arguments');
+    const schema = (core.listTools(f.front).find(t => t.name === 'events_poll')!.inputSchema.properties as Record<string,any>).after;
+    assert.equal(schema.maxLength,40);
+    for (const after of ['0','42','0.0','18446744073709551615.9223372036854775807']) assert.match(after,new RegExp(schema.pattern));
+    for (const after of ['1x2','1.2.3','-1','1.','123456789012345678901.0']) assert.doesNotMatch(after,new RegExp(schema.pattern));
+    const after = '18446744073709551615.9223372036854775807';
+    const empty = await call(f.front,'events_poll',{scope:'project:a',after});
+    assert.deepEqual(empty.events,[]);
+    assert.equal(empty.next_cursor,after);
   });
 
   it('filters event types by the underlying resource read permissions',async () => {
@@ -415,6 +577,6 @@ describe('core transactional invariants', {skip:!connectionString,concurrency:fa
     assert.equal(tasks.events[0].name,'task.updated');
     const neither = await call({...f.front,permissions:['events:read']},'events_poll',{scope:'project:a'});
     assert.equal(neither.events.length,0);
-    assert.equal(neither.next_cursor,'0');
+    assert.equal(neither.next_cursor,'0.0');
   });
 });

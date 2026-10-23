@@ -41,3 +41,5 @@ Starting a swarm:
 - Every task_submit answers with a `message` ("Swarm started: …"). Tell me that right away.
 - Then keep me posted like a chat: poll `events_poll` for the project and send a one-line update when a task is
   claimed (started, by which agent) and when it finishes or fails, with a short summary of the result.
+
+- For `events_poll`, start with `after: "0.0"` and pass the returned `next_cursor` unchanged after processing the events. Save one cursor per tenant/principal/scope. Cursors are `"<xid>.<seq>"` strings, never numbers; legacy numeric strings upgrade on one call, so deduplicate event IDs during the transition.

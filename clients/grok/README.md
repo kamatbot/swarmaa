@@ -48,7 +48,7 @@ small pages and follow returned task-list cursors. Request memory revision bodie
 needed, using small `history_limit` and `proposal_limit` values. The `*_has_more` flags mean older
 records were omitted; memory history pagination is not implemented in this release.
 
-Use `events_poll` for portable updates. Optional webhook/routine wake-up requires your actual
+Use `events_poll` for portable updates: start with `after: "0.0"`, process the events, then persist `next_cursor` per tenant/principal/scope. Pass its `"<xid>.<seq>"` string unchanged; never convert it to a number. Legacy numeric strings upgrade on one call; deduplicate event IDs during the transition. Optional webhook/routine wake-up requires your actual
 receiver URL, authentication and payload contract; see `docs/OPERATIONS.md` before registering
 a sink. No routine or outbound message is enabled by this configuration alone.
 

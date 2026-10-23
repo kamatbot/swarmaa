@@ -87,6 +87,13 @@ test('validatePlan defaults to local-only and accepts a user-owned remote domain
   assert.deepEqual(validatePlan({ ...okPlan(), folders: [dir, dir] }).folders, [dir]);
 });
 
+test('validatePlan accepts 100 folders and reserves two of 512 scopes for demo and general', () => {
+  const folders = Array.from({length:100},(_,i) => `p${i}=${dir}`);
+  assert.equal(validatePlan({...okPlan(),folders}).folders.length,100);
+  assert.equal(validatePlan({...okPlan(),folders:Array.from({length:510},(_,i) => `p${i}=${dir}`)}).folders.length,510);
+  assert.throws(() => validatePlan({...okPlan(),folders:Array(511).fill(dir)}),/512 scopes/);
+});
+
 test('validatePlan rejects unknown harnesses, bad folders, bad hostnames and junk', () => {
   rejects({ ...okPlan(), harnesses: { evil: { connect: true } } }, /unknown harness/);
   rejects({ ...okPlan(), harnesses: { claude: { connect: true, exec: 'rm -rf /' } } }, /unknown field/);

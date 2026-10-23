@@ -42,7 +42,7 @@ Before modifying project files, obtain a specific user task and submit kind `pat
 the configured worker capability is available and the account is authorized for it. A frontend
 token cannot claim leases, impersonate a worker, or promote memory.
 
-Use `events_poll` with the last processed sequence cursor for a portable update feed. An event
+Use `events_poll` with the last processed `next_cursor` string per tenant/principal/scope for a portable update feed. Start at `"0.0"`; cursors use `"<xid>.<seq>"` and must be passed unchanged, never converted to numbers. Legacy numeric strings upgrade on one call; deduplicate event IDs during that transition. An event
 is a cue to call `task_get`/`memory_get`, not evidence that an agent completed work. Do not send
 proactive messages to other people merely because an event occurred.
 

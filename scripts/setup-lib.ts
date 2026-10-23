@@ -231,7 +231,7 @@ export function validatePlan(input: unknown): SetupPlan {
     }
   }
   const folders: string[] = [];
-  if (!Array.isArray(input.folders) || input.folders.length > 64) errors.push('folders must be a list of at most 64 paths');
+  if (!Array.isArray(input.folders) || input.folders.length + 2 > 512) errors.push('folders must be a list of at most 510 paths (512 scopes including demo and general)');
   else for (const entry of input.folders) {
     if (typeof entry !== 'string' || !entry || entry.length > 4096 || entry.includes('\0')) { errors.push('folder must be a path string'); continue; }
     const { name, path: f } = splitFolder(entry);

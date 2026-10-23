@@ -144,7 +144,7 @@ export function cleanLesson(raw: unknown, allowed: ReadonlySet<string>): Candida
 
 export async function ensureDistiller(pool: Pool, tenant: string, dryRun: boolean): Promise<Principal> {
   const scopes = await pool.query<{ scope: string }>('SELECT DISTINCT scope FROM chat_sessions WHERE tenant_id=$1 AND scope LIKE $2 ORDER BY scope', [tenant, 'project:%']);
-  const want = [...new Set([...scopes.rows.map(r => r.scope), GENERAL_SCOPE])].slice(0, 64); // principals allow at most 64 scopes
+  const want = [...new Set([...scopes.rows.map(r => r.scope), GENERAL_SCOPE])].slice(0, 512); // principals allow at most 512 scopes
   const found = await pool.query('SELECT * FROM principals WHERE tenant_id=$1 AND name=$2', [tenant, DISTILLER]);
   const row = found.rows[0];
   if (row) {

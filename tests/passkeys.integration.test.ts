@@ -84,7 +84,7 @@ test('passkey registration, login, sessions and the OAuth owner consent flow', {
     await admin.query(`DROP SCHEMA ${schema} CASCADE`);
     await admin.end();
   });
-  for (const migration of ['001_identity.sql', '003_oauth.sql', '007_passkeys.sql', '009_oauth_client_cleanup.sql', '015_gateway_tenants.sql']) {
+  for (const migration of ['001_identity.sql', '003_oauth.sql', '007_passkeys.sql', '009_oauth_client_cleanup.sql', '015_gateway_tenants.sql','018_events_xid.sql']) {
     await pool.query(await readFile(new URL(`../db/migrations/${migration}`, import.meta.url), 'utf8'));
   }
 
@@ -322,7 +322,7 @@ test('gateway invite, first consent and worker tokens stay inside the invited te
     await admin.query(`DROP SCHEMA ${schema} CASCADE`);
     await admin.end();
   });
-  for (const migration of ['001_identity.sql', '002_core.sql', '003_oauth.sql', '005_swarm.sql', '006_sessions.sql', '007_passkeys.sql', '008_lessons.sql', '009_oauth_client_cleanup.sql', '010_routing_policy.sql', '011_patch_routing.sql', '012_session_task.sql', '013_worker_slots.sql','016_worker_slots_drain.sql', '015_gateway_tenants.sql']) {
+  for (const migration of ['001_identity.sql', '002_core.sql', '003_oauth.sql', '005_swarm.sql', '006_sessions.sql', '007_passkeys.sql', '008_lessons.sql', '009_oauth_client_cleanup.sql', '010_routing_policy.sql', '011_patch_routing.sql', '012_session_task.sql', '013_worker_slots.sql','016_worker_slots_drain.sql', '015_gateway_tenants.sql','018_events_xid.sql']) {
     await pool.query(await readFile(new URL(`../db/migrations/${migration}`, import.meta.url), 'utf8'));
   }
   const logged: string[] = [], secrets: string[] = [];
@@ -617,6 +617,23 @@ test('gateway invite, first consent and worker tokens stay inside the invited te
     const personalWorker = await svc.createWorker(personalOwner, 'worker-mac'); secrets.push(personalWorker.token);
     assert.deepEqual(personalWorker.scopes, ['project:general', 'project:private']);
     assert.equal((await auth.authenticate(personalWorker.token))?.tenantId, 'personal');
+  });
+  await t.test('owner worker minting accepts 512 scopes and rejects a 513-scope union', async () => {
+    const scopes = Array.from({length:512}, (_, i) => `project:wide${i}`);
+    const extra = randomUUID();
+    await pool.query('UPDATE principals SET scopes=$2 WHERE id=$1', [frontend.id, scopes]);
+    try {
+      const wide = await svc.createWorker(ownerToken, 'wide-worker'); secrets.push(wide.token);
+      assert.equal(wide.scopes.length, 512);
+      assert.deepEqual(new Set(wide.scopes), new Set(scopes));
+      await pool.query("INSERT INTO principals(id,tenant_id,name,role,scopes,permissions,token_hash) VALUES($1,$2,'extra-front','frontend',$3,$4,$5)",
+        [extra, frontend.tenantId, ['project:overflow'], ROLE_PERMISSIONS.frontend, tokenHash(randomUUID())]);
+      await assert.rejects(svc.createWorker(ownerToken, 'overflow-worker'), {code:'too_many_scopes'});
+      assert.equal((await pool.query("SELECT id FROM principals WHERE tenant_id=$1 AND name='overflow-worker'", [frontend.tenantId])).rowCount, 0);
+    } finally {
+      await pool.query('UPDATE principals SET scopes=$2 WHERE id=$1', [frontend.id, frontend.scopes]);
+      await pool.query('DELETE FROM principals WHERE id=$1', [extra]);
+    }
   });
   for (const secret of secrets) for (const line of logged) assert.ok(!line.includes(secret), 'secret appeared in console output');
 });

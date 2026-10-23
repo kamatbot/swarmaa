@@ -116,33 +116,28 @@ export class CoreService implements ToolBackend {
     noExtraKeys(input,['scope','after','limit']);
     const scope = scopeName(input.scope);
     assertKnownScope(p,scope);
-    const after = input.after === undefined ? '0' : string(input.after,'after',19);
-    requireCondition(/^[0-9]+$/.test(after) && BigInt(after)<=9223372036854775807n,400,'invalid_arguments','after must be a nonnegative bigint decimal cursor.');
+    const after = input.after === undefined ? '0.0' : string(input.after,'after',40);
+    const parts = /^(?:([0-9]{1,20})\.)?([0-9]{1,19})$/.exec(after);
+    requireCondition(parts !== null && BigInt(parts[2]!)<=9223372036854775807n &&
+      (parts[1] === undefined || BigInt(parts[1])<=18446744073709551615n),400,'invalid_arguments','after must be an xid.seq decimal cursor or a legacy nonnegative bigint sequence.');
+    const legacy = parts[1] === undefined;
     const limit = input.limit === undefined ? 50 : integer(input.limit,'limit',1,100);
     const names:string[] = [];
     if (hasPermission(p,'memory:read')) names.push('memory.changed');
     if (hasPermission(p,'task:read')) names.push('task.updated');
-    if (!names.length) return {scope,events:[],next_cursor:after,has_more:false};
-    try {
-      return await transaction(this.pool,async db => {
-        await db.query("SET LOCAL lock_timeout='3s'");
-        // Identity values can be allocated before an earlier transaction commits. This short read barrier
-        // waits all event INSERT transactions, then prevents further allocation until this poll commits.
-        // Polling holds no memory/task row locks, so there is no reverse lock dependency with writers.
-        await db.query('LOCK TABLE events IN SHARE MODE');
-        const result = await db.query<{id:string;seq:string;scope:string;name:string;subject_id:string;payload:Record<string,unknown>;created_at:Date}>(`SELECT
-          id,seq::text AS seq,scope,name,subject_id,payload,created_at FROM events
-          WHERE tenant_id=$1 AND scope=$2 AND seq>$3::bigint AND name=ANY($4::text[]) ORDER BY seq LIMIT $5`,[p.tenantId,scope,after,names,limit+1]);
-        const rows = result.rows.slice(0,limit);
-        return {scope,events:rows.map(row => ({id:row.id,cursor:row.seq,scope:row.scope,name:row.name,
-          subject_id:row.subject_id,payload:row.payload,created_at:row.created_at.toISOString()})),
-          next_cursor:rows.at(-1)?.seq ?? after,has_more:result.rows.length>limit};
-      });
-    } catch (error) {
-      if (typeof error === 'object' && error !== null && 'code' in error && error.code === '55P03') {
-        throw new AppError(503,'events_busy','Event writers are busy. Retry this poll with the same cursor.');
-      }
-      throw error;
-    }
+    if (!names.length) return {scope,events:[],next_cursor:legacy ? '0.0' : after,has_more:false};
+    return transaction(this.pool,async db => {
+      // Capture the legacy upgrade fence before reading: an empty page can resume at xmin.0 safely.
+      const xmin = legacy ? (await db.query<{xmin:string}>('SELECT pg_snapshot_xmin(pg_current_snapshot())::text AS xmin')).rows[0]!.xmin : null;
+      const result = await db.query<{id:string;cursor:string;scope:string;name:string;subject_id:string;payload:Record<string,unknown>;created_at:Date}>(`SELECT
+        id,xid::text || '.' || seq::text AS cursor,scope,name,subject_id,payload,created_at FROM events
+        WHERE tenant_id=$1 AND scope=$2 AND ${legacy ? 'seq>$3::bigint' : '(xid,seq)>($3::xid8,$6::bigint)'} AND name=ANY($4::text[])
+        AND xid < pg_snapshot_xmin(pg_current_snapshot()) ${legacy ? 'AND xid<$6::xid8' : ''}
+        ORDER BY xid,seq LIMIT $5`,[p.tenantId,scope,legacy ? parts[2] : parts[1],names,limit+1,legacy ? xmin : parts[2]]);
+      const rows = result.rows.slice(0,limit);
+      return {scope,events:rows.map(row => ({id:row.id,cursor:row.cursor,scope:row.scope,name:row.name,
+        subject_id:row.subject_id,payload:row.payload,created_at:row.created_at.toISOString()})),
+        next_cursor:rows.at(-1)?.cursor ?? (legacy ? `${xmin}.0` : after),has_more:result.rows.length>limit};
+    });
   }
 }

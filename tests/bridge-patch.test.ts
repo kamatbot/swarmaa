@@ -48,7 +48,7 @@ async function scenario(opts: { repo: boolean; baseRef?: string }) {
       if (opts.baseRef === 'FIRST') assert.equal(readFileSync(join(req.cwd, 'a.txt'), 'utf8'), 'one\n');
       return ok;
     });
-    await worker.claimAndRun(cfg.projects[0]!, new AbortController().signal);
+    await worker.claimAndRun(cfg.projects, new AbortController().signal);
     return { dir, root, calls, seen, first, finish: calls.find(c => c.name === 'task_finish')!.args };
   } finally { if (home === undefined) delete process.env.HOME; else process.env.HOME = home; }
 }
@@ -75,7 +75,7 @@ test('patch task: own branch + commit, worktree removed, user checkout untouched
     const diff = s.calls.filter(c => c.name === 'artifact_put').find(c => c.args.name === 'codex-patch.diff')!;
     assert.equal(diff.args.media_type, 'text/x-diff');
     assert.match(String(diff.args.content), /\+new/u);
-    assert.deepEqual(s.calls.find(c => c.name === 'task_claim')!.args.capabilities, ['codex.read', 'codex.patch', 'auto.read', 'auto.patch']);
+    assert.deepEqual((s.calls.find(c => c.name === 'task_claim')!.args.projects as {capabilities:string[]}[])[0]!.capabilities, ['codex.read', 'codex.patch', 'auto.read', 'auto.patch']);
     const rec = s.calls.find(c => c.name === 'session_record')!.args as { harness: string; cwd: string; turns: { text: string }[] };
     assert.equal(rec.harness, 'codex');
     assert.equal(rec.cwd, s.root);

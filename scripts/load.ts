@@ -1,5 +1,5 @@
 // Load test: hundreds of swarms against the real CoreService on a throwaway schema in TEST_DATABASE_URL.
-// Workers behave like the bridge (one pass over every project, claim while a slot is free, heartbeat, finish),
+// Workers behave like the bridge (one claim over up to 64 projects, claim while a slot is free, heartbeat, finish),
 // frontends poll swarm_status and events_poll like notches and agents do. Prints per-tool latency and errors.
 //   node --env-file=.env.test --import tsx scripts/load.ts [--scopes 100] [--tasks 500] [--workers 6] [--slots 16] [--pollers 30] [--pool 12]
 import { randomUUID } from 'node:crypto';
@@ -61,9 +61,10 @@ async function worker(w: Principal): Promise<void> {
   let inflight = 0; const running = new Set<Promise<void>>();
   while (!stop) {
     let claimed = false;
-    for (const scope of scopes) {
+    for (let i = 0; i < scopes.length; i += 64) {
+      const projects = scopes.slice(i, i + 64).map(scope => ({ scope, capabilities: ['claude.read', 'auto.read'] }));
       while (!stop && inflight < N.slots) {
-        const c = await call(w, 'task_claim', { scope, capabilities: ['claude.read', 'auto.read'], lease_seconds: 60 });
+        const c = await call(w, 'task_claim', { projects, lease_seconds: 60 });
         if (!c?.task) break;
         claimed = true; inflight++;
         const r = runTask(w, c).finally(() => { inflight--; running.delete(r); }); running.add(r);
@@ -78,7 +79,7 @@ async function poller(p: Principal): Promise<void> {
   while (!stop) {
     await call(p, 'swarm_status', {});
     for (const scope of [0, 1, 2].map(() => scopes[Math.floor(Math.random() * scopes.length)])) {
-      const r = await call(p, 'events_poll', { scope, after: cursors.get(scope) ?? '0' });
+      const r = await call(p, 'events_poll', { scope, after: cursors.get(scope) ?? '0.0' });
       if (r) cursors.set(scope, r.next_cursor);
     }
     await sleep(N.poll);

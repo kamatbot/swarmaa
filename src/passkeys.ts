@@ -271,7 +271,7 @@ export class PasskeyService {
       "SELECT DISTINCT unnest(scopes) AS scope FROM principals WHERE tenant_id=$1 AND role='frontend' AND disabled=false AND NOT ('admin'=ANY(permissions)) AND NOT ('*'=ANY(scopes)) ORDER BY scope", [session.tenantId],
     );
     const scopes = rows.rows.length ? rows.rows.map(row => row.scope) : ['project:general'];
-    if (scopes.length > 50) throw new AppError(409, 'too_many_scopes', 'A bridge can connect at most 50 projects.');
+    if (scopes.length > 512) throw new AppError(409, 'too_many_scopes', 'A bridge can connect at most 512 projects.');
     const id = randomUUID(), token = newToken();
     const created = await this.pool.query(
       "INSERT INTO principals(id,tenant_id,name,role,scopes,permissions,token_hash) VALUES($1,$2,$3,'worker',$4,$5,$6) ON CONFLICT (tenant_id,name) DO NOTHING RETURNING id",

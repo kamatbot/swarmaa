@@ -24,5 +24,5 @@ A first read-only dispatch can call `task_submit` with:
 
 Save the returned task ID. Grok Bot can retrieve the same task using its own scoped connection.
 If push events are unavailable, poll `events_poll`, advance `next_cursor` only after handling
-the received events, and fetch the changed task. The service does not manufacture a Dot account
+the received events, and fetch the changed task. Start with `after: "0.0"`; persist the returned `"<xid>.<seq>"` string per tenant/principal/scope and pass it unchanged. Legacy numeric cursors upgrade on one call; deduplicate event IDs during the transition. The service does not manufacture a Dot account
 connection or a hosted callback URL for you.

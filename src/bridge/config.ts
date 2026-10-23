@@ -55,7 +55,7 @@ export function parseBridgeConfig(value: unknown): BridgeConfig {
     return { id, provider, sandbox, binary: absolute(a.binary, 'agent.binary'), model: a.model === undefined ? undefined : text(a.model, 'agent.model', 200), enable_patch };
   });
   if (new Set(agents.map(a => a.id)).size !== agents.length) throw new Error('Agent IDs must be unique');
-  if (!Array.isArray(raw.projects) || raw.projects.length < 1 || raw.projects.length > 50) throw new Error('projects requires 1–50 entries');
+  if (!Array.isArray(raw.projects) || raw.projects.length < 1 || raw.projects.length > 512) throw new Error('projects requires 1–512 entries');
   const projects: ProjectConfig[] = raw.projects.map((entry, index) => {
     const p = record(entry, `projects[${index}]`);
     const scope = text(p.scope, 'project.scope', 100);
