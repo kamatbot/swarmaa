@@ -124,7 +124,7 @@ export function decideAll(policy: RoutingPolicy, usage: UsageRow[]): Record<Rout
 export async function scopeUsage(db: Db, tenantId: string, scope: string): Promise<UsageRow[]> {
   const r = await db.query<{ provider: string; ok: boolean; headroom: number; windows: { windows?: UsageRow['windows'] } }>(`SELECT u.provider,u.ok,u.headroom::float AS headroom,u.windows,
       (u.fetched_at>clock_timestamp()-interval '15 minutes') AS fresh,
-      (NOT w.disabled AND w.last_seen_at>clock_timestamp()-interval '60 seconds' AND $2=ANY(w.scopes)) AS live
+      (NOT w.disabled AND w.last_seen_at>clock_timestamp()-interval '60 seconds' AND $2=ANY(w.scopes) AND coalesce(w.worker_slots,1)>0) AS live
     FROM provider_usage u JOIN principals w ON w.id=u.reporter_id WHERE u.tenant_id=$1`, [tenantId, scope]);
   return r.rows.map((x: any) => ({ provider: x.provider, ok: x.ok, headroom: x.headroom, windows: x.windows?.windows ?? [], fresh: x.fresh, live: x.live }));
 }

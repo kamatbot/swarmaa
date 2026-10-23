@@ -26,7 +26,7 @@ describe('routing policy', {skip:!connectionString,concurrency:false}, () => {
     control = new pg.Pool({connectionString,max:2});
     await control.query(`CREATE SCHEMA "${schema}"`);
     pool = new pg.Pool({connectionString,max:8,options:`-c search_path=${schema},public`});
-    for (const file of ['001_identity.sql','002_core.sql','005_swarm.sql','006_sessions.sql','008_lessons.sql','010_routing_policy.sql','011_patch_routing.sql','012_session_task.sql','013_worker_slots.sql']) {
+    for (const file of ['001_identity.sql','002_core.sql','005_swarm.sql','006_sessions.sql','008_lessons.sql','010_routing_policy.sql','011_patch_routing.sql','012_session_task.sql','013_worker_slots.sql','016_worker_slots_drain.sql']) {
       await pool.query(await readFile(new URL(`../db/migrations/${file}`,import.meta.url),'utf8'));
     }
     core = new CoreService(pool);
@@ -90,6 +90,18 @@ describe('routing policy', {skip:!connectionString,concurrency:false}, () => {
     assert.deepEqual([got.policy,got.is_default,got.updated_at],[next,false,set.updated_at]);
     assert.deepEqual(got.default_policy,DEFAULT_POLICY);
     assert.equal((await pool.query(`SELECT count(*)::int AS n FROM audit_log WHERE tenant_id=$1 AND operation='routing.set' AND actor_id=$2`,[owner.tenantId,owner.id])).rows[0].n,1);
+  });
+
+  it('skips a draining worker (0 slots) so auto work goes to the next provider', async () => {
+    const {front,claude,codex} = await fixture();
+    await call(claude,'usage_report',report('claude',5,5));
+    await call(codex,'usage_report',report('codex',50,50));
+    assert.equal((await call(front,'swarm_status',{})).routing.by_kind.review.provider,'claude');
+    await call(claude,'usage_report',{reports:[],slots:0});
+    assert.equal((await call(front,'swarm_status',{})).routing.by_kind.review.provider,'codex');
+    const task = (await call(front,'task_submit',submit('drain-1'))).task;
+    assert.equal((await claim(claude,['claude.read','auto.read'])).task,null);
+    assert.equal((await claim(codex,['codex.read','auto.read'])).task.id,task.id);
   });
 
   it('walks providers in priority order using the 5-hour and weekly ceilings', async () => {
