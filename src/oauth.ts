@@ -155,6 +155,9 @@ export function validateRedirectUri(value: unknown, config: ServerConfig): strin
 export class OAuthService {
   readonly issuer: string;
   readonly resource: string;
+  private running = false;
+  private timer: NodeJS.Timeout | undefined;
+  private activeCleanup: Promise<unknown> | undefined;
 
   constructor(private readonly pool: Pool, private readonly auth: AuthBackend, private readonly config: ServerConfig) {
     const url = new URL(config.publicUrl);
@@ -163,6 +166,79 @@ export class OAuthService {
     }
     this.issuer = url.origin;
     this.resource = `${this.issuer}/mcp`;
+  }
+
+  start(intervalMs = 60_000): void {
+    if (this.running) return;
+    this.running = true;
+    const schedule = () => {
+      if (!this.running) return;
+      this.timer = setTimeout(() => {
+        this.activeCleanup = this.cleanup().catch(() => { process.stderr.write('OAuth cleanup cycle failed; retrying.\n'); }).finally(schedule);
+      }, intervalMs);
+      this.timer.unref();
+    };
+    schedule();
+  }
+
+  async stop(): Promise<void> {
+    this.running = false;
+    if (this.timer) clearTimeout(this.timer);
+    await this.activeCleanup;
+  }
+
+  /**
+   * Bounded cleanup of expired OAuth state and unused dynamic client registrations.
+   * Refresh tokens that were already used (`used_at IS NOT NULL`) or marked abandoned (`expires_at = '-infinity'`)
+   * on a still-live grant family (`g.expires_at > now() AND g.revoked_at IS NULL`) are retained so a replay revokes the family.
+   */
+  async cleanup(limit = 500): Promise<{ clients: number; pending: number; codes: number; accessTokens: number; refreshTokens: number }> {
+    const bound = Math.max(1, Math.min(limit, 5000));
+    return transaction(this.pool, async client => {
+      const pending = await client.query(
+        'DELETE FROM oauth_pending WHERE id IN (SELECT id FROM oauth_pending WHERE expires_at <= now() LIMIT $1)',
+        [bound],
+      );
+      const codes = await client.query(
+        'DELETE FROM oauth_codes WHERE code_hash IN (SELECT code_hash FROM oauth_codes WHERE expires_at <= now() LIMIT $1)',
+        [bound],
+      );
+      const accessTokens = await client.query(
+        `DELETE FROM oauth_access_tokens WHERE token_hash IN (
+           SELECT a.token_hash FROM oauth_access_tokens a LEFT JOIN oauth_grants g ON g.id = a.grant_id
+           WHERE a.expires_at <= now() OR g.id IS NULL OR g.expires_at <= now() OR g.revoked_at IS NOT NULL
+           LIMIT $1)`,
+        [bound],
+      );
+      const refreshTokens = await client.query(
+        `DELETE FROM oauth_refresh_tokens WHERE token_hash IN (
+           SELECT r.token_hash FROM oauth_refresh_tokens r LEFT JOIN oauth_grants g ON g.id = r.grant_id
+           WHERE g.id IS NULL OR g.expires_at <= now() OR g.revoked_at IS NOT NULL
+              OR (r.expires_at <= now() AND r.expires_at <> '-infinity'::timestamptz AND r.used_at IS NULL)
+           LIMIT $1)`,
+        [bound],
+      );
+      const clients = await client.query(
+        `DELETE FROM oauth_clients WHERE client_id IN (
+           SELECT c.client_id FROM oauth_clients c
+           WHERE (c.created_at < now() - interval '24 hours'
+                  AND NOT EXISTS (SELECT 1 FROM oauth_grants g WHERE g.client_id = c.client_id)
+                  AND NOT EXISTS (SELECT 1 FROM oauth_pending p WHERE p.client_id = c.client_id AND p.expires_at > now())
+                  AND NOT EXISTS (SELECT 1 FROM oauth_codes cd WHERE cd.client_id = c.client_id AND cd.expires_at > now() AND cd.used_at IS NULL))
+              OR (EXISTS (SELECT 1 FROM oauth_grants g WHERE g.client_id = c.client_id)
+                  AND NOT EXISTS (SELECT 1 FROM oauth_grants g WHERE g.client_id = c.client_id
+                                  AND LEAST(COALESCE(g.revoked_at, 'infinity'::timestamptz), g.expires_at) >= now() - interval '30 days'))
+           LIMIT $1)`,
+        [bound],
+      );
+      return {
+        clients: clients.rowCount ?? 0,
+        pending: pending.rowCount ?? 0,
+        codes: codes.rowCount ?? 0,
+        accessTokens: accessTokens.rowCount ?? 0,
+        refreshTokens: refreshTokens.rowCount ?? 0,
+      };
+    });
   }
 
   authorizationMetadata(): Record<string, unknown> {
@@ -211,13 +287,14 @@ export class OAuthService {
     await transaction(this.pool, async client => {
       // Serialize registration so the ceilings hold across API replicas.
       await client.query("SELECT pg_advisory_xact_lock(420315903)");
-      // Opportunistic expiry, bounded per call; cascades remove codes/pending/grants. No background timer.
+      // Opportunistic expiry, bounded per call; cascades remove codes/pending/grants.
       await client.query(
         `DELETE FROM oauth_clients WHERE client_id IN (
            SELECT c.client_id FROM oauth_clients c
            WHERE (c.created_at < now() - interval '24 hours'
                   AND NOT EXISTS (SELECT 1 FROM oauth_grants g WHERE g.client_id = c.client_id)
-                  AND NOT EXISTS (SELECT 1 FROM oauth_pending p WHERE p.client_id = c.client_id))
+                  AND NOT EXISTS (SELECT 1 FROM oauth_pending p WHERE p.client_id = c.client_id AND p.expires_at > now())
+                  AND NOT EXISTS (SELECT 1 FROM oauth_codes cd WHERE cd.client_id = c.client_id AND cd.expires_at > now() AND cd.used_at IS NULL))
               OR (EXISTS (SELECT 1 FROM oauth_grants g WHERE g.client_id = c.client_id)
                   AND NOT EXISTS (SELECT 1 FROM oauth_grants g WHERE g.client_id = c.client_id
                                   AND LEAST(COALESCE(g.revoked_at, 'infinity'::timestamptz), g.expires_at) >= now() - interval '30 days'))
@@ -232,7 +309,8 @@ export class OAuthService {
       }
       const total = await client.query<{ count: string }>(
         `SELECT count(*)::text AS count FROM oauth_clients c WHERE c.created_at > now() - interval '24 hours'
-           OR EXISTS (SELECT 1 FROM oauth_grants g WHERE g.client_id = c.client_id)`,
+           OR EXISTS (SELECT 1 FROM oauth_grants g WHERE g.client_id = c.client_id
+                      AND LEAST(COALESCE(g.revoked_at, 'infinity'::timestamptz), g.expires_at) >= now() - interval '30 days')`,
       );
       if (Number(total.rows[0]?.count ?? 0) >= 5000) throw new OAuthError('temporarily_unavailable', 'Client registration capacity reached. Try again later.', 503);
       await client.query('INSERT INTO oauth_clients(client_id, client_name, redirect_uris, created_ip_hash) VALUES ($1,$2,$3,$4)', [id, name, redirects, ipHash ?? null]);
@@ -407,14 +485,14 @@ export class OAuthService {
     const reply = await transaction(this.pool, async client => {
       const result = await client.query<{
         id: string; client_id: string; principal_id: string; resource: string;
-        grant_snapshot: Principal; used_at: Date | null; revoked_at: Date | null; live: boolean; abandoned: boolean;
+        grant_snapshot: Principal; used_at: Date | null; revoked_at: Date | null; live: boolean; grant_live: boolean; abandoned: boolean;
       }>(
-        "SELECT g.*, r.used_at, (g.expires_at>now() AND r.expires_at>now()) AS live, r.expires_at='-infinity'::timestamptz AS abandoned FROM oauth_refresh_tokens r JOIN oauth_grants g ON g.id=r.grant_id WHERE r.token_hash=$1 FOR UPDATE OF g, r",
+        "SELECT g.*, r.used_at, (g.expires_at>now() AND r.expires_at>now()) AS live, g.expires_at>now() AS grant_live, r.expires_at='-infinity'::timestamptz AS abandoned FROM oauth_refresh_tokens r JOIN oauth_grants g ON g.id=r.grant_id WHERE r.token_hash=$1 FOR UPDATE OF g, r",
         [tokenHash(refreshToken)],
       );
       const row = result.rows[0];
-      if (row && row.client_id === clientId && row.resource === resource && row.abandoned && !row.revoked_at) {
-        // A reply given up as lost (below) has turned up after all: someone else holds this family. Revoke it.
+      if (row && row.client_id === clientId && row.resource === resource && !row.revoked_at && (row.abandoned || (row.used_at && row.grant_live && !row.live))) {
+        // A reply given up as lost (below) or an expired spent token in a live family has turned up: revoke the family.
         await client.query('UPDATE oauth_grants SET revoked_at=now() WHERE id=$1', [row.id]);
         return null;
       }

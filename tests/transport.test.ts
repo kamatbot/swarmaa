@@ -98,7 +98,7 @@ test('Mcp-Name base64 decoding is canonical and rejects invalid UTF-8', () => {
   assert.equal(decodeMcpHeader(' padded '), null);
 });
 
-async function listeningServer(t: TestContext, maxBodyBytes = 4096, toolBackend: ToolBackend = core, publicUrl?: string): Promise<{ url: string; server: Server }> {
+async function listeningServer(t: TestContext, maxBodyBytes = 4096, toolBackend: ToolBackend = core, publicUrl?: string, overrides: Partial<ServerConfig> = {}): Promise<{ url: string; server: Server; recordedIpHashes: string[] }> {
   const server = createServer();
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(async () => {
@@ -111,13 +111,32 @@ async function listeningServer(t: TestContext, maxBodyBytes = 4096, toolBackend:
   const config: ServerConfig = {
     host: '127.0.0.1', port: address.port, publicUrl: publicUrl ?? url, allowedOrigins: [], allowInsecureLocalhost: true,
     maxBodyBytes, oauthEnabled: false, oauthRedirectHosts: [], eventCallbackHosts: [], eventEncryptionKey: '',
+    ...overrides,
   };
+  const recordedIpHashes: string[] = [];
   const dependencies: HttpDependencies = {
-    config, core: toolBackend, pool: { query: async () => ({ rows: [] }) } as unknown as Pool,
+    config, core: toolBackend,
+    pool: {
+      query: async (sql: string, params?: unknown[]) => {
+        if (typeof sql === 'string' && sql.includes('INSERT INTO oauth_clients')) {
+          recordedIpHashes.push(String(params?.[3] ?? ''));
+        }
+        return { rows: [{ count: '0' }] };
+      },
+      connect: async () => ({
+        query: async (sql: string, params?: unknown[]) => {
+          if (typeof sql === 'string' && sql.includes('INSERT INTO oauth_clients')) {
+            recordedIpHashes.push(String(params?.[3] ?? ''));
+          }
+          return { rows: [{ count: '0' }] };
+        },
+        release: () => undefined,
+      }),
+    } as unknown as Pool,
     auth: { authenticate: async token => token === 'test-connection-token' ? principal : null, getPrincipal: async () => principal },
   };
   server.on('request', createHttpHandler(dependencies));
-  return { url, server };
+  return { url, server, recordedIpHashes };
 }
 
 const rpcHeaders = { authorization: 'Bearer test-connection-token', 'content-type': 'application/json', accept: 'application/json, text/event-stream', 'mcp-protocol-version': LEGACY_VERSION };
@@ -197,4 +216,56 @@ test('oversized serialized results produce bounded repairable errors before head
     assert.equal(error.code, 'response_too_large');
     assert.match(error.message, /history_limit/u);
   }
+});
+
+test('forwarded-IP headers are ignored from non-trusted sources and honored only from configured trusted proxies', async t => {
+  const registerRequest = (port: string, hostHeader: string, headers: Record<string, string>) =>
+    new Promise<number>((resolve, reject) => {
+      const body = JSON.stringify({ client_name: 'c', redirect_uris: ['https://claude.ai/cb'] });
+      const req = request({
+        host: '127.0.0.1', port, path: '/oauth/register', method: 'POST',
+        headers: { host: hostHeader, 'content-type': 'application/json', 'content-length': String(Buffer.byteLength(body)), ...headers },
+      }, res => { res.resume(); resolve(res.statusCode ?? 0); });
+      req.on('error', reject);
+      req.end(body);
+    });
+
+  // 1. Default (trustProxy disabled): spoofed CF-Connecting-IP / X-Forwarded-For cannot bypass rate limiting or rotate IP hashes.
+  const untrusted = await listeningServer(t, 4096, core, 'https://swarma.example.com', { oauthEnabled: true, oauthRedirectHosts: ['claude.ai'] });
+  const untrustedPort = new URL(untrusted.url).port;
+  for (let i = 0; i < 30; i++) {
+    const status = await registerRequest(untrustedPort, 'swarma.example.com', { 'cf-connecting-ip': `198.51.100.${i + 1}` });
+    assert.equal(status, 201);
+  }
+  // 31st request with a fresh spoofed CF-Connecting-IP is still rate-limited because all shared socket IP 127.0.0.1.
+  const limited = await registerRequest(untrustedPort, 'swarma.example.com', { 'cf-connecting-ip': '198.51.100.250' });
+  assert.equal(limited, 429);
+  assert.equal(new Set(untrusted.recordedIpHashes).size, 1, 'spoofed headers must not vary client IP hash when proxy is untrusted');
+
+  // 2. Trusted proxy configured to a different proxy IP (10.0.0.9): loopback socket is not in trustedProxies, so headers are ignored.
+  const wrongProxy = await listeningServer(t, 4096, core, 'https://swarma.example.com', {
+    oauthEnabled: true, oauthRedirectHosts: ['claude.ai'], trustProxy: true, trustedProxies: ['10.0.0.9'],
+  });
+  const wrongProxyPort = new URL(wrongProxy.url).port;
+  await registerRequest(wrongProxyPort, 'swarma.example.com', { 'cf-connecting-ip': '198.51.100.10' });
+  await registerRequest(wrongProxyPort, 'swarma.example.com', { 'cf-connecting-ip': '198.51.100.11' });
+  assert.equal(new Set(wrongProxy.recordedIpHashes).size, 1, 'socket not in trustedProxies must ignore forwarded IP');
+
+  // 3. Trusted loopback proxy (Cloudflare tunnel mode): public Host honors distinct public forwarded IPs,
+  // but direct loopback Host or spoofed loopback CF-Connecting-IP is ignored.
+  const trusted = await listeningServer(t, 4096, core, 'https://swarma.example.com', {
+    oauthEnabled: true, oauthRedirectHosts: ['claude.ai'], trustProxy: true,
+  });
+  const trustedPort = new URL(trusted.url).port;
+  for (let i = 0; i < 35; i++) {
+    const status = await registerRequest(trustedPort, 'swarma.example.com', { 'cf-connecting-ip': `203.0.113.${(i % 50) + 1}` });
+    assert.equal(status, 201);
+  }
+  assert.equal(new Set(trusted.recordedIpHashes).size, 35, 'trusted proxy requests use visitor CF-Connecting-IP');
+
+  // Direct local loopback Host (127.0.0.1:port) ignores spoofed CF-Connecting-IP even when trustProxy is true.
+  const beforeDirect = trusted.recordedIpHashes.length;
+  await registerRequest(trustedPort, `127.0.0.1:${trustedPort}`, { 'cf-connecting-ip': '198.51.100.99' });
+  await registerRequest(trustedPort, `127.0.0.1:${trustedPort}`, { 'cf-connecting-ip': '198.51.100.100' });
+  assert.equal(trusted.recordedIpHashes[beforeDirect], trusted.recordedIpHashes[beforeDirect + 1]);
 });

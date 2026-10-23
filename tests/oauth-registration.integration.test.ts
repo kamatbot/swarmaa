@@ -39,11 +39,14 @@ test('client registration: expiry, per-IP limit, global cap', { skip: !process.e
   assert.ok(!after.has('old_unused') && !after.has('old_dead'));
   assert.ok(after.has('new_unused') && after.has('old_used') && after.has('old_revoked_recent'));
 
-  // Pending authorization protects an old client.
+  // Pending authorization protects an old client only while the pending request is still unexpired.
   await add('old_pending', '30 hours');
   await pool.query("INSERT INTO oauth_pending(id,client_id,redirect_uri,challenge,resource,csrf_hash,browser_hash,expires_at) VALUES (gen_random_uuid(),'old_pending','u','c','r','a','b',now()+interval '5 minutes')");
+  await add('old_expired_pending', '30 hours');
+  await pool.query("INSERT INTO oauth_pending(id,client_id,redirect_uri,challenge,resource,csrf_hash,browser_hash,expires_at) VALUES (gen_random_uuid(),'old_expired_pending','u','c','r','a','b',now()-interval '1 minute')");
   await register('ip-a');
   assert.ok((await ids()).has('old_pending'));
+  assert.ok(!(await ids()).has('old_expired_pending'));
 
   // Per-IP: 20 live unused registrations; other IPs and absent IP unaffected.
   const before = Number((await pool.query("SELECT count(*) FROM oauth_clients WHERE created_ip_hash='ip-b'")).rows[0].count);

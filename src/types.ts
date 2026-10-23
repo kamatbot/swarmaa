@@ -52,6 +52,10 @@ export interface ServerConfig {
   eventEncryptionKey: string;
   /** Optional override for the WebAuthn RP ID (registrable domain of PUBLIC_URL by default). */
   passkeyRpId?: string;
+  /** Trust forwarded-IP headers only when enabled and arriving from a trusted proxy address. */
+  trustProxy?: boolean;
+  /** Optional explicit proxy socket addresses allowed to supply forwarded client IPs (defaults to loopback when trustProxy is true). */
+  trustedProxies?: string[];
 }
 
 export interface HttpDependencies {

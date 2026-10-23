@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { test } from 'node:test';
-import { authorizationHtml, narrowGrant, OAuthError, pkceChallenge, validateRedirectUri } from '../src/oauth.js';
+import type { Pool } from 'pg';
+import { authorizationHtml, narrowGrant, OAuthError, OAuthService, pkceChallenge, validateRedirectUri } from '../src/oauth.js';
 import type { Principal, ServerConfig } from '../src/types.js';
 
 const base: Principal = {
@@ -48,4 +49,35 @@ test('PKCE matches the RFC 7636 S256 example and HTML escapes untrusted metadata
   assert.ok(html.includes('&lt;script&gt;'));
   assert.ok(html.includes('project:alpha'));
 });
+
+test('scheduled OAuth cleanup reclaims unused registrations and expired tokens while preserving live refresh-replay tokens', async () => {
+  const executed: { sql: string; params: unknown[] }[] = [];
+  const fakePool = {
+    connect: async () => ({
+      query: async (sql: string, params: unknown[] = []) => {
+        executed.push({ sql, params });
+        return { rows: [], rowCount: 2 };
+      },
+      release: () => undefined,
+    }),
+  } as unknown as Pool;
+  const service = new OAuthService(fakePool, { authenticate: async () => base, getPrincipal: async () => base }, config);
+  service.start(20);
+  await new Promise(resolve => setTimeout(resolve, 60));
+  await service.stop();
+
+  const sqls = executed.map(e => e.sql);
+  // Verifies scheduled cleanup ran and executed bounded deletes for pending, codes, access tokens, refresh tokens, and unused clients.
+  assert.ok(sqls.some(s => s.includes('DELETE FROM oauth_access_tokens') && s.includes('LIMIT $1')));
+  const refreshDelete = sqls.find(s => s.includes('DELETE FROM oauth_refresh_tokens'));
+  assert.ok(refreshDelete, 'scheduled cleanup must clean up expired refresh tokens');
+  assert.ok(
+    refreshDelete.includes("r.expires_at <> '-infinity'::timestamptz AND r.used_at IS NULL"),
+    'refresh token cleanup must preserve used and abandoned tokens on live grant families for replay detection',
+  );
+  const clientDelete = sqls.find(s => s.includes('DELETE FROM oauth_clients'));
+  assert.ok(clientDelete, 'scheduled cleanup must reclaim unused dynamic client registrations');
+  assert.ok(clientDelete.includes("interval '24 hours'") && clientDelete.includes('p.expires_at > now()'));
+});
+
 
