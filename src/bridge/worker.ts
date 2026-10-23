@@ -45,6 +45,11 @@ export class BridgeWorker {
   /** Latest local quota headroom per provider, used to pick an agent for auto-routed work. */
   private readonly headroom = new Map<string, number>();
   private nextUsageAt = 0;
+  private draining = false;
+  private readonly running = new Set<Promise<unknown>>();
+  private readonly drainAbort = new AbortController();
+  private pollWait?: AbortController;
+  private drainTimer?: ReturnType<typeof setTimeout>;
 
   constructor(
     private readonly config: BridgeConfig,
@@ -54,16 +59,30 @@ export class BridgeWorker {
     private readonly usage: (providers: UsageProviderId[]) => Promise<UsageSnapshot[]> = providers => collectUsage(providers)
   ) {}
 
+  /** Stop claiming; the run loop and task heartbeats stay alive until every task settles. */
+  drain(maxSeconds?: number): void {
+    if (this.draining) return;
+    this.draining = true;
+    this.nextUsageAt = 0;
+    this.logger('bridge_draining', { running: this.running.size });
+    this.pollWait?.abort();
+    if (maxSeconds !== undefined && this.running.size) this.drainTimer = setTimeout(() => {
+      this.logger('bridge_drain_deadline', { running: this.running.size });
+      this.drainAbort.abort();
+    }, maxSeconds * 1000);
+  }
+
   /** Report provider quota to the service between tasks. Failures only delay routing data. */
   async reportUsage(signal: AbortSignal): Promise<void> {
-    if (!this.config.usage_seconds || Date.now() < this.nextUsageAt) return;
-    this.nextUsageAt = Date.now() + this.config.usage_seconds * 1000;
+    const seconds = this.draining ? Math.min(this.config.usage_seconds || 30, 30) : this.config.usage_seconds;
+    if (!seconds || Date.now() < this.nextUsageAt) return;
+    this.nextUsageAt = Date.now() + seconds * 1000;
     const providers = [...new Set(this.config.agents.map(a => a.provider))] as UsageProviderId[];
     try {
-      const snapshots = await this.usage(providers);
+      const snapshots = this.draining ? [] : await this.usage(providers);
       for (const s of snapshots) this.headroom.set(s.provider, headroom(s));
       await this.client.call('usage_report', { reports: snapshots.map(s => ({ provider: s.provider, ok: s.ok, windows: s.windows, fetched_at: s.fetched_at,
-        ...(s.plan ? { plan: s.plan.slice(0, 80) } : {}), ...(s.error ? { error: s.error.slice(0, 200) } : {}) })), slots: this.config.max_concurrent }, signal);
+        ...(s.plan ? { plan: s.plan.slice(0, 80) } : {}), ...(s.error ? { error: s.error.slice(0, 200) } : {}) })), slots: this.draining ? 0 : this.config.max_concurrent }, signal);
     } catch (error) {
       this.logger('usage_report_failed', { code: errorCode(error), message: String((error as Error)?.message ?? error).slice(0, 200) });
     }
@@ -75,34 +94,48 @@ export class BridgeWorker {
    * worker runs up to `max_concurrent` tasks at once without multiplying its requests to the service.
    */
   async run(signal: AbortSignal, once = false): Promise<void> {
+    signal = AbortSignal.any([signal, this.drainAbort.signal]);
     let inflight = 0;
-    const running = new Set<Promise<unknown>>();
-    while (!signal.aborted) {
+    let claimedOnce = false;
+    const running = this.running;
+    while (!signal.aborted && (!this.draining || running.size)) {
       let claimedAny = false;
       await this.reportUsage(signal);
       for (const project of this.config.projects) {
-        while (!signal.aborted && inflight < this.config.max_concurrent) {
+        while (!signal.aborted && !this.draining && !(once && claimedOnce) && inflight < this.config.max_concurrent) {
           let claimed!: () => void;
           const started = new Promise<boolean>(r => { claimed = () => r(true); });
           inflight++;
           const task = this.claimAndRun(project, signal, claimed)
             .catch(error => { this.logger('bridge_poll_failed', { scope: project.scope, code: errorCode(error), message: String((error as Error)?.message ?? error).slice(0, 200) }); return false; })
-            .finally(() => { inflight--; running.delete(task); });
+            .finally(() => {
+              inflight--; running.delete(task);
+              if (!running.size) {
+                if (this.drainTimer) clearTimeout(this.drainTimer);
+                if (this.draining || once) this.pollWait?.abort();
+              }
+            });
           running.add(task);
           if (!(await Promise.race([started, task]))) break; // nothing to claim here
           claimedAny = true;
-          if (once) { await task; return; }
+          claimedOnce = true;
+          if (once) break;
         }
       }
-      if (once) return;
+      if (once && !running.size) return;
+      if (this.draining && !running.size) break;
       if (!claimedAny) {
-        try { await delay(this.config.poll_seconds * 1000, undefined, { signal }); } catch { break; }
+        this.pollWait = new AbortController();
+        const seconds = this.draining ? Math.min(this.config.poll_seconds, this.config.usage_seconds || 30, 30) : this.config.poll_seconds;
+        try { await delay(seconds * 1000, undefined, { signal: AbortSignal.any([signal, this.pollWait.signal]) }); } catch { /* shutdown, drain, or the last task finished */ }
+        finally { this.pollWait = undefined; }
       }
     }
     await Promise.allSettled([...running]);
   }
 
   async claimAndRun(project: ProjectConfig, signal: AbortSignal, onClaimed?: () => void): Promise<boolean> {
+    if (this.draining || signal.aborted) return false;
     const capabilities = projectCapabilities(project, this.config.agents);
     const allowsPatch = capabilities.some(c => c.endsWith('.patch'));
     const claimStarted = performance.now();

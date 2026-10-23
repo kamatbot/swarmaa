@@ -21,6 +21,7 @@
     "bridge": "node --env-file=.env --import tsx src/bridge.ts",
     "proxy": "node --env-file=.env --import tsx src/stdio-proxy.ts",
     "build": "tsc -p tsconfig.json",
+    "deploy:local": "node --import tsx scripts/deploy-local.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "node --import tsx --test tests/*.test.ts",
     "test:integration": "node --import tsx --test tests/*.integration.test.ts",

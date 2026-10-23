@@ -48,7 +48,7 @@ export class SwarmService {
   /** Worker-reported quota readings for the providers it runs. Readings are data, never authority. */
   async report(p: Principal, input: Record<string, unknown>): Promise<unknown> {
     noExtraKeys(input, ['reports', 'slots']);
-    requireCondition(input.slots === undefined || (Number.isInteger(input.slots) && (input.slots as number) >= 1 && (input.slots as number) <= 16), 400, 'invalid_arguments', 'slots must be an integer from 1 to 16.');
+    requireCondition(input.slots === undefined || (Number.isInteger(input.slots) && (input.slots as number) >= 0 && (input.slots as number) <= 16), 400, 'invalid_arguments', 'slots must be an integer from 0 to 16.');
     requireCondition(p.role === 'worker', 403, 'forbidden', 'Only worker connections report provider usage.');
     requireCondition(Array.isArray(input.reports) && input.reports.length <= 10 && (input.reports.length >= 1 || input.slots !== undefined), 400, 'invalid_arguments', 'reports needs 1–10 entries (or none with slots).');
     const rows = input.reports.map(value => {
@@ -116,7 +116,7 @@ export class SwarmService {
       getPolicy(this.pool, p.tenantId),
     ]);
     const usageView: UsageView[] = usage.rows.map(r => ({ provider: r.provider, ok: r.ok, headroom: r.headroom, ...r.windows, fetched_at: r.fetched_at }));
-    const live = new Set<string>(workers.rows.filter(w => w.live).flatMap(w => w.providers as string[]));
+    const live = new Set<string>(workers.rows.filter(w => w.live && w.slots > 0).flatMap(w => w.providers as string[]));
     // List every permitted project, not just those with tasks, so a client can see what it can work in.
     const zero = { queued: 0, running: 0, blocked: 0, completed_24h: 0, failed_24h: 0 };
     const byScope = new Map<string, Record<string, unknown>>(counts.rows.map(r => [r.scope as string, r]));
