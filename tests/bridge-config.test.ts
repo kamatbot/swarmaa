@@ -37,6 +37,9 @@ test('exit zero without provider completion is not reported successful', () => {
   assert.equal(providerSucceeded('claude', {...result, stdout:JSON.stringify({type:'result',subtype:'success',is_error:false})}), true);
   assert.equal(providerSucceeded('codex', {...result,stdout:'{"type":"turn.completed"}\n'}), true);
   assert.equal(providerSucceeded('codex', {...result,stdout:'{"type":"turn.completed"}\n{"type":"turn.failed"}\n'}), false);
+  // Reconnect notices Codex recovers from are not failures (task afdc3554 was marked failed on these).
+  assert.equal(providerSucceeded('codex', {...result,stdout:'{"type":"error","message":"Reconnecting... 2/5 (workspace routing discovery timed out)"}\n{"type":"item.completed","item":{"id":"item_0","type":"error","message":"Falling back from WebSockets to HTTPS transport."}}\n{"type":"turn.completed"}\n'}), true);
+  assert.equal(providerSucceeded('codex', {...result,stdout:'{"type":"error","message":"stream disconnected"}\n'}), false);
 });
 
 test('token_file must be absolute and owner-only', async () => {

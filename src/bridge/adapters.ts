@@ -96,7 +96,9 @@ export function providerSucceeded(provider: string, result: ProcessResult): bool
     }
     if (provider === 'codex') {
       const events = result.stdout.trim().split('\n').filter(Boolean).map(line => JSON.parse(line) as Record<string, unknown>);
-      return events.some(event => event.type === 'turn.completed') && !events.some(event => event.type === 'turn.failed' || event.type === 'error');
+      // Codex also emits {"type":"error"} for notices it recovers from (reconnect attempts, a WebSocket-to-HTTPS
+      // fallback); only a failed turn, or no completed turn, is a failed run.
+      return events.some(event => event.type === 'turn.completed') && !events.some(event => event.type === 'turn.failed');
     }
   } catch { /* Malformed output fails closed. */ }
   return false;
