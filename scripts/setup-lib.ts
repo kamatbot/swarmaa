@@ -151,7 +151,7 @@ export const HOOK_APP_KEYS = ['kiro', 'windsurf', 'qwen'] as const;
 export type HookAppKey = typeof HOOK_APP_KEYS[number];
 export const SHARING_HARNESSES: readonly HarnessKey[] = ['claude', 'codex', 'agy'];
 export const GENERAL_SCOPE = 'project:general';
-export const DEFAULT_HOSTNAME = 'api.swarmaa.com';
+export const DEFAULT_HOSTNAME = '';
 
 /** `edit` is the worker's explicit opt-in to edits (needs the task:patch grant); it implies `worker`. */
 export interface HarnessPlan { connect: boolean; worker: boolean; edit: boolean; share: boolean }
@@ -243,7 +243,7 @@ export function validatePlan(input: unknown): SetupPlan {
   let remote: SetupPlan['remote'];
   if (input.remote !== undefined && input.remote !== null) {
     const host = isObj(input.remote) ? validHostname(input.remote.hostname) : undefined;
-    if (!host) errors.push('remote.hostname must be a valid DNS name such as api.example.com');
+    if (!host) errors.push('remote.hostname must be a valid DNS name such as swarm.example.com');
     else remote = { hostname: host };
   }
   if (typeof input.autostart !== 'boolean') errors.push('autostart must be true or false');

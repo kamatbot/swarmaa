@@ -1,5 +1,5 @@
 // Publishes the local Swarmaa service at https://<hostname> through a named Cloudflare Tunnel.
-// Usage: npm run tunnel -- --hostname api.swarmaa.com [--dry-run]
+// Usage: npm run tunnel -- --hostname swarm.example.com [--dry-run]
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -31,8 +31,9 @@ export function validHostname(host: string): boolean {
 export async function setupTunnel(opts: { hostname: string; root: string; dry: boolean; log: (line: string) => void; home?: string }): Promise<TunnelResult> {
   const { hostname, root, dry, log } = opts;
   const home = opts.home ?? homedir();
-  if (!validHostname(hostname) || !(hostname === 'swarmaa.com' || hostname.endsWith('.swarmaa.com'))) throw new Error(`hostname must be swarmaa.com or a subdomain of it, got ${hostname}`);
-  const cf = ['/opt/homebrew/bin/cloudflared', '/usr/local/bin/cloudflared'].find(existsSync);
+  if (!hostname) throw new Error('pass --hostname swarm.example.com with a hostname on your domain');
+  if (!validHostname(hostname)) throw new Error(`hostname must be a valid DNS name on your domain, got ${hostname}`);
+  const cf = ['/opt/homebrew/bin/cloudflared', '/usr/local/bin/cloudflared'].find(existsSync) ?? (dry ? 'cloudflared' : undefined);
   if (!cf) throw new Error('cloudflared is not installed (brew install cloudflared)');
   const run = (args: string[], capture = true) => {
     if (dry) { log(`  [dry-run] cloudflared ${args.join(' ')}`); return { status: 0, stdout: '', stderr: '' }; }
@@ -41,8 +42,8 @@ export async function setupTunnel(opts: { hostname: string; root: string; dry: b
   };
   const changed: string[] = [];
 
-  if (!existsSync(join(home, '.cloudflared', 'cert.pem'))) {
-    log('Authorize Cloudflare: approve swarmaa.com in the browser window that opens.');
+  if (dry || !existsSync(join(home, '.cloudflared', 'cert.pem'))) {
+    log('Authorize Cloudflare: approve your domain in the browser window that opens.');
     if (run(['tunnel', 'login'], false).status !== 0) throw new Error('cloudflared tunnel login did not complete');
   }
 
@@ -63,7 +64,7 @@ export async function setupTunnel(opts: { hostname: string; root: string; dry: b
   if (route.status !== 0 && !/already (exists|configured)/i.test(route.stderr)) throw new Error(`DNS route failed: ${route.stderr.trim().split('\n').at(-1)}`);
 
   const envFile = join(root, '.env');
-  let env = readFileSync(envFile, 'utf8');
+  let env = dry && !existsSync(envFile) ? '' : readFileSync(envFile, 'utf8');
   const port = envValue(env, 'PORT') || '8787';
   const yml = join(root, '.local', 'cloudflared.yml');
   // The service only accepts its PUBLIC_URL host, so pin the Host header the origin sees.
@@ -104,8 +105,8 @@ export async function setupTunnel(opts: { hostname: string; root: string; dry: b
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  const { values } = parseArgs({ options: { hostname: { type: 'string', default: 'api.swarmaa.com' }, 'dry-run': { type: 'boolean', default: false } } });
-  setupTunnel({ hostname: values.hostname!, root: process.cwd(), dry: values['dry-run']!, log: l => console.log(l) })
+  const { values } = parseArgs({ options: { hostname: { type: 'string' }, 'dry-run': { type: 'boolean', default: false } } });
+  setupTunnel({ hostname: values.hostname ?? '', root: process.cwd(), dry: values['dry-run']!, log: l => console.log(l) })
     .then(r => console.log(`MCP URL: ${r.publicUrl}/mcp`))
     .catch(e => { console.error(`Tunnel setup failed: ${(e as Error).message}`); process.exitCode = 1; });
 }
