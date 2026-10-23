@@ -42,20 +42,20 @@ The core and database are not the bottleneck. These three things are.
 - **Why the lock exists:** `seq` can be allocated by a transaction that commits after a later `seq` is already visible, so a reader could skip an event.
 
 **Do this, using the snapshot-xmin technique:**
-- New migration `db/migrations/014_events_xid.sql` adds `xid xid8 NOT NULL DEFAULT pg_current_xact_id()` to `events`. Check `004_events.sql` first.
-- In `eventsPoll`, remove the LOCK, the lock_timeout and the `55P03 → events_busy` branch. Add `AND xid < pg_snapshot_xmin(pg_current_snapshot())` to the SELECT. Newer events come back on the next poll, and the response shape stays the same.
+- New migration `db/migrations/018_events_xid.sql` adds `xid xid8 NOT NULL DEFAULT pg_current_xact_id()` to `events`. Check `004_events.sql` first.
+- In `eventsPoll`, remove the LOCK, the lock_timeout and the `55P03 → events_busy` branch. Filter with `xid < pg_snapshot_xmin(pg_current_snapshot())`, order by `(xid, seq)` and resume with `(xid, seq) > (cursor_xid, cursor_seq)`. A sequence-only resume loses events when XID and sequence allocation orders differ. Each event cursor and `next_cursor` become decimal `"<xid>.<seq>"` strings; legacy numeric cursors filter `seq > N` for one call and upgrade. Add an index on `events(tenant_id, scope, xid, seq)` in 018; preserve applied migrations 015–017.
 - Run `grep -rn "LOCK TABLE" src` and apply the same fix to any other reader with the same problem.
 
 ## Fix 3: raise the 64-project cap
 
 - `db/migrations/001_identity.sql` has `CHECK (cardinality(scopes) BETWEEN 1 AND 64)` on `principals`.
-- In migration 014, drop `principals_scopes_check` and allow 1–512.
+- In migration 018, drop `principals_scopes_check` and allow 1–512.
 - Grep `src/` and `scripts/` (admin, setup, oauth, policy, tool schemas) for other limits on how many projects an identity or grant can hold (maxItems, slice(0,64), …) and raise them to 512. Leave unrelated 64s alone, such as hash lengths.
 - List every place you changed or deliberately left.
 
 ## Tests
 
-- Integration tests build their schema from the migration files. Some list the files explicitly, for example `tests/swarm.integration.test.ts`; add `014` there.
+- Integration tests build their schema from the migration files. Some list the files explicitly, for example `tests/swarm.integration.test.ts`; add `018` there.
 - **Claim:**
   - With `projects`, returns a task from the second project when the first has none.
   - Returns "no task" when no project has work.
@@ -64,7 +64,7 @@ The core and database are not the bottleneck. These three things are.
   - Rejects `scope` and `projects` given together.
 - **Bridge** (`tests/bridge-worker.test.ts`, in its fake-client style): sends one `projects` call per slot attempt, not one per project.
 - **Events:**
-  - A poll doesn't wait on a concurrent uncommitted event insert. It returns promptly without that event, and after the commit the next poll returns it with nothing skipped.
+  - A poll doesn't wait on a concurrent uncommitted event insert. It returns promptly without that event, and after the commit the next poll returns it with nothing skipped. Cover a higher-XID event with a lower sequence committing after a returned event, same-XID pagination, and legacy cursor upgrade (including empty pages).
 - **Projects cap:** an identity with 100 scopes can be inserted.
 
 ## Rules
@@ -78,7 +78,7 @@ The core and database are not the bottleneck. These three things are.
 
 ```bash
 npm run build
-timeout 300 npm test 2>&1 | grep -E "^ℹ (pass|fail)"                       # 0 fail
+timeout 600 npm test 2>&1 | grep -E "^ℹ (pass|fail)"                       # 0 fail
 timeout 400 npx tsx --env-file=.env.test --test tests/*.integration.test.ts 2>&1 | grep -E "^ℹ (pass|fail)|^✖"   # 0 fail
 grep -rn "LOCK TABLE events" src                                               # no hits
 timeout 600 node --env-file=.env.test --import tsx scripts/load.ts --scopes 100 --tasks 2000 --workers 12 --pollers 100

@@ -4,7 +4,7 @@ import { transaction } from '../db.js';
 import { requireCondition } from '../errors.js';
 import { hasPermission } from '../policy.js';
 import { ARTIFACT_MAX_BYTES, type Principal } from '../types.js';
-import { enumValue, integer, optionalString, scopeName, string, strings, uuid } from '../validation.js';
+import { enumValue, integer, object, optionalString, scopeName, string, strings, uuid } from '../validation.js';
 import { assertKnownScope, audit, canonicalJson, event, jsonObject, newId, noExtraKeys, requireFound, scopeLock, scopeSql, sha256, uuidArray, type Db } from './shared.js';
 import { decideAll, getPolicy, policyAllows, scopeUsage, type RoutingKind } from './routing.js';
 import { AUTO_PATCH, AUTO_READ, touchWorker, workerProviders } from './swarm.js';
@@ -214,7 +214,7 @@ export class TaskService {
       if (!workers) return {task:await taskWithInstructions(db,row),replayed:false,
         warning:`No live worker serves ${scope}, so this task will wait in the queue. Start a worker for this project or submit it to a project a worker serves.`};
       // Acknowledge to the submitting agent, in words it can relay to the user.
-      const message = `Swarm started: task ${row.id.slice(0,8)} is queued in ${scope}. ${workers} live worker${workers===1?'':'s'} with ${free} free slot${free===1?'':'s'} serve it, so it ${free ? 'should start within seconds' : 'will start when a slot frees up'}. Follow it with events_poll on ${scope} (claimed, then finished) or task_get.`;
+      const message = `Swarm started: task ${row.id.slice(0,8)} is queued in ${scope}. ${workers} live worker${workers===1?'':'s'} with ${free} free slot${free===1?'':'s'} serve it, so it ${free ? 'should start within seconds' : 'will start when a slot frees up'}. Follow it with events_poll on ${scope} (claimed, then finished; start after 0.0 and pass next_cursor unchanged) or task_get.`;
       return {task:await taskWithInstructions(db,row),replayed:false,message};
     });
   }
@@ -289,19 +289,37 @@ export class TaskService {
   }
 
   async claim(p:Principal,input:Record<string,unknown>):Promise<unknown> {
-    noExtraKeys(input,['scope','capabilities','kinds','lease_seconds']);
+    noExtraKeys(input,['scope','capabilities','kinds','projects','lease_seconds']);
     worker(p);
-    const scope = scopeName(input.scope);
-    assertKnownScope(p,scope);
-    const capabilities = strings(input.capabilities,'capabilities',30,128);
-    requireCondition(capabilities.length>0,400,'invalid_arguments','At least one capability is required.');
-    let kinds:TaskKind[] = ['research','review'];
-    if (input.kinds !== undefined) {
-      requireCondition(Array.isArray(input.kinds) && input.kinds.length>0 && input.kinds.length<=3,400,'invalid_arguments','kinds must contain one to three supported task kinds.');
-      kinds = [...new Set(input.kinds.map(v => enumValue(v,'kinds',TASK_KINDS)))];
+    requireCondition((input.scope !== undefined) !== (input.projects !== undefined),400,'invalid_arguments','Give exactly one of scope or projects.');
+    if (input.projects !== undefined) {
+      requireCondition(input.capabilities === undefined && input.kinds === undefined,400,'invalid_arguments','Use per-project capabilities and kinds.');
+      requireCondition(Array.isArray(input.projects) && input.projects.length>0 && input.projects.length<=64,400,'invalid_arguments','projects must contain one to 64 entries.');
     }
-    requireCondition(!kinds.includes('patch') || hasPermission(p,'task:patch'),403,'forbidden','Claiming patch work requires the task:patch permission.');
+    const projects = (input.projects === undefined ? [{scope:input.scope,capabilities:input.capabilities,kinds:input.kinds}] : input.projects as unknown[]).map(value => {
+      const entry = object(value);
+      noExtraKeys(entry,['scope','capabilities','kinds']);
+      const scope = scopeName(entry.scope);
+      assertKnownScope(p,scope);
+      const capabilities = strings(entry.capabilities,'capabilities',30,128);
+      requireCondition(capabilities.length>0,400,'invalid_arguments','At least one capability is required.');
+      let kinds:TaskKind[] = ['research','review'];
+      if (entry.kinds !== undefined) {
+        requireCondition(Array.isArray(entry.kinds) && entry.kinds.length>0 && entry.kinds.length<=3,400,'invalid_arguments','kinds must contain one to three supported task kinds.');
+        kinds = [...new Set(entry.kinds.map(v => enumValue(v,'kinds',TASK_KINDS)))];
+      }
+      requireCondition(!kinds.includes('patch') || hasPermission(p,'task:patch'),403,'forbidden','Claiming patch work requires the task:patch permission.');
+      return {scope,capabilities,kinds};
+    });
     const seconds = leaseSeconds(input.lease_seconds);
+    for (const {scope,capabilities,kinds} of projects) {
+      const claim = await this.claimScope(p,scope,capabilities,kinds,seconds);
+      if (claim.task) return claim;
+    }
+    return {task:null};
+  }
+
+  private async claimScope(p:Principal,scope:string,capabilities:string[],kinds:TaskKind[],seconds:number) {
     return transaction(this.pool,async db => {
       await scopeLock(db,'tasks',p,scope);
       await touchWorker(db,p);

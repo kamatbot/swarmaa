@@ -26,12 +26,12 @@ test('successful worker stores provenance, transcript and explicit unverified ac
   } };
   const cfg = config();
   const worker = new BridgeWorker(cfg,client,()=>{},async request => {assert.ok(!request.input.includes('lease-secret'));return result;});
-  assert.equal(await worker.claimAndRun(cfg.projects[0]!,new AbortController().signal),true);
+  assert.equal(await worker.claimAndRun(cfg.projects,new AbortController().signal),true);
   const finish = calls.find(call=>call.name==='task_finish')!;
   assert.equal(finish.args.outcome,'completed');
   assert.equal((finish.args.result as Record<string,unknown>).acceptance_criteria_verified,false);
   assert.equal(calls.filter(call=>call.name==='artifact_put').length,1);
-  assert.deepEqual(calls[0]!.args.kinds,['research','review']);
+  assert.deepEqual((calls[0]!.args.projects as {kinds:string[]}[])[0]!.kinds,['research','review']);
 });
 
 test('heartbeat rejection aborts provider and prevents stale completion/artifact writes', async () => {
@@ -52,7 +52,7 @@ test('heartbeat rejection aborts provider and prevents stale completion/artifact
     });
     sawAbort=true;return {...result,stop_reason:'aborted'};
   });
-  await worker.claimAndRun(cfg.projects[0]!,new AbortController().signal);
+  await worker.claimAndRun(cfg.projects,new AbortController().signal);
   assert.equal(sawAbort,true);
   assert.ok(calls.includes('task_heartbeat'));
   assert.ok(!calls.includes('task_finish'));
@@ -75,7 +75,7 @@ test('transient heartbeat failures are retried and the task still completes', { 
   } };
   const cfg = config(); cfg.heartbeat_seconds = 0.01;
   const worker = new BridgeWorker(cfg,client,()=>{},async () => { await renewed.promise; return result; });
-  await worker.claimAndRun(cfg.projects[0]!,new AbortController().signal);
+  await worker.claimAndRun(cfg.projects,new AbortController().signal);
   assert.ok(beats>=3);
   assert.ok(calls.includes('task_finish'));
 });
@@ -94,7 +94,7 @@ test('heartbeats failing until the local lease deadline stop the provider', asyn
     await new Promise<void>(resolve=>{ if(request.signal?.aborted) resolve(); else request.signal?.addEventListener('abort',()=>resolve(),{once:true}); });
     sawAbort=true; return {...result,stop_reason:'aborted'};
   });
-  await worker.claimAndRun(cfg.projects[0]!,new AbortController().signal);
+  await worker.claimAndRun(cfg.projects,new AbortController().signal);
   assert.equal(sawAbort,true);
   assert.ok(!calls.includes('task_finish'));
 });
@@ -103,7 +103,7 @@ test('wrong-scope claims never invoke a provider', async () => {
   const client: ToolClient = {async call<T>():Promise<T>{return {task:{...task,scope:'project:other'},lease_token:'lease-secret',lease_generation:1} as T;}};
   const cfg=config(); let invoked=false;
   const worker=new BridgeWorker(cfg,client,()=>{},async()=>{invoked=true;return result;});
-  await assert.rejects(worker.claimAndRun(cfg.projects[0]!,new AbortController().signal));
+  await assert.rejects(worker.claimAndRun(cfg.projects,new AbortController().signal));
   assert.equal(invoked,false);
 });
 
@@ -120,7 +120,7 @@ test('lost completion response retries the identical result, never an alternate 
     return {task} as T;
   }};
   const cfg=config();
-  await new BridgeWorker(cfg,client,()=>{},async()=>result).claimAndRun(cfg.projects[0]!,new AbortController().signal);
+  await new BridgeWorker(cfg,client,()=>{},async()=>result).claimAndRun(cfg.projects,new AbortController().signal);
   assert.equal(completions.length,2);
   assert.deepEqual(completions[0],completions[1]);
   assert.equal(completions[1]!.outcome,'completed');
@@ -130,7 +130,7 @@ test('an already consumed conservative lease window prevents provider start', as
   const client:ToolClient={async call<T>():Promise<T>{return {task,lease_token:'lease-secret',lease_generation:1} as T;}};
   const cfg=config();cfg.lease_seconds=0.001;
   let invoked=false;
-  await new BridgeWorker(cfg,client,()=>{},async()=>{invoked=true;return result;}).claimAndRun(cfg.projects[0]!,new AbortController().signal);
+  await new BridgeWorker(cfg,client,()=>{},async()=>{invoked=true;return result;}).claimAndRun(cfg.projects,new AbortController().signal);
   assert.equal(invoked,false);
 });
 
@@ -159,9 +159,9 @@ test('usage readings are reported and steer auto.read to the agent with most hea
   const reports = calls.filter(c => c.name==='usage_report');
   assert.equal(reports.length,1);
   assert.deepEqual((reports[0]!.args.reports as {provider:string}[]).map(r => r.provider),['claude','codex']);
-  await worker.claimAndRun(cfg.projects[0]!,signal);
+  await worker.claimAndRun(cfg.projects,signal);
   assert.equal(command,'/bin/codex');
-  assert.ok((calls.find(c => c.name==='task_claim')!.args.capabilities as string[]).includes('auto.read'));
+  assert.ok(((calls.find(c => c.name==='task_claim')!.args.projects as {capabilities:string[]}[])[0]!.capabilities as string[]).includes('auto.read'));
 });
 
 function routed(route:unknown,cap='auto.read') {
@@ -182,7 +182,7 @@ function routed(route:unknown,cap='auto.read') {
     {provider:'claude' as const,ok:true,windows:[{name:'5h',used_percent:1,resets_at:null}],fetched_at:new Date().toISOString()}]);
   return {cfg,worker,ran,calls};
 }
-const go=async(x:ReturnType<typeof routed>)=>{await x.worker.reportUsage(new AbortController().signal);return x.worker.claimAndRun(x.cfg.projects[0]!,new AbortController().signal);};
+const go=async(x:ReturnType<typeof routed>)=>{await x.worker.reportUsage(new AbortController().signal);return x.worker.claimAndRun(x.cfg.projects,new AbortController().signal);};
 const finishOf=(x:ReturnType<typeof routed>)=>x.calls.find(c=>c.name==='task_finish')!.args;
 
 test('route.provider pins the agent even when another has more headroom',async()=>{
@@ -228,7 +228,7 @@ const answered: ProcessResult = {...result,stdout:JSON.stringify({type:'result',
 
 test('a run is recorded as a swarm chat; a continuation appends; failure is harmless', async () => {
   const cfg = config();
-  const run = async (h: ReturnType<typeof sessionHarness>) => { await new BridgeWorker(cfg,h.client,()=>{},async()=>answered).claimAndRun(cfg.projects[0]!,new AbortController().signal); };
+  const run = async (h: ReturnType<typeof sessionHarness>) => { await new BridgeWorker(cfg,h.client,()=>{},async()=>answered).claimAndRun(cfg.projects,new AbortController().signal); };
   const first = sessionHarness(); await run(first);
   const rec = first.calls.find(c=>c.name==='session_record')!.args as any;
   assert.deepEqual([rec.harness,rec.session_id,rec.task_id,rec.scope,rec.cwd,rec.title,rec.ended],['claude-code',`swarm:${task.id}`,task.id,'project:demo','/projects/demo','[swarm] Review source',true]);
@@ -238,6 +238,45 @@ test('a run is recorded as a swarm chat; a continuation appends; failure is harm
   assert.deepEqual(rec2.turns.map((t:any)=>[t.role,t.text]),[['user','Review source'],['assistant','All good'],['user','Now check tests'],['assistant','All good']]);
   const bad = sessionHarness([],undefined,true); await run(bad);
   assert.equal((bad.calls.find(c=>c.name==='task_finish')!.args as any).outcome,'completed');
+});
+
+test('one idle pass claims all projects in one call with per-project capabilities', async () => {
+  const cfg = parseBridgeConfig({ service_url:'http://localhost:8080', usage_seconds:0,
+    agents:[{id:'claude',provider:'claude',binary:'/bin/claude',sandbox:false,enable_patch:true},
+      {id:'codex',provider:'codex',binary:'/bin/codex',sandbox:false}],
+    projects:[{scope:'project:a',root:'/projects/a',agents:['claude'],allow_patch:true},
+      {scope:'project:b',root:'/projects/b',agents:['codex']}] });
+  const calls:Record<string,unknown>[] = [];
+  const client:ToolClient = {async call<T>(name:string,args:Record<string,unknown>):Promise<T> {
+    assert.equal(name,'task_claim'); calls.push(args); return {task:null} as T;
+  }};
+  await new BridgeWorker(cfg,client,()=>{}).run(new AbortController().signal,true);
+  assert.deepEqual(calls,[{projects:[
+    {scope:'project:a',capabilities:['claude.read','claude.patch','auto.read','auto.patch'],kinds:['research','review','patch']},
+    {scope:'project:b',capabilities:['codex.read','auto.read'],kinds:['research','review']}
+  ],lease_seconds:cfg.lease_seconds}]);
+});
+
+test('a 100-project pass chunks at 64 and maps the claimed scope to its own root', async () => {
+  const cfg = config(); cfg.usage_seconds = 0;
+  cfg.projects = Array.from({length:100},(_,i) => ({...cfg.projects[0]!,scope:`project:p${i}`,root:`/projects/p${i}`}));
+  const calls:Record<string,unknown>[] = [];
+  const claimed = {...task,scope:'project:p99'};
+  const client:ToolClient = {async call<T>(name:string,args:Record<string,unknown>):Promise<T> {
+    if(name==='task_claim') {
+      calls.push(args);
+      return (calls.length === 1 ? {task:null} : {task:claimed,lease_token:'l',lease_generation:1}) as T;
+    }
+    if(name==='context_get') return {scope:claimed.scope,task:claimed,memories:[],conflicts:[]} as T;
+    if(name==='artifact_put') return {artifact:{id:'22222222-2222-4222-8222-222222222222'}} as T;
+    if(name==='session_list') return {sessions:[]} as T;
+    return {task:claimed} as T;
+  }};
+  let cwd = '';
+  await new BridgeWorker(cfg,client,()=>{},async request => {cwd = request.cwd;return result;}).run(new AbortController().signal,true);
+  assert.deepEqual(calls.map(c => (c.projects as {scope:string}[]).map(p => p.scope)),
+    [cfg.projects.slice(0,64),cfg.projects.slice(64)].map(ps => ps.map(p => p.scope)));
+  assert.equal(cwd,'/projects/p99');
 });
 
 test('one worker runs up to max_concurrent tasks at the same time', async () => {
@@ -301,7 +340,7 @@ test('drain stops claims, keeps heartbeats and zero-slot reports, and waits for 
     assert.equal(claims,2);
     assert.equal(resolved,false);
     assert.ok(signals.every(s => !s.aborted));
-    assert.equal(await worker.claimAndRun(cfg.projects[0]!,stop.signal),false);
+    assert.equal(await worker.claimAndRun(cfg.projects,stop.signal),false);
     releases[0]!.resolve(); await firstFinished.promise;
     assert.equal(resolved,false);
     releases[1]!.resolve(); await run;

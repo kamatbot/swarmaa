@@ -1,5 +1,7 @@
 const frontendTools = new Set(['context_get', 'memory_search', 'memory_get', 'memory_propose', 'task_submit', 'task_get', 'task_list', 'task_continue', 'task_cancel', 'artifact_get', 'events_poll']);
 
+// events_poll cursors are opaque xid.seq strings: start at "0.0", then pass next_cursor unchanged.
+// Persist per tenant/principal/scope only after processing; legacy numeric strings upgrade on one call.
 export async function callSwarmaa(name, args, { signal } = {}) {
   if (!frontendTools.has(name)) throw new Error('Tool is not available to the Grok frontend');
   const origin = new URL(process.env.SWARMAA_URL || process.env.COLLECTIVE_URL || '');

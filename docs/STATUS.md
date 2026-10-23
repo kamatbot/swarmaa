@@ -19,7 +19,7 @@ Prepared 2026-10-21. This is an authored implementation, with source inspection 
 ## Deliberate scope of this release
 
 - **Explicit shared memory:** the server stores records agents publish through tools. It does not import hidden vendor memories or entire chat histories automatically.
-- **Small private network:** one service/database is the intended starting deployment. Multi-process task claims use database locks, but the source has not been load-tested. HTTP rate limits are per process. Event polling uses a brief global table read barrier to avoid sequence cursors skipping transactions that commit out of order.
+- **Small private network:** one service/database is the intended starting deployment. Multi-process task claims use per-scope database locks and accept up to 64 projects per request; identities support 512 scopes. HTTP rate limits are per process. Event polling uses snapshot-xmin filtering and `(xid, seq)` cursors without a table read barrier. See [scale-hardening results](briefs/scale-hardening-results.md) for current validation and load evidence.
 - **Text artifacts:** up to 256 KiB per artifact, stored in PostgreSQL. The earlier design's object-storage adapter and semantic/vector retrieval are not included. Memory search uses PostgreSQL text search.
 - **At-least-once work:** leases fence service writes. They do not guarantee exactly-once external effects or stop an already-issued action. Keep unattended work read-only initially (setup's default); enable edits per install.
 - **Provider result vs acceptance:** a successful provider terminal response is recorded as task completion, with acceptance criteria explicitly unverified. Human or subsequent agent review remains necessary before integration.

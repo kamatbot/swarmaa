@@ -26,7 +26,7 @@ describe('routing policy', {skip:!connectionString,concurrency:false}, () => {
     control = new pg.Pool({connectionString,max:2});
     await control.query(`CREATE SCHEMA "${schema}"`);
     pool = new pg.Pool({connectionString,max:8,options:`-c search_path=${schema},public`});
-    for (const file of ['001_identity.sql','002_core.sql','005_swarm.sql','006_sessions.sql','008_lessons.sql','010_routing_policy.sql','011_patch_routing.sql','012_session_task.sql','013_worker_slots.sql','016_worker_slots_drain.sql']) {
+    for (const file of ['001_identity.sql','002_core.sql','005_swarm.sql','006_sessions.sql','008_lessons.sql','010_routing_policy.sql','011_patch_routing.sql','012_session_task.sql','013_worker_slots.sql','016_worker_slots_drain.sql','018_events_xid.sql']) {
       await pool.query(await readFile(new URL(`../db/migrations/${file}`,import.meta.url),'utf8'));
     }
     core = new CoreService(pool);
@@ -290,7 +290,7 @@ describe('routing policy', {skip:!connectionString,concurrency:false}, () => {
       const ran:string[] = [];
       const res = {exit_code:0,signal:null,stdout:'{"type":"turn.completed"}',stderr:'',duration_ms:1,stop_reason:null};
       const worker = new BridgeWorker(cfg,client,() => {},async r => { ran.push(r.command); return res; },async () => []);
-      return {ran,run:() => worker.claimAndRun(cfg.projects[0]!,new AbortController().signal)};
+      return {ran,run:() => worker.claimAndRun(cfg.projects,new AbortController().signal)};
     };
 
     it('never runs a disabled provider on auto.read', async () => {

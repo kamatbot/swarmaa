@@ -41,7 +41,7 @@ test('event lifecycle verifies signatures, refreshes deterministically and stops
     await admin.query(`DROP SCHEMA ${schema} CASCADE`);
     await admin.end();
   });
-  for (const migration of ['001_identity.sql', '003_oauth.sql', '004_events.sql', '017_event_subscription_cursor.sql']) {
+  for (const migration of ['001_identity.sql', '003_oauth.sql', '004_events.sql', '017_event_subscription_cursor.sql','018_events_xid.sql']) {
     await pool.query(await readFile(new URL(`../db/migrations/${migration}`, import.meta.url), 'utf8'));
   }
 
@@ -155,7 +155,7 @@ test('generic task sinks deliver only terminal states as a small signed summary 
   const pool = new pg.Pool({ connectionString, options: `-c search_path=${schema},public`, max: 8 });
   let service: EventService | undefined;
   t.after(async () => { await service?.stop(); await pool.end(); await admin.query(`DROP SCHEMA ${schema} CASCADE`); await admin.end(); });
-  for (const migration of ['001_identity.sql', '002_core.sql', '003_oauth.sql', '004_events.sql', '017_event_subscription_cursor.sql']) {
+  for (const migration of ['001_identity.sql', '002_core.sql', '003_oauth.sql', '004_events.sql', '017_event_subscription_cursor.sql','018_events_xid.sql']) {
     await pool.query(await readFile(new URL(`../db/migrations/${migration}`, import.meta.url), 'utf8'));
   }
   const principal: Principal = { id: randomUUID(), tenantId: 'events-generic', name: 'grok', role: 'frontend', credentialVersion: 1,
@@ -199,7 +199,7 @@ test('event delivery is bounded-concurrent with per-host limits so a slow sink d
   const pool = new pg.Pool({ connectionString, options: `-c search_path=${schema},public`, max: 8 });
   let service: EventService | undefined;
   t.after(async () => { await service?.stop(); await pool.end(); await admin.query(`DROP SCHEMA ${schema} CASCADE`); await admin.end(); });
-  for (const migration of ['001_identity.sql', '002_core.sql', '003_oauth.sql', '004_events.sql', '017_event_subscription_cursor.sql']) {
+  for (const migration of ['001_identity.sql', '002_core.sql', '003_oauth.sql', '004_events.sql', '017_event_subscription_cursor.sql','018_events_xid.sql']) {
     await pool.query(await readFile(new URL(`../db/migrations/${migration}`, import.meta.url), 'utf8'));
   }
   const principal: Principal = {

@@ -42,7 +42,7 @@ function setup() {
     process.env.HOME = join(dir, 'home');
     try {
       const worker = new BridgeWorker(cfg, client, (e, m) => { if (process.env.DBG) console.error(e, m); }, async req => { edit(req.cwd); return ok; });
-      await worker.claimAndRun(cfg.projects[0]!, new AbortController().signal);
+      await worker.claimAndRun(cfg.projects, new AbortController().signal);
     } finally { if (home === undefined) delete process.env.HOME; else process.env.HOME = home; }
     const finish = calls.find(c => c.name === 'task_finish')!.args;
     return { calls, finish, result: finish.result as Record<string, any> };

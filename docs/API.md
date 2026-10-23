@@ -218,7 +218,7 @@ Result: `{task, replayed: boolean}`. The key is unique per tenant and submitting
 
 ### `task_claim`
 
-Arguments: `{scope, capabilities: string[], kinds?, lease_seconds?}`. At least one and at most 30 capability strings; kinds default to `['research','review']`. Patch requires both `kinds` opt-in and the provisioned `task:patch` permission. Leases default to 120 seconds, bounded 30–300 seconds.
+Arguments: either `{scope, capabilities: string[], kinds?, lease_seconds?}` or `{projects: [{scope, capabilities: string[], kinds?}], lease_seconds?}`. Give exactly one form; `projects` contains 1–64 entries, tried in order until one task is claimed. All entries are validated before any claim; each visited scope keeps its own transaction and expired-lease sweep. Capabilities and patch opt-in apply only to their entry. Bridges split longer project lists into chunks of 64 and make one claim call per slot attempt per chunk. Identities can hold up to 512 scopes. At least one and at most 30 capability strings; kinds default to `['research','review']`. Patch requires both `kinds` opt-in and the provisioned `task:patch` permission. Leases default to 120 seconds, bounded 30–300 seconds.
 
 If no eligible task exists: `{task: null}`. Otherwise:
 
@@ -291,13 +291,15 @@ Result: `{artifact: ArtifactMetadata, replayed: boolean}`. Reusing a name within
 }
 ```
 
-`after` defaults to `'0'`, a nonnegative decimal bigint string. Never convert it to a JavaScript `number`. Limit defaults to 50, maximum 100. Persist a cursor **per tenant/principal/scope stream** after processing the returned events. An empty page retains the input cursor. `memory.changed` additionally requires `memory:read`; `task.updated` requires `task:read`. A principal with only `events:read` receives an empty page. If permissions expand and historical catch-up is needed, restart at `'0'` and deduplicate already-seen event IDs.
+`after` defaults to `'0.0'`. Each event's `cursor` and `next_cursor` are opaque `'<xid>.<seq>'` decimal strings (up to 40 characters: unsigned 64-bit XID, dot, nonnegative signed bigint sequence). Pass them unchanged; never convert them to a JavaScript `number` or compare them lexicographically. Limit defaults to 50, maximum 100. Persist a cursor **per tenant/principal/scope stream** after processing the returned events. An empty page retains a pair cursor. `memory.changed` additionally requires `memory:read`; `task.updated` requires `task:read`. A principal with only `events:read` receives an empty page. If permissions expand and historical catch-up is needed, restart at `'0.0'` and deduplicate already-seen event IDs.
 
 Read task/memory state after a notification; an event is an invalidation hint and provenance trail, never an authority grant. Payloads contain identifiers, status/version and action metadata, without memory bodies, objective text, artifacts or lease secrets.
 
-Event writes commit in the same transaction as the state change. PostgreSQL identity values can be allocated in a different order from transaction commits. To avoid advancing over a lower uncommitted sequence, polling takes a brief table `SHARE` lock, waits for existing event writers, reads its page and commits. It touches no task or memory row locks. All event producers must allocate the default sequence inside their event insert; preallocating event sequences outside insert transactions would break this guarantee.
+Event writes commit in the same transaction as the state change. Polls only return rows with `xid < pg_snapshot_xmin(pg_current_snapshot())`, ordered by `(xid, seq)` and resumed with `(xid, seq) > (cursor_xid, cursor_seq)`. Transactions below that snapshot boundary have finished, and future transactions cannot acquire an XID below it. XID and sequence allocation order can differ, so a sequence-only resume is unsafe even with this filter. Polls do not wait for uncommitted inserts or take a table read barrier; a long-running transaction can delay visibility until a later poll. Producers must use the database defaults for XID and sequence.
 
-This barrier is deliberately simple for a small private network. It temporarily serializes event reads against writes across tenants and can contend at high volume. After three seconds waiting, the call returns HTTP 503 / `events_busy`: retry with the same cursor and backoff. Do not advance the cursor on that error. Callback delivery uses stable event IDs separately; callbacks can be duplicated, so consumers should deduplicate IDs and reconcile authoritative records.
+Legacy numeric `after: 'N'` remains accepted (up to 19 digits, at most 9223372036854775807). It filters `seq > N` for that call, still ordered by `(xid, seq)`, then upgrades `next_cursor` to the pair format. If that page is empty, polling captures xmin before reading and returns `'<xmin>.0'`, immediately before any event in the oldest pending transaction; a principal without resource read permissions receives `'0.0'`. On subsequent pair polls, historical events with `seq <= N` but a greater XID may reappear: deduplicate event IDs during migration. Use `'0.0'` for a complete catch-up if an old cursor may already have skipped data.
+
+Callback delivery uses stable event IDs separately; callbacks can be duplicated, so consumers should deduplicate IDs and reconcile authoritative records.
 
 ## Errors, limits and operational boundaries
 
@@ -312,7 +314,6 @@ This barrier is deliberately simple for a small private network. It temporarily 
 | `task_running` | A continuation cannot replace currently leased work |
 | `memory_retracted`, `kind_immutable`, `proposal_resolved` | The requested memory transition is not allowed |
 | `queue_full`, `continuation_limit`, `artifact_limit`, `artifact_too_large` | The configured fixed bound has been reached |
-| `events_busy` | Retry the same event cursor after backoff; no successful cursor advance occurred |
 
 The supplied schema and runtime are application-level authorization, not a database RLS security boundary. A PostgreSQL superuser or someone holding the service database credential can bypass the API. Keep that credential with the coordinator, never with agent clients. Use separate provisioned connection tokens and exact project scopes.
 
