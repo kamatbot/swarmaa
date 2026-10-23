@@ -341,6 +341,8 @@ test('gateway invite, first consent and worker tokens stay inside the invited te
   const config: ServerConfig = {
     host: '127.0.0.1', port, publicUrl: ORIGIN, allowedOrigins: [], allowInsecureLocalhost: false, maxBodyBytes: 65536,
     oauthEnabled: true, oauthRedirectHosts: ['grok.example'], eventCallbackHosts: [], eventEncryptionKey: '',
+    // Requests arrive like the Cloudflare Tunnel's: loopback socket, visitor address in cf-connecting-ip.
+    trustProxy: true, trustedProxies: ['loopback'],
   };
   server.on('request', createHttpHandler({ pool, core: backend, auth, config }));
   const svc = new PasskeyService(pool, config), oauth = new OAuthService(pool, auth, config);
