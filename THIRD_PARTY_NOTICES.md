@@ -174,7 +174,31 @@ Swarmaa declares the following direct runtime and development dependencies in `p
 
 ---
 
-## 5. Trademark and Non-Affiliation Notice
+## 5. HarnessRouter (Apache-2.0)
+
+- **Source:** https://github.com/harnessrouter/harnessrouter (borrowed from `docs/harness-verification.md` and `scripts/support-matrix/`)
+- **License:** Apache License 2.0
+- **Copyright:** Copyright (c) HarnessRouter Contributors
+- **Where used in Swarmaa:**
+  - `scripts/smoke-providers.ts` adapts the provider verification matrix methodology (scenarios per provider, connection/provider served verification, run duration metrics, and markdown/JSON result matrices).
+
+### Apache License 2.0 Notice
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+
+---
+
+## 6. Trademark and Non-Affiliation Notice
 
 Swarmaa is an independent open-source project and is not affiliated with, endorsed by, or sponsored by Anthropic, OpenAI, Google, Anysphere, xAI, Reason Machines, Asymptote Labs, or IBM.
 
