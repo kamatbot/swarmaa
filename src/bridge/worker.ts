@@ -2,6 +2,7 @@ import { runFlowCheck } from './checks.js';
 import { setTimeout as delay } from 'node:timers/promises';
 import { AUTO_PATCH, AUTO_READ, buildInvocation, capability, deniedActions, finalAnswer, projectCapabilities, providerSucceeded } from './adapters.js';
 import { collectUsage, headroom } from '../usage/index.js';
+import { windowsForModel } from '../usage/antigravity.js';
 import type { UsageProviderId, UsageSnapshot } from '../usage/types.js';
 import { runBoundedProcess } from './process.js';
 import { reasonNotify } from './reason.js';
@@ -93,7 +94,9 @@ export class BridgeWorker {
     this.nextUsageAt = Date.now() + seconds * 1000;
     const providers = [...new Set(this.config.agents.map(a => a.provider))] as UsageProviderId[];
     try {
-      const snapshots = this.draining ? [] : await this.usage(providers);
+      const agyModel = this.config.agents.find(a => a.provider === 'antigravity')?.model;
+      const snapshots = (this.draining ? [] : await this.usage(providers))
+        .map(s => s.provider === 'antigravity' ? { ...s, windows: windowsForModel(s.windows, agyModel) } : s);
       for (const s of snapshots) this.headroom.set(s.provider, headroom(s));
       await this.client.call('usage_report', { reports: snapshots.map(s => ({ provider: s.provider, ok: s.ok, windows: s.windows, fetched_at: s.fetched_at,
         ...(s.plan ? { plan: s.plan.slice(0, 80) } : {}), ...(s.error ? { error: s.error.slice(0, 200) } : {}) })), slots: this.draining ? 0 : this.config.max_concurrent }, signal);

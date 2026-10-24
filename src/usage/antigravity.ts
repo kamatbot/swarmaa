@@ -77,6 +77,15 @@ export function parseAntigravityQuota(json: unknown, now: Date = new Date()): Us
   return bs.some((b) => b.limit !== undefined) ? dedupe(bs.map((b) => (b.limit !== undefined && b.limit > 0 && b.used !== undefined && b.used >= 0 && b.used <= b.limit * 1.5 ? win(bucketId(b), b.used / b.limit, b) : null))) : modelWindows(bs, now);
 }
 
+/** Only the quota group `model` draws from (Gemini 4 Argon, Claude/GPT "3p", else the shared Gemini group), named 5h/weekly like
+ *  other providers, so headroom, routing and the notch never read another group's limit. Unknown shapes pass through unchanged. */
+export function windowsForModel(ws: UsageWindow[], model = ''): UsageWindow[] {
+  const m = model.toLowerCase();
+  const fam = m.includes('argon') ? 'gemini-argon' : /claude|gpt/.test(m) ? '3p' : 'gemini';
+  const mine = ws.filter((w) => w.name.startsWith(`${fam}-`) && (fam !== 'gemini' || !w.name.includes('argon')));
+  return mine.length ? mine.map((w) => ({ ...w, name: w.name.endsWith('weekly') ? 'weekly' : /(5h|hourly)$/.test(w.name) ? '5h' : w.name })) : ws;
+}
+
 // ---- discovery: prefer the IDE or `agy` CLI, otherwise keep a headless server of our own ----
 export interface Endpoint { ports: number[]; csrf?: string; pid: number }
 

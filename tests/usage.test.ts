@@ -5,7 +5,7 @@ import { EventEmitter } from 'node:events';
 import { collectUsage, headroom, _providers, _resetBackoff } from '../src/usage/index.js';
 import { fetchClaude, parseClaudeCreds, parseClaudeUsage, type ClaudeCreds } from '../src/usage/claude.js';
 import { fetchCodex, jwtExp, parseCodexAuth, parseCodexUsage } from '../src/usage/codex.js';
-import { discoverEndpoint, fetchAntigravity, parseAntigravityQuota, parsePorts, type AntigravityIO, type AntigravityProcess } from '../src/usage/antigravity.js';
+import { discoverEndpoint, fetchAntigravity, parseAntigravityQuota, parsePorts, windowsForModel, type AntigravityIO, type AntigravityProcess } from '../src/usage/antigravity.js';
 import { fetchGrok, parseGrokAuth, parseGrokCredits } from '../src/usage/grok.js';
 import { UsageError, type Ctx, type UsageSnapshot } from '../src/usage/types.js';
 
@@ -473,4 +473,19 @@ test('collectUsage: a success clears the backoff', async () => {
     mode = 'ok';
     assert.equal((await collectUsage(['codex'], { now: () => new Date(t) }))[0]!.ok, true);
   } finally { Object.assign(_providers, saved); _resetBackoff(); }
+});
+
+test('antigravity: a worker reads only its model\'s quota group, named 5h/weekly', () => {
+  // Shape and numbers from the live reading of 2026-10-24: Argon (a separate group) was the most-used window.
+  const ws = parseAntigravityQuota({ response: { groups: [
+    { displayName: 'Gemini Models', buckets: [{ bucketId: 'gemini-weekly', window: 'weekly', remainingFraction: 0.64 }, { bucketId: 'gemini-5h', window: '5h', remainingFraction: 0.43 }] },
+    { displayName: 'Claude and GPT models', buckets: [{ bucketId: '3p-weekly', window: 'weekly', remainingFraction: 1 }, { bucketId: '3p-5h', window: '5h', remainingFraction: 1 }] },
+    { displayName: 'Gemini 4 Argon', buckets: [{ bucketId: 'gemini-argon-wtu-weekly', window: 'weekly', remainingFraction: 0.39 }] }] } });
+  const pct = (m?: string) => Object.fromEntries(windowsForModel(ws, m).map(w => [w.name, Math.round(w.used_percent)]));
+  assert.deepEqual(pct('gemini-3.8-flash-high'), { '5h': 57, weekly: 36 });
+  assert.deepEqual(pct(), { '5h': 57, weekly: 36 });
+  assert.deepEqual(pct('gemini-4-argon'), { weekly: 61 });
+  assert.deepEqual(pct('claude-sonnet-4.6'), { '5h': 0, weekly: 0 });
+  assert.equal(headroom({ provider: 'antigravity', ok: true, windows: windowsForModel(ws, 'gemini-3.8-flash-high'), fetched_at: '' }), 43);
+  assert.deepEqual(windowsForModel([{ name: 'quota', used_percent: 5, resets_at: null }]), [{ name: 'quota', used_percent: 5, resets_at: null }]);
 });
