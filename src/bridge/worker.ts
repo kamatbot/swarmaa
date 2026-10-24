@@ -1,3 +1,4 @@
+import { runFlowCheck } from './checks.js';
 import { setTimeout as delay } from 'node:timers/promises';
 import { AUTO_PATCH, AUTO_READ, buildInvocation, capability, deniedActions, finalAnswer, projectCapabilities, providerSucceeded } from './adapters.js';
 import { collectUsage, headroom } from '../usage/index.js';
@@ -5,7 +6,7 @@ import type { UsageProviderId, UsageSnapshot } from '../usage/types.js';
 import { runBoundedProcess } from './process.js';
 import { reasonNotify } from './reason.js';
 import { cleanupNative, finishNative, prepareNative, type NativeSession } from './native-session.js';
-import { createWorktree, finishWorktree, type PatchOutcome, type Worktree } from './worktree.js';
+import { createWorktree, finishWorktree, inspectWorktree, removeSnapshot, type PatchOutcome, type Worktree } from './worktree.js';
 import type { AgentConfig, BridgeConfig, BridgeLogger, Claim, Lease, ProcessResult, ProcessRunner, ProjectConfig, Task, ToolClient } from './types.js';
 import { redactSecrets } from '../safety/redact.js';
 
@@ -34,9 +35,13 @@ function transient(error: unknown): boolean {
 function validateClaim(claim: Claim, project: ProjectConfig, agents: AgentConfig[], headroom: ReadonlyMap<string, number> = new Map()): { task: Task; lease: Lease; agent: AgentConfig } | null {
   if (!claim.task) return null;
   const task = claim.task;
-  if (task.scope !== project.scope || !['research', 'review', 'patch'].includes(task.kind) || typeof task.id !== 'string' || !claim.lease_token || !Number.isInteger(claim.lease_generation)) throw new Error('Invalid or misrouted task claim');
-  const patch = task.kind === 'patch';
+  if (task.scope !== project.scope || !['research', 'review', 'patch', 'check'].includes(task.kind) || typeof task.id !== 'string' || !claim.lease_token || !Number.isInteger(claim.lease_generation)) throw new Error('Invalid or misrouted task claim');
+  const patch = task.kind === 'patch' || task.kind === 'check';
   const candidates = agents.filter(a => project.agents.includes(a.id) && (!patch || (project.allow_patch && a.enable_patch)));
+  if (task.kind==='check') {
+    if (!task.flow_id || !task.flow?.check || task.required_capability!=='bridge.check' || !project.checks || !candidates.length) throw new Error('Invalid check claim or local checks are not enabled');
+    return {task,agent:candidates[0]!,lease:{task_id:task.id,lease_token:claim.lease_token,lease_generation:claim.lease_generation as number}};
+  }
   const auto = task.required_capability === (patch ? AUTO_PATCH : AUTO_READ);
   // The service's route binds execution; without it (older service) auto work fails closed.
   if (auto && !claim.route) throw Object.assign(new Error('Service claim has no routing decision for auto work'), { code: 'route_unavailable' });
@@ -151,7 +156,9 @@ export class BridgeWorker {
       projects: projects.map(project => {
         const capabilities = projectCapabilities(project, this.config.agents);
         const allowsPatch = capabilities.some(c => c.endsWith('.patch'));
-        return { scope: project.scope, capabilities, kinds: allowsPatch ? ['research', 'review', 'patch'] : ['research', 'review'] };
+        const checks = allowsPatch && project.checks !== undefined;
+        return { scope: project.scope, capabilities:checks ? [...capabilities,'bridge.check'] : capabilities,
+          kinds: allowsPatch ? ['research', 'review', 'patch',...(checks ? ['check'] : [])] : ['research', 'review'] };
       }),
       lease_seconds: this.config.lease_seconds
     }, signal);
@@ -184,6 +191,9 @@ export class BridgeWorker {
     let completionAttempted = false;
     let worktree: Worktree | undefined;
     let patchResult: PatchOutcome | undefined;
+    let observedCommit:string|undefined;
+    let checkFact:Awaited<ReturnType<typeof runFlowCheck>>|undefined;
+    let snapshotInvalid = false;
     let finalizeFailure: { worktree_path: string; recovery: string } | undefined;
     let expiryTimer: ReturnType<typeof setTimeout> | undefined;
     let progress = { output_bytes: 0, stdout_tail: '' };
@@ -214,7 +224,7 @@ export class BridgeWorker {
     };
     armExpiry(claimStarted);
     const checkpoint = (phase: string): Record<string, unknown> => ({
-      phase, agent: agent.id, provider: agent.provider, started_at: startedAt,
+      phase, agent: agent.id, provider: task.kind==='check' ? 'bridge' : agent.provider, started_at: startedAt,
       output_bytes: progress.output_bytes, partial_output: untrusted(progress.stdout_tail, 8192),
       partial_output_is_untrusted: true
     });
@@ -236,30 +246,48 @@ export class BridgeWorker {
         }
       }
     })();
-    this.logger('task_claimed', { task_id: task.id, scope: task.scope, provider: agent.provider, kind: task.kind });
+    this.logger('task_claimed', { task_id: task.id, scope: task.scope, provider: task.kind==='check' ? 'bridge' : agent.provider, kind: task.kind });
     try {
       if (leaseLost) return;
       await this.client.call('task_checkpoint', { ...lease, checkpoint: checkpoint('starting') }, execution.signal);
       const context = await this.client.call('context_get', { scope: task.scope, task_id: task.id, limit: 12 }, execution.signal);
       // Patch work gets its own worktree+branch, so parallel patch tasks on one project never share files.
-      if (task.kind === 'patch') worktree = await createWorktree(project.root, agent.provider, task);
+      // ponytail: flow commits must exist locally; cross-host execution needs reviewed commit transfer.
+      if (task.kind === 'patch' || task.flow_id) {
+        worktree = await createWorktree(project.root, task.kind==='check' ? 'check' : agent.provider, task);
+        if (task.flow_id) {
+          const snapshot = await inspectWorktree(worktree);
+          if (task.kind!=='patch' && (snapshot.commit!==task.flow?.commit || snapshot.dirty)) throw Object.assign(new Error('Flow snapshot is not the exact clean pinned commit'),{code:'flow_commit_mismatch'});
+          if (task.kind==='patch' && task.flow?.commit && worktree.baseCommit!==task.flow.commit) throw Object.assign(new Error('Patch base differs from pinned commit'),{code:'flow_commit_mismatch'});
+          observedCommit = snapshot.commit;
+        }
+      }
       let result: ProcessResult;
       let nativeSession: NativeSession | undefined;
       let nativePlan: ReturnType<typeof prepareNative>;
-      try { nativePlan = prepareNative(agent, task, worktree?.dir); }
+      try { if (task.kind!=='check') nativePlan = prepareNative(agent, task, worktree?.dir); }
       catch { this.logger('native_session_failed', { task_id: task.id, phase: 'prepare' }); }
       try {
-        const request = buildInvocation(agent, project, task, context, this.config, execution.signal, process.env, worktree, nativePlan);
-        request.on_progress = value => { progress = value; };
-        if (leaseLost || execution.signal.aborted) throw new Error('Provider start was aborted');
-        result = await this.runner(request);
+        if (leaseLost || execution.signal.aborted) throw new Error('Execution start was aborted');
+        if (task.kind==='check') {
+          checkFact = await runFlowCheck(task,project,agent,this.config,worktree!,this.runner,execution.signal);
+          result = {exit_code:checkFact.exit_code,signal:null,stdout:checkFact.output_tail,stderr:'',duration_ms:checkFact.duration_ms,stop_reason:checkFact.stop_reason as ProcessResult['stop_reason']};
+        } else {
+          const request = buildInvocation(agent, project, task, context, this.config, execution.signal, process.env, worktree, nativePlan);
+          request.on_progress = value => { progress = value; };
+          result = await this.runner(request);
+          if (task.flow_id && task.kind!=='patch') {
+            const snapshot = await inspectWorktree(worktree!);
+            snapshotInvalid = snapshot.dirty || snapshot.commit!==observedCommit;
+          }
+        }
       } finally {
         if (nativePlan) {
           try { nativeSession = finishNative(nativePlan, project.root, worktree?.dir); }
           catch (error) { cleanupNative(nativePlan); this.logger('native_session_failed', { task_id: task.id, phase: 'copy', message: error instanceof Error ? error.message.slice(0, 200) : '' }); }
         }
         // Whatever the provider did (even if aborted), commit it to the branch and drop the worktree.
-        if (worktree) {
+        if (worktree && task.kind==='patch') {
           try { patchResult = await finishWorktree(project.root, agent.provider, task, worktree, this.config.max_output_bytes); }
           catch {
             // Finalization failed: the worktree stays on disk and the task must not read as completed.
@@ -268,14 +296,15 @@ export class BridgeWorker {
           }
         }
       }
+      if (task.flow_id && patchResult) observedCommit = patchResult.head_commit ?? patchResult.base_commit;
       if (leaseLost) return;
       // A provider that stopped because the sandbox denied actions it needed did not finish the task.
-      const denied = deniedActions(agent.provider, result.stdout);
-      const outcome = finalizeFailure ? 'failed' : shutdown.aborted || denied.length ? 'blocked' : providerSucceeded(agent.provider, result) ? 'completed' : 'failed';
+      const denied = task.kind==='check' ? [] : deniedActions(agent.provider, result.stdout);
+      const outcome = finalizeFailure ? 'failed' : shutdown.aborted || denied.length || snapshotInvalid ? 'blocked' : task.kind==='check' ? (checkFact?.passed ? 'completed' : 'blocked') : providerSucceeded(agent.provider, result) ? 'completed' : 'failed';
       await this.client.call('task_checkpoint', { ...lease, checkpoint: checkpoint('provider_finished') });
       const artifact = await this.client.call<{ artifact: { id: string } }>('artifact_put', {
         ...lease, name: `${agent.id}-transcript.txt`, media_type: 'text/plain',
-        content: this.resultArtifact(agent, result)
+        content: task.kind==='check' ? JSON.stringify(checkFact) : this.resultArtifact(agent, result)
       });
       let diffArtifact: { artifact: { id: string } } | undefined;
       let diffArtifactError: string | undefined;
@@ -295,17 +324,20 @@ export class BridgeWorker {
       if (leaseLost) return;
       const completion = {
         ...lease, outcome, artifact_ids: [artifact.artifact.id, ...(diffArtifact ? [diffArtifact.artifact.id] : [])], result: {
-          agent: agent.id, provider: agent.provider, execution_completed: outcome === 'completed',
+          agent: agent.id, provider: task.kind==='check' ? 'bridge' : agent.provider, execution_completed: outcome === 'completed',
           acceptance_criteria_verified: false, review_required: true,
           exit_code: result.exit_code, stop_reason: result.stop_reason,
           duration_ms: result.duration_ms,
           // The agent's own answer, so callers can read it with task_get; untrusted provider output.
-          answer: untrusted(finalAnswer(agent.provider, result.stdout), 8 * 1024),
+          answer: task.kind==='check' ? checkFact!.output_tail : untrusted(finalAnswer(agent.provider, result.stdout), 8 * 1024),
           ...(denied.length ? { denied_actions: denied, next_step: 'This worker cannot run those actions (read-only sandbox). Resubmit with a capability whose worker can, e.g. codex.read, or narrow the task.' } : {}),
-          summary: outcome === 'completed' ? 'Provider completed. Review the transcript and acceptance criteria before integrating changes.' : 'Provider did not complete successfully. Review the transcript before continuing the task.',
+          summary: task.kind==='check' ? `Deterministic bridge check ${outcome==='completed' ? 'passed' : 'did not pass'}. See the recorded check evidence.` : outcome === 'completed' ? 'Provider completed. Review the transcript and acceptance criteria before integrating changes.' : 'Provider did not complete successfully. Review the transcript before continuing the task.',
           ...(task.kind === 'patch' ? { commands_allowed: true, ...(patchResult ? { branch: patchResult.branch, base_ref: patchResult.base_ref, base_commit: patchResult.base_commit, head_commit: patchResult.head_commit, changed_files: patchResult.changed_files, diffstat: patchResult.diffstat, ...(patchResult.continued ? { continued: true } : {}) } : {}), ...(diffArtifactError ? { diff_artifact_error: diffArtifactError } : {}), ...(finalizeFailure ?? {}) } : {}),
           ...(nativeSession ? { native_session: nativeSession } : {}),
-          tests_run_by_bridge: false
+          ...(task.flow_id ? {observed_commit:observedCommit} : {}),
+          ...(checkFact ? {check:checkFact} : {}),
+          ...(snapshotInvalid ? {reason:'Review changed tracked source or HEAD; pinned evidence is invalid.'} : {}),
+          tests_run_by_bridge: task.kind==='check'
         }
       };
       completionAttempted = true;
@@ -316,7 +348,7 @@ export class BridgeWorker {
       finished = true;
       this.logger('task_finished', { task_id: task.id, outcome });
       const branchLine = [patchResult ? `Branch: ${patchResult.branch} @ ${patchResult.head_commit?.slice(0, 7) ?? 'none'} (${patchResult.changed_files} files)` : finalizeFailure?.recovery, nativeSession ? `Resume: ${nativeSession.resume}` : undefined].filter(Boolean).join('\n') || undefined;
-      await this.recordSession(task, agent, project, context, completion.result.answer, branchLine);
+      if (task.kind!=='check') await this.recordSession(task, agent, project, context, completion.result.answer, branchLine);
       try { await this.notifyReason(task.id, outcome); }
       catch { this.logger('reason_notification_failed', { task_id: task.id }); }
     } catch (error) {
@@ -330,6 +362,7 @@ export class BridgeWorker {
         try {
           await this.client.call('task_finish', { ...lease, outcome: 'blocked', result: {
             agent: agent.id, code: errorCode(error), review_required: true,
+            ...(task.kind==='check' ? {reason:`Deterministic check could not run: ${errorCode(error)}`,tests_run_by_bridge:true,observed_commit:observedCommit} : {}),
             summary: 'Worker could not complete this attempt. Check local CLI authentication/version, project configuration, context size and service availability.',
             acceptance_criteria_verified: false
           } });
@@ -337,6 +370,9 @@ export class BridgeWorker {
         } catch { this.logger('task_finish_unconfirmed', { task_id: task.id }); }
       }
     } finally {
+      if (worktree && task.kind!=='patch') {
+        try { await removeSnapshot(project.root,worktree); } catch { this.logger('snapshot_cleanup_failed',{task_id:task.id}); }
+      }
       execution.abort();
       heartbeatStop.abort();
       shutdown.removeEventListener('abort', onShutdown);

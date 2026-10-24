@@ -265,6 +265,10 @@ Arguments: `{task_id, expected_version}`. Result: `{task}`. Cancellation advance
 
 Checkpoints/results remain as historical evidence. A stale expected version gives `version_conflict`; read the new task before deciding again. Workers with the old lease cannot renew, save a checkpoint, create artifacts or finish. A repeat using the current cancelled version is a no-op.
 
+## Flows
+
+`flow_list`, `flow_start`, `flow_get`, `flow_cancel`, and owner-only `flow_approve` enforce declarative task dependencies, provider separation, exact commit pins and deterministic/approval gates. Definitions are stored per tenant and each step remains a normal task. See [Flows](FLOWS.md) for schemas, built-ins, permissions, retry behavior and bridge check configuration.
+
 ## Artifacts
 
 `artifact_put({task_id, lease_token, lease_generation, name, content, media_type?})` requires a live worker lease. `name` is a plain filename of at most 120 characters, beginning with an ASCII letter or digit and then letters, digits, spaces, `.`, `_`, `-`. Path separators and `..` are rejected. Content is UTF-8 text without NUL, at most 256 KiB. Allowed media types are `text/plain` (default), `text/markdown`, `application/json`, `text/x-diff` and `application/x-patch`; the server records the label without claiming to validate its syntax. A task may store at most 128 artifacts across all attempts.

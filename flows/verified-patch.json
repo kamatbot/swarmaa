@@ -1,0 +1,8 @@
+{
+  "id": "verified-patch",
+  "title": "Verified patch",
+  "steps": [
+    {"id":"patch","kind":"patch","capability":"auto.patch","objective":"{{objective}}","needs":[]},
+    {"id":"tests","kind":"check","capability":"bridge.check","objective":"Run the configured tests on the patch commit.","needs":["patch"],"pin":"patch","check":{"type":"tests_pass"}}
+  ]
+}

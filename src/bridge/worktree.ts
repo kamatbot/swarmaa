@@ -14,7 +14,7 @@ export interface Worktree { dir: string; gitDir: string; branch: string; baseRef
 export interface PatchOutcome { branch: string; base_ref: string; base_commit: string; head_commit: string | null; changed_files: number; diffstat: string; diff: string; continued: boolean }
 
 async function git(cwd: string, args: string[], env?: NodeJS.ProcessEnv, maxBuffer = 64 * 1024 * 1024): Promise<string> {
-  const { stdout } = await run('git', ['-C', cwd, ...args], { env: { ...process.env, ...env }, maxBuffer, encoding: 'utf8' });
+  const { stdout } = await run('git', ['-C', cwd, ...args], { env: { ...process.env, ...env }, maxBuffer, encoding: 'utf8', timeout: 60_000 });
   return stdout;
 }
 
@@ -128,4 +128,16 @@ export async function finishWorktree(root: string, provider: string, task: Task,
       return { branch: wt.branch, base_ref: wt.baseRef, base_commit: wt.baseCommit, head_commit: unchanged ? null : head, changed_files: files, diffstat: stat, diff, continued: wt.continued };
     }
   });
+}
+
+/** Read/check worktrees are disposable snapshots; never commit their output as a patch. */
+export async function inspectWorktree(wt:Worktree,base?:string):Promise<{commit:string;dirty:boolean;files:string[]}> {
+  const commit = (await git(wt.dir,['rev-parse','HEAD'])).trim();
+  const dirty = !!(await git(wt.dir,['status','--porcelain','--untracked-files=no'])).trim();
+  // --no-renames includes both sides of renames so files_within cannot hide an out-of-scope deletion.
+  const files = base ? (await git(wt.dir,['diff','--no-ext-diff','--no-renames','--name-only','-z',`${base}..${commit}`])).split('\0').filter(Boolean) : [];
+  return {commit,dirty,files};
+}
+export async function removeSnapshot(root:string,wt:Worktree):Promise<void> {
+  await serialized(root,() => git(root,['worktree','remove','--force',wt.dir]));
 }
