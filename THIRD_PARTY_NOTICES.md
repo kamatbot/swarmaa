@@ -158,7 +158,17 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
 
 ---
 
-## 4. npm Dependencies
+## 4. HarnessRouter (Apache-2.0)
+
+- **Source:** Unified Harness Protocol and support-matrix from HarnessRouter (cloned at `~/Projects/research/harnessrouter`)
+- **License:** Apache License 2.0
+- **Where used in Swarmaa:**
+  - Closed failure-code taxonomy, retry semantics, and error classifications in `src/core/failures.ts` and `src/bridge/adapters.ts` adapt definitions from UHP `protocol/versions/2026-10-19/errors.md`.
+  - Model equivalence logic and substitution verification (`sameModel`) in `src/core/failures.ts` adapt `scripts/support-matrix/samemodel.py`.
+
+---
+
+## 5. npm Dependencies
 
 Swarmaa declares the following direct runtime and development dependencies in `package.json` (their full resolved tree and individual license metadata are recorded in `package-lock.json` and `node_modules/` upon installation):
 
@@ -174,7 +184,7 @@ Swarmaa declares the following direct runtime and development dependencies in `p
 
 ---
 
-## 5. Trademark and Non-Affiliation Notice
+## 6. Trademark and Non-Affiliation Notice
 
 Swarmaa is an independent open-source project and is not affiliated with, endorsed by, or sponsored by Anthropic, OpenAI, Google, Anysphere, xAI, Reason Machines, Asymptote Labs, or IBM.
 

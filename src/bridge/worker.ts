@@ -1,6 +1,6 @@
 import { runFlowCheck } from './checks.js';
 import { setTimeout as delay } from 'node:timers/promises';
-import { AUTO_PATCH, AUTO_READ, buildInvocation, capability, deniedActions, finalAnswer, projectCapabilities, providerSucceeded } from './adapters.js';
+import { AUTO_PATCH, AUTO_READ, buildInvocation, capability, classifyFailure, deniedActions, extractServed, finalAnswer, projectCapabilities, providerSucceeded } from './adapters.js';
 import { collectUsage, headroom } from '../usage/index.js';
 import type { UsageProviderId, UsageSnapshot } from '../usage/types.js';
 import { runBoundedProcess } from './process.js';
@@ -322,12 +322,21 @@ export class BridgeWorker {
       if (leaseLost) return;
       await renew();
       if (leaseLost) return;
+      let failure = outcome === 'completed' ? undefined : classifyFailure(agent.provider, result);
+      if (outcome !== 'completed' && !failure) {
+        if (denied.length) failure = { code: 'sandbox_denied', retry: false, detail: `Denied actions: ${denied.join(', ')}` };
+        else if (shutdown.aborted) failure = { code: 'cancelled', retry: false, detail: 'Task cancelled by shutdown or signal' };
+        else failure = { code: 'harness_error', retry: false, detail: 'Harness failed' };
+      }
+      const served = task.kind === 'check' ? { provider: 'bridge', model: null } : extractServed(agent.provider, result, agent.model);
       const completion = {
         ...lease, outcome, artifact_ids: [artifact.artifact.id, ...(diffArtifact ? [diffArtifact.artifact.id] : [])], result: {
           agent: agent.id, provider: task.kind==='check' ? 'bridge' : agent.provider, execution_completed: outcome === 'completed',
           acceptance_criteria_verified: false, review_required: true,
           exit_code: result.exit_code, stop_reason: result.stop_reason,
           duration_ms: result.duration_ms,
+          served,
+          ...(failure ? { failure } : {}),
           // The agent's own answer, so callers can read it with task_get; untrusted provider output.
           answer: task.kind==='check' ? checkFact!.output_tail : untrusted(finalAnswer(agent.provider, result.stdout), 8 * 1024),
           ...(denied.length ? { denied_actions: denied, next_step: 'This worker cannot run those actions (read-only sandbox). Resubmit with a capability whose worker can, e.g. codex.read, or narrow the task.' } : {}),

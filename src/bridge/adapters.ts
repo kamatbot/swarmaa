@@ -1,4 +1,6 @@
 import { tmpdir } from 'node:os';
+import { type FailureInfo, type ServedStamp, sameModel } from '../core/failures.js';
+import { redactSecrets } from '../safety/redact.js';
 import { claudeWorkerDir, type NativePlan } from './native-session.js';
 import { wrapCommand } from './sandbox.js';
 import type { AgentConfig, BridgeConfig, ProcessRequest, ProcessResult, ProjectConfig, Task } from './types.js';
@@ -132,4 +134,138 @@ export function deniedActions(provider: string, stdout: string): string[] {
     const d = (JSON.parse(stdout) as { denied_actions?: { display_name?: unknown; action?: unknown }[] }).denied_actions;
     return Array.isArray(d) ? d.map(a => String(a.display_name ?? a.action ?? 'unknown')).slice(0, 10) : [];
   } catch { return []; }
+}
+
+function cleanDetail(text: string): string {
+  const line = text.replace(/[\r\n]+/g, ' ').replace(/\s+/g, ' ').trim();
+  return redactSecrets(line).slice(0, 200).trim();
+}
+
+function parseRetryAfter(text: string): number | undefined {
+  const m = text.match(/(?:retry[- ]after|try again in|wait)\s*(?:is\s*|:\s*)?(\d+)\s*(?:s|sec|seconds)?/i);
+  return m ? parseInt(m[1]!, 10) * 1000 : undefined;
+}
+
+/** Pure failure classifier beside providerSucceeded. Reads CLI output, stop reason and exit code. */
+export function classifyFailure(provider: string, result: ProcessResult): FailureInfo | undefined {
+  if (providerSucceeded(provider, result)) return undefined;
+
+  if (result.stop_reason === 'timeout') {
+    return { code: 'timeout', retry: false, detail: 'Task wall-clock budget exceeded' };
+  }
+  if (result.stop_reason === 'aborted' || result.signal !== null) {
+    return { code: 'cancelled', retry: false, detail: 'Task cancelled by signal or abort' };
+  }
+  const denied = deniedActions(provider, result.stdout);
+  if (denied.length) {
+    return { code: 'sandbox_denied', retry: false, detail: cleanDetail(`Denied actions: ${denied.join(', ')}`) };
+  }
+
+  if (provider === 'claude') {
+    let payload: Record<string, unknown> | null = null;
+    try { payload = JSON.parse(result.stdout) as Record<string, unknown>; } catch {}
+    const text = [payload?.result, payload?.error, payload?.message, payload?.terminal_reason, payload?.subtype, result.stderr].filter(x => typeof x === 'string').join(' ');
+    const status = typeof payload?.api_error_status === 'number' ? payload.api_error_status : undefined;
+    if (status === 429 || /rate[- ]limit|too many requests|429/i.test(text)) {
+      return { code: 'rate_limited', retry: true, detail: cleanDetail(text || 'Claude rate limit exceeded'), ...(parseRetryAfter(text) ? { retry_after_ms: parseRetryAfter(text) } : {}) };
+    }
+    if (/quota|credit balance|credit limit|monthly limit|usage limit|exceeded your.*(limit|budget|quota)/i.test(text)) {
+      return { code: 'quota_exhausted', retry: false, detail: cleanDetail(text || 'Claude quota exhausted') };
+    }
+    if (status === 401 || /unauthorized|claude login|sign in|not logged in|invalid api key|authentication/i.test(text)) {
+      return { code: 'auth_required', retry: false, detail: 'sign in to Claude Code' };
+    }
+    if ((status !== undefined && status >= 500) || /overloaded|500|502|503|529|internal server error|upstream|service unavailable/i.test(text)) {
+      return { code: 'provider_error', retry: true, detail: cleanDetail(text || 'Claude upstream provider error') };
+    }
+  }
+
+  if (provider === 'codex') {
+    let errorText = '';
+    for (const line of result.stdout.split('\n')) {
+      if (!line.startsWith('{')) continue;
+      try {
+        const ev = JSON.parse(line) as Record<string, unknown>;
+        if (ev.type === 'turn.failed') {
+          const err = ev.error as Record<string, unknown> | undefined;
+          errorText += ' ' + String(err?.message ?? err ?? '');
+        } else if (ev.type === 'error' || (ev.item as any)?.type === 'error') {
+          errorText += ' ' + String(ev.message ?? (ev.item as any)?.message ?? '');
+        }
+      } catch {}
+    }
+    const text = (errorText + ' ' + result.stderr).trim();
+    if (/quota|credit|insufficient_quota|exceeded.*quota/i.test(text)) {
+      return { code: 'quota_exhausted', retry: false, detail: cleanDetail(text || 'Codex quota exhausted') };
+    }
+    if (/rate[- ]limit|too many requests|429/i.test(text)) {
+      return { code: 'rate_limited', retry: true, detail: cleanDetail(text || 'Codex rate limited'), ...(parseRetryAfter(text) ? { retry_after_ms: parseRetryAfter(text) } : {}) };
+    }
+    if (/unauthorized|invalid api key|sign in|login|authentication failed|401/i.test(text)) {
+      return { code: 'auth_required', retry: false, detail: 'sign in to Codex' };
+    }
+    if (/stream disconnected|500|502|503|504|server error|overloaded|service unavailable|internal server error/i.test(text)) {
+      return { code: 'provider_error', retry: true, detail: cleanDetail(text || 'Codex provider error') };
+    }
+  }
+
+  if (provider === 'antigravity') {
+    let payload: Record<string, unknown> | null = null;
+    try { payload = JSON.parse(result.stdout) as Record<string, unknown>; } catch {}
+    const text = [payload?.error, payload?.message, payload?.status, result.stderr].filter(x => typeof x === 'string').join(' ');
+    if (/resource_exhausted|quota|exceeded.*quota/i.test(text)) {
+      return { code: 'quota_exhausted', retry: false, detail: cleanDetail(text || 'Antigravity quota exhausted') };
+    }
+    if (/rate[- ]limit|rate_limit_exceeded|too many requests|429/i.test(text)) {
+      return { code: 'rate_limited', retry: true, detail: cleanDetail(text || 'Antigravity rate limited'), ...(parseRetryAfter(text) ? { retry_after_ms: parseRetryAfter(text) } : {}) };
+    }
+    if (/unauthenticated|sign in|login|invalid.*credential|authentication/i.test(text)) {
+      return { code: 'auth_required', retry: false, detail: 'sign in to Antigravity' };
+    }
+    if (/unavailable|deadline_exceeded|internal|500|502|503|upstream/i.test(text)) {
+      return { code: 'provider_error', retry: true, detail: cleanDetail(text || 'Antigravity provider error') };
+    }
+  }
+
+  // Unknown output falls back to harness_error, never to a retryable code.
+  const rawFallback = (result.stderr || result.stdout || `Harness exited with code ${result.exit_code ?? 'unknown'}`).trim();
+  return {
+    code: 'harness_error',
+    retry: false,
+    detail: cleanDetail(rawFallback)
+  };
+}
+
+/** Extracts the provider and model that actually served the run from CLI output. */
+export function extractServed(provider: string, result: ProcessResult, askedModel?: string): ServedStamp {
+  let model: string | null = null;
+  try {
+    if (provider === 'claude') {
+      const p = JSON.parse(result.stdout) as Record<string, unknown>;
+      if (typeof p.model === 'string') model = p.model;
+      else if (typeof p.model_id === 'string') model = p.model_id;
+      else if (p.modelUsage && typeof p.modelUsage === 'object') {
+        const keys = Object.keys(p.modelUsage);
+        if (keys.length > 0) model = keys[0]!;
+      }
+    } else if (provider === 'antigravity') {
+      const p = JSON.parse(result.stdout) as Record<string, unknown>;
+      if (typeof p.model === 'string') model = p.model;
+      else if (typeof (p.response_metadata as any)?.model === 'string') model = (p.response_metadata as any).model;
+      else if (typeof (p.metadata as any)?.model === 'string') model = (p.metadata as any).model;
+      else if (typeof (p.usage as any)?.model === 'string') model = (p.usage as any).model;
+    } else if (provider === 'codex') {
+      for (const line of result.stdout.split('\n')) {
+        if (!line.startsWith('{')) continue;
+        try {
+          const e = JSON.parse(line) as Record<string, unknown>;
+          if (typeof e.model === 'string') { model = e.model; break; }
+          if (typeof (e.turn as any)?.model === 'string') { model = (e.turn as any).model; break; }
+          if (typeof (e.item as any)?.model === 'string') { model = (e.item as any).model; break; }
+        } catch {}
+      }
+    }
+  } catch {}
+  const substituted = (askedModel && model && !sameModel(askedModel, model)) ? true : undefined;
+  return { provider, model, ...(substituted ? { substituted: true } : {}) };
 }

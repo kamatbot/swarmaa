@@ -1,6 +1,6 @@
 import { advanceFlow, validateFlowCompletion } from './flows.js';
 import type { FlowTask } from './flow-definition.js';
-import { inboxSession, readTaskInbox, taskFinished } from './inbox.js';
+import { inboxSession, readTaskInbox, taskFinished, taskReroutedNotice } from './inbox.js';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import type { Pool, PoolClient } from 'pg';
 import { transaction } from '../db.js';
@@ -9,7 +9,7 @@ import { hasPermission } from '../policy.js';
 import { ARTIFACT_MAX_BYTES, type Principal } from '../types.js';
 import { enumValue, integer, object, optionalString, scopeName, string, strings, uuid } from '../validation.js';
 import { assertKnownScope, audit, canonicalJson, event, jsonObject, newId, noExtraKeys, requireFound, scopeLock, scopeSql, sha256, uuidArray, type Db } from './shared.js';
-import { decideAll, getPolicy, policyAllows, scopeUsage, type RoutingKind } from './routing.js';
+import { decide, decideAll, getPolicy, policyAllows, scopeUsage, type RoutingKind } from './routing.js';
 import { AUTO_PATCH, AUTO_READ, touchWorker, workerProviders } from './swarm.js';
 
 export const TASK_KINDS = ['research','review','patch'] as const;
@@ -24,6 +24,7 @@ export interface TaskRow {
   attempt_count:number; max_attempts:number; continuation_count:number; lease_generation:number;
   lease_owner:string|null; lease_hash:string|null; lease_expires_at:Date|null;
   checkpoint:Record<string,unknown>|null; result:Record<string,unknown>|null; artifact_ids:string[];
+  excluded_providers?:string[]; not_before?:Date|null;
   created_at:Date; updated_at:Date; completed_at:Date|null;
 }
 interface RunRow {
@@ -58,6 +59,7 @@ function worker(p:Principal):void {
 }
 
 export function taskView(row:TaskRow):Record<string,unknown> {
+  const result = (row.result ?? {}) as Record<string, unknown>;
   return { id:row.id, scope:row.scope, kind:row.kind, objective:row.objective, constraints:row.constraints,
     acceptance_criteria:row.acceptance_criteria, permission_envelope:row.permission_envelope,
     required_capability:row.required_capability, resource_key:row.resource_key, base_ref:row.base_ref,
@@ -65,7 +67,12 @@ export function taskView(row:TaskRow):Record<string,unknown> {
     created_by:row.created_by, attempt_count:row.attempt_count, max_attempts:row.max_attempts,
     continuation_count:row.continuation_count, lease_generation:row.lease_generation,
     lease_owner:row.lease_owner, lease_expires_at:date(row.lease_expires_at), checkpoint:row.checkpoint,
-    result:row.result, artifact_ids:row.artifact_ids, created_at:date(row.created_at),
+    result:row.result, artifact_ids:row.artifact_ids,
+    failure: result.failure ?? null,
+    served: result.served ?? null,
+    excluded_providers: row.excluded_providers ?? [],
+    not_before: date(row.not_before ?? null),
+    created_at:date(row.created_at),
     updated_at:date(row.updated_at), completed_at:date(row.completed_at),
     ...(row.flow_id ? {flow_id:row.flow_id,flow:row.flow} : {}) };
 }
@@ -93,8 +100,10 @@ async function lockedTask(db:PoolClient,p:Principal,id:string):Promise<TaskRow> 
 }
 
 export async function taskChanged(db:PoolClient,p:Principal,row:TaskRow,action:string,advance=true):Promise<void> {
+  const failureCode = (row.result as any)?.failure?.code;
   const details = { task_id:row.id,version:row.version,status:row.status,action,
     attempt_count:row.attempt_count,lease_generation:row.lease_generation,
+    ...(failureCode ? { failure_code: failureCode } : {}),
     ...(row.flow_id ? {flow_id:row.flow_id,step_id:row.flow!.step_id,kind:row.kind,
       ...(row.kind==='approve' && action==='flow_ready' ? {approval_required:true} : {})} : {}) };
   await audit(db,p,row.scope,`task.${action}`,row.id,details);
@@ -357,21 +366,25 @@ export class TaskService {
       const decisions = capabilities.includes(AUTO_READ) || capabilities.includes(AUTO_PATCH) ? decideAll(policy,usage) : null;
       const eligible = (row:TaskRow):boolean => {
         if (row.kind === 'check') return true;
+        const exclusions = row.excluded_providers ?? [];
+        const policyForTask = exclusions.length ? { ...policy, providers: policy.providers.filter(x => !exclusions.includes(x.provider)) } : policy;
         if (row.required_capability === AUTO_PATCH) {
-          const d = decisions?.patch;
-          if (!d) return false;
-          if (d.anyone) return servedPatch.some(s => policyAllows(policy,s,'patch'));
-          return d.provider !== null && servedPatch.includes(d.provider);
+          const d = decide(policyForTask, 'patch', usage);
+          if (d.anyone) return servedPatch.some(s => policyAllows(policyForTask, s, 'patch') && !exclusions.includes(s));
+          return d.provider !== null && servedPatch.includes(d.provider) && !exclusions.includes(d.provider);
         }
-        if (row.required_capability.endsWith('.patch')) return policyAllows(policy,row.required_capability.slice(0,-6),'patch');
+        if (row.required_capability.endsWith('.patch')) {
+          const prov = row.required_capability.slice(0, -6);
+          return !exclusions.includes(prov) && policyAllows(policy, prov, 'patch');
+        }
         if (row.kind === 'patch') return true;
         if (row.required_capability === AUTO_READ) {
-          const d = decisions?.[row.kind as RoutingKind];
-          if (!d) return false;
-          if (d.anyone) return !served.length || served.some(s => policyAllows(policy,s,row.kind));
-          return d.provider !== null && served.includes(d.provider);
+          const d = decide(policyForTask, row.kind as RoutingKind, usage);
+          if (d.anyone) return !served.length || served.some(s => policyAllows(policyForTask, s, row.kind) && !exclusions.includes(s));
+          return d.provider !== null && served.includes(d.provider) && !exclusions.includes(d.provider);
         }
-        return !row.required_capability.endsWith('.read') || policyAllows(policy,row.required_capability.slice(0,-5),row.kind);
+        const prov = row.required_capability.slice(0, -5);
+        return !exclusions.includes(prov) && policyAllows(policy, prov, row.kind);
       };
       // Sweep expired attempts before selection. No process-local retry state is needed after a restart.
       const expired = await db.query<TaskRow>(`SELECT * FROM tasks WHERE tenant_id=$1 AND scope=$2 AND status='running'
@@ -390,6 +403,7 @@ export class TaskService {
         await taskChanged(db,p,result.rows[0]!,exhausted ? 'attempts_exhausted':'lease_expired');
       }
       const candidates = await db.query<TaskRow>(`SELECT * FROM tasks WHERE tenant_id=$1 AND scope=$2 AND status='queued'
+        AND (not_before IS NULL OR not_before<=clock_timestamp())
         AND attempt_count<max_attempts AND required_capability=ANY($3::text[]) AND kind=ANY($4::text[])
         AND kind<>'approve' AND (flow_id IS NULL OR ((flow->>'ready')::boolean
           AND NOT EXISTS (SELECT 1 FROM flow_runs f WHERE f.id=tasks.flow_id AND f.cancelled_at IS NOT NULL)
@@ -401,9 +415,10 @@ export class TaskService {
         let flowProvider:string|undefined;
         if (row.flow && row.kind!=='check') {
           const other = row.flow.different_provider_than ? (await db.query<TaskRow>("SELECT * FROM tasks WHERE flow_id=$1 AND flow->>'step_id'=$2",[row.flow_id,row.flow.different_provider_than])).rows[0] : undefined;
-          if (row.flow.different_provider_than && (!other || other.status!=='completed' || !other.flow?.provider)) continue;
-          const excluded = other?.flow?.provider;
-          const candidates = policy.providers.filter(x => x.enabled && x.kinds.includes(row.kind as RoutingKind) && x.provider!==excluded);
+          const otherServed = (other?.result as any)?.served?.provider ?? other?.flow?.provider;
+          if (row.flow.different_provider_than && (!other || other.status!=='completed' || !otherServed)) continue;
+          const excluded = otherServed;
+          const candidates = policy.providers.filter(x => x.enabled && x.kinds.includes(row.kind as RoutingKind) && x.provider!==excluded && !(row.excluded_providers || []).includes(x.provider));
           const auto = row.required_capability===AUTO_READ || row.required_capability===AUTO_PATCH;
           const d = decideAll({...policy,providers:candidates},usage)[row.kind as RoutingKind];
           const suffix = row.kind==='patch' ? 'patch' : 'read';
@@ -441,8 +456,11 @@ export class TaskService {
         await taskChanged(db,p,next,'claimed');
         // Bind the router's decision to execution: the bridge may only run what the policy allows for this kind.
         const auto = row.required_capability === AUTO_READ || row.required_capability === AUTO_PATCH;
-        const d = auto ? decisions?.[row.kind as RoutingKind] : undefined;
-        const route = flowProvider ? {provider:flowProvider,allowed:[flowProvider]} : auto ? {provider:d?.provider ?? null,allowed:policy.providers.filter(x => x.enabled && (x.kinds as string[]).includes(row.kind)).map(x => x.provider)} : undefined;
+        const exclusions = row.excluded_providers ?? [];
+        const policyForTask = exclusions.length ? { ...policy, providers: policy.providers.filter(x => !exclusions.includes(x.provider)) } : policy;
+        const d = auto ? decide(policyForTask, row.kind as RoutingKind, usage) : undefined;
+        const allowed = policyForTask.providers.filter(x => x.enabled && (x.kinds as string[]).includes(row.kind)).map(x => x.provider);
+        const route = flowProvider ? {provider:flowProvider,allowed:[flowProvider]} : auto ? {provider:d?.provider ?? null,allowed} : undefined;
         return {task:await taskWithInstructions(db,next),lease_token:token,lease_generation:generation,...(route ? {route} : {})};
       }
       return {task:null};
@@ -505,9 +523,156 @@ export class TaskService {
       }
       await requireLease(db,p,row,lease);
       validateFlowCompletion(row,outcome,result);
+      if (row.flow?.different_provider_than) {
+        const other = (await db.query<TaskRow>("SELECT * FROM tasks WHERE flow_id=$1 AND flow->>'step_id'=$2",[row.flow_id,row.flow.different_provider_than])).rows[0];
+        const otherServed = (other?.result as any)?.served?.provider ?? other?.flow?.provider;
+        const currentServed = (result.served as any)?.provider ?? result.provider;
+        requireCondition(!otherServed || currentServed !== otherServed, 409, 'flow_provider_mismatch', 'Step ran on the same provider as the step it must differ from.');
+      }
       const artifacts = await db.query<{id:string}>(`SELECT id FROM artifacts WHERE tenant_id=$1 AND scope=$2
         AND task_id=$3 AND run_generation=$4 AND id=ANY($5::uuid[])`,[p.tenantId,row.scope,row.id,lease.generation,artifactIds]);
       requireCondition(artifacts.rows.length === artifactIds.length,400,'invalid_artifacts','Each artifact must belong to this task execution attempt.');
+
+      const isAuto = row.required_capability === AUTO_READ || row.required_capability === AUTO_PATCH;
+      const failure = result.failure as { code?: string; retry?: boolean; detail?: string; retry_after_ms?: number } | undefined;
+      const failureCode = failure?.code;
+      const servedProvider = (result.served as any)?.provider || (result.provider as string) || row.required_capability.split('.')[0]!;
+
+      if (outcome === 'failed' && isAuto && failureCode === 'quota_exhausted') {
+        await db.query(`UPDATE provider_usage SET fetched_at=clock_timestamp()-interval '16 minutes', headroom=0
+          WHERE tenant_id=$1 AND provider=$2`, [p.tenantId, servedProvider]);
+        const nextExclusions = Array.from(new Set([...(row.excluded_providers || []), servedProvider]));
+        const { policy } = await getPolicy(db, p.tenantId);
+        const candidates = policy.providers.filter(pr => pr.enabled && (pr.kinds as string[]).includes(row.kind));
+        const usageRows = await db.query<{ provider: string; ok: boolean; headroom: number; windows: any }>(
+          `SELECT provider, ok, headroom::float AS headroom, windows FROM provider_usage WHERE tenant_id=$1`, [p.tenantId]
+        );
+        const usageMap = new Map(usageRows.rows.map(u => [u.provider, u]));
+
+        const allExhausted = candidates.every(c => {
+          if (nextExclusions.includes(c.provider)) return true;
+          const u = usageMap.get(c.provider);
+          return !u || !u.ok || u.headroom <= 0;
+        });
+
+        if (allExhausted) {
+          const resetDescriptions = candidates.map(c => {
+            const u = usageMap.get(c.provider);
+            const winList: any[] = u?.windows?.windows ?? u?.windows ?? [];
+            const resetWin = Array.isArray(winList) ? winList.find(w => w.resets_at) : undefined;
+            const resetTime = resetWin?.resets_at ? new Date(resetWin.resets_at).toISOString() : 'unknown';
+            return `${c.provider} resets at ${resetTime}`;
+          });
+          const exhaustedMessage = `quota_exhausted: all providers exhausted (${resetDescriptions.join(', ')})`;
+          result.failure = { code: 'quota_exhausted', retry: false, detail: exhaustedMessage };
+          result.summary = exhaustedMessage;
+          result.answer = exhaustedMessage;
+        } else {
+          const updated = await db.query<TaskRow>(`UPDATE tasks SET status='queued',result=$2::jsonb,
+            excluded_providers=$3::text[],artifact_ids=$4::uuid[],version=version+1,lease_owner=NULL,
+            lease_hash=NULL,lease_expires_at=NULL,updated_at=clock_timestamp(),completed_at=NULL
+            WHERE id=$1 AND lease_expires_at>clock_timestamp() RETURNING *`,
+          [row.id, JSON.stringify(result), nextExclusions, artifactIds]);
+          requireCondition(updated.rows[0], 409, 'lease_lost', 'Lease expired before result commit.');
+          await db.query(`UPDATE task_runs SET status='failed',completion_hash=$3,result=$4::jsonb,artifact_ids=$5::uuid[],ended_at=clock_timestamp()
+            WHERE task_id=$1 AND generation=$2`, [row.id, lease.generation, completionHash, JSON.stringify(result), artifactIds]);
+          await releaseResource(db, row);
+          const next = updated.rows[0]!;
+
+          const remainingUsage = await scopeUsage(db, p.tenantId, row.scope);
+          const policyForRequeue = { ...policy, providers: policy.providers.filter(pr => !nextExclusions.includes(pr.provider)) };
+          const nextDecision = decide(policyForRequeue, row.kind as RoutingKind, remainingUsage);
+          const reroutedTo = nextDecision.provider ?? 'another provider';
+
+          await taskChanged(db, p, next, 'requeued');
+          await taskReroutedNotice(db, p, next, servedProvider, reroutedTo, 'quota_exhausted');
+          return { task: await taskWithInstructions(db, next), replayed: false };
+        }
+      } else if (outcome === 'failed' && isAuto && failureCode === 'provider_error') {
+        const priorRuns = await db.query<RunRow>(
+          `SELECT * FROM task_runs WHERE task_id=$1 AND status='failed'
+           AND result->'failure'->>'code'='provider_error'
+           AND coalesce(result->'served'->>'provider', result->>'provider')=$2`,
+          [row.id, servedProvider]
+        );
+        if (priorRuns.rows.length === 0) {
+          const backoffSec = failure?.retry_after_ms ? Math.ceil(failure.retry_after_ms / 1000) : 5;
+          const updated = await db.query<TaskRow>(`UPDATE tasks SET status='queued',result=$2::jsonb,
+            not_before=clock_timestamp()+$3::integer*interval '1 second',artifact_ids=$4::uuid[],
+            version=version+1,lease_owner=NULL,lease_hash=NULL,lease_expires_at=NULL,updated_at=clock_timestamp(),completed_at=NULL
+            WHERE id=$1 AND lease_expires_at>clock_timestamp() RETURNING *`,
+          [row.id, JSON.stringify(result), backoffSec, artifactIds]);
+          requireCondition(updated.rows[0], 409, 'lease_lost', 'Lease expired before result commit.');
+          await db.query(`UPDATE task_runs SET status='failed',completion_hash=$3,result=$4::jsonb,artifact_ids=$5::uuid[],ended_at=clock_timestamp()
+            WHERE task_id=$1 AND generation=$2`, [row.id, lease.generation, completionHash, JSON.stringify(result), artifactIds]);
+          await releaseResource(db, row);
+          const next = updated.rows[0]!;
+          await taskChanged(db, p, next, 'requeued');
+          return { task: await taskWithInstructions(db, next), replayed: false };
+        } else {
+          const nextExclusions = Array.from(new Set([...(row.excluded_providers || []), servedProvider]));
+          const { policy } = await getPolicy(db, p.tenantId);
+          const candidates = policy.providers.filter(pr => pr.enabled && (pr.kinds as string[]).includes(row.kind));
+          const usageRows = await db.query<{ provider: string; ok: boolean; headroom: number; windows: any }>(
+            `SELECT provider, ok, headroom::float AS headroom, windows FROM provider_usage WHERE tenant_id=$1`, [p.tenantId]
+          );
+          const usageMap = new Map(usageRows.rows.map(u => [u.provider, u]));
+
+          const allExhausted = candidates.every(c => {
+            if (nextExclusions.includes(c.provider)) return true;
+            const u = usageMap.get(c.provider);
+            return !u || !u.ok || u.headroom <= 0;
+          });
+
+          if (allExhausted) {
+            const resetDescriptions = candidates.map(c => {
+              const u = usageMap.get(c.provider);
+              const winList: any[] = u?.windows?.windows ?? u?.windows ?? [];
+              const resetWin = Array.isArray(winList) ? winList.find(w => w.resets_at) : undefined;
+              const resetTime = resetWin?.resets_at ? new Date(resetWin.resets_at).toISOString() : 'unknown';
+              return `${c.provider} resets at ${resetTime}`;
+            });
+            const exhaustedMessage = `quota_exhausted: all providers exhausted (${resetDescriptions.join(', ')})`;
+            result.failure = { code: 'quota_exhausted', retry: false, detail: exhaustedMessage };
+            result.summary = exhaustedMessage;
+            result.answer = exhaustedMessage;
+          } else {
+            const updated = await db.query<TaskRow>(`UPDATE tasks SET status='queued',result=$2::jsonb,
+              excluded_providers=$3::text[],artifact_ids=$4::uuid[],version=version+1,lease_owner=NULL,
+              lease_hash=NULL,lease_expires_at=NULL,updated_at=clock_timestamp(),completed_at=NULL
+              WHERE id=$1 AND lease_expires_at>clock_timestamp() RETURNING *`,
+            [row.id, JSON.stringify(result), nextExclusions, artifactIds]);
+            requireCondition(updated.rows[0], 409, 'lease_lost', 'Lease expired before result commit.');
+            await db.query(`UPDATE task_runs SET status='failed',completion_hash=$3,result=$4::jsonb,artifact_ids=$5::uuid[],ended_at=clock_timestamp()
+              WHERE task_id=$1 AND generation=$2`, [row.id, lease.generation, completionHash, JSON.stringify(result), artifactIds]);
+            await releaseResource(db, row);
+            const next = updated.rows[0]!;
+
+            const remainingUsage = await scopeUsage(db, p.tenantId, row.scope);
+            const policyForRequeue = { ...policy, providers: policy.providers.filter(pr => !nextExclusions.includes(pr.provider)) };
+            const nextDecision = decide(policyForRequeue, row.kind as RoutingKind, remainingUsage);
+            const reroutedTo = nextDecision.provider ?? 'another provider';
+
+            await taskChanged(db, p, next, 'requeued');
+            await taskReroutedNotice(db, p, next, servedProvider, reroutedTo, 'provider_error');
+            return { task: await taskWithInstructions(db, next), replayed: false };
+          }
+        }
+      } else if (outcome === 'failed' && isAuto && failureCode === 'rate_limited') {
+        const backoffSec = failure?.retry_after_ms ? Math.ceil(failure.retry_after_ms / 1000) : 60;
+        const updated = await db.query<TaskRow>(`UPDATE tasks SET status='queued',result=$2::jsonb,
+          not_before=clock_timestamp()+$3::integer*interval '1 second',artifact_ids=$4::uuid[],
+          version=version+1,lease_owner=NULL,lease_hash=NULL,lease_expires_at=NULL,updated_at=clock_timestamp(),completed_at=NULL
+          WHERE id=$1 AND lease_expires_at>clock_timestamp() RETURNING *`,
+        [row.id, JSON.stringify(result), backoffSec, artifactIds]);
+        requireCondition(updated.rows[0], 409, 'lease_lost', 'Lease expired before result commit.');
+        await db.query(`UPDATE task_runs SET status='failed',completion_hash=$3,result=$4::jsonb,artifact_ids=$5::uuid[],ended_at=clock_timestamp()
+          WHERE task_id=$1 AND generation=$2`, [row.id, lease.generation, completionHash, JSON.stringify(result), artifactIds]);
+        await releaseResource(db, row);
+        const next = updated.rows[0]!;
+        await taskChanged(db, p, next, 'requeued');
+        return { task: await taskWithInstructions(db, next), replayed: false };
+      }
       const updated = await db.query<TaskRow>(`UPDATE tasks SET status=$2,result=$3::jsonb,artifact_ids=$4::uuid[],
         version=version+1,lease_owner=NULL,lease_hash=NULL,lease_expires_at=NULL,updated_at=clock_timestamp(),
         completed_at=CASE WHEN $2='blocked' THEN NULL ELSE clock_timestamp() END
