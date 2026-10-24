@@ -334,8 +334,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const flags = process.argv.slice(2);
   const root = packageRoot(dirname(fileURLToPath(import.meta.url)));
   for (const harness of ['claude','codex','agy'] as Harness[]) {
-    const opts = {root,dry:flags.includes('--dry-run'),log:console.log,node:process.execPath};
-    for (const r of [await impl[harness](!flags.includes('--remove'),opts,homedir()),await inboxHooks(harness,!flags.includes('--remove'),opts)]) if (r.skipped) console.log(`${r.harness}: ${r.skipped}`);
+    const opts = {root,dry:flags.includes('--dry-run'),log:console.log}; // hook commands use `node` from PATH, like the journal hooks, so they survive Node upgrades
+    // --inbox-only adds or removes just the inbox hooks, leaving journal hooks and Codex notify exactly as they are.
+    const only = flags.includes('--inbox-only');
+    for (const r of [...(only ? [] : [await impl[harness](!flags.includes('--remove'),opts,homedir())]),await inboxHooks(harness,!flags.includes('--remove'),opts)]) if (r.skipped) console.log(`${r.harness}: ${r.skipped}`);
   }
-  for (const r of await installSwarmCommand(!flags.includes('--remove'), { root, dry: flags.includes('--dry-run'), log: console.log })) if (r.skipped) console.log(`${r.harness}: ${r.skipped}`);
+  if (!flags.includes('--inbox-only')) for (const r of await installSwarmCommand(!flags.includes('--remove'), { root, dry: flags.includes('--dry-run'), log: console.log })) if (r.skipped) console.log(`${r.harness}: ${r.skipped}`);
 }
