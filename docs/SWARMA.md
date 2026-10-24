@@ -192,3 +192,27 @@ Stopping autostart: `launchctl bootout gui/$(id -u)/com.swarma.<job>` and delete
 `~/Library/LaunchAgents`.
 
 Removing a client: `claude mcp remove -s user swarma`, `codex mcp remove swarma`, `agy mcp remove swarma`.
+
+## Inbox notifications between agents
+
+After applying migration `019_inbox.sql`, setup installs inbox hooks for each connected Claude Code, Codex
+and Antigravity CLI, independently of optional chat sharing. `npx tsx scripts/hooks-install.ts` installs the
+journal, inbox and `/swarm` files; `--remove` removes only these owned entries, and `--dry-run` previews them.
+Codex requires one-time review and trust through `/hooks`; the installer never bypasses it.
+
+`clients/hooks/swarmaa-inbox.mjs <claude|codex|agy> <event>` reads the same `.local/<identity>.json` and `.env`
+port as the stdio launcher. Fast hooks have a two-second network budget and stay silent on errors. Bodies
+are labeled as untrusted data and context is capped below 10,000 characters (four items per fetch).
+
+- Claude's SessionStart, UserPromptSubmit and PostToolUse hooks inject context; its matched `task_submit`
+  hook registers the submitting session. Stop runs an async + asyncRewake waiter for up to 30 minutes in
+  25-second chunks. An item goes to stderr with exit 2. One PID lock per session lives under
+  `~/.swarma/inbox/<session hash>`; another Stop leaves a live waiter alone, and normal cancellation releases it.
+- Codex's step hooks inject context. Stop only displays an informational message and saves that batch
+  privately for the next step: the current Stop contract does not support model-visible additionalContext.
+  It never blocks or creates a continuation. No `codex queue` idle-wake path is enabled without live proof.
+- Antigravity PreInvocation returns an ephemeral injected step; Stop continues only when pending data exists.
+
+For explicit routing use `message_send`; to watch a task from Codex or Antigravity, call `task_watch` with
+the harness-prefixed session ID. A principal-wide notification can go to any session of that identity;
+explicit session watchers receive their own item. Delivery is not acknowledgment of model acceptance.

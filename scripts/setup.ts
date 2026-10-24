@@ -13,7 +13,7 @@ import { loadConfig } from '../src/config.js';
 import { createPool } from '../src/db.js';
 import { PasskeyService } from '../src/passkeys.js';
 import { SOURCES, detectSources } from '../src/capture/index.js';
-import { installJournalHooks, removeJournalHooks, type Harness } from './hooks-install.js';
+import { installInboxHooks, removeInboxHooks, installJournalHooks, removeJournalHooks, type Harness } from './hooks-install.js';
 import {
   AGY_TOOLS, DEFAULT_HOSTNAME, isCompiled, packageRoot, scriptCommand, HARNESS_KEYS, HOOK_APP_KEYS, PlanError, SHARING_HARNESSES, WORKER_HARNESSES, bridgeConfig, identityScopes, mergeAgyPermissions,
   parseEnv, plist, slugScopes, splitFolder, stateFile, validHostname, validatePlan, yes,
@@ -295,6 +295,16 @@ export async function runSetup(plan: SetupPlan, opts: RunOpts): Promise<SetupSum
           summary.workers.push(key);
           if (hp.edit) summary.edits.push(key);
         }
+      });
+    }
+
+    for (const k of ['claude','codex','agy'] as const) {
+      if (!summary.agents.includes(k) && !state.agents?.includes(k)) continue;
+      await step(`inbox:${k}`, `${META[k].label} inbox`, async () => {
+        const o = {root,dry,node:bundledNode,log:(line: string) => say(`  ${line}`)};
+        const r = await (summary.agents.includes(k) ? installInboxHooks : removeInboxHooks)(k,o);
+        if (r.skipped) throw new Error(r.skipped);
+        return summary.agents.includes(k) ? 'inbox notifications installed' : 'inbox notifications removed';
       });
     }
 

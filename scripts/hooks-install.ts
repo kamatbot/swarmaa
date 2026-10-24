@@ -2,8 +2,9 @@
 // Idempotent, never clobbers foreign config, writes nothing when dry. Detection is by the script's path suffix.
 import { copyFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { packageRoot } from './setup-lib.js';
 
 export type Harness = 'claude' | 'codex' | 'agy' | 'kiro' | 'windsurf' | 'qwen';
 export interface HookResult { harness: Harness; changed: string[]; skipped?: string }
@@ -45,7 +46,7 @@ const json = (v: unknown) => JSON.stringify(v, null, 2) + '\n';
 // ---- Claude-style settings: hooks.<Event> matcher groups. Claude Code (~/.claude/settings.json) and Qwen Code (~/.qwen/settings.json) ----
 const CLAUDE_EVENTS = ['Stop', 'SessionEnd'];
 
-async function settingsHooks(harness: Harness, path: string, events: string[], handler: Obj, install: boolean, o: Opts, backup: boolean): Promise<HookResult> {
+async function settingsHooks(harness: Harness, path: string, events: string[], handler: Obj, install: boolean, o: Opts, backup: boolean, owns = isOurs, matcher?: string): Promise<HookResult> {
   const r = await readJsonObject(path);
   if ('skipped' in r) return { harness, changed: [], skipped: r.skipped };
   const settings = r.data;
@@ -59,17 +60,17 @@ async function settingsHooks(harness: Harness, path: string, events: string[], h
     if (install) {
       let found = false;
       for (const g of groups) for (const h of isObj(g) && Array.isArray(g.hooks) ? g.hooks : []) {
-        if (!isObj(h) || !isOurs(h.command)) continue;
+        if (!isObj(h) || !owns(h.command) || (matcher !== undefined && (!isObj(g) || g.matcher !== matcher))) continue;
         found = true;
         for (const [k, v] of Object.entries(handler)) if (h[k] !== v) { h[k] = v; dirty = true; }
       }
-      if (!found) { groups.push({ hooks: [{ ...handler }] }); dirty = true; }
+      if (!found) { groups.push({ ...(matcher === undefined ? {} : { matcher }), hooks: [{ ...handler }] }); dirty = true; }
       hooks[ev] = groups;
     } else {
       const kept: unknown[] = [];
       for (const g of groups) {
         if (!isObj(g) || !Array.isArray(g.hooks)) { kept.push(g); continue; }
-        const rest = g.hooks.filter(h => !(isObj(h) && isOurs(h.command)));
+        const rest = g.hooks.filter(h => !(isObj(h) && owns(h.command)));
         if (rest.length === g.hooks.length) { kept.push(g); continue; }
         dirty = true;
         if (rest.length) kept.push({ ...g, hooks: rest });
@@ -80,7 +81,7 @@ async function settingsHooks(harness: Harness, path: string, events: string[], h
   if (!dirty) return { harness, changed: [] };
   if (Object.keys(hooks).length) settings.hooks = hooks; else delete settings.hooks;
   const names = events.join(', ');
-  await write(path, json(settings), o, install ? `add journal hooks (${names})` : `remove journal hooks (${names})`, backup);
+  await write(path, json(settings), o, install ? `add hooks (${names})` : `remove hooks (${names})`, backup);
   return { harness, changed: [path] };
 }
 
@@ -257,6 +258,50 @@ export async function removeJournalHooks(harness: Harness, opts: { root: string;
   return impl[harness](false, opts, opts.home ?? homedir());
 }
 
+// ---- Inbox hooks, independent of optional chat journaling ----
+const INBOX_MARKER = 'clients/hooks/swarmaa-inbox.mjs';
+const shellQuote = (value: string) => "'" + value.replaceAll("'", "'\"'\"'") + "'";
+async function inboxHooks(harness: Harness, install: boolean, o: Opts): Promise<HookResult> {
+  if (!['claude','codex','agy'].includes(harness)) return { harness, changed: [] };
+  const home = o.home ?? homedir();
+  const cmd = (event: string) => `${shellQuote(o.node ?? process.execPath)} ${shellQuote(join(o.root,INBOX_MARKER))} ${harness} ${event}`;
+  const ours = (c: unknown) => typeof c === 'string' && c.includes(INBOX_MARKER);
+  if (harness === 'agy') {
+    const path = join(home,'.gemini','config','hooks.json');
+    const r = await readJsonObject(path);
+    if ('skipped' in r) return {harness,changed:[],skipped:r.skipped};
+    const current = r.data['swarmaa-inbox'];
+    if (current !== undefined && !JSON.stringify(current).includes(INBOX_MARKER)) return {harness,changed:[],skipped:`${path}: swarmaa-inbox is not ours; left untouched`};
+    const want = Object.fromEntries(['PreInvocation','Stop'].map(ev => [ev,[{type:'command',command:cmd(ev),timeout:5}]]));
+    if (install ? JSON.stringify(current)===JSON.stringify(want) : current===undefined) return {harness,changed:[]};
+    if (install) r.data['swarmaa-inbox']=want; else delete r.data['swarmaa-inbox'];
+    await write(path,json(r.data),o,install ? 'add inbox hooks' : 'remove inbox hooks');
+    return {harness,changed:[path]};
+  }
+  const path = join(home,harness==='claude' ? '.claude' : '.codex',harness==='claude' ? 'settings.json' : 'hooks.json');
+  const events: [string,string?][] = [['SessionStart'],['UserPromptSubmit'],['PostToolUse'],['Stop']];
+  if (harness==='claude') events.splice(2,1,['PostToolUse','^(?!mcp__swarma__task_submit$).*'],['PostToolUse','^mcp__swarma__task_submit$']);
+  const changed = new Set<string>();
+  // Preflight every affected event before any write, preserving malformed foreign configuration.
+  const current = await readJsonObject(path);
+  if ('skipped' in current) return {harness,changed:[],skipped:current.skipped};
+  const existingHooks = current.data.hooks;
+  if (existingHooks !== undefined && (!isObj(existingHooks) || events.some(([ev]) => existingHooks[ev] !== undefined && !Array.isArray(existingHooks[ev])))) {
+    return {harness,changed:[],skipped:`${path}: invalid hook groups; left untouched`};
+  }
+  for (const [event,matcher] of events) {
+    const wake = harness==='claude' && event==='Stop';
+    const result = await settingsHooks(harness,path,[event],{type:'command',command:cmd(event),timeout:wake ? 1830 : 5,
+      ...(wake ? {async:true,asyncRewake:true} : {})},install,o,false,ours,matcher);
+    if (result.skipped) return {...result,changed:[...changed]};
+    result.changed.forEach(p => changed.add(p));
+  }
+  if (install && harness==='codex') o.log('Codex: review and trust the Swarmaa inbox hooks once with /hooks.');
+  return {harness,changed:[...changed]};
+}
+export const installInboxHooks = (harness: Harness, opts: Opts) => inboxHooks(harness,true,opts);
+export const removeInboxHooks = (harness: Harness, opts: Opts) => inboxHooks(harness,false,opts);
+
 // ---- /swarm command: clients/commands/swarm.md wrapped per harness; only a file carrying COMMAND_MARKER is ever overwritten or removed ----
 // Claude Code: ~/.claude/commands/swarm.md. Codex 0.160 and Antigravity use skills (custom prompts / workflows are deprecated):
 // ~/.codex/skills/swarm/SKILL.md (`$swarm`), ~/.gemini/config/skills/swarm/SKILL.md (Antigravity global config, `/swarm`).
@@ -287,6 +332,10 @@ export async function installSwarmCommand(install: boolean, opts: { root: string
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const flags = process.argv.slice(2);
-  const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+  const root = packageRoot(dirname(fileURLToPath(import.meta.url)));
+  for (const harness of ['claude','codex','agy'] as Harness[]) {
+    const opts = {root,dry:flags.includes('--dry-run'),log:console.log,node:process.execPath};
+    for (const r of [await impl[harness](!flags.includes('--remove'),opts,homedir()),await inboxHooks(harness,!flags.includes('--remove'),opts)]) if (r.skipped) console.log(`${r.harness}: ${r.skipped}`);
+  }
   for (const r of await installSwarmCommand(!flags.includes('--remove'), { root, dry: flags.includes('--dry-run'), log: console.log })) if (r.skipped) console.log(`${r.harness}: ${r.skipped}`);
 }

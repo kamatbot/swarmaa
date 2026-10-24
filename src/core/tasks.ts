@@ -1,3 +1,4 @@
+import { taskFinished } from './inbox.js';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import type { Pool, PoolClient } from 'pg';
 import { transaction } from '../db.js';
@@ -92,6 +93,7 @@ async function taskChanged(db:PoolClient,p:Principal,row:TaskRow,action:string):
     attempt_count:row.attempt_count,lease_generation:row.lease_generation };
   await audit(db,p,row.scope,`task.${action}`,row.id,details);
   await event(db,p,row.scope,'task.updated',row.id,details);
+  await taskFinished(db,p,row);
 }
 
 async function releaseResource(db:PoolClient,row:TaskRow):Promise<void> {

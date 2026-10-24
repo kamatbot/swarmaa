@@ -4,6 +4,7 @@ import { AppError, requireCondition } from '../errors.js';
 import { hasPermission, requirePermission } from '../policy.js';
 import type { Permission, Principal, ToolBackend, ToolDefinition } from '../types.js';
 import { integer, object, optionalString, scopeName, string, uuid } from '../validation.js';
+import { InboxService } from './inbox.js';
 import { LESSON_GUIDANCE, LessonService } from './lessons.js';
 import { booleanOption, MemoryService } from './memory.js';
 import { assertKnownScope, noExtraKeys } from './shared.js';
@@ -16,6 +17,7 @@ import { TOOL_PERMISSIONS, TOOLS } from './tools.js';
 const workerTools = new Set(['usage_report','task_claim','task_heartbeat','task_checkpoint','task_finish','artifact_put']);
 const ownerTools = new Set(['memory_promote','memory_retract']);
 const responseReadPermissions:Partial<Record<string,Permission>> = {
+  task_watch:'events:read',
   memory_propose:'memory:read',memory_promote:'memory:read',memory_retract:'memory:read',
   task_submit:'task:read',task_continue:'task:read',task_claim:'task:read',task_heartbeat:'task:read',
   task_checkpoint:'task:read',task_finish:'task:read',task_cancel:'task:read',
@@ -29,6 +31,7 @@ export class CoreService implements ToolBackend {
   private readonly swarm:SwarmService;
   private readonly sessions:SessionService;
   private readonly lessons:LessonService;
+  private readonly inbox:InboxService;
 
   constructor(private readonly pool:Pool) {
     this.memories = new MemoryService(pool);
@@ -36,6 +39,7 @@ export class CoreService implements ToolBackend {
     this.swarm = new SwarmService(pool);
     this.sessions = new SessionService(pool);
     this.lessons = new LessonService(pool);
+    this.inbox = new InboxService(pool);
   }
 
   listTools(principal:Principal):ToolDefinition[] {
@@ -55,6 +59,9 @@ export class CoreService implements ToolBackend {
     requireCondition(!ownerTools.has(name) || principal.role === 'admin',403,'owner_required','This operation requires an owner/admin connection.');
     const input = object(args);
     switch (name) {
+      case 'message_send': return this.inbox.send(principal,input);
+      case 'inbox_get': return this.inbox.get(principal,input);
+      case 'task_watch': return this.inbox.watch(principal,input);
       case 'context_get': return this.context(principal,input);
       case 'memory_search': return this.memories.search(principal,input);
       case 'memory_get': return this.memories.get(principal,input);
