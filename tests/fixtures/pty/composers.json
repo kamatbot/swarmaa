@@ -1,0 +1,8 @@
+{
+  "codex_idle": "\u001b[2J\u001b[HOpenAI Codex\r\n› \u001b[K\r\u001b[2C",
+  "codex_busy": "• Working (0s • esc to interrupt)",
+  "codex_login": "› \r\nSign in to Codex\u001b[1;3H",
+  "agy_idle": "\u001b[2J\u001b[HAntigravity\r\n> \r\u001b[2C",
+  "agy_busy": "Thinking (esc to cancel)",
+  "agy_login": "Welcome to the Antigravity CLI. You are currently not signed in.\r\nSelect login method:\r\n > 1. Google OAuth\r\n   2. Use a Google Cloud project\r\n↑/↓ Navigate · enter Select"
+}

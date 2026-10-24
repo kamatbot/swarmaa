@@ -133,6 +133,9 @@ ul.plain { list-style: none; display: grid; gap: 6px; }
 
     <h2 id="h-startup">Startup</h2>
     <div class="card on"><div class="row">
+      <label class="t" for="wrap-aliases"><span class="name">Show idle-wake aliases</span><div class="hint">Print optional Codex and Antigravity terminal wrapper aliases. Add them to your shell yourself.</div></label>
+      <span class="switch"><input type="checkbox" id="wrap-aliases" /></span>
+    </div><div class="row">
       <label class="t" for="autostart"><span class="name">Start at login</span><div class="hint">Keeps the database, the service and any workers running in the background.</div></label>
       <span class="switch"><input type="checkbox" id="autostart" checked /></span>
     </div></div>
@@ -258,7 +261,7 @@ function plan() {
   const hosted = sv.grok.connect.checked || sv.dot.connect.checked;
   const hookApps = {};
   for (const k of det.hookApps || []) if ($(`ha-${k}`)?.checked) hookApps[k] = { share: true };
-  return { harnesses, capture: { enabled: !!$('cap-on')?.checked }, hookApps, folders, autostart: $('autostart').checked, ...(hosted && $('remoteOn').checked ? { remote: { hostname: $('hostname').value.trim() } } : {}) };
+  return { harnesses, capture: { enabled: !!$('cap-on')?.checked }, hookApps, folders, wrapAliases: $('wrap-aliases').checked, autostart: $('autostart').checked, ...(hosted && $('remoteOn').checked ? { remote: { hostname: $('hostname').value.trim() } } : {}) };
 }
 
 let polling;

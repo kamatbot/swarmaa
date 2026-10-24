@@ -439,6 +439,8 @@ export async function runSetup(plan: SetupPlan, opts: RunOpts): Promise<SetupSum
       put(join(root, '.local/setup.json'), `${JSON.stringify(stateFile({ folders: plan.folders, projects, agents: summary.agents, workers: summary.workers, edits: summary.edits, sharing: summary.sharing, capture: captureOn, hookApps: summary.hookApps, autostart, remote: plan.remote }), null, 2)}\n`);
     });
     if (summary.agents.some(a => (CLI_KEYS as readonly string[]).includes(a))) summary.nextSteps.push('Restart Claude Code, Codex or Antigravity so they pick up the swarma MCP server.');
+    if (plan.wrapAliases) for (const k of ['codex','agy']) if (summary.agents.includes(k))
+      summary.nextSteps.push(`Optional idle wake (print only; add this yourself if swarmaa is on PATH): alias ${k}='swarmaa wrap ${k}'`);
     if (!summary.agents.length) summary.nextSteps.push('Nothing was connected. Re-run setup and switch a service on.');
   } catch (e) {
     if (!(e instanceof Abort)) { summary.ok = false; summary.error = (e as Error).message; }
@@ -630,13 +632,14 @@ async function cliMain(dry: boolean): Promise<number> {
     const capture = { enabled: found.length > 0 && await askYes(`Capture chats from other apps (${found.map(id => SOURCES.find(x => x.id === id)?.label ?? id).join(', ')}) so your agents can recall them?`, state.capture ?? true) };
     const hookApps: Record<string, { share: boolean }> = {};
     for (const k of det.hookApps ?? []) if (await askYes(`Share ${HOOK_APPS[k].label} chats across harnesses?`, state.hookApps ? state.hookApps.includes(k) : true)) hookApps[k] = { share: true };
+    const wrapAliases = ['codex','agy'].some(k => harnesses[k]?.connect) && await askYes('Print optional Codex/Antigravity idle-wake aliases (you install them yourself)?', false);
     let remote: { hostname: string } | undefined;
     if (HOSTED.some(k => harnesses[k]) && await askYes('Set up remote access with a Cloudflare Tunnel (opens Cloudflare in your browser to authorize)?', false)) {
       const h = validHostname(await ask(`Hostname on your domain${state.remote?.hostname ? ` [${state.remote.hostname}]` : ''}:`) || state.remote?.hostname || DEFAULT_HOSTNAME);
       if (h) remote = { hostname: h }; else say('  that is not a valid hostname; skipping remote access.');
     }
     const autostart = await askYes('Start Swarmaa automatically at login?', state.autostart ?? true);
-    const s = await runSetup(validatePlan({ harnesses, capture, hookApps, folders, remote, autostart }), { dry, log: say, detected: det });
+    const s = await runSetup(validatePlan({ harnesses, capture, hookApps, folders, remote, autostart, wrapAliases }), { dry, log: say, detected: det });
     printSummary(s, say);
     return s.ok ? 0 : 1;
   } finally { rl.close(); }

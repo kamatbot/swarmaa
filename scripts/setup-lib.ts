@@ -156,6 +156,8 @@ export const DEFAULT_HOSTNAME = '';
 /** `edit` is the worker's explicit opt-in to edits (needs the task:patch grant); it implies `worker`. */
 export interface HarnessPlan { connect: boolean; worker: boolean; edit: boolean; share: boolean }
 export interface SetupPlan {
+  /** Print optional idle-wake aliases; never install them or edit a shell profile. Off by default. */
+  wrapAliases?: boolean;
   harnesses: Partial<Record<HarnessKey, HarnessPlan>>;
   /** Poll chats of the other installed AI coding apps (Cursor, OpenCode, ...). Off unless the plan says so. */
   capture: { enabled: boolean };
@@ -193,7 +195,8 @@ const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object
 export function validatePlan(input: unknown): SetupPlan {
   const errors: string[] = [];
   if (!isObj(input)) throw new PlanError(['plan must be an object']);
-  for (const k of Object.keys(input)) if (!['harnesses', 'capture', 'hookApps', 'folders', 'remote', 'autostart'].includes(k)) errors.push(`unknown field "${k}"`);
+  for (const k of Object.keys(input)) if (!['harnesses', 'capture', 'hookApps', 'folders', 'remote', 'autostart', 'wrapAliases'].includes(k)) errors.push(`unknown field "${k}"`);
+  if (input.wrapAliases!==undefined && typeof input.wrapAliases!=='boolean') errors.push('wrapAliases must be true or false');
   const harnesses: SetupPlan['harnesses'] = {};
   if (!isObj(input.harnesses)) errors.push('harnesses must be an object');
   else for (const [key, v] of Object.entries(input.harnesses)) {
@@ -248,5 +251,5 @@ export function validatePlan(input: unknown): SetupPlan {
   }
   if (typeof input.autostart !== 'boolean') errors.push('autostart must be true or false');
   if (errors.length) throw new PlanError(errors);
-  return { harnesses, capture: { enabled: capture }, hookApps, folders, ...(remote ? { remote } : {}), autostart: input.autostart === true };
+  return { harnesses, capture: { enabled: capture }, hookApps, folders, ...(remote ? { remote } : {}), autostart: input.autostart === true, ...(input.wrapAliases===true ? {wrapAliases:true} : {}) };
 }

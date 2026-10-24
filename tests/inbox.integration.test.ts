@@ -238,6 +238,39 @@ describe('durable inbox', {skip:!connectionString,concurrency:false},() => {
     assert.equal(status.items[0].state,'read');
   });
 
+  it('wrapper sessions are owned, routable and record an idempotent unconfirmed verdict without downgrading acceptance',async () => {
+    const f=await fixture(),session=`wrap:codex:${randomUUID()}`;
+    await call(f.b,'inbox_poll',{session});
+    await reject(()=>call(f.a,'inbox_poll',{session}),'forbidden');
+    await send(f.a,`session:${session}`,'wrapper-only notice');
+    const item=(await call(f.b,'inbox_poll',{session})).items[0];
+    assert.equal(item.recipient_session,session);
+    const input={session,delivery_id:item.delivery_id,state:'unconfirmed'};
+    const first=await call(f.b,'inbox_ack',input),second=await call(f.b,'inbox_ack',input);
+    assert.equal(first.receipt.state,'unconfirmed'); assert.equal(first.receipt.accepted_at,null);
+    assert.equal(first.replayed,false); assert.equal(second.replayed,true);
+    assert.deepEqual(first.receipt,second.receipt);
+    await reject(()=>call(f.other,'inbox_ack',input),'not_found');
+    await reject(()=>call(f.a,'inbox_ack',input),'not_found');
+    await reject(()=>call(f.b,'inbox_ack',{...input,state:'read'}),'invalid_arguments');
+    await call(f.b,'inbox_ack',{...input,state:'accepted'});
+    assert.equal((await call(f.b,'inbox_ack',input)).receipt.state,'accepted');
+    assert.equal((await call(f.b,'inbox_poll',{session})).items.length,0);
+    await reject(()=>call(f.b,'inbox_poll',{session:'wrap:codex:bad-id'}),'invalid_arguments');
+    const agy=`wrap:agy:${randomUUID()}`;
+    assert.deepEqual((await call(f.b,'inbox_poll',{session:agy})).items,[]);
+  });
+
+  it('a wrapper summary wake leaves the full original body readable through inbox_get',async () => {
+    const f=await fixture(),session=`wrap:agy:${randomUUID()}`,body='full brief '.repeat(170);
+    await call(f.b,'inbox_poll',{session}); await send(f.a,`session:${session}`,body);
+    const item=(await call(f.b,'inbox_poll',{session})).items[0];
+    await call(f.b,'inbox_ack',{session,delivery_id:item.delivery_id,state:'unconfirmed'});
+    const read=(await call(f.b,'inbox_get',{session})).items[0];
+    assert.equal(read.body,body); assert.equal(read.state,'read');
+    assert.equal((await call(f.b,'inbox_poll',{session})).items.length,0);
+  });
+
   it('receipt lookup, acknowledgment and status isolate tenants, principals, scopes and task permissions',async () => {
     const f=await fixture(),task=await submit(f.a); await send(f.a,'b','private',{task_id:task.id});
     const session='agy:private', item=(await call(f.b,'inbox_poll',{session})).items[0];
