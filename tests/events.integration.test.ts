@@ -155,7 +155,7 @@ test('generic task sinks deliver only terminal states as a small signed summary 
   const pool = new pg.Pool({ connectionString, options: `-c search_path=${schema},public`, max: 8 });
   let service: EventService | undefined;
   t.after(async () => { await service?.stop(); await pool.end(); await admin.query(`DROP SCHEMA ${schema} CASCADE`); await admin.end(); });
-  for (const migration of ['001_identity.sql', '002_core.sql', '003_oauth.sql', '004_events.sql', '017_event_subscription_cursor.sql','018_events_xid.sql']) {
+  for (const migration of ['001_identity.sql', '002_core.sql', '019_inbox.sql', '020_inbox_receipts.sql', '003_oauth.sql', '004_events.sql', '017_event_subscription_cursor.sql','018_events_xid.sql']) {
     await pool.query(await readFile(new URL(`../db/migrations/${migration}`, import.meta.url), 'utf8'));
   }
   const principal: Principal = { id: randomUUID(), tenantId: 'events-generic', name: 'grok', role: 'frontend', credentialVersion: 1,
@@ -169,6 +169,13 @@ test('generic task sinks deliver only terminal states as a small signed summary 
     async (url, body, headers) => { sent.push({ url, body, headers }); return { status: 202, body: '' }; });
   await service.registerGeneric(principal, { scope: 'project:alpha', name: 'task.updated', url: 'https://receiver.example/hook', headers: { Authorization: 'Bearer test-token' } });
   const taskId = randomUUID();
+  await pool.query(`INSERT INTO tasks(id,tenant_id,scope,kind,objective,permission_envelope,required_capability,status,created_by,idempotency_key,request_hash)
+    VALUES($1,$2,'project:alpha','research','Receipt fixture','{}','claude.read','completed',$3,'fixture','fixture')`,[taskId,principal.tenantId,principal.id]);
+  const inbox=await pool.query(`INSERT INTO inbox(id,tenant_id,recipient_principal,kind,scope,task_id,from_principal,body)
+    VALUES(gen_random_uuid(),$1,$2,'message','project:alpha',$3,$2,'private sink body') RETURNING delivery_id`,[principal.tenantId,principal.id,taskId]);
+  await pool.query(`INSERT INTO inbox_receipts(delivery_id,session,state,offers,accepted_at,confirm_by)
+    VALUES($1,'claude:accepted','accepted',1,clock_timestamp(),NULL),
+      ($1,'codex:stuck','offered',3,NULL,clock_timestamp()-interval '1 second')`,[inbox.rows[0].delivery_id]);
   const emit = (status: string) => pool.query('INSERT INTO events(id,tenant_id,scope,name,subject_id,payload) VALUES($1,$2,$3,$4,$5,$6::jsonb)',
     [randomUUID(), principal.tenantId, 'project:alpha', 'task.updated', taskId, JSON.stringify({ task_id: taskId, status, action: status })]);
   await emit('queued'); await emit('running'); await emit('completed');
@@ -176,8 +183,12 @@ test('generic task sinks deliver only terminal states as a small signed summary 
   await eventually(async () => (await pool.query("SELECT 1 FROM event_deliveries WHERE state IN ('pending','sending')")).rowCount === 0 && sent.length > 0, 'deliveries to settle');
   assert.equal(sent.length, 1, 'queued and running are skipped');
   const body = JSON.parse(sent[0]!.body) as Record<string, unknown>;
-  assert.deepEqual(Object.keys(body).sort(), ['completed_at', 'event', 'event_id', 'kind', 'provider', 'scope', 'status', 'task_id', 'title']);
+  assert.deepEqual(Object.keys(body).sort(), ['completed_at', 'event', 'event_id', 'inbox_receipts', 'kind', 'provider', 'scope', 'status', 'task_id', 'title']);
   assert.deepEqual([body.event, body.task_id, body.scope, body.status], ['task.completed', taskId, 'project:alpha', 'completed']);
+  assert.deepEqual(body.inbox_receipts,{offered:0,accepted:1,unconfirmed:1,read:0,stuck:1});
+  assert.ok(!sent[0]!.body.includes('private sink body'));
+  assert.ok(!sent[0]!.body.includes('claude:accepted'));
+  assert.ok(!sent[0]!.body.includes('body'));
   const h = sent[0]!.headers;
   assert.equal(h.Authorization, 'Bearer test-token', 'owner header sent as given');
   assert.equal(h['X-Collective-Event-Id'], body.event_id);
@@ -199,7 +210,7 @@ test('event delivery is bounded-concurrent with per-host limits so a slow sink d
   const pool = new pg.Pool({ connectionString, options: `-c search_path=${schema},public`, max: 8 });
   let service: EventService | undefined;
   t.after(async () => { await service?.stop(); await pool.end(); await admin.query(`DROP SCHEMA ${schema} CASCADE`); await admin.end(); });
-  for (const migration of ['001_identity.sql', '002_core.sql', '003_oauth.sql', '004_events.sql', '017_event_subscription_cursor.sql','018_events_xid.sql']) {
+  for (const migration of ['001_identity.sql', '002_core.sql', '019_inbox.sql', '020_inbox_receipts.sql', '003_oauth.sql', '004_events.sql', '017_event_subscription_cursor.sql','018_events_xid.sql']) {
     await pool.query(await readFile(new URL(`../db/migrations/${migration}`, import.meta.url), 'utf8'));
   }
   const principal: Principal = {

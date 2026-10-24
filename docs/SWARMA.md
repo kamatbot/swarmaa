@@ -195,7 +195,7 @@ Removing a client: `claude mcp remove -s user swarma`, `codex mcp remove swarma`
 
 ## Inbox notifications between agents
 
-After applying migration `019_inbox.sql`, setup installs inbox hooks for each connected Claude Code, Codex
+After applying migrations `019_inbox.sql` and `020_inbox_receipts.sql`, setup installs inbox hooks for each connected Claude Code, Codex
 and Antigravity CLI, independently of optional chat sharing. `npx tsx scripts/hooks-install.ts` installs the
 journal, inbox and `/swarm` files; `--remove` removes only these owned entries, and `--dry-run` previews them.
 Codex requires one-time review and trust through `/hooks`; the installer never bypasses it.
@@ -214,5 +214,16 @@ are labeled as untrusted data and context is capped below 10,000 characters (fou
 - Antigravity PreInvocation returns an ephemeral injected step; Stop continues only when pending data exists.
 
 For explicit routing use `message_send`; to watch a task from Codex or Antigravity, call `task_watch` with
-the harness-prefixed session ID. A principal-wide notification can go to any session of that identity;
-explicit session watchers receive their own item. Delivery is not acknowledgment of model acceptance.
+the harness-prefixed session ID. A principal-wide notification is tracked independently for each session of that identity;
+explicit session watchers receive their own item.
+
+Hooks reserve an `offered` receipt before output. The wrapper waits for its output-only child to exit 0 (step)
+or 2 (Claude wake), then sends `inbox_ack` with the stable delivery ID. A small private acceptance journal retains
+IDs when the acknowledgment response is lost; later hooks reconcile those IDs before fetching or printing more.
+Codex Stop's informational output is not accepted until the next model-visible step prints its cached batch.
+Before using that cache, the hook rechecks access and receipt state with a read-only lookup; accepted/read or
+stuck items are discarded without printing.
+A crash before local confirmation remains unconfirmed; after 30 seconds the server permits at most two re-offers,
+then shows the receipt as stuck in `swarm_status`. Acceptance means successful output, not model comprehension.
+Use `inbox_get` or `task_get` with `session` to record an agent read in that session. Exact `delivery_id` lookups
+return receipt metadata without redelivery. Dashboard and sink receipt summaries never include message bodies.

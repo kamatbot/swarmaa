@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Inbox bodies are untrusted data. Hooks are bounded, silent on errors and never run body text as commands.
+import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, realpathSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, rmdirSync } from 'node:fs';
+import { existsSync, realpathSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, rmdirSync, renameSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -73,7 +74,7 @@ async function request(origin,token,path,body,signal) {
   return JSON.parse(text).result;
 }
 
-export async function run(harness,event,payload,{root=resolve(dirname(fileURLToPath(import.meta.url)),'../..'),home=homedir(),signal,waitMs=30*60*1000}={}) {
+export async function run(harness,event,payload,{root=resolve(dirname(fileURLToPath(import.meta.url)),'../..'),home=homedir(),signal,waitMs=30*60*1000,emit}={}) {
   let release;
   try {
     const session=sessionKey(harness,payload);
@@ -84,9 +85,41 @@ export async function run(harness,event,payload,{root=resolve(dirname(fileURLToP
     try { port=readPort(readFileSync(join(root,'.env'),'utf8')); } catch { /* launcher default */ }
     const origin=`http://127.0.0.1:${port}`, dir=sessionDirectory(home,session);
     const call=(name,body,s) => request(origin,token,`/api/tools/${name}`,body,s);
+    const accepted=join(dir,'accepted.json');
+    const saveAccepted=ids => {
+      const temp=join(dir,`accepted-${process.pid}.tmp`);
+      writeFileSync(temp,JSON.stringify(ids),{mode:0o600}); renameSync(temp,accepted);
+    };
+    const flush=async s => {
+      const ids=readJson(accepted);
+      if (!Array.isArray(ids) || !ids.length) return;
+      const pending=join(dir,'pending.json'), saved=readJson(pending);
+      if (Array.isArray(saved?.items)) {
+        const items=saved.items.filter(item => !ids.includes(item.delivery_id));
+        if (items.length) writeFileSync(pending,JSON.stringify({items}),{mode:0o600});
+        else unlinkSync(pending);
+      }
+      for (const delivery_id of ids) await call('inbox_ack',{session,delivery_id},s);
+      unlinkSync(accepted);
+    };
+    const deliver=async(items,output,s,pending) => {
+      if (!emit) return output;
+      // The output-only child must finish successfully before we acknowledge transport acceptance.
+      await emit(output);
+      const ids=items.slice(0,4).filter(x => typeof x?.body==='string').map(x => x.delivery_id);
+      try {
+        saveAccepted(ids);
+        if (pending && existsSync(pending)) unlinkSync(pending);
+        await flush(s);
+      } catch { /* retain IDs across an uncertain acknowledgment; a failed local write remains unconfirmed */ }
+      return output;
+    };
     if (harness==='claude' && event==='Stop') {
       release=acquireLock(dir);
       if (!release) return null;
+      const startRelease=acquireLock(dir,'step');
+      if (!startRelease) return null;
+      try { await flush(AbortSignal.timeout(2000)); } finally { startRelease(); }
       const deadline=Date.now()+Math.min(waitMs,30*60*1000);
       for (let polls=0;polls<72;polls++) {
         const remaining=deadline-Date.now();
@@ -95,7 +128,12 @@ export async function run(harness,event,payload,{root=resolve(dirname(fileURLToP
         const result=await request(origin,token,`/api/inbox/wait?session=${encodeURIComponent(session)}&timeout=${Math.min(25,Math.ceil(remaining/1000))}`,null,pollSignal);
         if (!Array.isArray(result?.items)) return null;
         const text=formatItems(result.items);
-        if (text) return {wake:text};
+        if (text) {
+          const outputRelease=acquireLock(dir,'step');
+          if (!outputRelease) return null;
+          try { return await deliver(result.items,{wake:text},AbortSignal.timeout(2000)); }
+          finally { outputRelease(); }
+        }
       }
       return null;
     }
@@ -107,17 +145,52 @@ export async function run(harness,event,payload,{root=resolve(dirname(fileURLToP
     }
     release=acquireLock(dir,'step');
     if (!release) return null;
+    await flush(budget);
     const pending=join(dir,'pending.json');
     const saved=harness==='codex' ? readJson(pending) : null;
     // Codex Stop supports UI messages, not model context. Keep the claimed batch for the next step.
-    const result=saved?.items?.length ? saved : await call('inbox_get',{session,limit:4},budget);
+    if (saved?.items?.length && event==='Stop') return null;
+    let result;
+    if (saved?.items?.length) {
+      const items=[];
+      for (const item of saved.items.slice(0,4)) {
+        if (typeof item.delivery_id!=='string') continue;
+        const lookup=await call('inbox_poll',{session,delivery_id:item.delivery_id},budget);
+        const receipt=lookup?.items?.find(r => r.delivery_id===item.delivery_id);
+        if (receipt && ['offered','unconfirmed'].includes(receipt.state) && !receipt.stuck) items.push(item);
+      }
+      if (!items.length) { unlinkSync(pending); return null; }
+      result={items};
+    } else result=await call('inbox_poll',{session,limit:4},budget);
     const text=formatItems(result?.items);
     if (!text) return null;
-    if (harness==='codex' && event==='Stop') writeFileSync(pending,JSON.stringify({items:result.items}),{mode:0o600});
-    else if (harness==='codex' && existsSync(pending)) unlinkSync(pending);
-    return injection(harness,event,text);
+    const output=injection(harness,event,text);
+    if (harness==='codex' && event==='Stop') {
+      writeFileSync(pending,JSON.stringify({items:result.items}),{mode:0o600});
+      if (emit) await emit(output);
+      return output;
+    }
+    if (!emit && saved) unlinkSync(pending);
+    return await deliver(result.items,output,budget,pending);
   } catch { return null; }
   finally { release?.(); }
+}
+
+/** The parent observes the output process exit, rather than claiming its own future exit succeeded. */
+export async function emitOutput(output) {
+  const wake=typeof output.wake==='string', data=wake ? `${output.wake}\n` : `${JSON.stringify(output)}\n`;
+  await new Promise((resolve,reject) => {
+    const child=spawn(process.execPath,['--input-type=module','-e',`
+      let data=''; for await (const chunk of process.stdin) data+=chunk;
+      const stream=process.argv[1]==='wake' ? process.stderr : process.stdout;
+      stream.on('error',()=>{process.exitCode=1;});
+      stream.write(data,error=>{process.exitCode=error ? 1 : process.argv[1]==='wake' ? 2 : 0;});
+    `,wake ? 'wake' : 'step'],{env:{},stdio:['pipe','inherit','inherit'],timeout:1000});
+    child.once('error',reject);
+    child.stdin.on('error',reject);
+    child.once('close',code => code===(wake ? 2 : 0) ? resolve() : reject(new Error('inbox output failed')));
+    child.stdin.end(data);
+  });
 }
 
 async function main() {
@@ -131,9 +204,8 @@ async function main() {
     const stdinTimer=setTimeout(() => process.stdin.destroy(),500);
     try { for await (const chunk of process.stdin) { input+=chunk; if (input.length>1024*1024) return; } }
     finally { clearTimeout(stdinTimer); }
-    const output=await run(harness,event,JSON.parse(input),{signal:abort.signal});
-    if (output?.wake) { process.stderr.write(`${output.wake}\n`); process.exitCode=2; }
-    else if (output) process.stdout.write(`${JSON.stringify(output)}\n`);
+    const output=await run(harness,event,JSON.parse(input),{signal:abort.signal,emit:emitOutput});
+    if (output?.wake) process.exitCode=2;
   } catch { /* hooks never expose errors or credentials */ }
   finally { clearTimeout(timer); }
 }

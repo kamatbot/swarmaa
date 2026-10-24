@@ -54,7 +54,7 @@ export async function waitForInbox(pool:Pool,core:ToolBackend,principal:Principa
       if (failed) throw new AppError(503,'inbox_unavailable','Inbox listener disconnected. Retry the request.');
       const fresh = await refresh();
       if (fresh.id!==principal.id || fresh.tenantId!==principal.tenantId) throw new AppError(401,'unauthorized','Connection changed.');
-      const result = await core.call(fresh,'inbox_get',{session}) as {items:unknown[]};
+      const result = await core.call(fresh,'inbox_poll',{session}) as {items:unknown[]};
       if (result.items.length || Date.now()>=deadline) return result;
       if (!changed) await new Promise<void>(done => { resolve=done; });
       resolve=undefined;

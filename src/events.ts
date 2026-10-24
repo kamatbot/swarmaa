@@ -1,5 +1,6 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import type { Pool } from 'pg';
+import { inboxStatus } from './core/inbox-status.js';
 import { transaction } from './db.js';
 import { AppError, requireCondition } from './errors.js';
 import { narrowGrant } from './oauth.js';
@@ -330,7 +331,8 @@ export class EventService implements EventBackend {
           "SELECT kind,objective,result->>'provider' AS provider,updated_at FROM tasks WHERE id=$1 AND tenant_id=$2", [sub.subject_id, sub.tenant_id])).rows[0];
         body = JSON.stringify({ event: `task.${status}`, event_id: delivery.event_id, task_id: sub.subject_id, scope: sub.scope, kind: task?.kind ?? null,
           status, provider: task?.provider ?? null, completed_at: (task?.updated_at ?? sub.event_created_at).toISOString(),
-          title: (task?.objective ?? '').replace(/\s+/gu, ' ').trim().slice(0, 120) });
+          title: (task?.objective ?? '').replace(/\s+/gu, ' ').trim().slice(0, 120),
+          inbox_receipts: (await inboxStatus(this.pool,principal,false,[sub.scope],sub.subject_id)).counts });
       }
       const secret = this.box.decrypt(sub.secret_ciphertext, sub.id);
       const old = sub.previous_secret_ciphertext && sub.previous_secret_until && sub.previous_secret_until.getTime() > Date.now() ? this.box.decrypt(sub.previous_secret_ciphertext, sub.id) : undefined;
