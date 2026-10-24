@@ -14,6 +14,8 @@ export async function runBoundedProcess(request: ProcessRequest): Promise<Proces
     let bytes = 0;
     let stopReason: ProcessResult['stop_reason'] = null;
     let settled = false;
+    let spawned = false;
+    let inputFlushed = false;
     let killTimer: ReturnType<typeof setTimeout> | undefined;
     let finalTimer: ReturnType<typeof setTimeout> | undefined;
     const signalGroup = (signal: NodeJS.Signals): void => {
@@ -32,7 +34,8 @@ export async function runBoundedProcess(request: ProcessRequest): Promise<Proces
       // A child could exit while a descendant retained its pipes. Do not leave it behind.
       signalGroup('SIGKILL');
       child.stdin.destroy(); child.stdout.destroy(); child.stderr.destroy();
-      resolve({ exit_code: exitCode, signal, stdout: Buffer.concat(output).toString('utf8'), stderr: Buffer.concat(errors).toString('utf8'), duration_ms: Date.now() - started, stop_reason: stopReason });
+      resolve({ exit_code: exitCode, signal, stdout: Buffer.concat(output).toString('utf8'), stderr: Buffer.concat(errors).toString('utf8'), duration_ms: Date.now() - started, stop_reason: stopReason,
+        input_delivered: spawned && (request.input === '' || inputFlushed) });
     };
     const stop = (reason: NonNullable<ProcessResult['stop_reason']>): void => {
       if (stopReason || settled) return;
@@ -53,10 +56,12 @@ export async function runBoundedProcess(request: ProcessRequest): Promise<Proces
     child.stdout.on('data', (chunk: Buffer) => collect(output, chunk));
     child.stderr.on('data', (chunk: Buffer) => collect(errors, chunk));
     child.once('error', () => { stopReason = 'spawn_error'; finish(null, null); });
+    child.once('spawn', () => { spawned = true; });
     child.once('close', (code, signal) => finish(code, signal));
     child.stdin.on('error', () => { /* EPIPE when provider exits early is reflected by exit status. */ });
     request.signal?.addEventListener('abort', abort, { once: true });
     if (request.signal?.aborted) abort();
-    child.stdin.end(request.input, 'utf8');
+    // A successful pipe flush is a process-boundary receipt, not proof the provider consumed it.
+    child.stdin.end(request.input, 'utf8', (error?:Error|null) => { if (!error) inputFlushed = true; });
   });
 }

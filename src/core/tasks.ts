@@ -8,6 +8,7 @@ import { enumValue, integer, object, optionalString, scopeName, string, strings,
 import { assertKnownScope, audit, canonicalJson, event, jsonObject, newId, noExtraKeys, requireFound, scopeLock, scopeSql, sha256, uuidArray, type Db } from './shared.js';
 import { decideAll, getPolicy, policyAllows, scopeUsage, type RoutingKind } from './routing.js';
 import { AUTO_PATCH, AUTO_READ, touchWorker, workerProviders } from './swarm.js';
+import { workflowTaskDeadline, workflowTaskEligible } from './workflow-authorization.js';
 
 export const TASK_KINDS = ['research','review','patch'] as const;
 export const TASK_STATUSES = ['queued','running','blocked','completed','failed','cancelled'] as const;
@@ -16,6 +17,7 @@ export interface TaskRow {
   id:string; tenant_id:string; scope:string; kind:TaskKind; objective:string;
   constraints:string[]; acceptance_criteria:string[]; permission_envelope:Record<string,unknown>;
   required_capability:string; resource_key:string|null; base_ref:string|null; context_refs:string[]; context_versions:Record<string,number>;
+  workflow_id?:string|null; workflow_step?:string|null;
   status:typeof TASK_STATUSES[number]; version:number; created_by:string; idempotency_key:string; request_hash:string;
   attempt_count:number; max_attempts:number; continuation_count:number; lease_generation:number;
   lease_owner:string|null; lease_hash:string|null; lease_expires_at:Date|null;
@@ -57,6 +59,7 @@ export function taskView(row:TaskRow):Record<string,unknown> {
   return { id:row.id, scope:row.scope, kind:row.kind, objective:row.objective, constraints:row.constraints,
     acceptance_criteria:row.acceptance_criteria, permission_envelope:row.permission_envelope,
     required_capability:row.required_capability, resource_key:row.resource_key, base_ref:row.base_ref,
+    workflow_id:row.workflow_id ?? null, workflow_step:row.workflow_step ?? null,
     context_refs:row.context_refs, context_versions:row.context_versions, status:row.status, version:row.version,
     created_by:row.created_by, attempt_count:row.attempt_count, max_attempts:row.max_attempts,
     continuation_count:row.continuation_count, lease_generation:row.lease_generation,
@@ -81,15 +84,16 @@ export async function findTask(db:Db,p:Principal,id:string,lock=false):Promise<T
 }
 
 /** All queue/resource mutations acquire scope then task locks, including retraction of context references. */
-async function lockedTask(db:PoolClient,p:Principal,id:string):Promise<TaskRow> {
+export async function lockedTask(db:PoolClient,p:Principal,id:string):Promise<TaskRow> {
   const visible = await findTask(db,p,id);
   await scopeLock(db,'tasks',p,visible.scope);
   return findTask(db,p,id,true);
 }
 
-async function taskChanged(db:PoolClient,p:Principal,row:TaskRow,action:string):Promise<void> {
+export async function taskChanged(db:PoolClient,p:Principal,row:TaskRow,action:string):Promise<void> {
   const details = { task_id:row.id,version:row.version,status:row.status,action,
-    attempt_count:row.attempt_count,lease_generation:row.lease_generation };
+    attempt_count:row.attempt_count,lease_generation:row.lease_generation,
+    ...(row.workflow_id ? {workflow_id:row.workflow_id,workflow_step:row.workflow_step} : {}) };
   await audit(db,p,row.scope,`task.${action}`,row.id,details);
   await event(db,p,row.scope,'task.updated',row.id,details);
 }
@@ -112,12 +116,13 @@ async function retireResource(db:PoolClient,row:TaskRow):Promise<void> {
 }
 
 /** Checks the database clock after waiting for locks; application-host clocks cannot revive a lease. */
-async function requireLease(db:PoolClient,p:Principal,row:TaskRow,lease:LeaseInput):Promise<void> {
+export async function requireLease(db:PoolClient,p:Principal,row:TaskRow,lease:LeaseInput):Promise<void> {
   worker(p);
   requireCondition(row.status === 'running' && row.lease_owner === p.id && row.lease_generation === lease.generation
     && sameHash(row.lease_hash,sha256(lease.token)),409,'lease_lost','Worker no longer owns this task lease.');
   const time = await db.query<{live:boolean}>('SELECT $1::timestamptz>clock_timestamp() AS live',[row.lease_expires_at]);
   requireCondition(time.rows[0]?.live,409,'lease_lost','Task lease expired; claim again instead of reviving it.');
+  requireCondition(await workflowTaskEligible(db,p,row),409,'lease_lost','This workflow is no longer authorized, active, or within its deadline.');
   if (row.kind === 'patch') {
     requireCondition(hasPermission(p,'task:patch'),403,'forbidden','This worker no longer has task:patch permission.');
     if (row.resource_key === null) return;
@@ -154,6 +159,7 @@ export class TaskService {
     const objective = string(input.objective,'objective',16000);
     requireCondition(Buffer.byteLength(objective)<=32768,400,'invalid_arguments','objective exceeds 32 KiB in UTF-8.');
     const idempotency = string(input.idempotency_key,'idempotency_key',200);
+    requireCondition(!idempotency.startsWith('workflow:'),400,'invalid_arguments','The workflow: idempotency namespace is reserved for workflow_submit.');
     const capability = string(input.required_capability,'required_capability',128);
     requireCondition((VALID_CAPABILITIES as readonly string[]).includes(capability),400,'unknown_capability',`Unknown required_capability. Valid: ${VALID_CAPABILITIES.join(', ')}.`);
     const resource = optionalString(input.resource_key,'resource_key',240) ?? null;
@@ -162,7 +168,7 @@ export class TaskService {
     requireCondition(!capability.endsWith('.patch') || kind === 'patch',400,'invalid_arguments',`${capability} takes patch tasks only; use a .read capability for ${kind}.`);
     requireCondition(!capability.endsWith('.read') || kind !== 'patch',400,'invalid_arguments',`${capability} is read-only; use auto.patch or <provider>.patch for patch tasks.`);
     const baseRef = optionalString(input.base_ref,'base_ref',200) ?? null;
-    requireCondition(baseRef === null || kind === 'patch',400,'invalid_arguments','base_ref applies to patch tasks only.');
+    requireCondition(baseRef === null || kind === 'patch' || /^[a-f0-9]{40}$/u.test(baseRef),400,'invalid_arguments','Read tasks require a full lowercase 40-character commit SHA for base_ref.');
     requireCondition(baseRef === null || (/^[A-Za-z0-9._\/-]+$/u.test(baseRef) && !baseRef.startsWith('-') && !baseRef.includes('..')),400,'invalid_arguments','base_ref must be a git ref using letters, digits, . _ / - with no leading - and no "..".');
     const constraints = input.constraints === undefined ? [] : strings(input.constraints,'constraints',30,1000);
     const acceptance = input.acceptance_criteria === undefined ? [] : strings(input.acceptance_criteria,'acceptance_criteria',30,1000);
@@ -257,6 +263,7 @@ export class TaskService {
     const requestHash = sha256(canonicalJson({instruction,expected_version:expected}));
     return transaction(this.pool,async db => {
       const row = await lockedTask(db,p,id);
+      requireCondition(!row.workflow_id,409,'workflow_managed','Workflow steps cannot be continued independently. Submit a new bounded workflow or cancel the whole run.');
       const existing = await db.query<{request_hash:string}>(`SELECT request_hash FROM task_instructions
         WHERE task_id=$1 AND actor_id=$2 AND idempotency_key=$3`,[id,p.id,key]);
       if (existing.rows[0]) {
@@ -321,8 +328,16 @@ export class TaskService {
 
   private async claimScope(p:Principal,scope:string,capabilities:string[],kinds:TaskKind[],seconds:number) {
     return transaction(this.pool,async db => {
+      // Capacity is shared across every project served by this worker. Serialize claims for
+      // the same identity before taking scope locks; two bridge processes cannot oversubscribe it.
+      await scopeLock(db,'worker-capacity',p,'',p.id);
       await scopeLock(db,'tasks',p,scope);
       await touchWorker(db,p);
+      const capacity = await db.query<{slots:number;busy:number}>(`SELECT coalesce(w.worker_slots,1) AS slots,
+          (SELECT count(*)::int FROM tasks t WHERE t.tenant_id=w.tenant_id AND t.lease_owner=w.id
+            AND t.status='running' AND t.lease_expires_at>clock_timestamp()) AS busy
+        FROM principals w WHERE w.id=$1 AND w.tenant_id=$2 AND w.role='worker' AND NOT w.disabled FOR SHARE OF w`,[p.id,p.tenantId]);
+      if (!capacity.rows[0] || capacity.rows[0].busy>=capacity.rows[0].slots) return {task:null};
       // The owner's routing policy decides, per kind, which provider takes auto.read work; explicit
       // capabilities still obey the policy's enabled flag and allowed kinds.
       const served = workerProviders(capabilities);
@@ -364,11 +379,15 @@ export class TaskService {
       }
       const candidates = await db.query<TaskRow>(`SELECT * FROM tasks WHERE tenant_id=$1 AND scope=$2 AND status='queued'
         AND attempt_count<max_attempts AND required_capability=ANY($3::text[]) AND kind=ANY($4::text[])
+        AND (workflow_id IS NULL OR EXISTS (SELECT 1 FROM workflow_steps s
+          WHERE s.task_id=tasks.id AND s.workflow_id=tasks.workflow_id AND s.activated_at IS NOT NULL))
         AND (kind<>'patch' OR NOT EXISTS (SELECT 1 FROM task_resource_leases r WHERE r.tenant_id=tasks.tenant_id
           AND r.scope=tasks.scope AND r.resource_key=tasks.resource_key AND r.expires_at>clock_timestamp()))
         ORDER BY created_at,id LIMIT 100 FOR UPDATE SKIP LOCKED`,[p.tenantId,scope,capabilities,kinds]);
       for (const row of candidates.rows) {
         if (!eligible(row)) continue;
+        if (!(await workflowTaskEligible(db,p,row))) continue;
+        const deadline = await workflowTaskDeadline(db,row);
         const generation = row.lease_generation+1;
         if (row.kind === 'patch' && row.resource_key !== null) {
           const resource = await db.query(`INSERT INTO task_resource_leases
@@ -384,8 +403,9 @@ export class TaskService {
         const hash = sha256(token);
         const updated = await db.query<TaskRow>(`UPDATE tasks SET status='running',version=version+1,
           attempt_count=attempt_count+1,lease_generation=$2,lease_owner=$3,lease_hash=$4,
-          lease_expires_at=clock_timestamp()+$5::integer*interval '1 second',updated_at=clock_timestamp(),completed_at=NULL
-          WHERE id=$1 RETURNING *`,[row.id,generation,p.id,hash,seconds]);
+          lease_expires_at=LEAST(clock_timestamp()+$5::integer*interval '1 second',$6::timestamptz),updated_at=clock_timestamp(),completed_at=NULL
+          WHERE id=$1 AND ($6::timestamptz IS NULL OR $6>clock_timestamp()) RETURNING *`,[row.id,generation,p.id,hash,seconds,deadline]);
+        if (!updated.rows[0]) continue;
         const next = updated.rows[0]!;
         // Use exactly the task's expiry for the resource; the two clocks must not diverge.
         if (row.kind === 'patch') await db.query(`UPDATE task_resource_leases SET expires_at=$4
@@ -397,7 +417,8 @@ export class TaskService {
         const auto = row.required_capability === AUTO_READ || row.required_capability === AUTO_PATCH;
         const d = auto ? decisions?.[row.kind as RoutingKind] : undefined;
         const route = auto ? {provider:d?.provider ?? null,allowed:policy.providers.filter(x => x.enabled && (x.kinds as string[]).includes(row.kind)).map(x => x.provider)} : undefined;
-        return {task:await taskWithInstructions(db,next),lease_token:token,lease_generation:generation,...(route ? {route} : {})};
+        const remaining = await db.query<{ms:number}>(`SELECT GREATEST(0,FLOOR(EXTRACT(EPOCH FROM ($1::timestamptz-clock_timestamp()))*1000))::int AS ms`,[next.lease_expires_at]);
+        return {task:await taskWithInstructions(db,next),lease_token:token,lease_generation:generation,lease_remaining_ms:remaining.rows[0]!.ms,...(route ? {route} : {})};
       }
       return {task:null};
     });
@@ -411,15 +432,17 @@ export class TaskService {
       const row = await lockedTask(db,p,lease.taskId);
       await requireLease(db,p,row,lease);
       await touchWorker(db,p);
+      const deadline = await workflowTaskDeadline(db,row);
       const updated = await db.query<TaskRow>(`UPDATE tasks SET
-        lease_expires_at=clock_timestamp()+$2::integer*interval '1 second'
-        WHERE id=$1 AND lease_expires_at>clock_timestamp() RETURNING *`,[row.id,seconds]);
+        lease_expires_at=LEAST(clock_timestamp()+$2::integer*interval '1 second',$3::timestamptz)
+        WHERE id=$1 AND lease_expires_at>clock_timestamp() AND ($3::timestamptz IS NULL OR $3>clock_timestamp()) RETURNING *`,[row.id,seconds,deadline]);
       requireCondition(updated.rows[0],409,'lease_lost','Lease expired before renewal.');
       const next = updated.rows[0];
       if (next.kind === 'patch') await db.query(`UPDATE task_resource_leases SET expires_at=$4
         WHERE tenant_id=$1 AND scope=$2 AND task_id=$3 AND generation=$5`,[p.tenantId,next.scope,next.id,next.lease_expires_at,next.lease_generation]);
       // Heartbeats do not change semantic versions or emit an event for every timer tick.
-      return {task:await taskWithInstructions(db,next)};
+      const remaining = await db.query<{ms:number}>(`SELECT GREATEST(0,FLOOR(EXTRACT(EPOCH FROM ($1::timestamptz-clock_timestamp()))*1000))::int AS ms`,[next.lease_expires_at]);
+      return {task:await taskWithInstructions(db,next),lease_remaining_ms:remaining.rows[0]!.ms};
     });
   }
 
@@ -481,6 +504,7 @@ export class TaskService {
     const expected = expectedVersion(input.expected_version);
     return transaction(this.pool,async db => {
       const row = await lockedTask(db,p,id);
+      requireCondition(!row.workflow_id,409,'workflow_managed','Cancel a managed step through workflow_cancel so the run and its other steps stay consistent.');
       requireCondition(row.version === expected,409,'version_conflict','Task changed; read it before cancelling.');
       if (row.status === 'cancelled') return {task:await taskWithInstructions(db,row)};
       await db.query(`UPDATE task_runs SET status='cancelled',ended_at=clock_timestamp()

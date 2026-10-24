@@ -8,9 +8,10 @@ import { parseBridgeConfig } from '../src/bridge/config.js';
 import type { ProcessResult, Task, ToolClient } from '../src/bridge/types.js';
 import { BridgeWorker } from '../src/bridge/worker.js';
 import { ARTIFACT_MAX_BYTES } from '../src/types.js';
+import { SANDBOX_EXEC } from '../src/bridge/sandbox.js';
 
 const git = (cwd: string, ...a: string[]) => execFileSync('git', ['-C', cwd, ...a], { encoding: 'utf8', env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null' } }).trim();
-const ok: ProcessResult = { exit_code: 0, signal: null, stdout: '{"type":"turn.completed"}', stderr: '', duration_ms: 1, stop_reason: null };
+const ok: ProcessResult = { exit_code: 0, signal: null, stdout: '{"type":"turn.completed"}', stderr: '', duration_ms: 1, stop_reason: null, input_delivered: true };
 const ID = '12345678-1111-4111-8111-111111111111';
 const BRANCH = 'swarmaa/codex/12345678';
 const LEGACY_BRANCH = 'swarma/codex/12345678';
@@ -21,7 +22,7 @@ function setup() {
   mkdirSync(root);
   git(root, 'init', '-q', '-b', 'main'); git(root, 'config', 'user.email', 't@t'); git(root, 'config', 'user.name', 't');
   writeFileSync(join(root, 'a.txt'), 'one\n'); git(root, 'add', '-A'); git(root, 'commit', '-qm', 'one');
-  const cfg = parseBridgeConfig({ service_url: 'http://localhost:8080', agents: [{ id: 'codex', provider: 'codex', binary: '/bin/codex', enable_patch: true, sandbox: false }],
+  const cfg = parseBridgeConfig({ service_url: 'http://localhost:8080', agents: [{ id: 'codex', provider: 'codex', binary: '/bin/codex', enable_patch: true, sandbox: true }],
     projects: [{ scope: 'project:demo', root, agents: ['codex'], allow_patch: true }] });
   const task: Task = { id: ID, scope: 'project:demo', kind: 'patch', objective: 'Edit things', constraints: [], acceptance_criteria: [], resource_key: null,
     required_capability: 'codex.patch', checkpoint: null, context_refs: [], version: 1 };
@@ -32,6 +33,9 @@ function setup() {
       calls.push({ name, args });
       if (name === 'task_claim') return { task, lease_token: 'l', lease_generation: 1 } as T;
       if (name === 'context_get') return { scope: task.scope, task, memories: [], conflicts: [] } as T;
+      if (name === 'task_handoff') return { handoff: { task, untrusted: true } } as T;
+      if (name === 'task_message_pull') return { batch_id: '33333333-3333-4333-8333-333333333333', messages: [], has_more: false, guidance: 'Quoted task context.' } as T;
+      if (name === 'task_message_ack') return { acknowledged: true } as T;
       if (name === 'artifact_put') {
         if (failDiffUpload && String(args.name).endsWith('.diff')) throw Object.assign(new Error('Artifact exceeds 256 KiB'), { code: 'artifact_too_large' });
         return { artifact: { id: `${calls.length}`.padStart(8, '0') + '-2222-4222-8222-222222222222' } } as T;
@@ -41,7 +45,13 @@ function setup() {
     const home = process.env.HOME;
     process.env.HOME = join(dir, 'home');
     try {
-      const worker = new BridgeWorker(cfg, client, (e, m) => { if (process.env.DBG) console.error(e, m); }, async req => { edit(req.cwd); return ok; });
+      mkdirSync(join(process.env.HOME, '.codex'), { recursive: true });
+      writeFileSync(join(process.env.HOME, '.codex/auth.json'), '{"tokens":{"access_token":"test-only","account_id":"fixture"}}', { mode: 0o600 });
+      const worker = new BridgeWorker(cfg, client, (e, m) => { if (process.env.DBG) console.error(e, m); }, async req => {
+        assert.equal(req.command, SANDBOX_EXEC); assert.equal(req.args[2], '/bin/codex');
+        assert.notEqual(req.env.CODEX_HOME, join(process.env.HOME!, '.codex'));
+        edit(req.cwd); return ok;
+      });
       await worker.claimAndRun(cfg.projects, new AbortController().signal);
     } finally { if (home === undefined) delete process.env.HOME; else process.env.HOME = home; }
     const finish = calls.find(c => c.name === 'task_finish')!.args;

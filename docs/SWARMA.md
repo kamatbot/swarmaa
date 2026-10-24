@@ -65,10 +65,15 @@ Removing a scope takes effect on the next request, including for OAuth-connected
 Workers report each provider's quota windows (`5h`, `weekly`) and reset times (`usage_report`, from `src/usage`).
 Submit read work with `required_capability: "auto.read"` (edits with `"auto.patch"`) and the owner's **routing policy** decides, per task kind
 (`review`, `research`, `patch`), who takes it: providers are walked in priority order and the first that is enabled, allows
-the kind, has a live worker for the scope, has a fresh reading (under 15 minutes) and is under both its
+the kind, has a live reporting worker with free slots for the scope, has a fresh reading (under 15 minutes) and is under both its
 `max_five_hour_pct` and `max_weekly_pct` wins. If none qualifies, `fallback: "most_headroom"` picks the allowed
 live provider with the most headroom, and `"none"` leaves auto.read tasks of that kind waiting. With no fresh
-readings at all, any enabled worker that allows the kind may claim, so work never stalls.
+readings from an available provider, any enabled worker that allows the kind may claim within its own slot limit.
+
+Slots are enforced by PostgreSQL per stable worker identity across all projects, not just by the bridge's local loop.
+`slots:0` drains new claims; occupied slots count only unexpired leases. Quota rows still retain one last reporter
+per provider/tenant. Runtime capabilities in usage reports are explicitly worker-reported static configuration,
+not proof of installed CLI readiness.
 
 Default policy (no saved row): claude, codex (review + research + patch, 90% / 95% ceilings) then antigravity (review + patch, 95%).
 Antigravity cannot reach outside the project, so it takes reviews and in-project edits, never research. Saved policies from before patch routing gain `patch` where the default allows it (migration 011). `routing_get` returns
@@ -78,22 +83,32 @@ Changes are audit-logged. Explicit capabilities obey the policy too: `<provider>
 does not take is rejected with `kind_not_allowed`, and a disabled provider with `provider_disabled`; queued
 work already pinned to such a provider is skipped by its worker.
 
-Rule for agents and front ends: prefer `auto.read` / `auto.patch`; use `antigravity.read` only for review tasks that need just
-the project's own files; anything needing commands, builds, cloning/fetching external repos or reading outside the
-project goes to `codex.read`/`claude.read`/`auto.read`. Check `swarm_status.routing.by_kind` before naming a provider.
+Rule for agents and front ends: prefer `auto.read` / `auto.patch`; use `antigravity.read` only for review tasks that need
+the project's own files. All read workers now have an enforced project filesystem boundary; changing provider does
+not authorize unrelated-file reads or writes. Check `swarm_status.routing.by_kind` before naming a provider, and use
+explicitly authorized patch work for edits/validation that needs writes.
 
 ### Fan out
 
 Name a provider (`codex.patch`, `claude.read`, ...) when the user asks for one; otherwise `auto.read` (review/research)
 or `auto.patch` (edits) and the service routes by the Routing rules and quota. `auto.read` rejects patch tasks and
 `auto.patch` rejects review/research. Patch tasks need only `task:submit`; `resource_key` is optional (set it to
-serialize work on one resource) and `base_ref` (patch only, a git ref) picks the starting commit. Each patch runs in an
+serialize work on one resource) and `base_ref` picks the starting commit (a Git ref for patch; a full lowercase commit SHA for pinned read work). Each patch runs in an
 isolated git worktree and returns a local branch `swarmaa/<provider>/<task id>` plus a diff artifact; the result carries
 `branch`, `base_ref`, `base_commit`, `head_commit`, `changed_files`, `diffstat`, `commands_allowed`. Review, then merge;
 nothing is pushed.
 
 `swarm_status` returns live workers, provider headroom with reset times, `routing` (`recommended`/`reason` for review, plus `policy`, `is_default`, `by_kind`), task counts per scope and
 recent tasks. `npm run usage` prints the local readings.
+
+### Independent review and handoff
+
+Use `workflow_submit` for two independent reviews of the same commit followed by synthesis. The fixed three-task
+workflow retains its authorization and deadline in PostgreSQL. `workflow_get` shows step dependencies and a bounded
+metadata timeline; execution completion remains separate from the owner verdict. `task_handoff` carries current
+memory references, artifact hashes and capture coverage when moving between agents. Task messages are delivered at
+the next invocation boundary and cannot interrupt a running CLI or expand permissions. See [COORDINATION.md](COORDINATION.md)
+for examples, limits, upgrade requirements, and the disabled-by-default Relay notification adapter.
 
 ## /swarm
 

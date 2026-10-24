@@ -20,7 +20,7 @@ describe('swarm usage routing and status', {skip:!connectionString,concurrency:f
     control = new pg.Pool({connectionString,max:2});
     await control.query(`CREATE SCHEMA "${schema}"`);
     pool = new pg.Pool({connectionString,max:8,options:`-c search_path=${schema},public`});
-    for (const file of ['001_identity.sql','002_core.sql','005_swarm.sql','006_sessions.sql','008_lessons.sql','010_routing_policy.sql','011_patch_routing.sql','012_session_task.sql','013_worker_slots.sql','016_worker_slots_drain.sql','018_events_xid.sql']) {
+    for (const file of ['001_identity.sql','002_core.sql','005_swarm.sql','006_sessions.sql','008_lessons.sql','010_routing_policy.sql','011_patch_routing.sql','012_session_task.sql','013_worker_slots.sql','016_worker_slots_drain.sql','018_events_xid.sql','019_workflows.sql','020_collaboration.sql']) {
       await pool.query(await readFile(new URL(`../db/migrations/${file}`,import.meta.url),'utf8'));
     }
     core = new CoreService(pool);

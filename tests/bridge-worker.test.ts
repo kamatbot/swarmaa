@@ -1,9 +1,13 @@
 import assert from 'node:assert/strict';
-import test from 'node:test';
+import test, { afterEach, beforeEach } from 'node:test';
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { BridgeWorker } from '../src/bridge/worker.js';
 import { parseBridgeConfig } from '../src/bridge/config.js';
 import { RemoteError } from '../src/bridge/client.js';
-import type { ProcessResult, Task, ToolClient } from '../src/bridge/types.js';
+import { SANDBOX_EXEC } from '../src/bridge/sandbox.js';
+import type { ProcessRequest, ProcessResult, Task, ToolClient } from '../src/bridge/types.js';
 
 function deferred<T = void>() {
   let resolve!: (value: T) => void;
@@ -11,15 +15,47 @@ function deferred<T = void>() {
   return { promise, resolve };
 }
 
-const config = () => parseBridgeConfig({ service_url:'http://localhost:8080', agents:[{id:'claude',provider:'claude',binary:'/bin/claude',sandbox:false}], projects:[{scope:'project:demo',root:'/projects/demo',agents:['claude']}] });
+const config = () => parseBridgeConfig({ service_url:'http://localhost:8080', agents:[{id:'claude',provider:'claude',binary:'/bin/claude',sandbox:true}], projects:[{scope:'project:demo',root:'/projects/demo',agents:['claude']}] });
 const task: Task = { id:'11111111-1111-4111-8111-111111111111',scope:'project:demo',kind:'review',objective:'Review source',constraints:[],acceptance_criteria:[],resource_key:null,required_capability:'claude.read',checkpoint:null,context_refs:[],version:1 };
-const result: ProcessResult = {exit_code:0,signal:null,stdout:'{"type":"result","subtype":"success","is_error":false}',stderr:'',duration_ms:10,stop_reason:null};
+const result: ProcessResult = {exit_code:0,signal:null,stdout:'{"type":"result","subtype":"success","is_error":false}',stderr:'',duration_ms:10,stop_reason:null,input_delivered:true};
+
+// Every test has an isolated provider profile. Mocked Codex runs must never copy
+// the developer's real login or write native history into the developer's HOME.
+let savedHome: string | undefined;
+let testHome: string;
+beforeEach(() => {
+  savedHome = process.env.HOME;
+  testHome = realpathSync(mkdtempSync(join(tmpdir(), 'bridge-worker-test-')));
+  process.env.HOME = testHome;
+  mkdirSync(join(testHome, '.codex'));
+  writeFileSync(join(testHome, '.codex/auth.json'), '{"tokens":{"access_token":"test-only","account_id":"fixture"}}', { mode: 0o600 });
+});
+afterEach(() => {
+  if (savedHome === undefined) delete process.env.HOME; else process.env.HOME = savedHome;
+  rmSync(testHome, { recursive: true, force: true });
+});
+
+const BATCH = '33333333-3333-4333-8333-333333333333';
+function protocolReply(name: string): unknown {
+  if (name === 'task_handoff') return { handoff: { schema_version: 1, scope: task.scope, task, context_is_untrusted: true } };
+  if (name === 'task_message_pull') return { batch_id: BATCH, messages: [], has_more: false, guidance: 'Quoted task context; delivery is for this invocation only.' };
+  if (name === 'task_message_ack') return { acknowledged: true };
+  return undefined;
+}
+function wrappedBinary(request: ProcessRequest): string {
+  assert.equal(request.command, SANDBOX_EXEC);
+  assert.equal(request.args[0], '-p');
+  assert.match(request.args[1]!, /\(deny default\)/u);
+  assert.equal(request.env.HOME, testHome);
+  return request.args[2]!;
+}
 
 test('successful worker stores provenance, transcript and explicit unverified acceptance', async () => {
   const calls: {name:string;args:Record<string,unknown>}[] = [];
   const client: ToolClient = { async call<T>(name:string,args:Record<string,unknown>):Promise<T> {
     calls.push({name,args});
     if(name==='task_claim') return {task,lease_token:'lease-secret',lease_generation:1} as T;
+    const protocol = protocolReply(name); if (protocol !== undefined) return protocol as T;
     if(name==='context_get') return {scope:task.scope,task,memories:[],conflicts:[]} as T;
     if(name==='artifact_put') return {artifact:{id:'22222222-2222-4222-8222-222222222222'}} as T;
     return {task} as T;
@@ -34,6 +70,82 @@ test('successful worker stores provenance, transcript and explicit unverified ac
   assert.deepEqual((calls[0]!.args.projects as {kinds:string[]}[])[0]!.kinds,['research','review']);
 });
 
+test('message delivery records the observed process boundary independently of provider success', async () => {
+  for (const inputDelivered of [true, false, undefined]) {
+    const calls: { name: string; args: Record<string, unknown> }[] = [];
+    let scratch: string | undefined;
+    const client: ToolClient = { async call<T>(name: string, args: Record<string, unknown>): Promise<T> {
+      calls.push({ name, args });
+      if (name === 'task_claim') return { task, lease_token: 'lease-secret', lease_generation: 1 } as T;
+      if (name === 'context_get') return { scope: task.scope, task, memories: [], conflicts: [] } as T;
+      if (name === 'task_handoff') return { handoff: { prior_attempt: 'handoff-evidence', untrusted: true } } as T;
+      if (name === 'task_message_pull') return { batch_id: BATCH, messages: [{ id: 'message-id', body: 'queued-guidance', untrusted: true }], has_more: false, guidance: 'Quoted task context.' } as T;
+      if (name === 'artifact_put') return { artifact: { id: 'artifact-id' } } as T;
+      if (name === 'session_list') return { sessions: [] } as T;
+      return { acknowledged: true } as T;
+    } };
+    const cfg = config();
+    await new BridgeWorker(cfg, client, () => {}, async request => {
+      wrappedBinary(request);
+      scratch = request.env.TMPDIR;
+      assert.ok(existsSync(scratch!));
+      assert.match(request.input, /handoff-evidence/u);
+      assert.match(request.input, /queued-guidance/u);
+      assert.match(request.input, /next_invocation_only/u);
+      assert.equal(calls.some(c => c.name === 'task_message_ack'), false, 'a batch was acknowledged before the invocation returned');
+      return { ...result, input_delivered: inputDelivered, exit_code: 1, stdout: '{"type":"result","subtype":"error","is_error":true}' };
+    }).claimAndRun(cfg.projects, new AbortController().signal);
+    assert.equal(existsSync(scratch!), false, 'private invocation scratch was retained');
+    const receipt = calls.find(c => c.name === 'task_message_ack')!.args;
+    assert.equal(receipt.batch_id, BATCH);
+    assert.equal(receipt.status, inputDelivered === true ? 'delivered' : 'deferred');
+    assert.equal(receipt.lease_token, 'lease-secret');
+    const finish = calls.find(c => c.name === 'task_finish')!.args;
+    assert.equal(finish.outcome, 'failed');
+    assert.equal((finish.result as Record<string, any>).message_delivery.input_delivery_observed, inputDelivered === true);
+    assert.equal((finish.result as Record<string, any>).message_delivery.acknowledgement_is_not_task_success, true);
+  }
+});
+
+test('a frozen message batch is deferred when invocation construction or execution throws', async () => {
+  const receipts: Record<string, unknown>[] = [];
+  const client: ToolClient = { async call<T>(name: string, args: Record<string, unknown>): Promise<T> {
+    if (name === 'task_claim') return { task, lease_token: 'lease-secret', lease_generation: 1 } as T;
+    if (name === 'context_get') return { task, memories: [], conflicts: [] } as T;
+    if (name === 'task_message_ack') { receipts.push(args); return { acknowledged: true } as T; }
+    const reply = protocolReply(name); if (reply !== undefined) return reply as T;
+    return { task } as T;
+  } };
+  const cfg = config();
+  await new BridgeWorker(cfg, client, () => {}, async () => { throw new Error('runner could not start'); })
+    .claimAndRun(cfg.projects, new AbortController().signal);
+  assert.equal(receipts.length, 1);
+  assert.equal(receipts[0]!.status, 'deferred');
+  assert.equal(receipts[0]!.reason, 'invocation_not_completed');
+});
+
+test('an ambiguous message acknowledgement is retried with the identical receipt', async () => {
+  const receipts: Record<string, unknown>[] = [];
+  const client: ToolClient = { async call<T>(name: string, args: Record<string, unknown>): Promise<T> {
+    if (name === 'task_claim') return { task, lease_token: 'lease-secret', lease_generation: 1 } as T;
+    if (name === 'context_get') return { task, memories: [], conflicts: [] } as T;
+    if (name === 'task_message_ack') {
+      receipts.push(args);
+      if (receipts.length === 1) throw new Error('response lost after receipt commit');
+      return { acknowledged: true } as T;
+    }
+    if (name === 'artifact_put') return { artifact: { id: 'artifact-id' } } as T;
+    if (name === 'session_list') return { sessions: [] } as T;
+    const reply = protocolReply(name); if (reply !== undefined) return reply as T;
+    return { task } as T;
+  } };
+  const cfg = config();
+  await new BridgeWorker(cfg, client, () => {}, async () => result).claimAndRun(cfg.projects, new AbortController().signal);
+  assert.equal(receipts.length, 2);
+  assert.deepEqual(receipts[0], receipts[1]);
+  assert.equal(receipts[1]!.status, 'delivered');
+});
+
 test('heartbeat rejection aborts provider and prevents stale completion/artifact writes', async () => {
   const calls: string[] = [];
   let sawAbort = false;
@@ -41,6 +153,7 @@ test('heartbeat rejection aborts provider and prevents stale completion/artifact
     calls.push(name);
     if(name==='task_claim') return {task,lease_token:'lease-secret',lease_generation:1} as T;
     if(name==='task_heartbeat') throw new RemoteError(409,'lease_lost');
+    const protocol = protocolReply(name); if (protocol !== undefined) return protocol as T;
     if(name==='context_get') return {scope:task.scope,memories:[],conflicts:[]} as T;
     return {task} as T;
   } };
@@ -69,6 +182,7 @@ test('transient heartbeat failures are retried and the task still completes', { 
       if (++beats<=2) throw beats===1 ? new Error('fetch failed') : new RemoteError(503,'internal_error');
       renewed.resolve();
     }
+    const protocol = protocolReply(name); if (protocol !== undefined) return protocol as T;
     if(name==='context_get') return {scope:task.scope,memories:[],conflicts:[]} as T;
     if(name==='artifact_put') return {artifact:{id:'22222222-2222-4222-8222-222222222222'}} as T;
     return {task} as T;
@@ -86,6 +200,7 @@ test('heartbeats failing until the local lease deadline stop the provider', asyn
     calls.push(name);
     if(name==='task_claim') return {task,lease_token:'lease-secret',lease_generation:1} as T;
     if(name==='task_heartbeat') throw new Error('fetch failed');
+    const protocol = protocolReply(name); if (protocol !== undefined) return protocol as T;
     if(name==='context_get') return {scope:task.scope,memories:[],conflicts:[]} as T;
     return {task} as T;
   } };
@@ -111,6 +226,7 @@ test('lost completion response retries the identical result, never an alternate 
   const completions:Record<string,unknown>[]=[];
   const client:ToolClient={async call<T>(name:string,args:Record<string,unknown>):Promise<T>{
     if(name==='task_claim') return {task,lease_token:'lease-secret',lease_generation:1} as T;
+    const protocol = protocolReply(name); if (protocol !== undefined) return protocol as T;
     if(name==='context_get') return {scope:task.scope,memories:[],conflicts:[]} as T;
     if(name==='artifact_put') return {artifact:{id:'22222222-2222-4222-8222-222222222222'}} as T;
     if(name==='task_finish') {
@@ -134,25 +250,71 @@ test('an already consumed conservative lease window prevents provider start', as
   assert.equal(invoked,false);
 });
 
+test('a server-bounded lease window is honored before provider start', async () => {
+  const client: ToolClient = { async call<T>(): Promise<T> {
+    return { task, lease_token: 'lease-secret', lease_generation: 1, lease_remaining_ms: 3000 } as T;
+  } };
+  const cfg = config();
+  let invoked = false;
+  await new BridgeWorker(cfg, client, () => {}, async () => { invoked = true; return result; })
+    .claimAndRun(cfg.projects, new AbortController().signal);
+  assert.equal(invoked, false, 'the configured lease duration overrode the shorter server grant');
+});
+
+test('a workflow claim without its remaining server lease window fails closed', async () => {
+  const client: ToolClient = { async call<T>(): Promise<T> {
+    return { task: { ...task, workflow_id: 'workflow-id', base_ref: 'a'.repeat(40) }, lease_token: 'lease-secret', lease_generation: 1 } as T;
+  } };
+  const cfg = config();
+  let invoked = false;
+  await new BridgeWorker(cfg, client, () => {}, async () => { invoked = true; return result; })
+    .claimAndRun(cfg.projects, new AbortController().signal);
+  assert.equal(invoked, false);
+});
+
+test('a shortened renewal stops the provider instead of extending to configured lease seconds', { timeout: 1500 }, async () => {
+  let sawAbort = false, finished = false;
+  const client: ToolClient = { async call<T>(name: string): Promise<T> {
+    if (name === 'task_claim') return { task, lease_token: 'lease-secret', lease_generation: 1, lease_remaining_ms: 60_000 } as T;
+    if (name === 'task_heartbeat') return { task, lease_remaining_ms: 3000 } as T;
+    if (name === 'task_finish') finished = true;
+    if (name === 'context_get') return { scope: task.scope, task, memories: [], conflicts: [] } as T;
+    const reply = protocolReply(name); if (reply !== undefined) return reply as T;
+    return { task } as T;
+  } };
+  const cfg = config(); cfg.heartbeat_seconds = 0.01;
+  await new BridgeWorker(cfg, client, () => {}, async request => {
+    await new Promise<void>(resolve => {
+      if (request.signal?.aborted) resolve();
+      else request.signal?.addEventListener('abort', () => resolve(), { once: true });
+    });
+    sawAbort = true;
+    return { ...result, stop_reason: 'aborted' };
+  }).claimAndRun(cfg.projects, new AbortController().signal);
+  assert.equal(sawAbort, true);
+  assert.equal(finished, false);
+});
+
 test('usage readings are reported and steer auto.read to the agent with most headroom', async () => {
   const calls: {name:string;args:Record<string,unknown>}[] = [];
   const autoTask = {...task,required_capability:'auto.read'};
   const client: ToolClient = { async call<T>(name:string,args:Record<string,unknown>):Promise<T> {
     calls.push({name,args});
     if(name==='task_claim') return {task:autoTask,lease_token:'lease-secret',lease_generation:1,route:{provider:null,allowed:['claude','codex']}} as T;
+    const protocol = protocolReply(name); if (protocol !== undefined) return protocol as T;
     if(name==='context_get') return {scope:task.scope,task:autoTask,memories:[],conflicts:[]} as T;
     if(name==='artifact_put') return {artifact:{id:'22222222-2222-4222-8222-222222222222'}} as T;
     return {task:autoTask,accepted:2} as T;
   } };
   const cfg = parseBridgeConfig({ service_url:'http://localhost:8080',
-    agents:[{id:'claude',provider:'claude',binary:'/bin/claude',sandbox:false},{id:'codex',provider:'codex',binary:'/bin/codex',sandbox:false}],
+    agents:[{id:'claude',provider:'claude',binary:'/bin/claude',sandbox:true},{id:'codex',provider:'codex',binary:'/bin/codex',sandbox:true}],
     projects:[{scope:'project:demo',root:'/projects/demo',agents:['claude','codex']}] });
   const at = new Date().toISOString();
   const usage = async () => [
     {provider:'claude' as const,ok:true,windows:[{name:'5h',used_percent:90,resets_at:null}],fetched_at:at},
     {provider:'codex' as const,ok:true,windows:[{name:'weekly',used_percent:10,resets_at:null}],fetched_at:at}];
   let command = '';
-  const worker = new BridgeWorker(cfg,client,()=>{},async request => {command = request.command;return result;},usage);
+  const worker = new BridgeWorker(cfg,client,()=>{},async request => {command = wrappedBinary(request);assert.ok(existsSync(request.env.CODEX_HOME!));assert.notEqual(request.env.CODEX_HOME,join(testHome,'.codex'));return {...result,stdout:'{"type":"turn.completed"}'};},usage);
   const signal = new AbortController().signal;
   await worker.reportUsage(signal);
   await worker.reportUsage(signal);
@@ -170,15 +332,16 @@ function routed(route:unknown,cap='auto.read') {
   const client:ToolClient={async call<T>(name:string,args:Record<string,unknown>):Promise<T>{
     calls.push({name,args});
     if(name==='task_claim') return {task:t,lease_token:'lease-secret',lease_generation:1,...(route===undefined?{}:{route})} as T;
+    const protocol = protocolReply(name); if (protocol !== undefined) return protocol as T;
     if(name==='context_get') return {scope:task.scope,task:t,memories:[],conflicts:[]} as T;
     if(name==='artifact_put') return {artifact:{id:'22222222-2222-4222-8222-222222222222'}} as T;
     return {task:t} as T;
   }};
   const cfg=parseBridgeConfig({service_url:'http://localhost:8080',
-    agents:[{id:'claude',provider:'claude',binary:'/bin/claude',sandbox:false},{id:'codex',provider:'codex',binary:'/bin/codex',sandbox:false}],
+    agents:[{id:'claude',provider:'claude',binary:'/bin/claude',sandbox:true},{id:'codex',provider:'codex',binary:'/bin/codex',sandbox:true}],
     projects:[{scope:'project:demo',root:'/projects/demo',agents:['claude','codex']}]});
   const ran:string[]=[];
-  const worker=new BridgeWorker(cfg,client,()=>{},async r=>{ran.push(r.command);return result;},async()=>[
+  const worker=new BridgeWorker(cfg,client,()=>{},async r=>{const binary=wrappedBinary(r);ran.push(binary);return binary.endsWith('codex')?{...result,stdout:'{"type":"turn.completed"}'}:result;},async()=>[
     {provider:'claude' as const,ok:true,windows:[{name:'5h',used_percent:1,resets_at:null}],fetched_at:new Date().toISOString()}]);
   return {cfg,worker,ran,calls};
 }
@@ -215,6 +378,7 @@ function sessionHarness(instructions: unknown[] = [], stored?: unknown[], fail =
   const client: ToolClient = { async call<T>(name:string,args:Record<string,unknown>):Promise<T> {
     calls.push({name,args});
     if(name==='task_claim') return {task,lease_token:'lease-secret',lease_generation:1} as T;
+    const protocol = protocolReply(name); if (protocol !== undefined) return protocol as T;
     if(name==='context_get') return {scope:task.scope,task:{...task,instructions},memories:[],conflicts:[]} as T;
     if(name==='artifact_put') return {artifact:{id:'22222222-2222-4222-8222-222222222222'}} as T;
     if(name==='session_list') return {sessions:stored?[{id:'s-id',session_id:`swarm:${task.id}`}]:[]} as T;
@@ -242,8 +406,8 @@ test('a run is recorded as a swarm chat; a continuation appends; failure is harm
 
 test('one idle pass claims all projects in one call with per-project capabilities', async () => {
   const cfg = parseBridgeConfig({ service_url:'http://localhost:8080', usage_seconds:0,
-    agents:[{id:'claude',provider:'claude',binary:'/bin/claude',sandbox:false,enable_patch:true},
-      {id:'codex',provider:'codex',binary:'/bin/codex',sandbox:false}],
+    agents:[{id:'claude',provider:'claude',binary:'/bin/claude',sandbox:true,enable_patch:true},
+      {id:'codex',provider:'codex',binary:'/bin/codex',sandbox:true}],
     projects:[{scope:'project:a',root:'/projects/a',agents:['claude'],allow_patch:true},
       {scope:'project:b',root:'/projects/b',agents:['codex']}] });
   const calls:Record<string,unknown>[] = [];
@@ -267,6 +431,7 @@ test('a 100-project pass chunks at 64 and maps the claimed scope to its own root
       calls.push(args);
       return (calls.length === 1 ? {task:null} : {task:claimed,lease_token:'l',lease_generation:1}) as T;
     }
+    const protocol = protocolReply(name); if (protocol !== undefined) return protocol as T;
     if(name==='context_get') return {scope:claimed.scope,task:claimed,memories:[],conflicts:[]} as T;
     if(name==='artifact_put') return {artifact:{id:'22222222-2222-4222-8222-222222222222'}} as T;
     if(name==='session_list') return {sessions:[]} as T;
@@ -280,11 +445,12 @@ test('a 100-project pass chunks at 64 and maps the claimed scope to its own root
 });
 
 test('one worker runs up to max_concurrent tasks at the same time', async () => {
-  const cfg = parseBridgeConfig({ service_url:'http://localhost:8080', max_concurrent:3, agents:[{id:'claude',provider:'claude',binary:'/bin/claude',sandbox:false}], projects:[{scope:'project:demo',root:'/projects/demo',agents:['claude']}] });
+  const cfg = parseBridgeConfig({ service_url:'http://localhost:8080', max_concurrent:3, agents:[{id:'claude',provider:'claude',binary:'/bin/claude',sandbox:true}], projects:[{scope:'project:demo',root:'/projects/demo',agents:['claude']}] });
   let handed = 0, active = 0, peak = 0, finished = 0;
   const ids = ['11111111-1111-4111-8111-11111111111a','11111111-1111-4111-8111-11111111111b','11111111-1111-4111-8111-11111111111c'];
   const client: ToolClient = { async call<T>(name:string):Promise<T> {
     if(name==='task_claim') return (handed < ids.length ? {task:{...task,id:ids[handed++]},lease_token:'l',lease_generation:1} : {task:null}) as T;
+    const protocol = protocolReply(name); if (protocol !== undefined) return protocol as T;
     if(name==='context_get') return {scope:task.scope,task,memories:[],conflicts:[]} as T;
     if(name==='artifact_put') return {artifact:{id:'22222222-2222-4222-8222-222222222222'}} as T;
     if(name==='session_list') return {sessions:[]} as T;
@@ -314,6 +480,7 @@ test('drain stops claims, keeps heartbeats and zero-slot reports, and waits for 
   const client: ToolClient = { async call<T>(name: string, args: Record<string,unknown>): Promise<T> {
     calls.push({name,args});
     if (name === 'task_claim') return {task:{...task,id:`task-${++claims}`},lease_token:'l',lease_generation:1} as T;
+    const protocol = protocolReply(name); if (protocol !== undefined) return protocol as T;
     if (name === 'context_get') return {task,memories:[],conflicts:[]} as T;
     if (name === 'artifact_put') return {artifact:{id:'artifact'}} as T;
     if (name === 'session_list') return {sessions:[]} as T;
@@ -375,6 +542,7 @@ test('drain preserves a once-mode claim already in flight and reports zero slots
   const client: ToolClient = { async call<T>(name: string, args: Record<string,unknown>): Promise<T> {
     if (name === 'task_claim') { claims++; claimed.resolve(); await claimResponse.promise; return {task,lease_token:'l',lease_generation:1} as T; }
     if (name === 'usage_report') { assert.equal(args.slots,0); reported.resolve(); }
+    const protocol = protocolReply(name); if (protocol !== undefined) return protocol as T;
     if (name === 'context_get') return {task,memories:[],conflicts:[]} as T;
     if (name === 'artifact_put') return {artifact:{id:'artifact'}} as T;
     if (name === 'session_list') return {sessions:[]} as T;
@@ -393,6 +561,7 @@ test('drain deadline uses the shutdown abort path for running providers', { time
   let aborted = false, outcome: unknown;
   const client: ToolClient = { async call<T>(name: string, args: Record<string,unknown>): Promise<T> {
     if (name === 'task_claim') return {task,lease_token:'l',lease_generation:1} as T;
+    const protocol = protocolReply(name); if (protocol !== undefined) return protocol as T;
     if (name === 'context_get') return {task,memories:[],conflicts:[]} as T;
     if (name === 'artifact_put') return {artifact:{id:'artifact'}} as T;
     if (name === 'session_list') return {sessions:[]} as T;
@@ -418,6 +587,7 @@ test('credential-shaped provider output is redacted before it is stored as answe
   const client: ToolClient = { async call<T>(name:string,args:Record<string,unknown>):Promise<T> {
     calls.push({name,args});
     if(name==='task_claim') return {task,lease_token:'lease-secret',lease_generation:1} as T;
+    const protocol = protocolReply(name); if (protocol !== undefined) return protocol as T;
     if(name==='context_get') return {scope:task.scope,task,memories:[],conflicts:[]} as T;
     if(name==='artifact_put') return {artifact:{id:'22222222-2222-4222-8222-222222222222'}} as T;
     return {task} as T;

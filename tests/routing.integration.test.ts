@@ -2,12 +2,16 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
-import { after, before, describe, it } from 'node:test';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { after, afterEach, before, beforeEach, describe, it } from 'node:test';
 import pg, { type Pool } from 'pg';
 import { CoreService } from '../src/core/index.js';
 import { DEFAULT_POLICY, type RoutingPolicy } from '../src/core/routing.js';
 import { parseBridgeConfig } from '../src/bridge/config.js';
 import { BridgeWorker } from '../src/bridge/worker.js';
+import { SANDBOX_EXEC } from '../src/bridge/sandbox.js';
 import type { ToolClient } from '../src/bridge/types.js';
 import { AppError } from '../src/errors.js';
 import { ROLE_PERMISSIONS } from '../src/policy.js';
@@ -26,7 +30,7 @@ describe('routing policy', {skip:!connectionString,concurrency:false}, () => {
     control = new pg.Pool({connectionString,max:2});
     await control.query(`CREATE SCHEMA "${schema}"`);
     pool = new pg.Pool({connectionString,max:8,options:`-c search_path=${schema},public`});
-    for (const file of ['001_identity.sql','002_core.sql','005_swarm.sql','006_sessions.sql','008_lessons.sql','010_routing_policy.sql','011_patch_routing.sql','012_session_task.sql','013_worker_slots.sql','016_worker_slots_drain.sql','018_events_xid.sql']) {
+    for (const file of ['001_identity.sql','002_core.sql','005_swarm.sql','006_sessions.sql','008_lessons.sql','010_routing_policy.sql','011_patch_routing.sql','012_session_task.sql','013_worker_slots.sql','016_worker_slots_drain.sql','018_events_xid.sql','019_workflows.sql','020_collaboration.sql']) {
       await pool.query(await readFile(new URL(`../db/migrations/${file}`,import.meta.url),'utf8'));
     }
     core = new CoreService(pool);
@@ -44,8 +48,9 @@ describe('routing policy', {skip:!connectionString,concurrency:false}, () => {
     const tenantId = randomUUID();
     const make = (name:string,role:Principal['role'],extra:Principal['permissions'] = []):Principal => ({id:randomUUID(),tenantId,name,role,scopes:['project:a'],permissions:[...ROLE_PERMISSIONS[role],...extra]});
     const ps = {front:make('dot','frontend'),owner:make('owner-ui','frontend',['routing:manage']),claude:make('w-claude','worker'),codex:make('w-codex','worker'),agy:make('w-agy','worker')};
-    for (const p of Object.values(ps)) await pool.query(`INSERT INTO principals(id,tenant_id,name,role,scopes,permissions,token_hash)
-      VALUES($1,$2,$3,$4,$5,$6,$7)`,[p.id,p.tenantId,p.name,p.role,p.scopes,p.permissions,randomUUID()]);
+    // Keep a spare slot while these scenarios isolate quota policy; capacity has its own integration suite.
+    for (const p of Object.values(ps)) await pool.query(`INSERT INTO principals(id,tenant_id,name,role,scopes,permissions,token_hash,worker_slots)
+      VALUES($1,$2,$3,$4,$5,$6,$7,2)`,[p.id,p.tenantId,p.name,p.role,p.scopes,p.permissions,randomUUID()]);
     return ps;
   }
   const policy = (edit:(p:RoutingPolicy) => void):RoutingPolicy => { const p = structuredClone(DEFAULT_POLICY); edit(p); return p; };
@@ -281,15 +286,35 @@ describe('routing policy', {skip:!connectionString,concurrency:false}, () => {
   });
 
   describe('router decision binds bridge execution', () => {
+    let previousHome:string|undefined;
+    let testHome:string;
+    beforeEach(() => {
+      previousHome = process.env.HOME;
+      testHome = realpathSync(mkdtempSync(join(tmpdir(),'routing-worker-test-')));
+      process.env.HOME = testHome;
+      mkdirSync(join(testHome,'.codex'));
+      writeFileSync(join(testHome,'.codex/auth.json'),'{"tokens":{"access_token":"test-only","account_id":"fixture"}}',{mode:0o600});
+    });
+    afterEach(() => {
+      if(previousHome === undefined) delete process.env.HOME; else process.env.HOME = previousHome;
+      rmSync(testHome,{recursive:true,force:true});
+    });
     const bridge = (w:Principal) => {
       const calls:string[] = [];
       const client:ToolClient = {call:async <T,>(name:string,args:Record<string,unknown>) => { calls.push(name); return await core.call(w,name,args) as T; }};
       const cfg = parseBridgeConfig({service_url:'http://localhost:8080',
-        agents:[{id:'codex',provider:'codex',binary:'/bin/codex',sandbox:false},{id:'claude',provider:'claude',binary:'/bin/claude',sandbox:false}],
+        agents:[{id:'codex',provider:'codex',binary:'/bin/codex',sandbox:true},{id:'claude',provider:'claude',binary:'/bin/claude',sandbox:true}],
         projects:[{scope:'project:a',root:'/projects/a',agents:['codex','claude']}]});
       const ran:string[] = [];
-      const res = {exit_code:0,signal:null,stdout:'{"type":"turn.completed"}',stderr:'',duration_ms:1,stop_reason:null};
-      const worker = new BridgeWorker(cfg,client,() => {},async r => { ran.push(r.command); return res; },async () => []);
+      const res = {exit_code:0,signal:null,stdout:'{"type":"turn.completed"}',stderr:'',duration_ms:1,stop_reason:null,input_delivered:true};
+      const worker = new BridgeWorker(cfg,client,() => {},async r => {
+        assert.equal(r.command,SANDBOX_EXEC);
+        assert.equal(r.args[0],'-p');
+        assert.equal(r.env.HOME,testHome);
+        const binary = r.args[2]!; ran.push(binary);
+        if(binary.endsWith('codex')) assert.notEqual(r.env.CODEX_HOME,join(testHome,'.codex'));
+        return binary.endsWith('claude') ? {...res,stdout:'{"type":"result","subtype":"success","is_error":false}'} : res;
+      },async () => []);
       return {ran,run:() => worker.claimAndRun(cfg.projects,new AbortController().signal)};
     };
 

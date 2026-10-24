@@ -80,7 +80,7 @@ export async function setPolicy(db: Db, p: Principal, input: unknown): Promise<{
   return { policy, updated_at: r.rows[0]!.updated_at.toISOString() };
 }
 
-export interface UsageRow { provider: string; ok: boolean; headroom: number; windows: { name: string; used_percent: number }[]; fresh: boolean; live: boolean }
+export interface UsageRow { provider: string; ok: boolean; headroom: number; windows: { name: string; used_percent: number }[]; fresh: boolean; live: boolean; free_slots?: number }
 export interface Decision { provider: string | null; /** True when no usable readings exist, so any enabled+allowed worker may claim. */ anyone: boolean; reason: string }
 
 /** Whether a provider may run this kind. Providers outside the policy (for example demo) are not governed by it. */
@@ -98,18 +98,23 @@ const label = (u: UsageRow) => `5-hour ${Math.round(gauge(u.windows, '5h'))}%, w
 /** Pure routing decision for one task kind. The claim path and swarm_status both use it. */
 export function decide(policy: RoutingPolicy, kind: RoutingKind, usage: UsageRow[]): Decision {
   const candidates = policy.providers.filter(p => p.enabled && p.kinds.includes(kind));
-  const usable = (provider: string) => usage.find(u => u.provider === provider && u.ok && u.fresh && u.live && u.windows.length > 0);
+  const available = (u:UsageRow) => u.live && (u.free_slots === undefined || u.free_slots>0);
+  const usable = (provider: string) => usage.find(u => u.provider === provider && u.ok && u.fresh && available(u) && u.windows.length > 0);
   const notes: string[] = [];
   for (const c of candidates) {
     const u = usable(c.provider);
-    if (!u) { notes.push(`${c.provider}: no live fresh quota reading`); continue; }
+    if (!u) {
+      const reporter = usage.find(x => x.provider === c.provider && x.live);
+      notes.push(reporter?.free_slots === 0 ? `${c.provider}: all worker slots occupied` : `${c.provider}: no live fresh quota reading`);
+      continue;
+    }
     const five = gauge(u.windows, '5h'), week = gauge(u.windows, 'weekly');
     if (five >= c.max_five_hour_pct) { notes.push(`${c.provider}: 5-hour window at ${Math.round(five)}% ≥ ${c.max_five_hour_pct}% limit`); continue; }
     if (week >= c.max_weekly_pct) { notes.push(`${c.provider}: weekly window at ${Math.round(week)}% ≥ ${c.max_weekly_pct}% limit`); continue; }
     return { provider: c.provider, anyone: false, reason: `${notes.length ? `${notes.join('; ')} → ` : ''}${c.provider} (${label(u)})` };
   }
   const live = candidates.map(c => usable(c.provider)).filter((u): u is UsageRow => !!u);
-  if (!live.length) return { provider: null, anyone: true, reason: `No fresh quota reading from a live ${kind} worker; any enabled worker that allows ${kind} may take auto work.` };
+  if (!live.length) return { provider: null, anyone: true, reason: `No fresh quota reading from an available ${kind} worker; an enabled worker with free capacity that allows ${kind} may take auto work.` };
   if (policy.fallback === 'none') return { provider: null, anyone: false, reason: `${notes.join('; ')}; fallback is none, so auto ${kind} tasks wait.` };
   // Ties keep policy order because sort is stable and candidates are in priority order.
   const best = live.slice().sort((a, b) => b.headroom - a.headroom)[0]!;
@@ -122,9 +127,11 @@ export function decideAll(policy: RoutingPolicy, usage: UsageRow[]): Record<Rout
 
 /** Usage rows for one scope: a reading counts as live only when its reporter is a live worker serving the scope. */
 export async function scopeUsage(db: Db, tenantId: string, scope: string): Promise<UsageRow[]> {
-  const r = await db.query<{ provider: string; ok: boolean; headroom: number; windows: { windows?: UsageRow['windows'] } }>(`SELECT u.provider,u.ok,u.headroom::float AS headroom,u.windows,
+  const r = await db.query<{ provider: string; ok: boolean; headroom: number; windows: { windows?: UsageRow['windows'] }; fresh:boolean; live:boolean; free_slots:number }>(`SELECT u.provider,u.ok,u.headroom::float AS headroom,u.windows,
       (u.fetched_at>clock_timestamp()-interval '15 minutes') AS fresh,
-      (NOT w.disabled AND w.last_seen_at>clock_timestamp()-interval '60 seconds' AND $2=ANY(w.scopes) AND coalesce(w.worker_slots,1)>0) AS live
+      (NOT w.disabled AND w.last_seen_at>clock_timestamp()-interval '60 seconds' AND $2=ANY(w.scopes) AND coalesce(w.worker_slots,1)>0) AS live,
+      greatest(coalesce(w.worker_slots,1)-(SELECT count(*)::int FROM tasks t WHERE t.tenant_id=w.tenant_id
+        AND t.lease_owner=w.id AND t.status='running' AND t.lease_expires_at>clock_timestamp()),0) AS free_slots
     FROM provider_usage u JOIN principals w ON w.id=u.reporter_id WHERE u.tenant_id=$1`, [tenantId, scope]);
-  return r.rows.map((x: any) => ({ provider: x.provider, ok: x.ok, headroom: x.headroom, windows: x.windows?.windows ?? [], fresh: x.fresh, live: x.live }));
+  return r.rows.map(x => ({ provider: x.provider, ok: x.ok, headroom: x.headroom, windows: x.windows?.windows ?? [], fresh: x.fresh, live: x.live, free_slots:x.free_slots }));
 }

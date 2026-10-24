@@ -1,13 +1,17 @@
 import { setTimeout as delay } from 'node:timers/promises';
-import { AUTO_PATCH, AUTO_READ, buildInvocation, capability, deniedActions, finalAnswer, projectCapabilities, providerSucceeded } from './adapters.js';
+import { AUTO_PATCH, AUTO_READ, buildInvocation, capability, cleanupInvocation, deniedActions, finalAnswer, projectCapabilities, providerSucceeded } from './adapters.js';
+import { runtimeCapabilities } from './capabilities.js';
 import { collectUsage, headroom } from '../usage/index.js';
 import type { UsageProviderId, UsageSnapshot } from '../usage/types.js';
 import { runBoundedProcess } from './process.js';
 import { reasonNotify } from './reason.js';
 import { cleanupNative, finishNative, prepareNative, type NativeSession } from './native-session.js';
 import { createWorktree, finishWorktree, type PatchOutcome, type Worktree } from './worktree.js';
-import type { AgentConfig, BridgeConfig, BridgeLogger, Claim, Lease, ProcessResult, ProcessRunner, ProjectConfig, Task, ToolClient } from './types.js';
+import { createReviewWorktree, removeReviewWorktree, type ReviewWorktree } from './review-worktree.js';
+import type { AgentConfig, BridgeConfig, BridgeLogger, Claim, Lease, ProcessRequest, ProcessResult, ProcessRunner, ProjectConfig, Task, ToolClient } from './types.js';
 import { redactSecrets } from '../safety/redact.js';
+
+interface InvocationInbox {batch_id:string;messages:unknown[];has_more:boolean;guidance:string}
 
 function cleanText(value: string, maxBytes: number): string {
   // PostgreSQL text cannot contain NUL. Clip by UTF-8 bytes, not character count.
@@ -91,6 +95,7 @@ export class BridgeWorker {
       const snapshots = this.draining ? [] : await this.usage(providers);
       for (const s of snapshots) this.headroom.set(s.provider, headroom(s));
       await this.client.call('usage_report', { reports: snapshots.map(s => ({ provider: s.provider, ok: s.ok, windows: s.windows, fetched_at: s.fetched_at,
+        runtime: runtimeCapabilities(this.config.agents.find(agent => agent.provider === s.provider)!),
         ...(s.plan ? { plan: s.plan.slice(0, 80) } : {}), ...(s.error ? { error: s.error.slice(0, 200) } : {}) })), slots: this.draining ? 0 : this.config.max_concurrent }, signal);
     } catch (error) {
       this.logger('usage_report_failed', { code: errorCode(error), message: String((error as Error)?.message ?? error).slice(0, 200) });
@@ -172,21 +177,27 @@ export class BridgeWorker {
     }
     if (!valid) return false;
     onClaimed?.();
-    await this.execute(valid.task, valid.lease, valid.agent, project, signal, claimStarted);
+    await this.execute(valid.task, valid.lease, valid.agent, project, signal, claimStarted,claim.lease_remaining_ms);
     return true;
   }
 
-  private async execute(task: Task, lease: Lease, agent: AgentConfig, project: ProjectConfig, shutdown: AbortSignal, claimStarted: number): Promise<void> {
+  private async execute(task: Task, lease: Lease, agent: AgentConfig, project: ProjectConfig, shutdown: AbortSignal, claimStarted: number, initialLeaseMs?:number): Promise<void> {
     const execution = new AbortController();
     const heartbeatStop = new AbortController();
     let leaseLost = false;
     let finished = false;
     let completionAttempted = false;
     let worktree: Worktree | undefined;
+    let reviewWorktree: ReviewWorktree | undefined;
+    let request: ProcessRequest | undefined;
+    let inbox: InvocationInbox | undefined;
+    let deliveryReceipt: {status:'delivered'|'deferred';reason:string} | undefined;
+    let deliveryConfirmed = false;
     let patchResult: PatchOutcome | undefined;
     let finalizeFailure: { worktree_path: string; recovery: string } | undefined;
     let expiryTimer: ReturnType<typeof setTimeout> | undefined;
     let progress = { output_bytes: 0, stdout_tail: '' };
+    let phase = 'preparing';
     const startedAt = new Date().toISOString();
     const onShutdown = (): void => execution.abort();
     shutdown.addEventListener('abort', onShutdown, { once: true });
@@ -197,27 +208,47 @@ export class BridgeWorker {
       execution.abort();
       this.logger('lease_lost_process_stopping', { task_id: task.id, code });
     };
-    const armExpiry = (requestStarted: number): void => {
+    const armExpiry = (requestStarted: number,remainingMs?:number): void => {
       if (leaseLost || finished) return;
       if (expiryTimer) clearTimeout(expiryTimer);
       // The server renews after the request starts. Measuring from request start is
       // conservative and avoids trusting wall-clock synchronization. Leave four
       // seconds for the subprocess termination grace before the known lease window.
-      const remaining = requestStarted + this.config.lease_seconds * 1000 - 4000 - performance.now();
+      const window = remainingMs === undefined ? (task.workflow_id ? 0 : this.config.lease_seconds * 1000)
+        : Number.isFinite(remainingMs) ? Math.max(0,Math.min(remainingMs,this.config.lease_seconds * 1000)) : 0;
+      const remaining = requestStarted + window - 4000 - performance.now();
       if (remaining <= 0) loseLease('local_lease_deadline');
       else expiryTimer = setTimeout(() => loseLease('local_lease_deadline'), remaining);
     };
     const renew = async (): Promise<void> => {
       const started = performance.now();
-      await this.client.call('task_heartbeat', { ...lease, lease_seconds: this.config.lease_seconds });
-      armExpiry(started);
+      const renewed = await this.client.call<{lease_remaining_ms?:number}>('task_heartbeat', { ...lease, lease_seconds: this.config.lease_seconds });
+      armExpiry(started,renewed.lease_remaining_ms);
     };
-    armExpiry(claimStarted);
+    armExpiry(claimStarted,initialLeaseMs);
     const checkpoint = (phase: string): Record<string, unknown> => ({
       phase, agent: agent.id, provider: agent.provider, started_at: startedAt,
       output_bytes: progress.output_bytes, partial_output: untrusted(progress.stdout_tail, 8192),
-      partial_output_is_untrusted: true
+      partial_output_is_untrusted: true, runtime: runtimeCapabilities(agent),
+      observation: {source:'bridge_process',output_bytes:'exact',tool_activity:'unavailable',model_reasoning:'unavailable'},
+      ...(reviewWorktree ? {base_commit:reviewWorktree.baseCommit} : {})
     });
+    const acknowledge = async (delivered:boolean,reason:string):Promise<void> => {
+      if (!inbox || leaseLost || deliveryConfirmed) return;
+      // An ambiguous receipt is retried verbatim, never changed from delivered to deferred.
+      deliveryReceipt ??= {status:delivered ? 'delivered' : 'deferred',reason};
+      const receipt = {...lease,batch_id:inbox.batch_id,...deliveryReceipt};
+      for (let attempt=0;attempt<2;attempt++) {
+        try { await this.client.call('task_message_ack',receipt); deliveryConfirmed = true; return; }
+        catch (error) {
+          if (!transient(error)) {
+            if (errorCode(error) === 'lease_lost') loseLease('lease_lost');
+            break;
+          }
+        }
+      }
+      this.logger('message_delivery_unconfirmed',{task_id:task.id,batch_id:inbox.batch_id});
+    };
     const heartbeat = (async (): Promise<void> => {
       while (!heartbeatStop.signal.aborted) {
         try { await delay(this.config.heartbeat_seconds * 1000, undefined, { signal: heartbeatStop.signal }); } catch { return; }
@@ -225,7 +256,7 @@ export class BridgeWorker {
         try {
           await renew();
           if (leaseLost) return;
-          if (!finished) await this.client.call('task_checkpoint', { ...lease, checkpoint: checkpoint('running') });
+          if (!finished) await this.client.call('task_checkpoint', { ...lease, checkpoint: checkpoint(phase) });
         } catch (error) {
           if (finished) return;
           // A refusal is final. An ambiguous failure (slow service, restart, dropped connection) is retried on the
@@ -240,23 +271,38 @@ export class BridgeWorker {
     try {
       if (leaseLost) return;
       await this.client.call('task_checkpoint', { ...lease, checkpoint: checkpoint('starting') }, execution.signal);
-      const context = await this.client.call('context_get', { scope: task.scope, task_id: task.id, limit: 12 }, execution.signal);
+      const packet = await this.client.call<Record<string,unknown>>('context_get', { scope: task.scope, task_id: task.id, limit: 12 }, execution.signal);
+      const handoff = await this.client.call<{handoff:unknown}>('task_handoff', {task_id:task.id,session_limit:5,artifact_limit:8}, execution.signal);
+      inbox = await this.client.call<InvocationInbox>('task_message_pull',lease,execution.signal);
+      const context = {...packet,handoff:handoff.handoff,task_messages:{batch_id:inbox.batch_id,messages:inbox.messages,
+        has_more:inbox.has_more,delivery:'next_invocation_only',guidance:inbox.guidance}};
       // Patch work gets its own worktree+branch, so parallel patch tasks on one project never share files.
       if (task.kind === 'patch') worktree = await createWorktree(project.root, agent.provider, task);
+      // Fixed review workflows must all inspect the exact same source, even if the user's checkout moves.
+      else if (task.base_ref) reviewWorktree = await createReviewWorktree(project.root,task,lease.lease_generation,execution.signal);
+      else if (task.workflow_id) throw new Error('Workflow review requires a pinned source commit');
+      const workspace = worktree ?? reviewWorktree;
       let result: ProcessResult;
       let nativeSession: NativeSession | undefined;
-      let nativePlan: ReturnType<typeof prepareNative>;
-      try { nativePlan = prepareNative(agent, task, worktree?.dir); }
-      catch { this.logger('native_session_failed', { task_id: task.id, phase: 'prepare' }); }
+      let nativePlan: ReturnType<typeof prepareNative> | undefined;
       try {
-        const request = buildInvocation(agent, project, task, context, this.config, execution.signal, process.env, worktree, nativePlan);
-        request.on_progress = value => { progress = value; };
+        // Private provider state is part of confinement; preparation failure must stop execution.
+        nativePlan = prepareNative(agent, task, workspace?.dir);
+        request = buildInvocation(agent, project, task, context, this.config, execution.signal, process.env, workspace, nativePlan);
+        request.on_progress = value => { progress = value; phase = 'output_observed'; };
         if (leaseLost || execution.signal.aborted) throw new Error('Provider start was aborted');
+        phase = 'process_requested';
         result = await this.runner(request);
+        phase = 'process_exited';
+        await acknowledge(result.input_delivered === true,result.input_delivered === true ? 'supplied_to_process_boundary' : 'input_delivery_not_observed');
       } finally {
         if (nativePlan) {
-          try { nativeSession = finishNative(nativePlan, project.root, worktree?.dir); }
+          try { nativeSession = finishNative(nativePlan, project.root, workspace?.dir); }
           catch (error) { cleanupNative(nativePlan); this.logger('native_session_failed', { task_id: task.id, phase: 'copy', message: error instanceof Error ? error.message.slice(0, 200) : '' }); }
+        }
+        if (request) {
+          try { cleanupInvocation(request); } catch { this.logger('invocation_cleanup_failed',{task_id:task.id}); }
+          request = undefined;
         }
         // Whatever the provider did (even if aborted), commit it to the branch and drop the worktree.
         if (worktree) {
@@ -299,9 +345,13 @@ export class BridgeWorker {
           acceptance_criteria_verified: false, review_required: true,
           exit_code: result.exit_code, stop_reason: result.stop_reason,
           duration_ms: result.duration_ms,
+          runtime: runtimeCapabilities(agent),
+          ...(reviewWorktree ? {base_commit:reviewWorktree.baseCommit,source_snapshot:'detached_read_worktree'} : {}),
+          ...(inbox ? {message_delivery:{batch_id:inbox.batch_id,status:deliveryConfirmed ? deliveryReceipt?.status : 'unconfirmed',
+            input_delivery_observed:result.input_delivered === true,acknowledgement_is_not_task_success:true}} : {}),
           // The agent's own answer, so callers can read it with task_get; untrusted provider output.
           answer: untrusted(finalAnswer(agent.provider, result.stdout), 8 * 1024),
-          ...(denied.length ? { denied_actions: denied, next_step: 'This worker cannot run those actions (read-only sandbox). Resubmit with a capability whose worker can, e.g. codex.read, or narrow the task.' } : {}),
+          ...(denied.length ? { denied_actions: denied, next_step: 'The configured worker boundary denied an action. Review the task constraints and owner configuration; do not disable confinement or assume another read provider permits writes.' } : {}),
           summary: outcome === 'completed' ? 'Provider completed. Review the transcript and acceptance criteria before integrating changes.' : 'Provider did not complete successfully. Review the transcript before continuing the task.',
           ...(task.kind === 'patch' ? { commands_allowed: true, ...(patchResult ? { branch: patchResult.branch, base_ref: patchResult.base_ref, base_commit: patchResult.base_commit, head_commit: patchResult.head_commit, changed_files: patchResult.changed_files, diffstat: patchResult.diffstat, ...(patchResult.continued ? { continued: true } : {}) } : {}), ...(diffArtifactError ? { diff_artifact_error: diffArtifactError } : {}), ...(finalizeFailure ?? {}) } : {}),
           ...(nativeSession ? { native_session: nativeSession } : {}),
@@ -321,6 +371,8 @@ export class BridgeWorker {
       catch { this.logger('reason_notification_failed', { task_id: task.id }); }
     } catch (error) {
       if (!leaseLost) {
+        await acknowledge(false,'invocation_not_completed');
+        if (leaseLost) return;
         this.logger('task_execution_failed', { task_id: task.id, code: errorCode(error) });
         if (completionAttempted) {
           // Never replace an ambiguous successful completion with a different result.
@@ -338,6 +390,13 @@ export class BridgeWorker {
       }
     } finally {
       execution.abort();
+      if (request) {
+        try { cleanupInvocation(request); } catch { this.logger('invocation_cleanup_failed',{task_id:task.id}); }
+      }
+      if (reviewWorktree) {
+        try { await removeReviewWorktree(project.root,reviewWorktree); }
+        catch { this.logger('review_worktree_cleanup_failed',{task_id:task.id,dir:reviewWorktree.dir}); }
+      }
       heartbeatStop.abort();
       shutdown.removeEventListener('abort', onShutdown);
       await heartbeat;

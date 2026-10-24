@@ -204,9 +204,9 @@ Task completion means a worker submitted an outcome. The core does not independe
 }
 ```
 
-Required: `scope`, `kind`, `objective`, `required_capability`, `idempotency_key`. Optional: `resource_key`, `constraints`, `acceptance_criteria`, `context_refs`, `max_attempts`. Objective is at most 16,000 characters and 32 KiB UTF-8. Constraints/criteria each allow 30 strings of 1,000 characters. Context refs allow 32 UUIDs, all in the same tenant/scope and unretracted; their current versions are captured. Capability is at most 128 characters; idempotency key 200; resource key 240. Attempts default to 3, permitted range 1–10. New submissions and terminal-task continuations cannot exceed 1,000 queued/running/blocked tasks in one scope.
+Required: `scope`, `kind`, `objective`, `required_capability`, `idempotency_key`. Optional: `resource_key`, `base_ref`, `constraints`, `acceptance_criteria`, `context_refs`, `max_attempts`. Objective is at most 16,000 characters and 32 KiB UTF-8. Constraints/criteria each allow 30 strings of 1,000 characters. Context refs allow 32 UUIDs, all in the same tenant/scope and unretracted; their current versions are captured. Capability is at most 128 characters; idempotency key 200; resource key 240. Attempts default to 3, permitted range 1–10. New submissions and terminal-task continuations cannot exceed 1,000 queued/running/blocked tasks in one scope. The `workflow:` idempotency prefix is reserved for coordinator-created tasks.
 
-Patch work must include a stable resource key, for example `repo:demo-main-worktree`. It requests only local patch work. This API does not accept caller-defined permission envelopes or deploy/publish/payment/message task types. Worker configuration must still authorize the local project and adapter mode.
+Patch work may include a stable resource key, for example `repo:demo-main-worktree`, to serialize a logical resource, and a Git `base_ref` (default HEAD). For research/review, an optional `base_ref` must be a full lowercase 40-hex commit SHA; the worker creates a detached read snapshot and reports the resolved `result.base_commit`. This API does not accept caller-defined permission envelopes or deploy/publish/payment/message task types. Worker configuration must still authorize the local project and adapter mode.
 
 Result: `{task, replayed: boolean}`. The key is unique per tenant and submitting principal, across scopes. Identical normalized inputs return the original task; different inputs return `idempotency_conflict`. Use a shared task ID to continue work across Dot and Grok: their separate identities have separate submission key namespaces. The service cannot infer that two differently worded requests to different frontends are the same intention.
 
@@ -223,18 +223,20 @@ Arguments: either `{scope, capabilities: string[], kinds?, lease_seconds?}` or `
 If no eligible task exists: `{task: null}`. Otherwise:
 
 ```ts
-{ task: Task; lease_token: string; lease_generation: number }
+{ task: Task; lease_token: string; lease_generation: number; lease_remaining_ms: number }
 ```
 
 The token is random, returned only at claim, and stored only as a hash. Every mutation must use the authenticated claiming principal, token and generation. Never include lease tokens in memory, artifacts, event payloads or model prompts. Claiming another worker identity in arguments is not supported.
 
-Claims serialize through a per-tenant/scope advisory lock and task row locks. Eligible work must match an advertised capability and allowed kind. Patch leases also reserve `(tenant, scope, resource_key)`, preventing two current patch leases on one resource. Configure the same canonical resource key everywhere that reaches the same workspace; different keys or scopes cannot protect an accidentally shared external directory.
+Claims first serialize by worker identity, then by tenant/scope and task row locks. Current, unexpired leases across all that worker's projects count against reported slots (default 1; zero drains). Eligible work must match an advertised capability and allowed kind; unactivated workflow steps are excluded before the bounded candidate scan. Routing also considers the reporting worker's free slots. Patch leases with a resource key reserve `(tenant, scope, resource_key)`, preventing two current patch leases on that resource. Different keys or scopes cannot protect an accidentally shared external directory.
+
+Managed workflow claims/renewals are clamped to the workflow deadline and, if applicable, the originating OAuth grant expiry. `lease_remaining_ms` is measured using the database clock; the bridge uses request start plus this window for its conservative monotonic stop timer. An originating authorization revocation prevents further managed claims and lease writes before the background coordinator catches up.
 
 Each claim sweep requeues expired running tasks and marks their runs abandoned. Attempts exhausted after expiry become failed with `result.error: 'attempts_exhausted'`; otherwise the next claim increments the attempt count and generation. A patch resource retains an old-generation tombstone for 30 seconds after the later of expiry or reclamation, allowing a cooperative local process time to stop. The task is queued during that cooldown; a later poll can claim it. Reclamation is driven by calls to `task_claim`, so a stopped fleet leaves expired work visible as running until a worker resumes polling. Results explicitly reported as failed/blocked are not automatically retried; an authorized continuation is needed.
 
 ### `task_heartbeat`
 
-Arguments: `{task_id, lease_token, lease_generation, lease_seconds?}`. Result: `{task}`. Renewal uses the database clock after waiting for locks and must occur before expiry. It updates both task and resource expiry without changing the semantic task version or emitting a timer event. A renewal never revives an expired or cancelled lease.
+Arguments: `{task_id, lease_token, lease_generation, lease_seconds?}`. Result: `{task, lease_remaining_ms}`. Renewal uses the database clock after waiting for locks and must occur before expiry. It updates both task and resource expiry without changing the semantic task version or emitting a timer event. A renewal never revives an expired or cancelled lease, and cannot extend a managed workflow's budget.
 
 ### `task_checkpoint`
 
@@ -256,11 +258,42 @@ A continuation appends an attributed instruction, requeues work, clears expired 
 
 An unexpired running task gives `task_running`; wait or explicitly cancel before continuing. A non-running or expired task can be continued, including a cancelled task. Repeating the same `(task, principal, idempotency_key)` with the same expected version and instruction returns the current task without appending again. Retain the original arguments when retrying an ambiguous request.
 
+Managed steps return `workflow_managed`; submit a new workflow for another attempt instead of changing a dependency's result under an existing synthesis.
+
 ### `task_cancel`
 
 Arguments: `{task_id, expected_version}`. Result: `{task}`. Cancellation advances the task version and lease generation and clears lease ownership immediately. A running patch retains its old resource reservation until the later of its original expiry or cancellation time, plus a 30-second stop grace. New or continued patch tasks on that resource wait for this cooldown. Other resources are released. This reduces overlap while a cooperative worker observes cancellation; it cannot physically fence a suspended or uncooperative process on another machine.
 
 Checkpoints/results remain as historical evidence. A stale expected version gives `version_conflict`; read the new task before deciding again. Workers with the old lease cannot renew, save a checkpoint, create artifacts or finish. A repeat using the current cancelled version is a no-op.
+
+Managed steps return `workflow_managed`; use `workflow_cancel` to fence the run and its remaining children atomically.
+
+## Review workflows, messages and handoffs
+
+All these tools use the same CoreService checks through REST and MCP. Arguments reject unknown keys. See [COORDINATION.md](COORDINATION.md) for examples and operator guidance.
+
+| Tool | Arguments | Authority / result |
+|---|---|---|
+| `workflow_submit` | `scope`, `objective`, `base_commit`, `idempotency_key`; optional `template`, two distinct `reviewers`, `synthesis_provider`, `context_refs`, `max_attempts`, `timeout_seconds` | `task:submit` + `task:read`; `{workflow,replayed}`. Only `independent_review_v1`; exactly three read tasks. |
+| `workflow_get` | `workflow_id`, optional `timeline_limit` (1–200, default 50) | `task:read`; workflow, dependencies, owner verdict, recent metadata timeline with explicit coverage. |
+| `workflow_list` | `scope`, optional `limit` (1–50, default 20), `before_id` | `task:read`; `{workflows,next_before_id}`. |
+| `workflow_cancel` | `workflow_id`, `expected_version` | `task:cancel` + `task:read`; fences pending/running children. |
+| `workflow_review` | `workflow_id`, `expected_version`, `verdict` (`approved`, `rejected`, `unverified`), optional `reason` | Admin role + `task:read`; records a verdict only after completed synthesis. |
+| `task_handoff` | `task_id`, optional `session_limit` (0–20), `artifact_limit` (0–128) | `task:read` + `memory:read` + `artifact:read`; consistent sourced snapshot, not an execution grant. |
+| `task_message_send` | `task_id`, `body`, `idempotency_key`; optional `kind`, `reply_to`, source lease fields | `task:read`; frontend/admin also need `task:submit`; workers need `task:work` and a live same-scope source lease. |
+| `task_message_list` | `task_id`, optional `limit` (1–50), `after_id` | `task:read`; attributed messages and delivery state. |
+| `task_message_pull` | Current task lease fields | Worker role + `task:work` + `task:read`; freezes one batch for the execution generation. |
+| `task_message_ack` | Current lease fields, `batch_id`, `status`, optional `reason` | Worker role + `task:work` + `task:read`; exact idempotent receipt, not task completion. |
+
+Workflow limits: full lowercase 40-hex commit, objective up to 14,000 characters / 24,000 UTF-8 bytes, three child tasks, 1–3 attempts per task (default 2), and 300–86,400 seconds (default 3,600). Lease expiry can retry within this budget; explicit failed/blocked results stop the workflow. The original authorization snapshot is a ceiling, rechecked against current principal/grant state. Reviewers are fixed to two distinct policy-enabled providers. Synthesis uses the same pinned commit and receives bounded upstream evidence only after both reviewers complete with matching commit provenance. A planned synthesis has task status `queued` and workflow phase `waiting_for_dependencies` until activated. `execution_completed` and owner `verification` are independent.
+
+For a synthesis task, `context_get` additionally requires `artifact:read`; its workflow packet contains upstream IDs, versions, matching-commit status, bounded answers/summaries and artifact excerpts/hashes. Independent reviewer packets exclude upstream findings. Each answer is bounded to 8 KiB, each summary to 2 KiB, and artifact excerpts total 16 KiB. Missing or truncated evidence is marked explicitly.
+
+Messages have kinds `context`, `question`, `answer`, `steer`; bodies are bounded to 4,000 characters / 8 KiB. Each task allows 256 messages. A pull freezes at most 20 messages / 16 KiB including metadata, even if the selection is empty. Sends after a claim wait for a later generation. Worker provenance uses `source_task_id`, `source_lease_token`, `source_lease_generation`; those source credentials are never returned in message views. Cross-task worker sends to independent reviewers are rejected. Terminal managed steps reject new messages because another invocation requires a new workflow.
+
+Delivery status is `accepted`, `delivered`, `deferred` or `failed`. Acknowledgement arguments allow the last three. Delivered means the bridge observed a process start plus stdin flush (or argv prompt supply); it does not prove consumption or success. Receipts are immutable for a batch, and a lost receipt may result in later redelivery. Messages never requeue tasks, override their contracts or enable live injection.
+
+Handoffs retain current memory version/status references, artifact IDs/hashes, linked session coverage, native-session identifiers as worker-reported evidence, and continuation policy. `session_record` still replaces only the latest window, at most 40 turns. Session and handoff coverage report `full_history_available:false` / unknown completeness instead of asserting a full provider history.
 
 ## Artifacts
 

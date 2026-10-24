@@ -1,0 +1,12 @@
+{
+  "enabled": false,
+  "service_url": "http://127.0.0.1:8080",
+  "service_token_file": "/ABSOLUTE/PRIVATE/PATH/swarmaa-relay-reader.json",
+  "relay_origin": "https://relay.example.internal",
+  "relay_agent_token_file": "/ABSOLUTE/PRIVATE/PATH/relay-agent-token.json",
+  "recipient": "review-inbox",
+  "scopes": ["project:demo"],
+  "state_file": "/ABSOLUTE/PRIVATE/PATH/relay-cursor.json",
+  "poll_interval_ms": 5000,
+  "timeout_ms": 5000
+}

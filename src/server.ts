@@ -27,6 +27,7 @@ server.listen(config.port, config.host, () => {
   process.stderr.write(`Swarmaa listening on ${config.host}:${config.port}; public origin ${config.publicUrl}\n`);
   oauth?.start();
   events?.start();
+  core.start();
 });
 
 let closing = false;
@@ -39,6 +40,7 @@ async function shutdown(code: number): Promise<void> {
     new Promise<void>(resolve => { server.close(() => resolve()); }),
     oauth?.stop() ?? Promise.resolve(),
     events?.stop() ?? Promise.resolve(),
+    core.stop(),
   ]);
   await pool.end();
   clearTimeout(deadline);

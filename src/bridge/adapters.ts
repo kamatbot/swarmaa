@@ -1,13 +1,40 @@
-import { tmpdir } from 'node:os';
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
+import { isAbsolute, join } from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { claudeWorkerDir, type NativePlan } from './native-session.js';
 import { wrapCommand } from './sandbox.js';
 import type { AgentConfig, BridgeConfig, ProcessRequest, ProcessResult, ProjectConfig, Task } from './types.js';
 
-/** The user's own environment, as the CLI would see it in their shell, minus every Swarmaa service token (COLLECTIVE_* and SWARMAA_*). */
-export function providerEnvironment(_provider: string, parent: NodeJS.ProcessEnv, tokenEnv: string): NodeJS.ProcessEnv {
+const RUNTIME_ENV = ['HOME', 'PATH', 'USER', 'LOGNAME', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TZ'];
+const PROVIDER_CREDENTIAL_ENV: Record<string, readonly string[]> = {
+  claude: ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN'],
+  codex: ['OPENAI_API_KEY'],
+  antigravity: ['GEMINI_API_KEY', 'GOOGLE_API_KEY'],
+};
+
+/** Explicit runtime and provider-auth allowlist, never the bridge's inherited shell environment. */
+export function providerEnvironment(provider: string, parent: NodeJS.ProcessEnv, tokenEnv: string): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { NO_COLOR: '1', TERM: 'dumb' };
-  for (const [key, value] of Object.entries(parent)) if (key !== tokenEnv && !/^(?:COLLECTIVE|SWARMAA)_/u.test(key)) env[key] = value;
+  for (const key of [...RUNTIME_ENV, ...(PROVIDER_CREDENTIAL_ENV[provider] ?? [])]) {
+    if (key !== tokenEnv && !/^(?:COLLECTIVE|SWARMAA)_/u.test(key) && parent[key] !== undefined) env[key] = parent[key];
+  }
+  // Empty/relative PATH entries implicitly trust a task's working directory.
+  env.PATH = (env.PATH ?? '/usr/bin:/bin:/usr/sbin:/sbin').split(':').filter(p => isAbsolute(p) && !/[\x00-\x1f\x7f]/u.test(p)).join(':');
+  env.GIT_CONFIG_NOSYSTEM = '1';
+  env.GIT_CONFIG_GLOBAL = '/dev/null';
+  env.GIT_OPTIONAL_LOCKS = '0';
   return env;
+}
+
+const invocationScratch = new WeakMap<ProcessRequest, string>();
+
+/** Call only after the provider process group exits and native transcript export finishes. */
+export function cleanupInvocation(request: ProcessRequest): void {
+  const scratch = invocationScratch.get(request);
+  if (!scratch) return;
+  invocationScratch.delete(request);
+  rmSync(scratch, { recursive: true, force: true });
 }
 
 /** Read work the service routes to whichever provider has most quota headroom. */
@@ -31,7 +58,7 @@ export function buildPrompt(task: Task, context: unknown, maxBytes: number): str
     'Preserve the original constraints. Report conflicting information and blockers. Never invent a successful test, connection, deployment or validation.',
     'Do not access credentials or unrelated files. Do not send messages, publish, deploy, commit, push, or change account settings.',
     task.kind === 'patch' ? 'This task allows file edits in the working directory, a git worktree on its own branch. Shell commands, builds and tests are allowed inside it. Do not commit, push, or change branches: the bridge commits your edits. Report what you validated and what still needs validation.' : 'This is a read-only task: do not alter files or external state. Use the project, the supplied context, read-only commands and the web as needed; cite web sources with their URL and retrieval date.',
-    'Headless Chrome/Chromium works here only with --no-sandbox (macOS cannot nest its sandbox inside this one) and a fresh --user-data-dir under $TMPDIR (the default browser profile folder is blocked); wait for the process to exit before checking its output.',
+    'Filesystem permissions are enforced by the worker runtime. Use only the private $TMPDIR for scratch files. A sandbox or permission denial is a blocker; do not attempt to disable it.',
     'The bridge owns task leases and service writes. Do not try to call the service or read its bearer token.',
     'Return a concise result with evidence, unresolved issues and recommended next steps. Provider exit code alone does not prove acceptance criteria passed.'
   ].join('\n');
@@ -46,17 +73,28 @@ export function buildInvocation(agent: AgentConfig, project: ProjectConfig, task
   const patch = task.kind === 'patch';
   if (task.required_capability !== capability(agent, patch) && task.required_capability !== (patch ? AUTO_PATCH : AUTO_READ)) throw new Error('Task capability does not match this provider/mode');
   if (patch && (!project.allow_patch || !agent.enable_patch)) throw new Error('Patch execution is not enabled for this project/provider');
+  if (!agent.sandbox) throw new Error('Worker execution requires sandbox:true; unconfined task execution is not supported');
+  if (patch && (!workspace || !isAbsolute(workspace.dir) || !isAbsolute(workspace.gitDir))) throw new Error('Patch execution requires an isolated worktree and shared git metadata path');
+  const canonical = (path: string): string => { try { return realpathSync(path); } catch { return path; } };
+  if (patch && canonical(workspace!.dir) === canonical(project.root)) throw new Error('Patch execution cannot use the configured project checkout');
+  if (agent.provider === 'codex' && (!native?.codexHome || native.harness !== 'codex')) throw new Error('Codex execution requires a prepared private native-session home');
   let args: string[];
+  const claudeSessionId = agent.provider === 'claude' ? native?.id ?? randomUUID() : undefined;
   if (agent.provider === 'claude') {
-    // The real CLIs as the user runs them (their config, MCP servers, skills, models, login), headless with
-    // permissions auto-approved because nobody is there to answer prompts. The light Seatbelt profile keeps
-    // credential folders out of reach; patch work stays on its own worktree branch.
+    // Official CLI contract: dontAsk denies unapproved tools, --tools limits the
+    // built-ins, and strict empty MCP config prevents inherited service clients.
+    // Bash remains inside the outer filesystem boundary, including for read tasks.
+    const tools = ['Read', 'Glob', 'Grep', 'Bash', 'WebFetch', 'WebSearch', ...(patch ? ['Edit', 'Write'] : [])].join(',');
     args = [
-      '--print', '--output-format', 'json', '--permission-mode', 'bypassPermissions', '--max-turns', '200',
-      ...(native?.harness === 'claude' ? ['--session-id', native.id!] : []),
+      '--print', '--output-format', 'json', '--permission-mode', 'dontAsk', '--max-turns', '200',
+      '--tools', tools, '--allowedTools', tools, '--disallowedTools', 'mcp__*',
+      '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}', '--setting-sources', '',
+      '--session-id', claudeSessionId!,
+      ...(native?.harness === 'claude' ? [] : ['--no-session-persistence']),
     ];
   } else if (agent.provider === 'codex') {
-    // --search is a top-level flag and must come before `exec`. Codex's own sandbox can't nest inside Seatbelt.
+    // The native sandbox cannot nest inside Seatbelt. This flag is permitted only
+    // with the mandatory outer boundary and a private CODEX_HOME (no user MCP).
     args = ['--search', 'exec', '--json', '--skip-git-repo-check', '--dangerously-bypass-approvals-and-sandbox', '--color', 'never'];
   } else {
     // agy takes the prompt only as the value of -p (no stdin), attached with '=' so it is never parsed as a flag;
@@ -68,18 +106,33 @@ export function buildInvocation(agent: AgentConfig, project: ProjectConfig, task
   const input = buildPrompt(task, context, config.max_prompt_bytes);
   if (agent.provider === 'antigravity') args.push(`-p=${input}`);
   const env = providerEnvironment(agent.provider, parentEnv, config.token_env);
-  let command = agent.binary;
-  if (agent.sandbox) {
-    const tmp = env.TMPDIR ?? tmpdir();
-    env.TMPDIR = tmp;
-    if (agent.provider === 'claude') env.CLAUDE_CODE_TMPDIR = tmp; // default /tmp/claude-<uid> is shared across projects
-    ({ command, args } = wrapCommand(agent.binary, args, { provider: agent.provider, binary: agent.binary, projectRoot: workspace?.dir ?? project.root, gitDir: workspace?.gitDir, patch, tmp, ownHistoryDir: native?.harness === 'claude' && workspace ? claudeWorkerDir(workspace.dir, native.home) : undefined }));
+  const scratch = realpathSync(mkdtempSync(join(tmpdir(), 'swarmaa-run-')));
+  chmodSync(scratch, 0o700);
+  try {
+    const cache = join(scratch, 'cache');
+    mkdirSync(cache, { mode: 0o700 });
+    env.HOME = native?.home ?? parentEnv.HOME ?? homedir();
+    env.TMPDIR = scratch; env.TMP = scratch; env.TEMP = scratch; env.XDG_CACHE_HOME = cache;
+    if (agent.provider === 'claude') env.CLAUDE_CODE_TMPDIR = scratch;
+    if (agent.provider === 'codex') env.CODEX_HOME = native!.codexHome!;
+    const wrapped = wrapCommand(agent.binary, args, {
+      provider: agent.provider, binary: agent.binary, projectRoot: workspace?.dir ?? project.root,
+      gitDir: workspace?.gitDir, patch, tmp: scratch, home: env.HOME,
+      protectedPaths: config.token_file ? [config.token_file] : [],
+      codexHome: native?.codexHome, claudeSessionId,
+      ownHistoryDir: native?.harness === 'claude' && workspace ? claudeWorkerDir(workspace.dir, native.home) : undefined,
+    });
+    const request: ProcessRequest = {
+      ...wrapped, cwd: workspace?.dir ?? project.root, env,
+      input: agent.provider === 'antigravity' ? '' : input,
+      timeout_ms: config.task_timeout_seconds * 1000, max_output_bytes: config.max_output_bytes, signal,
+    };
+    invocationScratch.set(request, scratch);
+    return request;
+  } catch (error) {
+    rmSync(scratch, { recursive: true, force: true });
+    throw error;
   }
-  return {
-    command, args, cwd: workspace?.dir ?? project.root, env,
-    input: agent.provider === 'antigravity' ? '' : input,
-    timeout_ms: config.task_timeout_seconds * 1000, max_output_bytes: config.max_output_bytes, signal
-  };
 }
 
 /** Exit 0 is insufficient: require a successful provider terminal result as well. */
@@ -88,7 +141,7 @@ export function providerSucceeded(provider: string, result: ProcessResult): bool
   try {
     if (provider === 'claude') {
       const payload = JSON.parse(result.stdout) as Record<string, unknown>;
-      return payload.type === 'result' && payload.subtype === 'success' && payload.is_error !== true;
+      return payload.type === 'result' && payload.subtype === 'success' && payload.is_error !== true && deniedActions(provider, result.stdout).length === 0;
     }
     if (provider === 'antigravity') {
       const payload = JSON.parse(result.stdout) as Record<string, unknown>;
@@ -125,10 +178,14 @@ export function finalAnswer(provider: string, stdout: string): string {
   return answer;
 }
 
-/** Actions the provider reports it was denied (Antigravity's denied_actions). A run that needed them is not complete. */
+/** Provider-reported denials are blockers, not proof that requested work completed. */
 export function deniedActions(provider: string, stdout: string): string[] {
-  if (provider !== 'antigravity') return [];
+  if (provider !== 'antigravity' && provider !== 'claude') return [];
   try {
+    if (provider === 'claude') {
+      const d = (JSON.parse(stdout) as { permission_denials?: { tool_name?: unknown }[] }).permission_denials;
+      return Array.isArray(d) ? d.map(a => String(a.tool_name ?? 'unknown')).slice(0, 10) : [];
+    }
     const d = (JSON.parse(stdout) as { denied_actions?: { display_name?: unknown; action?: unknown }[] }).denied_actions;
     return Array.isArray(d) ? d.map(a => String(a.display_name ?? a.action ?? 'unknown')).slice(0, 10) : [];
   } catch { return []; }

@@ -22,8 +22,10 @@ Swarmaa connects **Claude Code**, **Codex**, **Antigravity**, **Dot**, and **Gro
 ## What It Is
 
 - **Shared project memory (`project:<name>`):** Sourced notes, observations, and owner-reviewed decisions/preferences/procedures with optimistic version checks, conflict preservation, and live-store retraction.
-- **Quota-aware task routing (`auto.read` / `auto.patch`):** Workers report 5-hour and weekly quota windows (`usage_report`). Swarmaa routes review, research, and patch tasks by your priority policy and remaining quota headroom.
-- **Sandboxed background workers:** Local macOS worker bridges run Claude Code, Codex, and Antigravity headlessly with bounded execution time/output, database lease fencing, and Seatbelt credential-directory protection.
+- **Quota and capacity-aware task routing (`auto.read` / `auto.patch`):** Workers report quota windows and slots. Routing considers free capacity, and PostgreSQL prevents a worker identity from exceeding its slots across projects.
+- **Sandboxed background workers:** Local macOS bridges run Claude Code, Codex, and Antigravity with bounded execution time/output, database lease fencing, and a mandatory Seatbelt filesystem allowlist. Read tasks cannot write project files; patch writes stay inside their isolated worktree.
+- **Pinned independent reviews:** `workflow_submit` creates two independent reviews of one immutable commit and a dependent synthesis. The stored workflow survives service restarts and stays unverified until an owner records a verdict.
+- **Explicit handoffs and message receipts:** `task_handoff` carries task provenance, current memory versions and artifact hashes. Task messages arrive at the next invocation boundary, with delivery recorded separately from execution and acceptance.
 - **Isolated git worktree patches:** When edits are opted into, patch tasks run in isolated git worktrees (`~/.swarma/worktrees/`), commit to local `swarmaa/<provider>/<id>` branches, upload a diff artifact, and never push.
 - **Cross-harness session journal & distilled lessons:** Hooks and a read-only local poller capture chat turns from Claude Code, Codex, Antigravity, Cursor, OpenCode, GitHub Copilot CLI, Cline, Roo Code, Devin CLI, Hermes, Factory, Pi, Kiro, Windsurf, and Qwen Code—and distill reusable project lessons for owner review.
 
@@ -56,6 +58,8 @@ npm run setup
 Once connected, type `/swarm` inside Claude Code or Antigravity (or `$swarm` in Codex, after `npx tsx scripts/hooks-install.ts`) to inspect live workers, provider quota headroom, and recent swarm runs.
 
 See [docs/SWARMA.md](docs/SWARMA.md) for day-to-day commands, `/swarm` usage, chat capture, and lesson distillation.
+
+See [docs/COORDINATION.md](docs/COORDINATION.md) for independent-review workflows, message boundaries, structured handoffs, and the optional Relay notifier. The [Claude review handoff](docs/briefs/relay-inspired-coordination-review.md) records the change scope, authored tests, and outstanding local validation.
 
 ---
 
@@ -154,7 +158,7 @@ Swarmaa is designed around explicit trust boundaries:
 - **Per-client scoped credentials:** Provisioned tokens are stored only as SHA-256 digests. Every request is checked against tenant, role (`frontend`, `worker`, `admin`), and exact project scopes (`project:<name>`) in `CoreService`.
 - **Untrusted memory & transcripts:** Memories, task objectives, chat transcripts, and artifacts are treated strictly as data—never as execution grants or tool permissions. Shared decisions, preferences, and procedures stay `proposed` until promoted by an `admin` credential.
 - **Read-only by default, isolated worktrees for edits:** Workers default to read-only review/research. Edit tasks (`<provider>.patch` / `auto.patch`) require explicit opt-in (`task:patch` grant plus local bridge config), execute inside isolated git worktrees, commit to local `swarmaa/<provider>/<id>` branches, and never push or deploy.
-- **Credential scrubbing & Seatbelt sandboxing:** The worker bridge strips service tokens (`COLLECTIVE_*` / `SWARMAA_*`) from model subprocesses and wraps workers in a macOS Seatbelt profile that blocks access to sensitive credential directories (`~/.ssh`, `~/.aws`, `~/.config/gh`, etc.).
+- **Credential boundaries & Seatbelt sandboxing:** Provider environments use an explicit allowlist. The filesystem policy excludes service token files, `.env` files, project service state, and common credential directories. Provider login files and permitted Keychain services remain a documented residual; this is not per-secret isolation from a hostile process under the same OS account. See [SECURITY.md](docs/SECURITY.md).
 - **SSRF-guarded webhooks:** Outbound event deliveries validate public DNS hostnames, reject private/loopback IP ranges, pin the validated IP for the connection, reject HTTP redirects, and sign payloads with Standard Webhooks HMAC.
 
 Read [SECURITY.md](SECURITY.md) for vulnerability disclosure instructions (`mayur@kamatbot.com`) and [docs/SECURITY.md](docs/SECURITY.md) for the full threat model and operator checklist.

@@ -1,15 +1,16 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { parseBridgeConfig } from '../src/bridge/config.js';
 import type { ProcessResult, Task, ToolClient } from '../src/bridge/types.js';
 import { BridgeWorker } from '../src/bridge/worker.js';
+import { SANDBOX_EXEC } from '../src/bridge/sandbox.js';
 
 const git = (cwd: string, ...a: string[]) => execFileSync('git', ['-C', cwd, ...a], { encoding: 'utf8', env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null' } }).trim();
-const ok: ProcessResult = { exit_code: 0, signal: null, stdout: '{"type":"turn.completed"}', stderr: '', duration_ms: 1, stop_reason: null };
+const ok: ProcessResult = { exit_code: 0, signal: null, stdout: '{"type":"turn.completed"}', stderr: '', duration_ms: 1, stop_reason: null, input_delivered: true };
 const ID = '12345678-1111-4111-8111-111111111111';
 
 async function scenario(opts: { repo: boolean; baseRef?: string }) {
@@ -17,8 +18,11 @@ async function scenario(opts: { repo: boolean; baseRef?: string }) {
   const home = process.env.HOME;
   process.env.HOME = join(dir, 'home');
   try {
+    mkdirSync(join(process.env.HOME, '.codex'), { recursive: true });
+    writeFileSync(join(process.env.HOME, '.codex/auth.json'), '{"tokens":{"access_token":"test-only","account_id":"fixture"}}', { mode: 0o600 });
+    writeFileSync(join(process.env.HOME, '.codex/config.toml'), 'do not inherit this profile');
     const root = join(dir, 'repo');
-    execFileSync('mkdir', ['-p', root]);
+    mkdirSync(root);
     let first = '';
     if (opts.repo) {
       git(root, 'init', '-q', '-b', 'main');
@@ -28,7 +32,7 @@ async function scenario(opts: { repo: boolean; baseRef?: string }) {
       writeFileSync(join(root, 'a.txt'), 'two\n'); git(root, 'commit', '-qam', 'two');
       writeFileSync(join(root, 'dirty.txt'), 'untracked\n');
     }
-    const cfg = parseBridgeConfig({ service_url: 'http://localhost:8080', agents: [{ id: 'codex', provider: 'codex', binary: '/bin/codex', enable_patch: true, sandbox: false }],
+    const cfg = parseBridgeConfig({ service_url: 'http://localhost:8080', agents: [{ id: 'codex', provider: 'codex', binary: '/bin/codex', enable_patch: true, sandbox: true }],
       projects: [{ scope: 'project:demo', root, agents: ['codex'], allow_patch: true }] });
     const task: Task = { id: ID, scope: 'project:demo', kind: 'patch', objective: 'Add b file\nsecond line', constraints: [], acceptance_criteria: [], resource_key: null,
       required_capability: 'auto.patch', checkpoint: null, context_refs: [], version: 1, ...(opts.baseRef ? { base_ref: opts.baseRef === 'FIRST' ? first : opts.baseRef } : {}) };
@@ -37,12 +41,20 @@ async function scenario(opts: { repo: boolean; baseRef?: string }) {
       calls.push({ name, args });
       if (name === 'task_claim') return { task, lease_token: 'l', lease_generation: 1, route: { provider: null, allowed: ['codex'] } } as T;
       if (name === 'context_get') return { scope: task.scope, task, memories: [], conflicts: [] } as T;
+      if (name === 'task_handoff') return { handoff: { task, untrusted: true } } as T;
+      if (name === 'task_message_pull') return { batch_id: '33333333-3333-4333-8333-333333333333', messages: [], has_more: false, guidance: 'Quoted task context.' } as T;
+      if (name === 'task_message_ack') return { acknowledged: true } as T;
       if (name === 'artifact_put') return { artifact: { id: `${calls.length}`.padStart(8, '0') + '-2222-4222-8222-222222222222' } } as T;
       if (name === 'session_list') return { sessions: [] } as T;
       return { task } as T;
     } };
     let seen: { cwd: string; args: string[] } | undefined;
     const worker = new BridgeWorker(cfg, client, () => {}, async req => {
+      assert.equal(req.command, SANDBOX_EXEC);
+      assert.equal(req.args[2], '/bin/codex');
+      assert.notEqual(req.env.CODEX_HOME, join(process.env.HOME!, '.codex'));
+      assert.equal(existsSync(join(req.env.CODEX_HOME!, 'config.toml')), false);
+      assert.match(readFileSync(join(req.env.CODEX_HOME!, 'auth.json'), 'utf8'), /test-only/u);
       seen = { cwd: req.cwd, args: req.args };
       writeFileSync(join(req.cwd, 'b.txt'), 'new\n');
       if (opts.baseRef === 'FIRST') assert.equal(readFileSync(join(req.cwd, 'a.txt'), 'utf8'), 'one\n');

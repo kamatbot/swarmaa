@@ -127,10 +127,12 @@ dependencies installed, `npm run bridge -- --config /ABSOLUTE/PATH/bridge.local.
 TypeScript source entrypoint. Follow the repository's local validation instructions before
 starting a persistent worker.
 
-The default capabilities are `claude.read` and `codex.read`. A task must name one of those exact
-strings. `research` and `review` tasks are eligible by default. A single bridge process executes
-one task at a time, then polls the next configured project. Multiple machines can compete for
-the same queue using different worker identities.
+Read capabilities are `<provider>.read` and `auto.read`; `research` and `review` are eligible by
+default, with Antigravity limited by policy to review. A bridge runs up to `max_concurrent`
+tasks and reports its slots. The server independently enforces the shared limit across every
+project served by that identity. Give separate machines separate worker identities; two bridge
+processes sharing one identity share its capacity. `slots:0` drains claims while existing leases
+can still renew. Routing considers occupied slots as well as quota.
 
 The bridge claims a 120-second database lease and renews it every 20 seconds by default. It
 saves an initial checkpoint and bounded partial output on renewals. Completion stores a
@@ -138,7 +140,9 @@ transcript artifact and a task result. If renewal or checkpointing fails, the ru
 is aborted. POSIX process groups are terminated, with forced termination after a grace period.
 Each provider run also has a wall-clock timeout and a combined stdout/stderr byte cap.
 A separate conservative monotonic deadline stops the provider before the last known lease
-window ends, even when a renewal request hangs. Cancelling a running patch can impose a resource
+window ends, even when a renewal request hangs. Claims/renewals return `lease_remaining_ms` so
+shorter workflow/OAuth deadlines are respected without depending on synchronized host clocks.
+Cancelling a running patch can impose a resource
 cooldown through the old lease expiry plus a stop grace before a successor can claim it.
 
 The result explicitly marks acceptance criteria **unverified** and review required. A
@@ -153,40 +157,38 @@ keep patch work on one assigned machine, and inspect interrupted work before con
 Use one consistent `resource_key` for tasks touching the same logical resource. Keys supplied
 by different callers do not establish that their filesystem targets are distinct.
 
-Patch execution also takes an atomic local `.collective-patch.lock` directory in the configured
-project root, so two bridge processes cannot mutate the same root even when callers use
-different resource keys. It is released after the provider process group stops. A crashed
-bridge deliberately leaves the lock in place: inspect its `owner.json`, verify the old provider
-and its descendants have stopped, and then remove the lock before requeuing. There is no
-automatic stale-lock deletion that could overlap a still-active local process.
+Patch execution uses a task-specific worktree and local branch. The parent bridge commits
+provider edits and removes the worktree after the process stops; a finalization failure keeps
+the worktree and reports its recovery path. Pinned read tasks use separate detached worktrees
+under `~/.swarma/reviews`, verify the full commit SHA, and remove them after the attempt. The
+commit must already exist locally. Neither review preparation nor the coordinator fetches it.
 
 ## 4. Provider support and patch mode
 
 | Provider | Autonomous support | Enforced mode |
 |---|---|---|
-| Claude Code | Research/review; opt-in edits in sandboxed git worktrees (commands allowed) | `--restricted`, explicit built-in tool list, MCP tools denied, empty strict MCP config, permission prompts denied. |
-| Codex CLI | Research/review; opt-in edits in sandboxed git worktrees | `exec --sandbox read-only`, never approvals, user config ignored, apps/plugins disabled. |
-| Antigravity (`agy`) | Review and in-project edits (no research) | `--mode plan --output-format json --print-timeout`, prompt as one argv element (`-p=<text>`), no `--dangerously-skip-permissions`. Requires `sandbox:true`: the Seatbelt profile is the file boundary. |
+| Claude Code | Research/review; opt-in edits in isolated worktrees | Mandatory Seatbelt; `dontAsk`; explicit Read/Glob/Grep/Bash/web tools, plus Edit/Write for patch; strict empty MCP configuration and no inherited setting sources. |
+| Codex CLI | Research/review; opt-in edits in isolated worktrees | Mandatory Seatbelt and a private `CODEX_HOME` containing authentication only. The CLI's sandbox-bypass flag runs inside that outer boundary. |
+| Antigravity (`agy`) | Review and in-project edits, no research | Mandatory Seatbelt; JSON output, bounded print timeout, prompt as one argv element. CLI permission bypass stays inside the outer boundary. |
 
-Claude requires a release supporting `--restricted` and `--permission-prompts none` (at least
-v2.1.259 for the latter). Read-only mode exposes `Read`, `Glob` and `Grep`. File-only patch mode
-adds `Edit` and `Write` with `acceptEdits`; command execution, subagents, browser and MCP tools
-are absent from that tool list. Managed organization policy remains authoritative. The bridge
-never falls back to a permission-bypass flag if a CLI version rejects an option.
+All agents require `sandbox:true`; false is rejected. Startup requires macOS `sandbox-exec`
+before advertising slots or taking leases. The profile starts with `deny default`; project
+reads, installed runtime files, private scratch and specific provider state are allowed.
+Patch writes are limited to the task worktree. Service credential paths, `.env`, `.local`,
+common account secrets and shared Git metadata writes are excluded. A CLI option failure is
+a blocker; it does not cause an unconfined retry. Read-only filesystem mode does not prohibit
+all computation or outbound network effects; task constraints still apply.
 
-Codex must support the flags shown in `src/bridge/adapters.ts`. Its read-only filesystem sandbox
-does not mean that every readable file is limited to the project directory. Keep the worker's
-account and project data appropriate for the tasks it is authorized to analyze. Codex patch
-mode is rejected in this release; use an interactive reviewed workflow for Codex edits.
+Validate the exact flags in `src/bridge/adapters.ts` against each installed CLI. Runtime reports
+label their source as static local configuration and CLI version as unverified. The bridge can
+observe output bytes, process exit and provider-reported terminal results. It does not infer
+tool activity or model reasoning from silence, and exposes no live message-injection support.
 
-Antigravity workers run `agy` in plan mode: headless, it auto-denies shell commands and reads outside the
-workspace (reported as `denied_actions`; the bridge treats an empty answer as failure), and the outer
-Seatbelt profile independently blocks project writes, credential directories and other chats. Its MCP
-servers are defined in `~/.gemini/config/mcp_config.json` (which can hold tokens); the profile hides that
-file, so the worker has no MCP tools and cannot call Swarmaa. `agy` still needs its own state writable
-(`~/.gemini/antigravity-cli`, `~/.gemini/antigravity`, `~/.gemini/config/projects`), and other
-conversations' `brain/` and `conversations/` are unreadable. Not confined: network access, and the
-read-only guarantee for patch work (Antigravity has no patch mode here). Interactive MCP use of Antigravity is unchanged.
+Provider login remains deliberately available. Claude's `.claude.json` can also contain
+configuration, Keychain access is not per-secret isolation, and Antigravity needs enumerated
+shared provider state. Codex authentication refresh preserves account identity but is not a
+credential broker. Use a dedicated worker OS account for stronger isolation. Review
+[SECURITY.md](SECURITY.md) before treating the worker as a hostile-code boundary.
 
 Contract: Read tasks run as `<provider>.read` or `auto.read`; edit tasks as `<provider>.patch` or `auto.patch`. Edits are an explicit per-install opt-in (setup's "Allow edits", default read-only): the worker gets the `task:patch` grant and `enable_patch`/`allow_patch` together. Edit tasks run in sandboxed git worktrees with commands allowed, commit to the local branch `swarmaa/<provider>/<id>` and never push. Antigravity does review and in-project edits, not research. The routing policy picks the provider by order and quota.
 
@@ -199,10 +201,15 @@ Edits are opt-in. `npm run setup` ("Allow edits") provisions all of the followin
 3. Submit a `patch` task with `required_capability: "claude.patch"`, a stable `resource_key`,
    clear constraints, and acceptance criteria.
 
-The adapter produces local source edits and a provider transcript. It does not commit, push,
-merge, deploy or run tests/builds. Review the working copy's diff locally. No automated rollback
-is performed, because it could discard a user's concurrent edits. Other task kinds cannot gain
+The provider produces local source edits and a transcript. The trusted bridge commits patch
+edits on their local task branch and uploads the diff; it never pushes, merges or deploys.
+Patch workers may run commands/builds/tests within their granted worktree, subject to the task's
+constraints; the bridge does not itself claim those checks passed. Other task kinds cannot gain
 patch authority through task prose or a memory entry.
+
+For the fixed two-reviewer workflow, message delivery at invocation boundaries, structured
+handoffs, and optional Relay notifications, see [COORDINATION.md](COORDINATION.md). Upgrade the
+service schema through migrations 019 and 020 before using this worker version.
 
 ## 5. Optional Reason Network integration
 

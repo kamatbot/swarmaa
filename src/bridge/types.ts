@@ -7,7 +7,7 @@ export interface AgentConfig {
   binary: string;
   model?: string;
   enable_patch: boolean;
-  /** macOS Seatbelt confinement of the provider process (default true). */
+  /** Required macOS Seatbelt confinement; false is rejected by config and invocation. */
   sandbox: boolean;
 }
 export interface ProjectConfig {
@@ -43,8 +43,10 @@ export interface Task {
   acceptance_criteria: string[];
   resource_key: string | null;
   required_capability: string;
-  /** Patch only: ref/commit to branch the worktree from; empty or absent means HEAD. */
+  /** Patch base ref, or a full commit SHA for an isolated read snapshot. Absent means HEAD/current checkout. */
   base_ref?: string | null;
+  workflow_id?: string | null;
+  workflow_step?: string | null;
   checkpoint: Record<string, unknown> | null;
   context_refs: string[];
   instructions?: unknown[];
@@ -54,6 +56,8 @@ export interface Claim {
   task: Task | null;
   lease_token?: string;
   lease_generation?: number;
+  /** Server-measured remaining lease window, bounded by any workflow deadline. */
+  lease_remaining_ms?: number;
   /** Router decision for auto.* tasks: the provider to run (null = any allowed) and the providers the policy enables. */
   route?: { provider: string | null; allowed: string[] };
 }
@@ -82,6 +86,8 @@ export interface ProcessResult {
   stdout: string;
   stderr: string;
   duration_ms: number;
+  /** Process started and stdin flushed (or argv input passed); does not prove provider consumption. */
+  input_delivered?: boolean;
   stop_reason: 'timeout' | 'output_limit' | 'aborted' | 'spawn_error' | null;
 }
 export type ProcessRunner = (request: ProcessRequest) => Promise<ProcessResult>;
