@@ -87,6 +87,19 @@ test('validatePlan defaults to local-only and accepts a user-owned remote domain
   assert.deepEqual(validatePlan({ ...okPlan(), folders: [dir, dir] }).folders, [dir]);
 });
 
+test('idle-wake alias setup is off by default, explicitly print-only, and rejects non-booleans',async () => {
+  assert.equal(validatePlan(okPlan()).wrapAliases,undefined);
+  rejects({...okPlan(),wrapAliases:'yes'},/wrapAliases must be true or false/);
+  const root=realpathSync(mkdtempSync(join(tmpdir(),'swarmaa-alias-')));
+  try {
+    const plan=validatePlan({...okPlan(),harnesses:{codex:{connect:true}},wrapAliases:true});
+    const files:string[]=[],summary=await runSetup(plan,{dry:true,root,detected:fakeDetected(),log:()=>{},onFile:file=>files.push(file)});
+    assert.equal(summary.ok,true,String(summary.error));
+    assert.ok(summary.nextSteps.some(s=>s.includes("alias codex='swarmaa wrap codex'") && s.includes('print only')));
+    assert.ok(!files.some(f=>/\.(?:zshrc|bashrc|profile)$/.test(f)));
+  } finally { rmSync(root,{recursive:true,force:true}); }
+});
+
 test('validatePlan accepts 100 folders and reserves two of 512 scopes for demo and general', () => {
   const folders = Array.from({length:100},(_,i) => `p${i}=${dir}`);
   assert.equal(validatePlan({...okPlan(),folders}).folders.length,100);

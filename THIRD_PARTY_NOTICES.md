@@ -167,6 +167,7 @@ Swarmaa declares the following direct runtime and development dependencies in `p
 | `@simplewebauthn/server` | `14.0.3` | MIT | https://github.com/MasterKale/SimpleWebAuthn |
 | `ipaddr.js` | `2.5.0` | MIT | https://github.com/whitequark/ipaddr.js |
 | `pg` | `8.23.1` | MIT | https://github.com/brianc/node-postgres |
+| `node-pty` | `1.1.0` | MIT | https://github.com/microsoft/node-pty |
 | `@types/node` | `26.6.5` | MIT | https://github.com/DefinitelyTyped/DefinitelyTyped |
 | `@types/pg` | `8.23.1` | MIT | https://github.com/DefinitelyTyped/DefinitelyTyped |
 | `tsx` | `4.23.15` | MIT | https://github.com/privatenumber/tsx |
@@ -207,3 +208,19 @@ Swarmaa is an independent open-source project and is not affiliated with, endors
 - **Antigravity** and **Gemini** are trademarks of Google LLC.
 - **Cursor** is a trademark of Anysphere, Inc.
 - **Grok** is a trademark of xAI Corp.
+
+---
+
+## 6. AgentWorkforce Relay (Apache-2.0)
+
+- **Source:** https://github.com/AgentWorkforce/relay, local reference commit `c3a92d9c179972963756ebce3fcd106679302934`.
+- **License:** Apache License 2.0; preserved in [docs/licenses/agentworkforce-relay-APACHE-2.0.txt](docs/licenses/agentworkforce-relay-APACHE-2.0.txt).
+- **Adaptation:** `src/wrap/terminal.ts`, `src/wrap/delivery.ts`, and `tests/fixtures/pty/composers.json`
+  adapt composer/cursor readiness, Codex activity recognition, control-character sanitization,
+  paste selection, the 15-second prompt deadline, separate delayed CR, human cancellation and bounded
+  submit-only recovery from `crates/relay-pty/src/{readiness.rs,detection.rs,wait.rs,pty.rs}`,
+  `crates/broker/src/{wrap.rs,pty_worker.rs,injection_wire.rs,terminal_control.rs}` and
+  `docs/harnesses/{pty-delivery.md,injection.md}`.
+- **Changes:** Reimplemented in TypeScript with a bounded conservative VT observer, a 1,500-byte
+  whole-notice cap, one extra CR, Swarmaa inbox receipts and explicit unconfirmed verdicts. No Relay
+  broker, messaging transport or account integration is bundled or executed.

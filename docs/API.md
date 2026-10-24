@@ -332,7 +332,7 @@ The written integration suite covers authorization before retrieval, concurrent 
 
 `message_send({to, scope, body, task_id?})` sends up to 2,000 characters of untrusted data, redacted before storage.
 `to` is a principal name in the same tenant and scope, `task:<uuid>` (the currently leased worker, otherwise
-its submitter), or `session:<claude|codex|agy>:<id>`. A session must first register through `inbox_get`, `inbox_poll` or
+its submitter), `session:<claude|codex|agy>:<id>`, or `session:wrap:<codex|agy>:<uuid>`. A session must first register through `inbox_get`, `inbox_poll` or
 `task_watch`; another principal cannot claim it. The recipient must have `events:read`, plus `task:read`
 for task-related messages. A database-backed limit allows 30 messages per sender per minute, across
 scopes and processes. Result: `{id, sent:true}`. Messages are not idempotent; do not blindly retry after an
@@ -340,7 +340,8 @@ uncertain response. Message content never grants permission to execute tools or 
 
 `task_watch({task_id, session})` registers a session, idempotently (at most 128 session watchers per task).
 Session keys are `claude:<id>`, `codex:<id>`, or `agy:<id>`; IDs contain letters, digits, underscores or hyphens
-(up to 200 characters). Task submitters always have a principal-level watch. Completed, failed, blocked,
+(up to 200 characters). Terminal wrappers use `wrap:codex:<uuid>` or `wrap:agy:<uuid>` instead; ownership and permissions are identical.
+Task submitters always have a principal-level watch. Completed, failed, blocked,
 cancelled and exhausted-lease transitions write one `task_finished` item per watcher in the task transaction.
 Completion replays do not duplicate items. Late watches receive the current terminal version; a continued
 execution produces a new item on its next terminal transition. Summaries are redacted and bounded, with
@@ -367,10 +368,14 @@ expiry or acceptance. Only `delivery_id` and `session` are allowed in this form.
 expire stored rows, update timestamps/counters, or send a body. A fresh poll without an ID is the explicit
 request to drain/re-offer; an exact retry is never that request.
 
-`inbox_ack({delivery_id, session?})` confirms that the hook printed injection output and its output process
+`inbox_ack({delivery_id, session?, state?})` confirms that the hook printed injection output and its output process
 exited 0, or that the waiter printed its wake output and exited 2. It changes an existing offered/unconfirmed
 receipt to `accepted`. Repeated acknowledgments of an accepted/read receipt are read-only lookups. The caller
 cannot acknowledge an unknown delivery, another principal/tenant's receipt, or a different session's receipt.
+`state` defaults to `accepted`. A PTY wrapper sends `accepted` only after harness activity or an observed
+draft followed by a cleared composer. It sends `state: "unconfirmed"` after uncertain delivery, a write failure,
+an unproven prompt or human cancellation. This clears the offer deadline without marking acceptance or read.
+Repeating the same state is read-only; accepted/read receipts cannot be downgraded. No schema migration is needed.
 Acceptance proves transport output, not that a model read it. `inbox_get` or `task_get` with the session is the
 separate `read` signal. A lost explicit agent-read response stays read; automatic retries belong to the hook
 transport, where uncertain delivery is represented honestly.

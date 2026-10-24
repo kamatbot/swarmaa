@@ -1,0 +1,11 @@
+{
+  "provenance": "Recorded installed CLI in isolated tmux with temp HOME; unauthenticated startup only",
+  "harness": "agy",
+  "columns": 120,
+  "rows": 34,
+  "cursor": [
+    13,
+    30
+  ],
+  "screen": "\n     ▄▀▀▄\n    ▀▀▀▀▀▀\n   ▀▀▀▀▀▀▀▀\n  ▄▀▀    ▀▀▄\n ▄▀▀      ▀▀▄\n\n Welcome to the Antigravity CLI. You are currently not signed in.\n\n Select login method:\n > 1. Google OAuth\n   2. Use a Google Cloud project\n\n   ↑/↓ Navigate · enter Select\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n"
+}

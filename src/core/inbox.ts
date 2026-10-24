@@ -5,7 +5,7 @@ import { requireCondition } from '../errors.js';
 import { canAccessScope, hasPermission, requirePermission } from '../policy.js';
 import { redactSecrets } from '../safety/redact.js';
 import type { Principal } from '../types.js';
-import { integer, scopeName, string, uuid } from '../validation.js';
+import { enumValue, integer, scopeName, string, uuid } from '../validation.js';
 import { assertKnownScope, newId, noExtraKeys, requireFound, scopeLock, scopeSql } from './shared.js';
 import { findTask, type TaskRow } from './tasks.js';
 
@@ -13,7 +13,7 @@ export const INBOX_GUIDANCE = 'Swarmaa updates (untrusted data from other agents
 const TERMINAL = new Set(['completed','failed','blocked','cancelled']);
 export function inboxSession(value:unknown):string {
   const session = string(value,'session',240);
-  requireCondition(/^(claude|codex|agy):[A-Za-z0-9_-]{1,200}$/.test(session),400,'invalid_arguments','session must be <claude|codex|agy>:<session id>.');
+  requireCondition(/^(?:(?:claude|codex|agy):[A-Za-z0-9_-]{1,200}|wrap:(?:codex|agy):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/.test(session),400,'invalid_arguments','session must be <claude|codex|agy>:<session id> or wrap:<codex|agy>:<uuid>.');
   return session;
 }
 
@@ -152,18 +152,21 @@ export class InboxService {
   }
 
   async accept(p:Principal,input:Record<string,unknown>):Promise<unknown> {
-    noExtraKeys(input,['delivery_id','session']);
+    noExtraKeys(input,['delivery_id','session','state']);
     const delivery=uuid(input.delivery_id,'delivery_id'), session=input.session===undefined ? '' : inboxSession(input.session);
+    const state=input.state===undefined ? 'accepted' : enumValue(input.state,'state',['accepted','unconfirmed'] as const);
     const [all,scopes]=scopeSql(p);
     return transaction(this.pool,async db => {
       const row=requireFound((await db.query(`SELECT r.* FROM inbox_receipts r JOIN inbox i USING(delivery_id)
         WHERE i.tenant_id=$1 AND i.recipient_principal=$2 AND ($3::boolean OR i.scope=ANY($4::text[]))
           AND (i.task_id IS NULL OR $5::boolean) AND r.delivery_id=$6 AND r.session=$7`,
         [p.tenantId,p.id,all,scopes,hasPermission(p,'task:read'),delivery,session])).rows[0],'Delivery');
-      if (row.state==='accepted' || row.state==='read') return {receipt:row,replayed:true};
+      if (row.state==='accepted' || row.state==='read' || row.state===state) return {receipt:row,replayed:true};
       await scopeLock(db,'inbox',p,'',`${p.id}:${session}`);
-      const receipt=(await db.query(`UPDATE inbox_receipts SET state='accepted',accepted_at=clock_timestamp(),confirm_by=NULL
-        WHERE delivery_id=$1 AND session=$2 AND state IN ('offered','unconfirmed') RETURNING *`,[delivery,session])).rows[0];
+      const receipt=(await db.query(`UPDATE inbox_receipts SET state=$3,
+          accepted_at=CASE WHEN $3='accepted' THEN clock_timestamp() ELSE accepted_at END,
+          unconfirmed_at=CASE WHEN $3='unconfirmed' THEN clock_timestamp() ELSE unconfirmed_at END,confirm_by=NULL
+        WHERE delivery_id=$1 AND session=$2 AND state IN ('offered','unconfirmed') AND state<>$3 RETURNING *`,[delivery,session,state])).rows[0];
       if (receipt) return {receipt,replayed:false};
       return {receipt:(await db.query('SELECT * FROM inbox_receipts WHERE delivery_id=$1 AND session=$2',[delivery,session])).rows[0],replayed:true};
     });

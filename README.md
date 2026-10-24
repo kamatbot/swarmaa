@@ -186,6 +186,17 @@ All other product and company names mentioned in this repository are trademarks 
 
 ---
 
+## Idle terminal wake
+
+Run `npm run wrap -- codex [args…]` or `npm run wrap -- agy [args…]` under Node 24. The package bin
+also supports `swarmaa wrap codex|agy`. The wrapper preserves the interactive terminal and watches
+a printed `wrap:<harness>:<uuid>` inbox session using the same local identity as MCP. It types only
+into a proven empty, idle composer; user input cancels pending delivery. Acceptance requires
+activity or the composer clearing, never editor echo.
+
+See [setup, receipts and limits](docs/PTY_WRAP.md). Setup's optional alias display is off by default,
+and `npm run wrap -- --aliases` only prints aliases; neither changes a shell profile.
+
 ## License
 
 Released under the [MIT License](LICENSE). Copyright (c) 2026 Mayur Kamat.

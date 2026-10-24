@@ -1,0 +1,11 @@
+{
+  "provenance": "Recorded installed CLI in isolated tmux with temp HOME; unauthenticated startup only",
+  "harness": "codex",
+  "columns": 120,
+  "rows": 34,
+  "cursor": [
+    14,
+    25
+  ],
+  "screen": "  Welcome to Codex, OpenAI's command-line coding agent\n\n  Sign in with ChatGPT to use Codex as part of your paid plan\n  or connect an API key for usage-based billing\n\n> 1. Sign in with ChatGPT\n     Usage included with Plus, Pro, Business, and Enterprise plans\n\n  2. Sign in with Device Code\n     Sign in from another device with a one-time code\n\n  3. Provide your own API key\n     Pay for what you use\n\n  Press enter to continue\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n"
+}
