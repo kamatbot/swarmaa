@@ -1,4 +1,4 @@
-import { taskFinished } from './inbox.js';
+import { inboxSession, readTaskInbox, taskFinished } from './inbox.js';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import type { Pool, PoolClient } from 'pg';
 import { transaction } from '../db.js';
@@ -222,10 +222,12 @@ export class TaskService {
   }
 
   async get(p:Principal,input:Record<string,unknown>):Promise<unknown> {
-    noExtraKeys(input,['task_id']);
+    noExtraKeys(input,['task_id','session']);
     const id = uuid(input.task_id,'task_id');
+    const session = input.session===undefined ? '' : inboxSession(input.session);
     return transaction(this.pool,async db => {
       const row = await findTask(db,p,id);
+      await readTaskInbox(db,p,id,session);
       return {task:await taskWithInstructions(db,row)};
     });
   }

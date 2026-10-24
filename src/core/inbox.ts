@@ -95,26 +95,82 @@ export class InboxService {
     });
   }
 
-  async get(p:Principal,input:Record<string,unknown>):Promise<unknown> {
-    noExtraKeys(input,['after','limit','session']);
+  async get(p:Principal,input:Record<string,unknown>,offer=false):Promise<unknown> {
+    noExtraKeys(input,['after','limit','session','delivery_id']);
     const after = input.after === undefined ? null : uuid(input.after,'after');
     const limit = input.limit === undefined ? 4 : integer(input.limit,'limit',1,50);
-    const session = input.session === undefined ? null : inboxSession(input.session);
+    const session = input.session === undefined ? '' : inboxSession(input.session);
+    const delivery = input.delivery_id === undefined ? null : uuid(input.delivery_id,'delivery_id');
+    requireCondition(!delivery || (input.after===undefined && input.limit===undefined),400,'invalid_arguments','A delivery lookup accepts only delivery_id and session.');
     const [all,scopes] = scopeSql(p);
     return transaction(this.pool,async db => {
-      if (session) await bindSession(db,p,session);
-      const access = `tenant_id=$1 AND recipient_principal=$2 AND ($3::boolean OR scope=ANY($4::text[]))
-        AND (recipient_session IS NULL OR recipient_session=$5) AND (task_id IS NULL OR $6::boolean)`;
+      const access = `i.tenant_id=$1 AND i.recipient_principal=$2 AND ($3::boolean OR i.scope=ANY($4::text[]))
+        AND (i.recipient_session IS NULL OR i.recipient_session=$5) AND (i.task_id IS NULL OR $6::boolean)`;
       const args = [p.tenantId,p.id,all,scopes,session,hasPermission(p,'task:read')];
-      if (after) requireFound((await db.query(`SELECT id FROM inbox WHERE ${access} AND id=$7`,[...args,after])).rows[0],'Inbox cursor');
-      const rows = await db.query(`WITH pending AS (
-        SELECT id FROM inbox WHERE ${access} AND delivered_at IS NULL AND read_at IS NULL
-          AND ($7::uuid IS NULL OR (created_at,id)>(SELECT created_at,id FROM inbox WHERE id=$7))
-        ORDER BY created_at,id LIMIT $8 FOR UPDATE SKIP LOCKED
-      ) UPDATE inbox i SET delivered_at=clock_timestamp() FROM pending WHERE i.id=pending.id
-        RETURNING i.id,i.recipient_session,i.kind,i.scope,i.task_id,i.from_principal,i.body,i.created_at,i.delivered_at,i.read_at`,[...args,after,limit]);
-      rows.rows.sort((a,b) => a.created_at-b.created_at || a.id.localeCompare(b.id));
-      return {items:rows.rows,guidance:INBOX_GUIDANCE};
+      // Reconciliation must not bind a session, expire receipts, bump counters or return the body.
+      if (delivery) {
+        const receipt = requireFound((await db.query(`SELECT i.id,i.kind,i.scope,i.task_id,r.* FROM inbox i
+          JOIN inbox_receipt_status r ON r.delivery_id=i.delivery_id AND r.session=$5
+          WHERE ${access} AND i.delivery_id=$7`,[...args,delivery])).rows[0],'Delivery');
+        return {items:[receipt],guidance:INBOX_GUIDANCE};
+      }
+      await scopeLock(db,'inbox',p,'',`${p.id}:${session}`);
+      if (session) await bindSession(db,p,session);
+      if (after) requireFound((await db.query(`SELECT i.id FROM inbox i WHERE ${access} AND i.id=$7`,[...args,after])).rows[0],'Inbox cursor');
+      await db.query(`UPDATE inbox_receipts r SET state='unconfirmed',unconfirmed_at=confirm_by FROM inbox i
+        WHERE r.delivery_id=i.delivery_id AND r.session=$5 AND ${access}
+          AND r.state='offered' AND r.confirm_by<=clock_timestamp()`,args);
+      const rows = await db.query(`SELECT i.*,r.state AS previous_state FROM inbox i
+        LEFT JOIN inbox_receipts r ON r.delivery_id=i.delivery_id AND r.session=$5
+        WHERE ${access} AND ${offer ? "(r.state IS NULL OR (r.state='unconfirmed' AND r.offers<3))" : "r.state IS DISTINCT FROM 'read'"}
+          AND ($7::uuid IS NULL OR (i.created_at,i.id)>(SELECT created_at,id FROM inbox WHERE id=$7))
+        ORDER BY i.created_at,i.id LIMIT $8 FOR UPDATE OF i`,[...args,after,limit]);
+      const items=[];
+      for (const row of rows.rows) {
+        const receipt = (await db.query(`INSERT INTO inbox_receipts(delivery_id,session,state,offers,offered_at,confirm_by,read_at)
+          VALUES($1,$2,$3,$4,CASE WHEN $4=1 THEN clock_timestamp() END,
+            CASE WHEN $4=1 THEN clock_timestamp()+interval '30 seconds' END,CASE WHEN $3='read' THEN clock_timestamp() END)
+          ON CONFLICT(delivery_id,session) DO UPDATE SET state=EXCLUDED.state,
+            offers=inbox_receipts.offers+EXCLUDED.offers,
+            offered_at=COALESCE(EXCLUDED.offered_at,inbox_receipts.offered_at),confirm_by=EXCLUDED.confirm_by,
+            read_at=EXCLUDED.read_at RETURNING *`,[row.delivery_id,session,offer ? 'offered' : 'read',offer ? 1 : 0])).rows[0];
+        await db.query(`UPDATE inbox SET delivered_at=COALESCE(delivered_at,clock_timestamp()),
+          read_at=CASE WHEN $2 THEN COALESCE(read_at,clock_timestamp()) ELSE read_at END WHERE id=$1`,[row.id,!offer]);
+        const {tenant_id,recipient_principal,task_version,previous_state,body,...item}=row;
+        items.push({...item,...receipt,delivered_at:row.delivered_at ?? receipt.offered_at ?? receipt.read_at,stuck:false,
+          ...(previous_state==='accepted' ? {} : {body})});
+      }
+      return {items,guidance:INBOX_GUIDANCE};
     });
   }
+
+  async accept(p:Principal,input:Record<string,unknown>):Promise<unknown> {
+    noExtraKeys(input,['delivery_id','session']);
+    const delivery=uuid(input.delivery_id,'delivery_id'), session=input.session===undefined ? '' : inboxSession(input.session);
+    const [all,scopes]=scopeSql(p);
+    return transaction(this.pool,async db => {
+      const row=requireFound((await db.query(`SELECT r.* FROM inbox_receipts r JOIN inbox i USING(delivery_id)
+        WHERE i.tenant_id=$1 AND i.recipient_principal=$2 AND ($3::boolean OR i.scope=ANY($4::text[]))
+          AND (i.task_id IS NULL OR $5::boolean) AND r.delivery_id=$6 AND r.session=$7`,
+        [p.tenantId,p.id,all,scopes,hasPermission(p,'task:read'),delivery,session])).rows[0],'Delivery');
+      if (row.state==='accepted' || row.state==='read') return {receipt:row,replayed:true};
+      await scopeLock(db,'inbox',p,'',`${p.id}:${session}`);
+      const receipt=(await db.query(`UPDATE inbox_receipts SET state='accepted',accepted_at=clock_timestamp(),confirm_by=NULL
+        WHERE delivery_id=$1 AND session=$2 AND state IN ('offered','unconfirmed') RETURNING *`,[delivery,session])).rows[0];
+      if (receipt) return {receipt,replayed:false};
+      return {receipt:(await db.query('SELECT * FROM inbox_receipts WHERE delivery_id=$1 AND session=$2',[delivery,session])).rows[0],replayed:true};
+    });
+  }
+}
+
+/** A task read is evidence only for the caller's selected stream, not every harness session. */
+export async function readTaskInbox(db:PoolClient,p:Principal,taskId:string,session:string):Promise<void> {
+  if (!hasPermission(p,'events:read')) return;
+  await scopeLock(db,'inbox',p,'',`${p.id}:${session}`);
+  if (session) await bindSession(db,p,session);
+  await db.query(`INSERT INTO inbox_receipts(delivery_id,session,state,read_at)
+    SELECT delivery_id,$3,'read',clock_timestamp() FROM inbox
+    WHERE tenant_id=$1 AND recipient_principal=$2 AND task_id=$4 AND (recipient_session IS NULL OR recipient_session=$3)
+    ON CONFLICT(delivery_id,session) DO UPDATE SET state='read',read_at=clock_timestamp(),confirm_by=NULL
+      WHERE inbox_receipts.state<>'read'`,[p.tenantId,p.id,session,taskId]);
 }

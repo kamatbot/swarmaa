@@ -2,6 +2,7 @@ import type { Pool } from 'pg';
 import { requireCondition } from '../errors.js';
 import type { Principal } from '../types.js';
 import { object, optionalString, scopeName, string } from '../validation.js';
+import { inboxStatus } from './inbox-status.js';
 import { LessonService } from './lessons.js';
 import { decideAll, getPolicy, type RoutingPolicy, type UsageRow } from './routing.js';
 import { SessionService } from './sessions.js';
@@ -93,7 +94,7 @@ export class SwarmService {
       assertKnownScope(p, scope);
       [all, scopes] = [false, [scope]];
     }
-    const [workers, usage, counts, recent, sessions, lessonsPending, policy] = await Promise.all([
+    const [workers, usage, counts, recent, sessions, lessonsPending, policy, inbox] = await Promise.all([
       this.pool.query(`SELECT w.name,w.last_seen_at,coalesce(w.last_seen_at>clock_timestamp()-interval '60 seconds',false) AS live,coalesce(w.worker_slots,1) AS slots,
           (SELECT coalesce(json_agg(json_build_object('task_id',t.id,'scope',t.scope,'kind',t.kind,'objective',left(t.objective,140),'required_capability',t.required_capability,'started_at',coalesce((SELECT r.started_at FROM task_runs r WHERE r.task_id=t.id AND r.generation=t.lease_generation),t.updated_at))),'[]') FROM tasks t
             WHERE t.lease_owner=w.id AND t.status='running' AND ($2::boolean OR t.scope=ANY($3::text[]))) AS running,
@@ -114,6 +115,7 @@ export class SwarmService {
       this.sessions.active(p, all, scopes),
       this.lessons.pending(p, all, scopes),
       getPolicy(this.pool, p.tenantId),
+      inboxStatus(this.pool,p,all,scopes),
     ]);
     const usageView: UsageView[] = usage.rows.map(r => ({ provider: r.provider, ok: r.ok, headroom: r.headroom, ...r.windows, fetched_at: r.fetched_at }));
     const live = new Set<string>(workers.rows.filter(w => w.live && w.slots > 0).flatMap(w => w.providers as string[]));
@@ -124,7 +126,7 @@ export class SwarmService {
     return {
       workers: workers.rows.map(w => ({ ...w, free_slots: w.live ? Math.max(0, w.slots - (w.running as unknown[]).length) : 0 })), usage: usageView, routing: routing(usageView, live, policy.policy, policy.is_default), sessions,
       scopes: [...byScope.values()].sort((a, b) => String(a.scope).localeCompare(String(b.scope))),
-      recent: recent.rows, lessons_pending: lessonsPending, generated_at: new Date().toISOString(),
+      recent: recent.rows, inbox, lessons_pending: lessonsPending, generated_at: new Date().toISOString(),
     };
   }
 }

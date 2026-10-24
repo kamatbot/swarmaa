@@ -61,6 +61,8 @@ export class CoreService implements ToolBackend {
     switch (name) {
       case 'message_send': return this.inbox.send(principal,input);
       case 'inbox_get': return this.inbox.get(principal,input);
+      case 'inbox_poll': return this.inbox.get(principal,input,true);
+      case 'inbox_ack': return this.inbox.accept(principal,input);
       case 'task_watch': return this.inbox.watch(principal,input);
       case 'context_get': return this.context(principal,input);
       case 'memory_search': return this.memories.search(principal,input);

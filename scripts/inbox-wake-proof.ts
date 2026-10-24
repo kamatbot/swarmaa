@@ -111,6 +111,9 @@ try {
   await writeFile('.local/inbox-manual-screen.txt',screen);
   console.log('FINAL TMUX CAPTURE:\n'+screen);
   process.off('SIGTERM',stop);process.off('SIGINT',stop);
+  const receipts=(await pool.query('SELECT state,count(*)::int AS count FROM inbox_receipt_status GROUP BY state ORDER BY state')).rows;
+  console.log('PROOF: receipt counts '+JSON.stringify(receipts));
+  if(proved && !receipts.some(r=>['accepted','read'].includes(r.state) && r.count>0)) {console.log('PROOF: wake observed but acceptance receipt NOT established.');process.exitCode=1;}
   if(!proved) {console.log('PROOF: idle wake NOT established; inspect the capture.');process.exitCode=1;}
 } finally {
   tmux('kill-server');

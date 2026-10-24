@@ -15,7 +15,8 @@ async function fixture(t:any) {
   mkdirSync(join(root,'.local'));
   for (const name of ['claude','codex','antigravity']) writeFileSync(join(root,'.local',`${name}.json`),JSON.stringify({token:'test-only-token'}));
   const calls:{path:string;body:any}[]=[];
-  let reply:(res:ServerResponse)=>void=(res:ServerResponse) => res.end(JSON.stringify({result:{items:[{body:'Task abc completed. Full result: task_get abc.'}]}}));
+  const delivery_id=randomUUID();
+  let reply:(res:ServerResponse)=>void=(res:ServerResponse) => res.end(JSON.stringify({result:{items:[{delivery_id,...(calls.at(-1)?.body?.delivery_id ? {state:'offered'} : {body:'Task abc completed. Full result: task_get abc.'})}]}}));
   const server=createServer(async(req,res) => {
     let data=''; for await (const c of req) data+=c;
     calls.push({path:req.url!,body:data ? JSON.parse(data) : null});
@@ -24,7 +25,7 @@ async function fixture(t:any) {
   await new Promise<void>(r => server.listen(0,'127.0.0.1',r));
   writeFileSync(join(root,'.env'),`PORT=${(server.address() as {port:number}).port}\n`);
   t.after(async () => { server.closeAllConnections(); await new Promise<void>(r => server.close(() => r())); rmSync(root,{recursive:true,force:true}); rmSync(home,{recursive:true,force:true}); });
-  return {root,home,calls,setReply:(f:typeof reply) => {reply=f;}};
+  return {root,home,calls,delivery_id,setReply:(f:typeof reply) => {reply=f;}};
 }
 
 test('step injection uses the actual Claude, Codex and agy event schemas',async t => {
@@ -49,7 +50,8 @@ test('agy continues only on pending messages; Codex Stop saves them for a model-
   const before=f.calls.length;
   const step=await H.run('codex','UserPromptSubmit',{session_id:'c'},f);
   assert.match(step.hookSpecificOutput.additionalContext,/Task abc/);
-  assert.equal(f.calls.length,before,'saved batch is injected before fetching more');
+  assert.equal(f.calls.length,before+1,'cached bodies require a read-only receipt and access check');
+  assert.deepEqual(f.calls.at(-1)?.body,{session:'codex:c',delivery_id:f.delivery_id});
   f.setReply(res => res.end('{"result":{"items":[]}}'));
   assert.equal(await H.run('codex','UserPromptSubmit',{session_id:'c'},f),null);
   assert.equal(await H.run('agy','Stop',{conversationId:'a'},f),null);
@@ -128,7 +130,72 @@ test('executable hook exits 2 with stderr for Claude wake and 0 silently on malf
   });
   const wake=await launch('{"session_id":"s"}');
   assert.equal(wake.code,2); assert.equal(wake.out,''); assert.match(wake.err,/^Swarmaa updates/);
+  assert.deepEqual(f.calls.at(-1),{path:'/api/tools/inbox_ack',body:{session:'claude:s',delivery_id:f.delivery_id}});
   assert.deepEqual(await launch('{bad'),{code:0,out:'',err:''});
+});
+
+test('receipt acknowledgment follows successful output and a failed output never acknowledges',async t => {
+  const f=await fixture(t);
+  for (const [harness,event,payload] of [['claude','UserPromptSubmit',{session_id:'step'}],['claude','Stop',{session_id:'wake'}],['agy','Stop',{conversationId:'agy'}]] as const) {
+    f.calls.length=0;
+    const emit=async() => { assert.equal(f.calls.some(x => x.path.endsWith('inbox_ack')),false); };
+    assert.ok(await H.run(harness,event,payload,{...f,emit,waitMs:1000}));
+    assert.deepEqual(f.calls.at(-1),{path:'/api/tools/inbox_ack',body:{session:H.sessionKey(harness,payload),delivery_id:f.delivery_id}});
+  }
+  f.calls.length=0;
+  assert.equal(await H.run('codex','PostToolUse',{session_id:'broken'},{...f,emit:async() => {throw new Error('broken pipe');}}),null);
+  assert.equal(f.calls.some(x => x.path.endsWith('inbox_ack')),false);
+});
+
+test('lost acknowledgment is retried using the same ID before any new poll or output',async t => {
+  const f=await fixture(t); let outputs=0;
+  f.setReply(res => {
+    if (f.calls.at(-1)!.path.endsWith('inbox_ack')) res.destroy();
+    else res.end(JSON.stringify({result:{items:[{delivery_id:f.delivery_id,body:'only once'}]}}));
+  });
+  const options={...f,emit:async() => {outputs++;}};
+  await H.run('codex','UserPromptSubmit',{session_id:'retry'},options);
+  assert.equal(outputs,1);
+  const pending=join(H.sessionDirectory(f.home,'codex:retry'),'pending.json');
+  // Recover the crash window after the acceptance journal is written but before cached output is removed.
+  writeFileSync(pending,JSON.stringify({items:[{delivery_id:f.delivery_id,body:'only once'}]}));
+  const before=f.calls.length;
+  await H.run('codex','UserPromptSubmit',{session_id:'retry'},options);
+  assert.equal(outputs,1); assert.equal(f.calls.length,before+1);
+  assert.deepEqual(f.calls.at(-1),{path:'/api/tools/inbox_ack',body:{session:'codex:retry',delivery_id:f.delivery_id}});
+  f.setReply(res => res.end('{"result":{"items":[]}}'));
+  await H.run('codex','UserPromptSubmit',{session_id:'retry'},options);
+  assert.equal(outputs,1); assert.equal(f.calls.at(-1)!.path,'/api/tools/inbox_poll');
+  assert.equal(existsSync(pending),false);
+});
+
+test('Codex Stop does not acknowledge UI-only output; the model-visible step does',async t => {
+  const f=await fixture(t); let outputs=0;
+  const options={...f,emit:async() => {outputs++;}};
+  await H.run('codex','Stop',{session_id:'codex'},options);
+  assert.equal(f.calls.length,1); assert.equal(outputs,1);
+  assert.equal(await H.run('codex','Stop',{session_id:'codex'},options),null);
+  await H.run('codex','PostToolUse',{session_id:'codex'},options);
+  assert.equal(outputs,2);
+  assert.deepEqual(f.calls.at(-1),{path:'/api/tools/inbox_ack',body:{session:'codex:codex',delivery_id:f.delivery_id}});
+});
+
+test('Codex cached batches never print an accepted/read/stuck or revoked receipt',async t => {
+  const f=await fixture(t); let outputs=0;
+  const options={...f,emit:async() => {outputs++;}};
+  for (const state of ['accepted','read','stuck','revoked']) {
+    f.setReply(res => res.end(JSON.stringify({result:{items:[{delivery_id:f.delivery_id,body:'cached'}]}})));
+    await H.run('codex','Stop',{session_id:state},options);
+    const before=outputs;
+    f.setReply(res => {
+      if (state==='revoked') {res.statusCode=404; res.end('{}');}
+      else res.end(JSON.stringify({result:{items:[{delivery_id:f.delivery_id,state:state==='stuck' ? 'unconfirmed' : state,stuck:state==='stuck'}]}}));
+    });
+    assert.equal(await H.run('codex','PostToolUse',{session_id:state},options),null);
+    assert.equal(outputs,before);
+    assert.equal(f.calls.at(-1)!.path,'/api/tools/inbox_poll');
+    assert.equal(f.calls.at(-1)!.body.delivery_id,f.delivery_id);
+  }
 });
 
 test('inbox installs alongside journal, idempotently, and removal preserves foreign hooks in temporary homes',async t => {

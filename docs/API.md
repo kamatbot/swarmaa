@@ -25,7 +25,7 @@ All examples below show **tool arguments and unwrapped tool results**, without t
 | `artifact_put` | `artifact:write` | Worker role and current owned lease |
 | `artifact_get` | `artifact:read` | Exact authorized scope |
 | `message_send` | `memory:write` | Shared exact scope; `task:read` also required for task references |
-| `inbox_get` | `events:read` | Own principal/session; task items additionally require `task:read` |
+| `inbox_get`, `inbox_poll`, `inbox_ack` | `events:read` | Own principal/session; task items additionally require `task:read` |
 | `task_watch` | `task:read` and `events:read` | Scoped task and own session |
 | `events_poll` | `events:read` | Exact authorized scope; each event type also requires its resource's read permission |
 
@@ -215,7 +215,7 @@ Result: `{task, replayed: boolean}`. The key is unique per tenant and submitting
 
 ### `task_get` and `task_list`
 
-`task_get({task_id})` returns `{task}`, including appended instructions and run metadata. IDs outside the principal's tenant/scopes return `not_found` rather than leaking a body before checking permission.
+`task_get({task_id, session?})` returns `{task}`, including appended instructions and run metadata. It marks related inbox items read for the caller in that session (the principal stream when omitted), if the caller also has `events:read`. Other sessions remain independent. IDs outside the principal's tenant/scopes return `not_found` rather than leaking a body before checking permission.
 
 `task_list({scope, status?, limit?, before_id?})` returns `{tasks, next_before_id: string | null}`. Default limit 20, maximum 100. Sort is newest creation time then UUID. Pass the returned cursor as `before_id` for the next page; cursors must identify a task in that same scope. Listing is not a transactional snapshot across pages. Status filters can change as workers act, so clients should reconcile displayed tasks by ID.
 
@@ -324,11 +324,11 @@ Queues/resources serialize per scope; memory uses optimistic versions and row/ad
 
 The written integration suite covers authorization before retrieval, concurrent memory conflicts, review/retraction, bounded context, concurrent idempotent submissions, lease races/expiry/retry exhaustion, resource exclusion, artifact integrity, continuation/completion replay, cancellation and out-of-order event commits. It is in `tests/core.integration.test.ts`, skips without an explicit `TEST_DATABASE_URL`, creates a unique test schema, and removes only that generated schema. It has not been executed as part of this handoff.
 
-## Agent inbox (migration 019)
+## Agent inbox (migrations 019–020)
 
 `message_send({to, scope, body, task_id?})` sends up to 2,000 characters of untrusted data, redacted before storage.
 `to` is a principal name in the same tenant and scope, `task:<uuid>` (the currently leased worker, otherwise
-its submitter), or `session:<claude|codex|agy>:<id>`. A session must first register through `inbox_get` or
+its submitter), or `session:<claude|codex|agy>:<id>`. A session must first register through `inbox_get`, `inbox_poll` or
 `task_watch`; another principal cannot claim it. The recipient must have `events:read`, plus `task:read`
 for task-related messages. A database-backed limit allows 30 messages per sender per minute, across
 scopes and processes. Result: `{id, sent:true}`. Messages are not idempotent; do not blindly retry after an
@@ -342,16 +342,47 @@ Completion replays do not duplicate items. Late watches receive the current term
 execution produces a new item on its next terminal transition. Summaries are redacted and bounded, with
 `task_get <uuid>` pointing to the full result. Revoked recipient scopes/permissions are checked again.
 
-`inbox_get({after?, limit?, session?})` returns `{items, guidance}` and atomically marks pending unread items
-delivered. `limit` defaults to 4, maximum 50. Items contain `id`, `recipient_session`, `kind`, `scope`, `task_id`,
-`from_principal`, `body`, `created_at`, `delivered_at`, and `read_at`. No session returns principal-level items
-only; a session also includes that session's items. Concurrent consumers claim different rows. `after` is
-an optional previously returned item UUID for chronological filtering, not a durable change cursor: omit it
-to drain all pending items, including late commits. `read_at` is reserved; delivery means handed to a client,
-not proof that a model or user read it. A response lost after delivery is not automatically replayed.
+`inbox_get({after?, limit?, session?, delivery_id?})` returns `{items, guidance}`. Without a delivery ID,
+this is an explicit agent read: unread items become `read` before the response. Accepted items return metadata
+only, since their body has already been injected. `limit` defaults to 4, maximum 50. Items include the original
+item `id`, stable `delivery_id`, kind, scope, task ID, source principal, timestamps, receipt `state`, `offers`,
+and `stuck`. No session selects the principal stream; a session includes principal-wide items and that session's
+items. Each session has independent receipts. `after` is a previously returned item UUID for chronological
+filtering, not a durable change cursor; omit it to drain pending items, including late commits.
+
+`inbox_poll({after?, limit?, session?, delivery_id?})` is the hook transport. It reserves `offered` receipts
+in the database transaction **before** returning bodies. An offer has a 30-second confirmation deadline.
+Expired offers are visible as `unconfirmed` even without another poll; a new poll materializes expiry and
+may offer them again, with the same delivery ID. There are at most three offers total (initial plus two retries).
+An exhausted unconfirmed receipt is `stuck`. Accepted/read items are never re-offered to that stream.
+Migration 020 backfills old `delivered_at` records as unconfirmed, not accepted; the old delivery did not prove
+output success or identify which session consumed a principal-wide item.
+
+With `delivery_id`, both get and poll perform an exact **read-only, metadata-only lookup**, including after
+expiry or acceptance. Only `delivery_id` and `session` are allowed in this form. They do not bind sessions,
+expire stored rows, update timestamps/counters, or send a body. A fresh poll without an ID is the explicit
+request to drain/re-offer; an exact retry is never that request.
+
+`inbox_ack({delivery_id, session?})` confirms that the hook printed injection output and its output process
+exited 0, or that the waiter printed its wake output and exited 2. It changes an existing offered/unconfirmed
+receipt to `accepted`. Repeated acknowledgments of an accepted/read receipt are read-only lookups. The caller
+cannot acknowledge an unknown delivery, another principal/tenant's receipt, or a different session's receipt.
+Acceptance proves transport output, not that a model read it. `inbox_get` or `task_get` with the session is the
+separate `read` signal. A lost explicit agent-read response stays read; automatic retries belong to the hook
+transport, where uncertain delivery is represented honestly.
+
+`swarm_status` includes `inbox: {counts, items}` for the caller's permitted receipts. Counts are `offered`,
+`accepted`, `unconfirmed`, `read`, and `stuck`; items are at most 50 metadata records, stuck first. No inbox
+body appears in dashboard/notch status. Generic terminal-task sinks include only `inbox_receipts` counts for
+the subscriber's receipts for that task, never bodies, session IDs, or per-item details. Neither surface grants
+access to another principal's inbox. Existing MCP event callbacks remain metadata-only invalidation hints.
 
 `GET /api/inbox/wait?session=claude:<id>&timeout=25` uses the same service bearer token as REST tools,
-returns `{result:{items,guidance}}`, and marks delivery using `inbox_get`. Timeout is an integer 0–25 seconds;
+returns `{result:{items,guidance}}`, and reserves offers using `inbox_poll`. Timeout is an integer 0–25 seconds;
 an empty timeout response is 200. A shared PostgreSQL `LISTEN/NOTIFY` connection wakes outstanding requests
 on committed inserts, without a polling sleep loop. Each read reauthenticates the token and checks current
-grants. Disconnects cancel the wait; limits are four waiters per principal and 32 per HTTP handler.
+grants. Disconnects cancel the wait; limits are four waiters per principal and 32 per HTTP handler. Expired
+offers become eligible on the next read (including at the long-poll deadline).
+
+The design uses the write-ahead reservation and exact-retry ideas described in AgentWorkforce Relay's
+`crates/broker/src/native_delivery.rs` and `docs/harnesses/pty-delivery.md`; no Relay code was adapted.
