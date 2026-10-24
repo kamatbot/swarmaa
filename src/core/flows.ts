@@ -73,7 +73,15 @@ export function validateFlowCompletion(row:TaskRow,outcome:string,result:Record<
       typeof fact.output_tail==='string' && Buffer.byteLength(fact.output_tail)<=16384 &&
       typeof fact.duration_ms==='number' && Number.isFinite(fact.duration_ms) && fact.duration_ms>=0,
     409,'flow_check_failed','Only a passing deterministic bridge check can complete this step.');
-  } else requireCondition(result.provider===flow.provider,409,'flow_provider_mismatch','Completion provider differs from the service-bound provider.');
+    const servedProvider = (result.served as any)?.provider ?? result.provider;
+    requireCondition(servedProvider===flow.provider,409,'flow_provider_mismatch','Completion provider differs from the service-bound provider.');
+  }
+}
+
+export function validateFlowStepProvider(actualProvider: string, otherServedProvider?: string | null): void {
+  if (otherServedProvider) {
+    requireCondition(actualProvider !== otherServedProvider, 409, 'flow_provider_mismatch', 'Step ran on the same provider as the step it must differ from.');
+  }
 }
 
 export class FlowService {

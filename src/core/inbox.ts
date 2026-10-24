@@ -28,9 +28,30 @@ async function bindSession(db:PoolClient,p:Principal,session:string):Promise<voi
 export async function taskFinished(db:PoolClient,p:Principal,row:TaskRow):Promise<void> {
   if (!TERMINAL.has(row.status)) return;
   const result = row.result ?? {};
-  const summary = [result.answer,result.reason,result.message,result.error].find(v => typeof v === 'string') ?? '';
+  const failure = (result as any).failure as { code?: string; detail?: string } | undefined;
   const provider = typeof result.provider === 'string' ? result.provider : row.required_capability.split('.')[0];
-  const body = redactSecrets(`Task ${row.id.slice(0,8)} (${row.kind}, ${row.scope}) ${row.status} on ${provider}: ${redactSecrets(String(summary)).slice(0,300)}. Full result: task_get ${row.id}.`).slice(0,2000);
+  let body: string;
+  if (row.status === 'failed' && failure?.code === 'auth_required') {
+    const provName = provider === 'claude' ? 'Claude Code' : provider === 'codex' ? 'Codex' : provider === 'antigravity' ? 'Antigravity' : provider;
+    body = redactSecrets(`Task ${row.id.slice(0,8)} (${row.kind}, ${row.scope}) failed: auth_required, sign in to ${provName}. Full result: task_get ${row.id}.`).slice(0,2000);
+  } else if (row.status === 'failed' && failure?.code) {
+    const summary = failure.detail || [result.answer,result.reason,result.message,result.error].find(v => typeof v === 'string') || failure.code;
+    body = redactSecrets(`Task ${row.id.slice(0,8)} (${row.kind}, ${row.scope}) failed: ${failure.code}, ${redactSecrets(String(summary)).slice(0,300)}. Full result: task_get ${row.id}.`).slice(0,2000);
+  } else {
+    const summary = [result.answer,result.reason,result.message,result.error].find(v => typeof v === 'string') ?? '';
+    body = redactSecrets(`Task ${row.id.slice(0,8)} (${row.kind}, ${row.scope}) ${row.status} on ${provider}: ${redactSecrets(String(summary)).slice(0,300)}. Full result: task_get ${row.id}.`).slice(0,2000);
+  }
+  await db.query(`INSERT INTO inbox(id,tenant_id,recipient_principal,recipient_session,kind,scope,task_id,task_version,from_principal,body)
+    SELECT gen_random_uuid(),$1,w.principal_id,w.session,'task_finished',$2,$3,$4,$5,$6
+    FROM (SELECT $7::uuid AS principal_id,NULL::text AS session UNION SELECT principal_id,session FROM task_watchers WHERE task_id=$3) w
+    JOIN principals r ON r.id=w.principal_id AND r.tenant_id=$1 AND NOT r.disabled
+    WHERE ($2=ANY(r.scopes) OR (r.role='admin' AND '*'=ANY(r.scopes)))
+      AND ('admin'=ANY(r.permissions) OR ('events:read'=ANY(r.permissions) AND 'task:read'=ANY(r.permissions)))
+    ON CONFLICT DO NOTHING`,[row.tenant_id,row.scope,row.id,row.version,p.id,body,row.created_by]);
+}
+
+export async function taskReroutedNotice(db:PoolClient,p:Principal,row:TaskRow,fromProvider:string,toProvider:string,code:string):Promise<void> {
+  const body = redactSecrets(`Task ${row.id.slice(0,8)} (${row.kind}, ${row.scope}) failed (${code} on ${fromProvider}, rerouted to ${toProvider}). Full result: task_get ${row.id}.`).slice(0,2000);
   await db.query(`INSERT INTO inbox(id,tenant_id,recipient_principal,recipient_session,kind,scope,task_id,task_version,from_principal,body)
     SELECT gen_random_uuid(),$1,w.principal_id,w.session,'task_finished',$2,$3,$4,$5,$6
     FROM (SELECT $7::uuid AS principal_id,NULL::text AS session UNION SELECT principal_id,session FROM task_watchers WHERE task_id=$3) w

@@ -327,11 +327,12 @@ export class EventService implements EventBackend {
         // without task output: the receiver looks the result up itself with task_get.
         const status = String(sub.payload.status ?? '');
         if (!TERMINAL_STATUSES.has(status)) { await this.complete(delivery, 'skipped', null, 'not_terminal'); return; }
-        const task = (await this.pool.query<{ kind: string; objective: string; provider: string | null; updated_at: Date }>(
-          "SELECT kind,objective,result->>'provider' AS provider,updated_at FROM tasks WHERE id=$1 AND tenant_id=$2", [sub.subject_id, sub.tenant_id])).rows[0];
+        const task = (await this.pool.query<{ kind: string; objective: string; provider: string | null; updated_at: Date; failure_code: string | null }>(
+          "SELECT kind,objective,result->>'provider' AS provider,updated_at,result->'failure'->>'code' AS failure_code FROM tasks WHERE id=$1 AND tenant_id=$2", [sub.subject_id, sub.tenant_id])).rows[0];
         body = JSON.stringify({ event: `task.${status}`, event_id: delivery.event_id, task_id: sub.subject_id, scope: sub.scope, kind: task?.kind ?? null,
           status, provider: task?.provider ?? null, completed_at: (task?.updated_at ?? sub.event_created_at).toISOString(),
           title: (task?.objective ?? '').replace(/\s+/gu, ' ').trim().slice(0, 120),
+          ...(task?.failure_code ? { failure_code: task.failure_code } : {}),
           inbox_receipts: (await inboxStatus(this.pool,principal,false,[sub.scope],sub.subject_id)).counts });
       }
       const secret = this.box.decrypt(sub.secret_ciphertext, sub.id);

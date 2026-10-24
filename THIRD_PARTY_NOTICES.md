@@ -182,6 +182,8 @@ Swarmaa declares the following direct runtime and development dependencies in `p
 - **Copyright:** Copyright (c) HarnessRouter Contributors
 - **Where used in Swarmaa:**
   - `scripts/smoke-providers.ts` adapts the provider verification matrix methodology (scenarios per provider, connection/provider served verification, run duration metrics, and markdown/JSON result matrices).
+  - Closed failure-code taxonomy, retry semantics, and error classifications in `src/core/failures.ts` and `src/bridge/adapters.ts` adapt definitions from UHP `protocol/versions/2026-10-19/errors.md`.
+  - Model equivalence logic and substitution verification (`sameModel`) in `src/core/failures.ts` adapt `scripts/support-matrix/samemodel.py`.
 
 ### Apache License 2.0 Notice
 
@@ -211,7 +213,7 @@ Swarmaa is an independent open-source project and is not affiliated with, endors
 
 ---
 
-## 6. AgentWorkforce Relay (Apache-2.0)
+## 7. AgentWorkforce Relay (Apache-2.0)
 
 - **Source:** https://github.com/AgentWorkforce/relay, local reference commit `c3a92d9c179972963756ebce3fcd106679302934`.
 - **License:** Apache License 2.0; preserved in [docs/licenses/agentworkforce-relay-APACHE-2.0.txt](docs/licenses/agentworkforce-relay-APACHE-2.0.txt).
