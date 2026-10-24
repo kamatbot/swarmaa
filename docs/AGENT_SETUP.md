@@ -259,3 +259,7 @@ Official references reviewed while implementing this package:
 - [Antigravity MCP](https://antigravity.google/docs/mcp): its `mcpServers` configuration format.
 - [Reason Network](https://github.com/reason-machines/reason-network): the pinned upstream source,
   CLI discovery/messaging interface, and separate network installation.
+
+## Flow check execution
+
+The bridge can execute service-owned flow checks without invoking a model. Enable `projects[].checks` in the owner's local bridge configuration and supply absolute Node 24 test/build commands. This requires the existing patch opt-ins and worker permission. See [Flows](FLOWS.md#owner-configured-bridge-checks); this setting does not change provider configuration or environment.

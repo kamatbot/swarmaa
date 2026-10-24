@@ -40,6 +40,13 @@ export async function taskFinished(db:PoolClient,p:Principal,row:TaskRow):Promis
     ON CONFLICT DO NOTHING`,[row.tenant_id,row.scope,row.id,row.version,p.id,body,row.created_by]);
 }
 
+/** Approval notices use the durable owner inbox and its existing notification trigger. */
+export async function flowApprovalNotice(db:PoolClient,p:Principal,task:TaskRow,ownerId:string,title:string,flowId:string):Promise<void> {
+  const body = redactSecrets(`Flow ${title} needs your approval: ${task.objective.replace(/^Flow .*? needs your approval: /,'').slice(0,1000)}. flow_approve {flow_id: ${flowId}, step_id: ${task.flow!.step_id}, approve: true|false}`).slice(0,2000);
+  await db.query(`INSERT INTO inbox(id,tenant_id,recipient_principal,kind,scope,task_id,from_principal,body)
+    VALUES($1,$2,$3,'flow_approval',$4,$5,$6,$7) ON CONFLICT DO NOTHING`,[newId(),p.tenantId,ownerId,task.scope,task.id,p.id,body]);
+}
+
 export class InboxService {
   constructor(private readonly pool:Pool) {}
 

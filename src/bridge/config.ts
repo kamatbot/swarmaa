@@ -61,7 +61,18 @@ export function parseBridgeConfig(value: unknown): BridgeConfig {
     const scope = text(p.scope, 'project.scope', 100);
     if (!/^[a-z][a-z0-9:_/.-]*$/u.test(scope)) throw new Error('Invalid project scope');
     if (!Array.isArray(p.agents) || p.agents.length < 1 || p.agents.some(a => typeof a !== 'string' || !agents.some(agent => agent.id === a))) throw new Error('project.agents must reference configured agent IDs');
-    return { scope, root: absolute(p.root, 'project.root'), agents: [...new Set(p.agents as string[])], allow_patch: bool(p.allow_patch, 'project.allow_patch') };
+    let checks:ProjectConfig['checks'];
+    if (p.checks !== undefined) {
+      const configured = record(p.checks,'project.checks'); checks = {};
+      for (const [kind,value] of Object.entries(configured)) {
+        if (kind!=='tests_pass' && kind!=='build_passes') throw new Error('Only tests_pass/build_passes commands are configurable');
+        const c = record(value,`checks.${kind}`);
+        if (Object.keys(c).some(k => !['command','args','timeout_seconds'].includes(k))) throw new Error('Unknown check command setting');
+        if (!Array.isArray(c.args) || c.args.length>30 || c.args.some(a => typeof a!=='string' || a.length>2048 || /[\x00-\x1f]/u.test(a))) throw new Error('check args must be a bounded string array');
+        checks[kind] = {command:absolute(c.command,'check.command'),args:c.args as string[],timeout_seconds:integer(c.timeout_seconds,600,'check.timeout_seconds',1,7200)};
+      }
+    }
+    return { scope, root: absolute(p.root, 'project.root'), agents: [...new Set(p.agents as string[])], allow_patch: bool(p.allow_patch, 'project.allow_patch'), ...(checks ? {checks} : {}) };
   });
   if (new Set(projects.map(p => p.scope)).size !== projects.length) throw new Error('Each scope must have exactly one static project root in this bridge');
   const lease_seconds = integer(raw.lease_seconds, 120, 'lease_seconds', 30, 300);
@@ -105,6 +116,7 @@ export async function loadBridgeConfig(filename: string): Promise<BridgeConfig> 
   for (const project of config.projects) {
     project.root = await realpath(project.root);
     if (!(await stat(project.root)).isDirectory()) throw new Error('Project root is not a directory');
+    for (const command of Object.values(project.checks ?? {})) await access(command.command,constants.X_OK);
   }
   for (const agent of config.agents) {
     agent.binary = await realpath(agent.binary);

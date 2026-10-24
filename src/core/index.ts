@@ -4,6 +4,7 @@ import { AppError, requireCondition } from '../errors.js';
 import { hasPermission, requirePermission } from '../policy.js';
 import type { Permission, Principal, ToolBackend, ToolDefinition } from '../types.js';
 import { integer, object, optionalString, scopeName, string, uuid } from '../validation.js';
+import { FlowService } from './flows.js';
 import { InboxService } from './inbox.js';
 import { LESSON_GUIDANCE, LessonService } from './lessons.js';
 import { booleanOption, MemoryService } from './memory.js';
@@ -15,9 +16,9 @@ import { findTask, TaskService, taskWithInstructions, type TaskRow } from './tas
 import { TOOL_PERMISSIONS, TOOLS } from './tools.js';
 
 const workerTools = new Set(['usage_report','task_claim','task_heartbeat','task_checkpoint','task_finish','artifact_put']);
-const ownerTools = new Set(['memory_promote','memory_retract']);
+const ownerTools = new Set(['memory_promote','memory_retract','flow_approve']);
 const responseReadPermissions:Partial<Record<string,Permission>> = {
-  task_watch:'events:read',
+  task_watch:'events:read',flow_start:'task:read',flow_cancel:'task:read',flow_approve:'task:read',
   memory_propose:'memory:read',memory_promote:'memory:read',memory_retract:'memory:read',
   task_submit:'task:read',task_continue:'task:read',task_claim:'task:read',task_heartbeat:'task:read',
   task_checkpoint:'task:read',task_finish:'task:read',task_cancel:'task:read',
@@ -32,6 +33,7 @@ export class CoreService implements ToolBackend {
   private readonly sessions:SessionService;
   private readonly lessons:LessonService;
   private readonly inbox:InboxService;
+  private readonly flows:FlowService;
 
   constructor(private readonly pool:Pool) {
     this.memories = new MemoryService(pool);
@@ -40,6 +42,7 @@ export class CoreService implements ToolBackend {
     this.sessions = new SessionService(pool);
     this.lessons = new LessonService(pool);
     this.inbox = new InboxService(pool);
+    this.flows = new FlowService(pool);
   }
 
   listTools(principal:Principal):ToolDefinition[] {
@@ -59,6 +62,11 @@ export class CoreService implements ToolBackend {
     requireCondition(!ownerTools.has(name) || principal.role === 'admin',403,'owner_required','This operation requires an owner/admin connection.');
     const input = object(args);
     switch (name) {
+      case 'flow_list': return this.flows.list(principal,input);
+      case 'flow_start': return this.flows.start(principal,input);
+      case 'flow_get': return this.flows.get(principal,input);
+      case 'flow_cancel': return this.flows.cancel(principal,input);
+      case 'flow_approve': return this.flows.approve(principal,input);
       case 'message_send': return this.inbox.send(principal,input);
       case 'inbox_get': return this.inbox.get(principal,input);
       case 'task_watch': return this.inbox.watch(principal,input);

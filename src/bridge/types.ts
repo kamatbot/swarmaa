@@ -1,4 +1,5 @@
-export type TaskKind = 'research' | 'review' | 'patch';
+import type { FlowTask } from '../core/flow-definition.js';
+export type TaskKind = 'research' | 'review' | 'patch' | 'check';
 export type Provider = 'claude' | 'codex' | 'antigravity';
 
 export interface AgentConfig {
@@ -10,11 +11,13 @@ export interface AgentConfig {
   /** macOS Seatbelt confinement of the provider process (default true). */
   sandbox: boolean;
 }
+export interface CheckCommand { command:string; args:string[]; timeout_seconds:number }
 export interface ProjectConfig {
   scope: string;
   root: string;
   agents: string[];
   allow_patch: boolean;
+  checks?: Partial<Record<'tests_pass'|'build_passes',CheckCommand>>;
 }
 export interface BridgeConfig {
   service_url: string;
@@ -36,6 +39,8 @@ export interface BridgeConfig {
 }
 export interface Task {
   id: string;
+  flow_id?: string;
+  flow?: FlowTask;
   scope: string;
   kind: TaskKind;
   objective: string;
