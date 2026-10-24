@@ -25,7 +25,7 @@ export function scriptCommand(root: string, name: string, o: { envFile?: boolean
 
 export interface ScopeRoot { scope: string; root: string }
 
-export const AGY_TOOLS = ['artifact_get', 'context_get', 'events_poll', 'lesson_list', 'lesson_propose', 'lesson_search', 'memory_get', 'memory_propose', 'memory_search', 'session_get', 'session_list', 'swarm_status', 'task_cancel', 'task_continue', 'task_get', 'task_list', 'task_submit'];
+export const AGY_TOOLS = ['inbox_get', 'message_send', 'task_watch', 'artifact_get', 'context_get', 'events_poll', 'lesson_list', 'lesson_propose', 'lesson_search', 'memory_get', 'memory_propose', 'memory_search', 'session_get', 'session_list', 'swarm_status', 'task_cancel', 'task_continue', 'task_get', 'task_list', 'task_submit'];
 
 export function parseEnv(text: string): Record<string, string> {
   const out: Record<string, string> = {};

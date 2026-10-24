@@ -24,6 +24,9 @@ All examples below show **tool arguments and unwrapped tool results**, without t
 | `task_cancel` | `task:cancel` and `task:read` | Expected current task version |
 | `artifact_put` | `artifact:write` | Worker role and current owned lease |
 | `artifact_get` | `artifact:read` | Exact authorized scope |
+| `message_send` | `memory:write` | Shared exact scope; `task:read` also required for task references |
+| `inbox_get` | `events:read` | Own principal/session; task items additionally require `task:read` |
+| `task_watch` | `task:read` and `events:read` | Scoped task and own session |
 | `events_poll` | `events:read` | Exact authorized scope; each event type also requires its resource's read permission |
 
 The `admin` permission satisfies permission checks, but it does not turn an admin connection into a worker. Owner review and worker execution use separate identities. Default frontend and worker permissions do not include `memory:moderate` or `task:patch`. Capability strings route work; they are never permissions. Mutation tools that return a full memory/task also require that resource's read permission, preventing a custom write-only grant from exposing an existing record through a conflict or replay response.
@@ -320,3 +323,35 @@ The supplied schema and runtime are application-level authorization, not a datab
 Queues/resources serialize per scope; memory uses optimistic versions and row/advisory locks. These choices prioritize inspectable correctness for a small network over very high throughput. There are no embeddings, automatic semantic deduplication, arbitrary DAG workflows, billing/quotas per model, automatic deployments, cross-instance local filesystem fencing, or global backup erasure in this release.
 
 The written integration suite covers authorization before retrieval, concurrent memory conflicts, review/retraction, bounded context, concurrent idempotent submissions, lease races/expiry/retry exhaustion, resource exclusion, artifact integrity, continuation/completion replay, cancellation and out-of-order event commits. It is in `tests/core.integration.test.ts`, skips without an explicit `TEST_DATABASE_URL`, creates a unique test schema, and removes only that generated schema. It has not been executed as part of this handoff.
+
+## Agent inbox (migration 019)
+
+`message_send({to, scope, body, task_id?})` sends up to 2,000 characters of untrusted data, redacted before storage.
+`to` is a principal name in the same tenant and scope, `task:<uuid>` (the currently leased worker, otherwise
+its submitter), or `session:<claude|codex|agy>:<id>`. A session must first register through `inbox_get` or
+`task_watch`; another principal cannot claim it. The recipient must have `events:read`, plus `task:read`
+for task-related messages. A database-backed limit allows 30 messages per sender per minute, across
+scopes and processes. Result: `{id, sent:true}`. Messages are not idempotent; do not blindly retry after an
+uncertain response. Message content never grants permission to execute tools or expand task scope.
+
+`task_watch({task_id, session})` registers a session, idempotently (at most 128 session watchers per task).
+Session keys are `claude:<id>`, `codex:<id>`, or `agy:<id>`; IDs contain letters, digits, underscores or hyphens
+(up to 200 characters). Task submitters always have a principal-level watch. Completed, failed, blocked,
+cancelled and exhausted-lease transitions write one `task_finished` item per watcher in the task transaction.
+Completion replays do not duplicate items. Late watches receive the current terminal version; a continued
+execution produces a new item on its next terminal transition. Summaries are redacted and bounded, with
+`task_get <uuid>` pointing to the full result. Revoked recipient scopes/permissions are checked again.
+
+`inbox_get({after?, limit?, session?})` returns `{items, guidance}` and atomically marks pending unread items
+delivered. `limit` defaults to 4, maximum 50. Items contain `id`, `recipient_session`, `kind`, `scope`, `task_id`,
+`from_principal`, `body`, `created_at`, `delivered_at`, and `read_at`. No session returns principal-level items
+only; a session also includes that session's items. Concurrent consumers claim different rows. `after` is
+an optional previously returned item UUID for chronological filtering, not a durable change cursor: omit it
+to drain all pending items, including late commits. `read_at` is reserved; delivery means handed to a client,
+not proof that a model or user read it. A response lost after delivery is not automatically replayed.
+
+`GET /api/inbox/wait?session=claude:<id>&timeout=25` uses the same service bearer token as REST tools,
+returns `{result:{items,guidance}}`, and marks delivery using `inbox_get`. Timeout is an integer 0–25 seconds;
+an empty timeout response is 200. A shared PostgreSQL `LISTEN/NOTIFY` connection wakes outstanding requests
+on committed inserts, without a polling sleep loop. Each read reauthenticates the token and checks current
+grants. Disconnects cancel the wait; limits are four waiters per principal and 32 per HTTP handler.

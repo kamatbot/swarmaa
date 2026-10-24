@@ -3,6 +3,7 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import ipaddr from 'ipaddr.js';
 import { AppError, publicError } from './errors.js';
+import { waitForInbox } from './inbox-wait.js';
 import { handleMcp } from './mcp.js';
 import { OAuthError, OAuthService, OAUTH_COOKIE, authorizationHtml, type AuthorizationForm } from './oauth.js';
 import { accountHtml, type AccountView } from './passkey-ui.js';
@@ -183,6 +184,8 @@ export function createHttpHandler(dependencies: HttpDependencies): (request: Inc
   const passkeys = new PasskeyService(dependencies.pool, config);
   const limiter = new RateLimiter();
   let inFlight = 0;
+  let inboxWaiters = 0;
+  const principalWaiters = new Map<string,number>();
   const secureCookies = publicUrl.protocol === 'https:';
 
   /** Passkey routes: JSON POSTs are same-origin only (exact PUBLIC_URL origin), JSON-typed and small. */
@@ -411,6 +414,31 @@ export function createHttpHandler(dependencies: HttpDependencies): (request: Inc
         name: oneHeader(request, 'mcp-name'),
       }, dependencies);
       json(response, reply.status, reply.body);
+      return;
+    }
+    if (path === '/api/inbox/wait') {
+      onlyMethod(request, response, ['GET']);
+      const principal = await authenticate(request, response, false);
+      if ([...url.searchParams.keys()].some(k => !['session','timeout'].includes(k) || url.searchParams.getAll(k).length!==1)) {
+        throw new AppError(400,'invalid_arguments','Only one session and timeout may be supplied.');
+      }
+      const count = principalWaiters.get(principal.id) ?? 0;
+      if (inboxWaiters>=32 || count>=4) throw new AppError(429,'wait_limit','Too many inbox waiters.');
+      const abort = new AbortController();
+      const closed = () => abort.abort();
+      response.on('close',closed);
+      inboxWaiters++;
+      principalWaiters.set(principal.id,count+1);
+      try {
+        const result = await waitForInbox(dependencies.pool,dependencies.core,principal,url.searchParams.get('session'),
+          Number(url.searchParams.get('timeout') ?? '25'),abort.signal,() => authenticate(request,response,false));
+        if (!response.destroyed) json(response,200,{result});
+      } finally {
+        response.off('close',closed);
+        inboxWaiters--;
+        const remaining = (principalWaiters.get(principal.id) ?? 1)-1;
+        if (remaining) principalWaiters.set(principal.id,remaining); else principalWaiters.delete(principal.id);
+      }
       return;
     }
     const toolMatch = path.match(/^\/api\/tools\/([a-z][a-z0-9_]{0,127})$/u);
