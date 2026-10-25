@@ -328,7 +328,9 @@ export class BridgeWorker {
       if (leaseLost) return;
       let failure = outcome === 'completed' ? undefined : classifyFailure(agent.provider, result);
       if (outcome !== 'completed' && !failure) {
-        if (denied.length) failure = { code: 'sandbox_denied', retry: false, detail: `Denied actions: ${denied.join(', ')}` };
+        // The provider finished; the bridge could not commit its worktree (for example gigabytes of untracked build output).
+        if (finalizeFailure) failure = { code: 'swarmaa_worktree_commit_failed', retry: false, detail: 'Provider finished but its worktree could not be committed; untracked build output is the usual cause. Edits are kept in the worktree.' };
+        else if (denied.length) failure = { code: 'sandbox_denied', retry: false, detail: `Denied actions: ${denied.join(', ')}` };
         else if (shutdown.aborted) failure = { code: 'cancelled', retry: false, detail: 'Task cancelled by shutdown or signal' };
         else failure = { code: 'harness_error', retry: false, detail: 'Harness failed' };
       }
