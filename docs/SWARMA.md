@@ -95,6 +95,8 @@ nothing is pushed.
 `swarm_status` returns live workers, provider headroom with reset times, `routing` (`recommended`/`reason` for review, plus `policy`, `is_default`, `by_kind`), task counts per scope and
 recent tasks. `npm run usage` prints the local readings.
 
+**Coming next:** persistent agents with their own threads, channels and tracked swarms; see [TEAMS.md](TEAMS.md).
+
 ## /swarm
 
 `/swarm` shows swarm runs from inside Claude Code, Codex and Antigravity through the `swarma` MCP tools (worker chats are

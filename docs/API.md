@@ -395,3 +395,8 @@ offers become eligible on the next read (including at the long-poll deadline).
 
 The design uses the write-ahead reservation and exact-retry ideas described in AgentWorkforce Relay's
 `crates/broker/src/native_delivery.rs` and `docs/harnesses/pty-delivery.md`; no Relay code was adapted.
+
+## Agents, threads, channels and swarms (design)
+
+Persistent agents, threads, channels, tracked swarms, questions and the live stream are specified in
+[TEAMS.md](TEAMS.md). They are not implemented yet; the tools above are unchanged.
