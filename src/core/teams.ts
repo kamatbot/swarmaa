@@ -9,6 +9,55 @@ import { booleanOption } from './memory.js';
 import { assertKnownScope, audit, canonicalJson, event, newId, noExtraKeys, requireFound, scopeLock, scopeSql, sha256, type Db } from './shared.js';
 import { runnerCapability, type RunnerConfig } from '../bridge/adapters.js';
 
+export function clipUtf8(value: string, maxBytes: number): string {
+  const buf = Buffer.from(value.replaceAll('\0', '\uFFFD'), 'utf8');
+  if (buf.byteLength <= maxBytes) return buf.toString('utf8');
+  let end = maxBytes;
+  while (end > 0 && (buf[end]! & 0xC0) === 0x80) {
+    end--;
+  }
+  const byte = buf[end]!;
+  let seqLen = 1;
+  if ((byte & 0xE0) === 0xC0) seqLen = 2;
+  else if ((byte & 0xF0) === 0xE0) seqLen = 3;
+  else if ((byte & 0xF8) === 0xF0) seqLen = 4;
+  if (end + seqLen > maxBytes) {
+    return buf.subarray(0, end).toString('utf8');
+  }
+  return buf.subarray(0, end + seqLen).toString('utf8');
+}
+
+export async function assignThreadSeq(db: Db, tenantId: string, threadId: string): Promise<bigint> {
+  const row = (await db.query<{ id: string }>(
+    'SELECT id FROM threads WHERE tenant_id=$1 AND id=$2 FOR UPDATE',
+    [tenantId, threadId]
+  )).rows[0];
+  requireFound(row, 'Thread');
+  const seqRes = await db.query<{ next_seq: string }>(
+    'SELECT COALESCE(MAX(seq), 0) + 1 AS next_seq FROM messages WHERE thread_id=$1',
+    [threadId]
+  );
+  return BigInt(seqRes.rows[0]!.next_seq);
+}
+
+export async function getTurnWindow(db: Db, threadId: string): Promise<Record<string, unknown>[]> {
+  const mRes = await db.query<MessageRow>(
+    'SELECT * FROM messages WHERE thread_id=$1 ORDER BY seq DESC LIMIT 40',
+    [threadId]
+  );
+  const rows = mRes.rows;
+  const window: Record<string, unknown>[] = [];
+  let totalBytes = 0;
+  for (const row of rows) {
+    const bytes = Buffer.byteLength(row.body ?? '', 'utf8');
+    if (window.length > 0 && totalBytes + bytes > 24 * 1024) break;
+    window.push(messageView(row));
+    totalBytes += bytes;
+  }
+  window.reverse();
+  return window;
+}
+
 export interface AgentRow {
   id: string;
   tenant_id: string;
@@ -136,7 +185,9 @@ export class TeamService {
     requirePermission(p, 'agent:manage');
     const name = string(input.name, 'name', 64);
     const role = string(input.role, 'role', 64);
-    const instructions = string(input.instructions, 'instructions', 8192);
+    const rawInstructions = string(input.instructions, 'instructions', 8192);
+    requireCondition(Buffer.byteLength(rawInstructions, 'utf8') <= 8192, 400, 'invalid_arguments', 'instructions exceeds maximum size of 8192 bytes.');
+    const instructions = rawInstructions;
     const scope = scopeName(input.scope);
     assertKnownScope(p, scope);
     requireScope(p, scope);
@@ -188,7 +239,7 @@ export class TeamService {
   }
 
   async agentUpdate(p: Principal, input: Record<string, unknown>): Promise<unknown> {
-    noExtraKeys(input, ['agent_id', 'expected_version', 'name', 'role', 'instructions', 'scope', 'runner', 'edits', 'avatar']);
+    noExtraKeys(input, ['agent_id', 'expected_version', 'name', 'role', 'instructions', 'runner', 'edits', 'avatar']);
     requirePermission(p, 'agent:manage');
     const agentId = uuid(input.agent_id, 'agent_id');
     const expected = integer(input.expected_version, 'expected_version', 1, 2147483647);
@@ -201,11 +252,11 @@ export class TeamService {
 
       const nextName = input.name !== undefined ? string(input.name, 'name', 64) : existing.name;
       const nextRole = input.role !== undefined ? string(input.role, 'role', 64) : existing.role;
-      const nextInstructions = input.instructions !== undefined ? string(input.instructions, 'instructions', 8192) : existing.instructions;
-      const nextScope = input.scope !== undefined ? scopeName(input.scope) : existing.scope;
-      if (input.scope !== undefined) {
-        assertKnownScope(p, nextScope);
-        requireScope(p, nextScope);
+      let nextInstructions = existing.instructions;
+      if (input.instructions !== undefined) {
+        const rawInstructions = string(input.instructions, 'instructions', 8192);
+        requireCondition(Buffer.byteLength(rawInstructions, 'utf8') <= 8192, 400, 'invalid_arguments', 'instructions exceeds maximum size of 8192 bytes.');
+        nextInstructions = rawInstructions;
       }
       const nextRunner = input.runner !== undefined ? parseRunner(input.runner) : existing.runner;
       const nextEdits = input.edits !== undefined ? booleanOption(input.edits, 'edits') : existing.edits;
@@ -214,17 +265,16 @@ export class TeamService {
       const runnerChanged = input.runner !== undefined && canonicalJson(nextRunner) !== canonicalJson(existing.runner);
 
       const updated = (await db.query<AgentRow>(
-        `UPDATE agents SET name=$1, role=$2, instructions=$3, scope=$4, runner=$5::jsonb, edits=$6, avatar=$7,
+        `UPDATE agents SET name=$1, role=$2, instructions=$3, runner=$4::jsonb, edits=$5, avatar=$6,
            version=version+1, updated_at=clock_timestamp()
-         WHERE id=$8 RETURNING *`,
-        [nextName, nextRole, nextInstructions, nextScope, JSON.stringify(nextRunner), nextEdits, nextAvatar, agentId]
+         WHERE id=$7 RETURNING *`,
+        [nextName, nextRole, nextInstructions, JSON.stringify(nextRunner), nextEdits, nextAvatar, agentId]
       )).rows[0]!;
 
       if (runnerChanged && existing.main_thread_id) {
         const display = runnerDisplayName(nextRunner);
-        const noticeBody = `${updated.name} now runs on ${display}`;
-        const seqRes = await db.query<{ next_seq: string }>('SELECT COALESCE(MAX(seq),0)+1 AS next_seq FROM messages WHERE thread_id=$1', [existing.main_thread_id]);
-        const nextSeq = BigInt(seqRes.rows[0]!.next_seq);
+        const noticeBody = clipUtf8(`${updated.name} now runs on ${display}`, 16384);
+        const nextSeq = await assignThreadSeq(db, existing.tenant_id, existing.main_thread_id);
         const msgId = newId();
         await db.query(
           `INSERT INTO messages (id, tenant_id, scope, thread_id, seq, author, kind, body)
@@ -338,11 +388,12 @@ export class TeamService {
   }
 
   async threadPost(p: Principal, input: Record<string, unknown>): Promise<unknown> {
-    noExtraKeys(input, ['thread_id', 'body', 'idempotency_key', 'reply_to', 'turn_task_id', 'lease_token']);
+    noExtraKeys(input, ['thread_id', 'body', 'idempotency_key', 'reply_to']);
     requirePermission(p, 'thread:write');
     const threadId = uuid(input.thread_id, 'thread_id');
     const rawBody = string(input.body, 'body', 16384);
-    const body = redactSecrets(rawBody).slice(0, 16384);
+    requireCondition(Buffer.byteLength(rawBody, 'utf8') <= 16384, 400, 'invalid_arguments', 'body exceeds maximum size of 16384 bytes.');
+    const body = clipUtf8(redactSecrets(rawBody), 16384);
     const idempotency = string(input.idempotency_key, 'idempotency_key', 200);
     const replyTo = input.reply_to !== undefined ? uuid(input.reply_to, 'reply_to') : null;
 
@@ -351,25 +402,18 @@ export class TeamService {
       requireFound(thread, 'Thread');
       requireScope(p, thread.scope);
 
-      // Check turn grant if caller specifies turn task or author is not human
-      if (input.turn_task_id !== undefined || input.lease_token !== undefined) {
-        const turnTaskId = uuid(input.turn_task_id, 'turn_task_id');
-        const taskRow = (await db.query('SELECT * FROM tasks WHERE id=$1 AND tenant_id=$2', [turnTaskId, p.tenantId])).rows[0];
-        requireCondition(taskRow && taskRow.agent_id === thread.agent_id, 403, 'turn_grant_forbidden', 'Turn grant refuses posting to another agent\'s thread.');
-      }
+      const author = { kind: 'human' as const, id: p.id };
 
       const existingMsg = (await db.query<MessageRow>(
-        'SELECT * FROM messages WHERE tenant_id=$1 AND thread_id=$2 AND idempotency_key=$3',
-        [p.tenantId, threadId, idempotency]
+        'SELECT * FROM messages WHERE tenant_id=$1 AND thread_id=$2 AND author=$3::jsonb AND idempotency_key=$4',
+        [p.tenantId, threadId, JSON.stringify(author), idempotency]
       )).rows[0];
       if (existingMsg) {
+        requireCondition(existingMsg.body === body, 409, 'idempotency_conflict', 'Idempotency key reused with different message body.');
         return { message: messageView(existingMsg), replayed: true };
       }
 
-      const seqRes = await db.query<{ next_seq: string }>('SELECT COALESCE(MAX(seq), 0) + 1 AS next_seq FROM messages WHERE thread_id=$1', [threadId]);
-      const nextSeq = BigInt(seqRes.rows[0]!.next_seq);
-
-      const author = { kind: 'human' as const, id: p.id };
+      const nextSeq = await assignThreadSeq(db, p.tenantId, threadId);
       const msgId = newId();
       const ref = replyTo ? { reply_to: replyTo } : null;
 
@@ -392,13 +436,13 @@ export class TeamService {
 
       // If posting to an agent thread by a human, queue a turn task if none is currently active
       if (thread.agent_id) {
+        const agent = (await db.query<AgentRow>('SELECT * FROM agents WHERE id=$1 FOR UPDATE', [thread.agent_id])).rows[0]!;
         const activeTurn = (await db.query(
           "SELECT id FROM tasks WHERE tenant_id=$1 AND agent_id=$2 AND status IN ('queued', 'running') LIMIT 1",
           [p.tenantId, thread.agent_id]
         )).rows[0];
 
         if (!activeTurn) {
-          const agent = (await db.query<AgentRow>('SELECT * FROM agents WHERE id=$1', [thread.agent_id])).rows[0]!;
           const requiredCap = runnerCapability(agent.runner, agent.edits);
           const taskId = newId();
           const turnObjective = `Turn for agent ${agent.name}`;

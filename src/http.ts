@@ -8,7 +8,7 @@ import { handleMcp } from './mcp.js';
 import { OAuthError, OAuthService, OAUTH_COOKIE, authorizationHtml, type AuthorizationForm } from './oauth.js';
 import { accountHtml, type AccountView } from './passkey-ui.js';
 import { BIND_COOKIE, OWNER_COOKIE, PasskeyService, bindCookie, newBinding, ownerCookie } from './passkeys.js';
-import { canAccessScope, hasPermission } from './policy.js';
+import { canAccessScope, hasPermission, requirePermission } from './policy.js';
 import type { HttpDependencies, Principal } from './types.js';
 
 const MAX_RESPONSE_BYTES = 6 * 1024 * 1024;
@@ -187,6 +187,7 @@ export function createHttpHandler(dependencies: HttpDependencies): (request: Inc
   let inFlight = 0;
   let inboxWaiters = 0;
   const principalWaiters = new Map<string,number>();
+  const principalStreams = new Map<string,number>();
   const secureCookies = publicUrl.protocol === 'https:';
 
   /** Passkey routes: JSON POSTs are same-origin only (exact PUBLIC_URL origin), JSON-typed and small. */
@@ -445,6 +446,11 @@ export function createHttpHandler(dependencies: HttpDependencies): (request: Inc
     if (path === '/api/stream') {
       onlyMethod(request, response, ['GET']);
       const principal = await authenticate(request, response, false);
+      requirePermission(principal, 'events:read');
+      const count = principalStreams.get(principal.id) ?? 0;
+      if (count >= 4) throw new AppError(429, 'too_many_streams', 'Too many concurrent streams for this principal.');
+      principalStreams.set(principal.id, count + 1);
+
       const afterParam = url.searchParams.get('after') ?? (oneHeader(request, 'last-event-id') || '0.0');
       const parts = /^(?:([0-9]{1,20})\.)?([0-9]{1,19})$/.exec(afterParam);
       requireCondition(parts !== null && BigInt(parts[2]!) <= 9223372036854775807n &&
@@ -480,15 +486,38 @@ export function createHttpHandler(dependencies: HttpDependencies): (request: Inc
 
       let active = true;
       let pollTimer: NodeJS.Timeout | undefined;
-      const heartbeatTimer = setInterval(() => {
+      const heartbeatTimer = setInterval(async () => {
+        if (!active || response.destroyed) return;
+        try {
+          const fresh = await authenticate(request, response, false);
+          if (!hasPermission(fresh, 'events:read')) {
+            cleanup();
+            response.end();
+            return;
+          }
+        } catch {
+          cleanup();
+          response.end();
+          return;
+        }
         if (active && !response.destroyed) response.write(': heartbeat\n\n');
-      }, 15_000);
+      }, dependencies.streamHeartbeatMs ?? 15_000);
+
+      const maxDurationTimer = setTimeout(() => {
+        cleanup();
+        if (!response.destroyed) response.end();
+      }, dependencies.streamMaxDurationMs ?? 3600_000);
 
       const cleanup = () => {
         if (!active) return;
         active = false;
         clearInterval(heartbeatTimer);
+        clearTimeout(maxDurationTimer);
         if (pollTimer) clearTimeout(pollTimer);
+        response.off('close', cleanup);
+        const remaining = (principalStreams.get(principal.id) ?? 1) - 1;
+        if (remaining) principalStreams.set(principal.id, remaining);
+        else principalStreams.delete(principal.id);
       };
       response.on('close', cleanup);
 

@@ -64,6 +64,8 @@ export interface HttpDependencies {
   auth: AuthBackend;
   events?: EventBackend;
   config: ServerConfig;
+  streamHeartbeatMs?: number;
+  streamMaxDurationMs?: number;
 }
 
 export interface StoredEvent {

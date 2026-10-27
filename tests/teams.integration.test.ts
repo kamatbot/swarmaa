@@ -36,7 +36,7 @@ describe('teams phase 1 service foundation', { skip: !connectionString, concurre
       host: '127.0.0.1', port: 0, publicUrl: 'http://127.0.0.1', allowedOrigins: [], allowInsecureLocalhost: true,
       maxBodyBytes: 131072, oauthEnabled: false, oauthRedirectHosts: [], eventCallbackHosts: [], eventEncryptionKey: '0'.repeat(64)
     };
-    server = createServer(createHttpHandler({ pool, core, auth: new AuthService(pool), config }));
+    server = createServer(createHttpHandler({ pool, core, auth: new AuthService(pool), config, streamHeartbeatMs: 50 }));
     await new Promise<void>(r => server.listen(0, '127.0.0.1', r));
     config.port = (server.address() as { port: number }).port;
     origin = `http://127.0.0.1:${config.port}`;
@@ -313,7 +313,7 @@ describe('teams phase 1 service foundation', { skip: !connectionString, concurre
       (err: any) => err instanceof AppError && err.code === 'turn_grant_forbidden'
     );
 
-    // 2. Direct thread_post with turn_task_id targeting Agent B's thread
+    // 2. Direct thread_post rejects unknown dead arguments turn_task_id / lease_token
     await assert.rejects(
       async () => {
         await call(user, 'thread_post', {
@@ -323,7 +323,7 @@ describe('teams phase 1 service foundation', { skip: !connectionString, concurre
           turn_task_id: claimA.task.id
         });
       },
-      (err: any) => err instanceof AppError && err.code === 'turn_grant_forbidden'
+      (err: any) => err instanceof AppError && err.code === 'invalid_arguments'
     );
   });
 
@@ -551,5 +551,474 @@ describe('teams phase 1 service foundation', { skip: !connectionString, concurre
     // 8. agent_list must not leak Tenant A's agents to Tenant B
     const listB = await call(userB, 'agent_list', { scope: 'project:a' });
     assert.equal(listB.agents.some((x: any) => x.id === agentA.id), false);
+  });
+
+  it('regression 1: an auto agent\'s turn claim returns a route with a provider', async () => {
+    const tenantId = randomUUID();
+    const user = await createPrincipal(tenantId, 'user-auto-1');
+    const worker = await createPrincipal(tenantId, 'worker-auto-1', 'worker');
+
+    const { agent, thread } = await call(user, 'agent_create', {
+      name: 'AutoBot', role: 'Helper', instructions: 'Auto instructions', scope: 'project:a', runner: { mode: 'auto' }
+    });
+
+    await call(user, 'thread_post', {
+      thread_id: thread.id, body: 'Help me auto', idempotency_key: 'auto-post-1'
+    });
+
+    await call(worker, 'usage_report', {
+      reports: [{
+        provider: 'codex',
+        ok: true,
+        fetched_at: new Date().toISOString(),
+        windows: [{ name: '5h', used_percent: 20 }, { name: 'weekly', used_percent: 20 }]
+      }]
+    });
+
+    const claimRes = await call(worker, 'task_claim', {
+      scope: 'project:a',
+      capabilities: ['codex.read', 'auto.read'],
+      kinds: ['turn']
+    });
+
+    assert.ok(claimRes.task, 'Auto turn task should be claimed');
+    assert.equal(claimRes.task.agent_id, agent.id);
+    assert.ok(claimRes.route, 'Route must be returned for auto task claim');
+    assert.ok(claimRes.route.provider, 'Route provider must not be null');
+    assert.ok(claimRes.route.allowed.length > 0, 'Route allowed providers must not be empty');
+    assert.ok(claimRes.route.allowed.includes(claimRes.route.provider));
+  });
+
+  it('regression 2: worker without task:patch cannot claim or hold edit turns', async () => {
+    const tenantId = randomUUID();
+    const user = await createPrincipal(tenantId, 'user-patch-1');
+    const roWorker = await createPrincipal(tenantId, 'worker-ro-1', 'worker');
+    roWorker.permissions = roWorker.permissions.filter(p => p !== 'task:patch');
+    await pool.query('UPDATE principals SET permissions=$2 WHERE id=$1', [roWorker.id, roWorker.permissions]);
+
+    const patchWorker = await createPrincipal(tenantId, 'worker-patch-1', 'worker');
+    if (!patchWorker.permissions.includes('task:patch')) {
+      patchWorker.permissions.push('task:patch');
+      await pool.query('UPDATE principals SET permissions=$2 WHERE id=$1', [patchWorker.id, patchWorker.permissions]);
+    }
+
+    const { agent, thread } = await call(user, 'agent_create', {
+      name: 'EditBot', role: 'Editor', instructions: 'Edit code', scope: 'project:a',
+      runner: { provider: 'codex' }, edits: true
+    });
+
+    await call(user, 'thread_post', {
+      thread_id: thread.id, body: 'Perform edit', idempotency_key: 'edit-post-1'
+    });
+
+    // 1. Worker without task:patch requesting patch capability gets 403 forbidden
+    await assert.rejects(
+      () => call(roWorker, 'task_claim', {
+        scope: 'project:a',
+        capabilities: ['codex.patch'],
+        kinds: ['turn']
+      }),
+      (err: any) => err instanceof AppError && err.code === 'forbidden'
+    );
+
+    // 2. Worker without task:patch requesting only read capabilities cannot claim edit turns
+    const roClaim = await call(roWorker, 'task_claim', {
+      scope: 'project:a',
+      capabilities: ['codex.read'],
+      kinds: ['turn']
+    });
+    assert.equal(roClaim.task, null);
+
+    // 3. Worker with task:patch can claim the edit turn
+    const claimRes = await call(patchWorker, 'task_claim', {
+      scope: 'project:a',
+      capabilities: ['codex.patch'],
+      kinds: ['turn', 'patch']
+    });
+    assert.ok(claimRes.task, 'Worker with task:patch claims edit turn');
+    assert.equal(claimRes.task.agent_id, agent.id);
+
+    // 4. If worker loses task:patch while lease is running, heartbeat fails with 403 forbidden
+    patchWorker.permissions = patchWorker.permissions.filter(p => p !== 'task:patch');
+    await pool.query('UPDATE principals SET permissions=$2 WHERE id=$1', [patchWorker.id, patchWorker.permissions]);
+
+    await assert.rejects(
+      () => call(patchWorker, 'task_heartbeat', {
+        task_id: claimRes.task.id,
+        lease_token: claimRes.lease_token,
+        lease_generation: claimRes.lease_generation,
+        lease_seconds: 30
+      }),
+      (err: any) => err instanceof AppError && err.code === 'forbidden'
+    );
+  });
+
+  it('regression 3: turns take resource lease agent:<id> preventing concurrent turns for one agent', async () => {
+    const tenantId = randomUUID();
+    const user = await createPrincipal(tenantId, 'user-res-1');
+    const worker1 = await createPrincipal(tenantId, 'worker-res-1', 'worker');
+    const worker2 = await createPrincipal(tenantId, 'worker-res-2', 'worker');
+
+    const { agent, thread } = await call(user, 'agent_create', {
+      name: 'SoloBot', role: 'Worker', instructions: 'Solo task', scope: 'project:a', runner: { provider: 'codex' }
+    });
+
+    await call(user, 'thread_post', {
+      thread_id: thread.id, body: 'Task 1', idempotency_key: 'solo-1'
+    });
+
+    const claim1 = await call(worker1, 'task_claim', {
+      scope: 'project:a',
+      capabilities: ['codex.read'],
+      kinds: ['turn']
+    });
+    assert.ok(claim1.task);
+    assert.equal(claim1.task.agent_id, agent.id);
+
+    // Directly insert another turn task for the same agent into tasks table
+    const secondTaskId = randomUUID();
+    await pool.query(
+      `INSERT INTO tasks (id, tenant_id, scope, kind, agent_id, thread_id, objective, constraints, acceptance_criteria,
+        permission_envelope, required_capability, resource_key, context_versions, status, created_by, idempotency_key, request_hash, max_attempts)
+       VALUES ($1, $2, 'project:a', 'turn', $3, $4, 'Turn 2', '[]', '[]', '{}', 'codex.read', $5, '{}', 'queued', $6, $7, $8, 3)`,
+      [secondTaskId, tenantId, agent.id, thread.id, `agent:${agent.id}`, user.id, randomUUID(), 'hash2']
+    );
+
+    // Worker 2 attempts to claim while Worker 1 is still running Turn 1
+    const claim2 = await call(worker2, 'task_claim', {
+      scope: 'project:a',
+      capabilities: ['codex.read'],
+      kinds: ['turn']
+    });
+    assert.equal(claim2.task, null, 'Resource lease agent:<id> must prevent second concurrent turn for same agent');
+
+    // Worker 1 finishes Turn 1, releasing resource lease
+    await call(worker1, 'task_finish', {
+      task_id: claim1.task.id,
+      lease_token: claim1.lease_token,
+      lease_generation: claim1.lease_generation,
+      outcome: 'completed',
+      result: { answer: 'Done 1' }
+    });
+
+    // Now Worker 2 can claim the second turn
+    const claim3 = await call(worker2, 'task_claim', {
+      scope: 'project:a',
+      capabilities: ['codex.read'],
+      kinds: ['turn']
+    });
+    assert.ok(claim3.task);
+    assert.equal(claim3.task.id, secondTaskId);
+  });
+
+  it('regression 4: assignThreadSeq locks thread row preventing seq collisions across post, notice, and finish', async () => {
+    const tenantId = randomUUID();
+    const user = await createPrincipal(tenantId, 'user-seq-1');
+    const { agent, thread } = await call(user, 'agent_create', {
+      name: 'SeqBot', role: 'Tester', instructions: 'Seq test', scope: 'project:a', runner: { provider: 'codex' }
+    });
+
+    const posts = await Promise.all(
+      Array.from({ length: 10 }, (_, i) =>
+        call(user, 'thread_post', {
+          thread_id: thread.id,
+          body: `Message ${i}`,
+          idempotency_key: `seq-msg-${i}`
+        })
+      )
+    );
+
+    const seqs = posts.map(p => p.message.seq).sort((a, b) => a - b);
+    assert.deepEqual(seqs, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], 'All 10 concurrent posts must have unique sequential seqs');
+
+    await call(user, 'agent_update', {
+      agent_id: agent.id,
+      expected_version: 1,
+      runner: { provider: 'claude' }
+    });
+
+    const messagesRes = await call(user, 'thread_read', { thread_id: thread.id, limit: 20 });
+    const readSeqs = messagesRes.messages.map((m: any) => m.seq);
+    assert.equal(readSeqs.length, 11);
+    assert.deepEqual(readSeqs, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+  });
+
+  it('regression 5: task_get does not leak thread messages and task_claim bounds turn window to 40 messages or 24 KB', async () => {
+    const tenantId = randomUUID();
+    const user = await createPrincipal(tenantId, 'user-leak-1');
+    const worker = await createPrincipal(tenantId, 'worker-leak-1', 'worker');
+
+    const { agent, thread } = await call(user, 'agent_create', {
+      name: 'LeakBot', role: 'Tester', instructions: 'Test leak', scope: 'project:a', runner: { provider: 'codex' }
+    });
+
+    for (let i = 1; i <= 45; i++) {
+      await call(user, 'thread_post', {
+        thread_id: thread.id,
+        body: `Post ${i}`,
+        idempotency_key: `leak-post-${i}`
+      });
+    }
+
+    const listRes = await pool.query('SELECT id FROM tasks WHERE tenant_id=$1 AND agent_id=$2 AND status=\'queued\'', [tenantId, agent.id]);
+    const taskId = listRes.rows[0].id;
+
+    // 1. task_get must NOT leak thread_messages or message bodies
+    const getRes = await call(user, 'task_get', { task_id: taskId });
+    assert.equal(getRes.task.thread_messages, undefined, 'task_get must not include thread_messages');
+    assert.equal(getRes.task.agent, undefined, 'task_get must not include agent row');
+
+    // 2. task_claim returns the bounded turn window (capped to 40 messages, oldest first)
+    const claimRes = await call(worker, 'task_claim', {
+      scope: 'project:a',
+      capabilities: ['codex.read'],
+      kinds: ['turn']
+    });
+    assert.ok(claimRes.task);
+    assert.ok(Array.isArray(claimRes.task.thread_messages), 'task_claim must include thread_messages window for leaseholder');
+    assert.equal(claimRes.task.thread_messages.length, 40, 'Window must cap at 40 messages');
+    assert.equal(claimRes.task.thread_messages[0].seq, 6);
+    assert.equal(claimRes.task.thread_messages[39].seq, 45);
+  });
+
+  it('regression 6: agent_update rejects scope argument', async () => {
+    const tenantId = randomUUID();
+    const user = await createPrincipal(tenantId, 'user-scope-1');
+
+    const { agent } = await call(user, 'agent_create', {
+      name: 'ScopeBot', role: 'Tester', instructions: 'Scope test', scope: 'project:a', runner: { provider: 'codex' }
+    });
+
+    await assert.rejects(
+      () => call(user, 'agent_update', {
+        agent_id: agent.id,
+        expected_version: 1,
+        scope: 'project:b'
+      }),
+      (err: any) => err instanceof AppError && err.code === 'invalid_arguments'
+    );
+  });
+
+  it('regression 8: turn records max prompt seq at claim so queued messages are not answered twice', async () => {
+    const tenantId = randomUUID();
+    const user = await createPrincipal(tenantId, 'user-double-1');
+    const worker = await createPrincipal(tenantId, 'worker-double-1', 'worker');
+
+    const { agent, thread } = await call(user, 'agent_create', {
+      name: 'DoubleBot', role: 'Assistant', instructions: 'Double test', scope: 'project:a', runner: { provider: 'codex' }
+    });
+
+    await call(user, 'thread_post', {
+      thread_id: thread.id, body: 'Message 1', idempotency_key: 'double-1'
+    });
+
+    await call(user, 'thread_post', {
+      thread_id: thread.id, body: 'Message 2', idempotency_key: 'double-2'
+    });
+
+    const claimRes = await call(worker, 'task_claim', {
+      scope: 'project:a',
+      capabilities: ['codex.read'],
+      kinds: ['turn']
+    });
+    assert.ok(claimRes.task);
+    assert.equal(claimRes.task.context_versions.message_seq, 2);
+
+    await call(worker, 'task_finish', {
+      task_id: claimRes.task.id,
+      lease_token: claimRes.lease_token,
+      lease_generation: claimRes.lease_generation,
+      outcome: 'completed',
+      result: { answer: 'Answer for 1 and 2' }
+    });
+
+    const activeTasks = await pool.query(
+      'SELECT id FROM tasks WHERE tenant_id=$1 AND agent_id=$2 AND status IN (\'queued\', \'running\')',
+      [tenantId, agent.id]
+    );
+    assert.equal(activeTasks.rows.length, 0, 'No duplicate follow-up turn should be queued for message 2');
+
+    await call(user, 'thread_post', {
+      thread_id: thread.id, body: 'Message 3', idempotency_key: 'double-3'
+    });
+    const followUpTasks = await pool.query(
+      'SELECT id FROM tasks WHERE tenant_id=$1 AND agent_id=$2 AND status=\'queued\'',
+      [tenantId, agent.id]
+    );
+    assert.equal(followUpTasks.rows.length, 1, 'New message after finish should queue follow-up turn');
+  });
+
+  it('regression 9: UTF-8 byte length validation rejects 6000 euro signs and byte clips notices', async () => {
+    const tenantId = randomUUID();
+    const user = await createPrincipal(tenantId, 'user-bytes-1');
+    const worker = await createPrincipal(tenantId, 'worker-bytes-1', 'worker');
+
+    const { agent, thread } = await call(user, 'agent_create', {
+      name: 'ByteBot', role: 'Validator', instructions: 'Byte validation test', scope: 'project:a', runner: { provider: 'codex' }
+    });
+
+    // 1. 6000 '€' has string length 6000 (<= 16384 characters), but byte length 18000 (> 16384 octets)
+    const euro6000 = '€'.repeat(6000);
+    await assert.rejects(
+      () => call(user, 'thread_post', {
+        thread_id: thread.id,
+        body: euro6000,
+        idempotency_key: 'euro-post-1'
+      }),
+      (err: any) => err instanceof AppError && err.code === 'invalid_arguments'
+    );
+
+    // 2. 3000 '€' in agent_create instructions: length 3000 (<= 8192 chars), but 9000 bytes (> 8192 octets)
+    await assert.rejects(
+      () => call(user, 'agent_create', {
+        name: 'HugeInstBot', role: 'Validator', instructions: '€'.repeat(3000), scope: 'project:a', runner: { provider: 'codex' }
+      }),
+      (err: any) => err instanceof AppError && err.code === 'invalid_arguments'
+    );
+
+    // 3. Post a valid message to queue turn
+    await call(user, 'thread_post', {
+      thread_id: thread.id,
+      body: 'Valid message',
+      idempotency_key: 'valid-post-1'
+    });
+
+    // 4. Claim and finish with a multi-byte answer > 16384 bytes -> clips cleanly by bytes without DB constraint error
+    const claimRes = await call(worker, 'task_claim', {
+      scope: 'project:a',
+      capabilities: ['codex.read'],
+      kinds: ['turn']
+    });
+
+    const hugeAnswer = '€'.repeat(6000);
+    await call(worker, 'task_finish', {
+      task_id: claimRes.task.id,
+      lease_token: claimRes.lease_token,
+      lease_generation: claimRes.lease_generation,
+      outcome: 'completed',
+      result: { answer: hugeAnswer }
+    });
+
+    const threadRes = await call(user, 'thread_read', { thread_id: thread.id, limit: 1 });
+    const reply = threadRes.messages[0];
+    assert.equal(reply.kind, 'text');
+    assert.ok(Buffer.byteLength(reply.body, 'utf8') <= 16384, 'Reply body must be clipped to <= 16384 UTF-8 bytes');
+  });
+
+  it('regression 10: message idempotency key is unique per author and rejects different body with idempotency_conflict', async () => {
+    const tenantId = randomUUID();
+    const user1 = await createPrincipal(tenantId, 'user-idemp-1');
+    const user2 = await createPrincipal(tenantId, 'user-idemp-2');
+
+    const { thread } = await call(user1, 'agent_create', {
+      name: 'IdempBot', role: 'Tester', instructions: 'Idemp test', scope: 'project:a', runner: { provider: 'codex' }
+    });
+
+    const post1 = await call(user1, 'thread_post', {
+      thread_id: thread.id, body: 'Hello from User 1', idempotency_key: 'shared-key-1'
+    });
+    assert.equal(post1.replayed, false);
+
+    const post1Replay = await call(user1, 'thread_post', {
+      thread_id: thread.id, body: 'Hello from User 1', idempotency_key: 'shared-key-1'
+    });
+    assert.equal(post1Replay.replayed, true);
+    assert.equal(post1Replay.message.id, post1.message.id);
+
+    await assert.rejects(
+      () => call(user1, 'thread_post', {
+        thread_id: thread.id, body: 'Different body from User 1', idempotency_key: 'shared-key-1'
+      }),
+      (err: any) => err instanceof AppError && err.code === 'idempotency_conflict'
+    );
+
+    const post2 = await call(user2, 'thread_post', {
+      thread_id: thread.id, body: 'Hello from User 2', idempotency_key: 'shared-key-1'
+    });
+    assert.equal(post2.replayed, false);
+    assert.notEqual(post2.message.id, post1.message.id);
+  });
+
+  it('regression 11: GET /api/stream requires events:read, caps concurrent streams at 4, rechecks principal on heartbeat', async () => {
+    const tenantId = randomUUID();
+    const user = await createPrincipal(tenantId, 'user-stream-reg');
+
+    const noEventsUser = await createPrincipal(tenantId, 'user-no-events');
+    noEventsUser.permissions = noEventsUser.permissions.filter(p => p !== 'events:read');
+    await pool.query('UPDATE principals SET permissions=$2 WHERE id=$1', [noEventsUser.id, noEventsUser.permissions]);
+
+    const resForbidden = await fetch(`${origin}/api/stream?after=0.0`, {
+      headers: { Authorization: `Bearer ${noEventsUser.token}` }
+    });
+    assert.equal(resForbidden.status, 403);
+
+    const streams: Response[] = [];
+    for (let i = 0; i < 4; i++) {
+      const s = await fetch(`${origin}/api/stream?after=0.0`, {
+        headers: { Authorization: `Bearer ${user.token}` }
+      });
+      assert.equal(s.status, 200);
+      streams.push(s);
+    }
+
+    const stream5 = await fetch(`${origin}/api/stream?after=0.0`, {
+      headers: { Authorization: `Bearer ${user.token}` }
+    });
+    assert.equal(stream5.status, 429);
+    const body5 = (await stream5.json()) as any;
+    assert.equal(body5.error.code, 'too_many_streams');
+
+    await streams[0]!.body?.cancel();
+    await new Promise(r => setTimeout(r, 50));
+
+    const streamRetry = await fetch(`${origin}/api/stream?after=0.0`, {
+      headers: { Authorization: `Bearer ${user.token}` }
+    });
+    assert.equal(streamRetry.status, 200);
+
+    await streamRetry.body?.cancel();
+    for (const s of streams.slice(1)) {
+      await s.body?.cancel();
+    }
+
+    // 5. Recheck principal on heartbeat: disabling principal closes the stream
+    const streamToRevoke = await fetch(`${origin}/api/stream?after=0.0`, {
+      headers: { Authorization: `Bearer ${user.token}` }
+    });
+    assert.equal(streamToRevoke.status, 200);
+    const revokeReader = streamToRevoke.body!.getReader();
+
+    // Disable principal in database
+    await pool.query('UPDATE principals SET disabled=true WHERE id=$1', [user.id]);
+
+    let closed = false;
+    const deadline = Date.now() + 1500;
+    while (Date.now() < deadline) {
+      const res = await revokeReader.read();
+      if (res.done) {
+        closed = true;
+        break;
+      }
+    }
+    assert.ok(closed, 'Stream must be terminated when principal is disabled on heartbeat');
+
+    await pool.query('UPDATE principals SET disabled=false WHERE id=$1', [user.id]);
+
+    // 6. thread_post rejects dead arguments turn_task_id and lease_token
+    const { thread } = await call(user, 'agent_create', {
+      name: 'DeadArgBot', role: 'Tester', instructions: 'Inst', scope: 'project:a', runner: { provider: 'codex' }
+    });
+    await assert.rejects(
+      () => call(user, 'thread_post', {
+        thread_id: thread.id, body: 'test', idempotency_key: 'dead-1', turn_task_id: randomUUID()
+      }),
+      (err: any) => err instanceof AppError && err.code === 'invalid_arguments'
+    );
+    await assert.rejects(
+      () => call(user, 'thread_post', {
+        thread_id: thread.id, body: 'test', idempotency_key: 'dead-2', lease_token: 'dead'
+      }),
+      (err: any) => err instanceof AppError && err.code === 'invalid_arguments'
+    );
   });
 });

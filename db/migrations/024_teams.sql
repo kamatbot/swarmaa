@@ -53,7 +53,7 @@ CREATE TABLE messages (
   created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
   edited_at timestamptz,
   UNIQUE (thread_id, seq),
-  UNIQUE (tenant_id, thread_id, idempotency_key)
+  UNIQUE (tenant_id, thread_id, author, idempotency_key)
 );
 CREATE INDEX messages_thread_seq_idx ON messages (thread_id, seq DESC);
 CREATE INDEX messages_scope_idx ON messages (tenant_id, scope, created_at DESC);

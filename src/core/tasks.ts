@@ -13,6 +13,13 @@ import { decide, decideAll, getPolicy, policyAllows, scopeUsage, type RoutingKin
 import { AUTO_PATCH, AUTO_READ, touchWorker, workerProviders } from './swarm.js';
 import { runnerCapability } from '../bridge/adapters.js';
 import { redactSecrets } from '../safety/redact.js';
+import { clipUtf8, assignThreadSeq, getTurnWindow, type AgentRow } from './teams.js';
+
+function effectiveRoutingKind(row: { kind: string; required_capability: string }): RoutingKind {
+  return row.kind === 'turn'
+    ? (row.required_capability.endsWith('.patch') ? 'patch' : 'review')
+    : (row.kind as RoutingKind);
+}
 
 export const TASK_KINDS = ['research','review','patch'] as const;
 export const TASK_STATUSES = ['queued','running','blocked','completed','failed','cancelled'] as const;
@@ -88,18 +95,7 @@ export async function taskWithInstructions(db:Db, row:TaskRow):Promise<Record<st
     WHERE task_id=$1 ORDER BY created_at,id`, [row.id]);
   const runs = await db.query(`SELECT generation,worker_id,status,artifact_ids,started_at,ended_at
     FROM task_runs WHERE task_id=$1 ORDER BY generation`, [row.id]);
-  let agent: Record<string, unknown> | null = null;
-  let threadMessages: Record<string, unknown>[] = [];
-  if (row.agent_id) {
-    const aRes = await db.query('SELECT * FROM agents WHERE id=$1', [row.agent_id]);
-    if (aRes.rows[0]) agent = aRes.rows[0];
-  }
-  if (row.thread_id) {
-    const mRes = await db.query('SELECT * FROM messages WHERE thread_id=$1 ORDER BY seq ASC', [row.thread_id]);
-    threadMessages = mRes.rows;
-  }
-  return { ...taskView(row), instructions:instructions.rows, runs:runs.rows,
-    ...(agent ? {agent, thread_messages: threadMessages} : {}) };
+  return { ...taskView(row), instructions:instructions.rows, runs:runs.rows };
 }
 
 export async function findTask(db:Db,p:Principal,id:string,lock=false):Promise<TaskRow> {
@@ -153,9 +149,11 @@ async function requireLease(db:PoolClient,p:Principal,row:TaskRow,lease:LeaseInp
     && sameHash(row.lease_hash,sha256(lease.token)),409,'lease_lost','Worker no longer owns this task lease.');
   const time = await db.query<{live:boolean}>('SELECT $1::timestamptz>clock_timestamp() AS live',[row.lease_expires_at]);
   requireCondition(time.rows[0]?.live,409,'lease_lost','Task lease expired; claim again instead of reviving it.');
-  if (row.kind === 'patch' || row.kind === 'check') {
+  const isPatchLike = row.kind === 'patch' || row.kind === 'check' || (row.kind === 'turn' && row.required_capability.endsWith('.patch'));
+  if (isPatchLike) {
     requireCondition(hasPermission(p,'task:patch'),403,'forbidden','This worker no longer has task:patch permission.');
-    if (row.resource_key === null) return;
+  }
+  if (row.resource_key !== null) {
     const resource = await db.query(`SELECT 1 FROM task_resource_leases WHERE tenant_id=$1 AND scope=$2
       AND resource_key=$3 AND task_id=$4 AND generation=$5 AND expires_at>clock_timestamp() FOR UPDATE`,
     [row.tenant_id,row.scope,row.resource_key,row.id,lease.generation]);
@@ -359,7 +357,8 @@ export class TaskService {
         requireCondition(Array.isArray(entry.kinds) && entry.kinds.length>0 && entry.kinds.length<=5,400,'invalid_arguments','kinds must contain one to five supported task kinds.');
         kinds = [...new Set(entry.kinds.map(v => enumValue(v,'kinds',[...TASK_KINDS,'check','turn'] as const)))];
       }
-      requireCondition(!(kinds.includes('patch') || kinds.includes('check')) || hasPermission(p,'task:patch'),403,'forbidden','Claiming patch/check work requires the task:patch permission.');
+      const wantsPatch = kinds.includes('patch') || kinds.includes('check') || capabilities.some(c => c.endsWith('.patch'));
+      requireCondition(!wantsPatch || hasPermission(p,'task:patch'),403,'forbidden','Claiming patch/check work requires the task:patch permission.');
       return {scope,capabilities,kinds};
     });
     const seconds = leaseSeconds(input.lease_seconds);
@@ -385,9 +384,7 @@ export class TaskService {
         if (row.kind === 'check') return true;
         const exclusions = row.excluded_providers ?? [];
         const policyForTask = exclusions.length ? { ...policy, providers: policy.providers.filter(x => !exclusions.includes(x.provider)) } : policy;
-        const effectiveKind: RoutingKind = row.kind === 'turn'
-          ? (row.required_capability.endsWith('.patch') ? 'patch' : 'review')
-          : (row.kind as RoutingKind);
+        const effectiveKind: RoutingKind = effectiveRoutingKind(row);
         if (row.required_capability === AUTO_PATCH) {
           const d = decide(policyForTask, 'patch', usage);
           if (d.anyone) return servedPatch.some(s => policyAllows(policyForTask, s, 'patch') && !exclusions.includes(s));
@@ -425,11 +422,17 @@ export class TaskService {
       const candidates = await db.query<TaskRow>(`SELECT * FROM tasks WHERE tenant_id=$1 AND scope=$2 AND status='queued'
         AND (not_before IS NULL OR not_before<=clock_timestamp())
         AND attempt_count<max_attempts AND required_capability=ANY($3::text[])
-        AND (kind=ANY($4::text[]) OR (kind='turn' AND (('turn'=ANY($4::text[])) OR (NOT required_capability LIKE '%.patch' AND $4::text[] && ARRAY['research','review']::text[]) OR (required_capability LIKE '%.patch' AND 'patch'=ANY($4::text[])))))
+        AND (
+          (kind<>'turn' AND kind=ANY($4::text[]))
+          OR (kind='turn' AND (
+            (NOT required_capability LIKE '%.patch' AND ('turn'=ANY($4::text[]) OR $4::text[] && ARRAY['research','review']::text[]))
+            OR (required_capability LIKE '%.patch' AND 'patch'=ANY($4::text[]))
+          ))
+        )
         AND kind<>'approve' AND (flow_id IS NULL OR ((flow->>'ready')::boolean
           AND NOT EXISTS (SELECT 1 FROM flow_runs f WHERE f.id=tasks.flow_id AND f.cancelled_at IS NOT NULL)
           AND NOT EXISTS (SELECT 1 FROM tasks sibling WHERE sibling.flow_id=tasks.flow_id AND sibling.status IN ('blocked','failed','cancelled'))))
-        AND (kind<>'patch' OR NOT EXISTS (SELECT 1 FROM task_resource_leases r WHERE r.tenant_id=tasks.tenant_id
+        AND (kind NOT IN ('patch', 'turn') OR NOT EXISTS (SELECT 1 FROM task_resource_leases r WHERE r.tenant_id=tasks.tenant_id
           AND r.scope=tasks.scope AND r.resource_key=tasks.resource_key AND r.expires_at>clock_timestamp()))
         ORDER BY created_at,id LIMIT 100 FOR UPDATE SKIP LOCKED`,[p.tenantId,scope,capabilities,kinds]);
       for (const row of candidates.rows) {
@@ -448,7 +451,7 @@ export class TaskService {
           if (!flowProvider) continue;
         } else if (!eligible(row)) continue;
         const generation = row.lease_generation+1;
-        if (row.kind === 'patch' && row.resource_key !== null) {
+        if ((row.kind === 'patch' || row.kind === 'turn') && row.resource_key !== null) {
           const resource = await db.query(`INSERT INTO task_resource_leases
             (tenant_id,scope,resource_key,task_id,generation,expires_at)
             VALUES ($1,$2,$3,$4,$5,clock_timestamp()+$6::integer*interval '1 second')
@@ -470,8 +473,10 @@ export class TaskService {
           await db.query('UPDATE tasks SET flow=$2::jsonb WHERE id=$1',[next.id,JSON.stringify(next.flow)]);
         }
         // Use exactly the task's expiry for the resource; the two clocks must not diverge.
-        if (row.kind === 'patch') await db.query(`UPDATE task_resource_leases SET expires_at=$4
-          WHERE tenant_id=$1 AND scope=$2 AND task_id=$3 AND generation=$5`,[p.tenantId,scope,row.id,next.lease_expires_at,generation]);
+        if ((row.kind === 'patch' || row.kind === 'turn') && row.resource_key !== null) {
+          await db.query(`UPDATE task_resource_leases SET expires_at=$4
+            WHERE tenant_id=$1 AND scope=$2 AND task_id=$3 AND generation=$5`,[p.tenantId,scope,row.id,next.lease_expires_at,generation]);
+        }
         await db.query(`INSERT INTO task_runs (id,task_id,generation,worker_id,lease_hash,status)
           VALUES ($1,$2,$3,$4,$5,'running')`,[newId(),row.id,generation,p.id,hash]);
         await taskChanged(db,p,next,'claimed');
@@ -479,10 +484,27 @@ export class TaskService {
         const auto = row.required_capability === AUTO_READ || row.required_capability === AUTO_PATCH;
         const exclusions = row.excluded_providers ?? [];
         const policyForTask = exclusions.length ? { ...policy, providers: policy.providers.filter(x => !exclusions.includes(x.provider)) } : policy;
-        const d = auto ? decide(policyForTask, row.kind as RoutingKind, usage) : undefined;
-        const allowed = policyForTask.providers.filter(x => x.enabled && (x.kinds as string[]).includes(row.kind)).map(x => x.provider);
+        const effKind = effectiveRoutingKind(row);
+        const d = auto ? decide(policyForTask, effKind, usage) : undefined;
+        const allowed = policyForTask.providers.filter(x => x.enabled && (x.kinds as string[]).includes(effKind)).map(x => x.provider);
         const route = flowProvider ? {provider:flowProvider,allowed:[flowProvider]} : auto ? {provider:d?.provider ?? null,allowed} : undefined;
-        return {task:await taskWithInstructions(db,next),lease_token:token,lease_generation:generation,...(route ? {route} : {})};
+        const baseTask = await taskWithInstructions(db,next);
+        let claimTask: Record<string, unknown> = baseTask;
+        if (next.kind === 'turn' && next.agent_id && next.thread_id) {
+          const aRes = await db.query('SELECT * FROM agents WHERE id=$1', [next.agent_id]);
+          const agent = aRes.rows[0] ?? null;
+          const window = await getTurnWindow(db, next.thread_id);
+          const maxSeq = window.reduce((max, m) => Math.max(max, Number((m as any).seq ?? 0)), 0);
+          if (maxSeq > 0) {
+            const nextVersions = { ...(next.context_versions ?? {}), message_seq: maxSeq };
+            await db.query('UPDATE tasks SET context_versions=$2::jsonb WHERE id=$1', [next.id, JSON.stringify(nextVersions)]);
+            next.context_versions = nextVersions;
+            claimTask = { ...baseTask, ...(agent ? { agent } : {}), context_versions: nextVersions, thread_messages: window };
+          } else {
+            claimTask = { ...baseTask, ...(agent ? { agent } : {}), thread_messages: window };
+          }
+        }
+        return {task:claimTask,lease_token:token,lease_generation:generation,...(route ? {route} : {})};
       }
       return {task:null};
     });
@@ -501,7 +523,7 @@ export class TaskService {
         WHERE id=$1 AND lease_expires_at>clock_timestamp() RETURNING *`,[row.id,seconds]);
       requireCondition(updated.rows[0],409,'lease_lost','Lease expired before renewal.');
       const next = updated.rows[0];
-      if (next.kind === 'patch') await db.query(`UPDATE task_resource_leases SET expires_at=$4
+      if ((next.kind === 'patch' || next.kind === 'turn') && next.resource_key !== null) await db.query(`UPDATE task_resource_leases SET expires_at=$4
         WHERE tenant_id=$1 AND scope=$2 AND task_id=$3 AND generation=$5`,[p.tenantId,next.scope,next.id,next.lease_expires_at,next.lease_generation]);
       // Heartbeats do not change semantic versions or emit an event for every timer tick.
       return {task:await taskWithInstructions(db,next)};
@@ -602,7 +624,7 @@ export class TaskService {
 
           const remainingUsage = await scopeUsage(db, p.tenantId, row.scope);
           const policyForRequeue = { ...policy, providers: policy.providers.filter(pr => !nextExclusions.includes(pr.provider)) };
-          const nextDecision = decide(policyForRequeue, row.kind as RoutingKind, remainingUsage);
+          const nextDecision = decide(policyForRequeue, effectiveRoutingKind(row), remainingUsage);
           const reroutedTo = nextDecision.provider ?? 'another provider';
 
           await taskChanged(db, p, next, 'requeued');
@@ -633,7 +655,7 @@ export class TaskService {
         } else {
           const nextExclusions = Array.from(new Set([...(row.excluded_providers || []), servedProvider]));
           const { policy } = await getPolicy(db, p.tenantId);
-          const candidates = policy.providers.filter(pr => pr.enabled && (pr.kinds as string[]).includes(row.kind));
+          const candidates = policy.providers.filter(pr => pr.enabled && (pr.kinds as string[]).includes(effectiveRoutingKind(row)));
           const usageRows = await db.query<{ provider: string; ok: boolean; headroom: number; windows: any }>(
             `SELECT provider, ok, headroom::float AS headroom, windows FROM provider_usage WHERE tenant_id=$1`, [p.tenantId]
           );
@@ -671,7 +693,7 @@ export class TaskService {
 
             const remainingUsage = await scopeUsage(db, p.tenantId, row.scope);
             const policyForRequeue = { ...policy, providers: policy.providers.filter(pr => !nextExclusions.includes(pr.provider)) };
-            const nextDecision = decide(policyForRequeue, row.kind as RoutingKind, remainingUsage);
+            const nextDecision = decide(policyForRequeue, effectiveRoutingKind(row), remainingUsage);
             const reroutedTo = nextDecision.provider ?? 'another provider';
 
             await taskChanged(db, p, next, 'requeued');
@@ -711,9 +733,8 @@ export class TaskService {
 
         if (outcome === 'completed') {
           const rawAnswer = [result.answer, result.summary, result.reason].find(v => typeof v === 'string') ?? '';
-          const answer = redactSecrets(String(rawAnswer)).slice(0, 16384);
-          const seqRes = await db.query<{ next_seq: string }>('SELECT COALESCE(MAX(seq), 0) + 1 AS next_seq FROM messages WHERE thread_id=$1', [targetThreadId]);
-          const nextSeq = BigInt(seqRes.rows[0]!.next_seq);
+          const answer = clipUtf8(redactSecrets(String(rawAnswer)), 16384);
+          const nextSeq = await assignThreadSeq(db, p.tenantId, targetThreadId);
           const msgId = newId();
           await db.query(
             `INSERT INTO messages (id, tenant_id, scope, thread_id, seq, author, kind, body)
@@ -740,9 +761,8 @@ export class TaskService {
           const failureObj = result.failure as { code?: string; detail?: string } | undefined;
           const failCode = failureObj?.code || 'harness_error';
           const detail = failureObj?.detail || result.summary || failCode;
-          const noticeBody = redactSecrets(`Turn failed: ${failCode} - ${detail}`).slice(0, 16384);
-          const seqRes = await db.query<{ next_seq: string }>('SELECT COALESCE(MAX(seq), 0) + 1 AS next_seq FROM messages WHERE thread_id=$1', [targetThreadId]);
-          const nextSeq = BigInt(seqRes.rows[0]!.next_seq);
+          const noticeBody = clipUtf8(redactSecrets(`Turn failed: ${failCode} - ${detail}`), 16384);
+          const nextSeq = await assignThreadSeq(db, p.tenantId, targetThreadId);
           const msgId = newId();
           await db.query(
             `INSERT INTO messages (id, tenant_id, scope, thread_id, seq, author, kind, body)
@@ -758,6 +778,8 @@ export class TaskService {
           });
         }
 
+        const agentRow = (await db.query<AgentRow>('SELECT * FROM agents WHERE id=$1 FOR UPDATE', [row.agent_id])).rows[0];
+
         const processedSeq = (row.context_versions as any)?.message_seq ?? 0;
         const pendingHuman = (await db.query<{ seq: string }>(
           `SELECT seq FROM messages
@@ -766,7 +788,7 @@ export class TaskService {
           [row.thread_id, processedSeq]
         )).rows[0];
 
-        if (pendingHuman) {
+        if (pendingHuman && agentRow) {
           const active = (await db.query(
             `SELECT id FROM tasks
              WHERE tenant_id=$1 AND agent_id=$2 AND status IN ('queued', 'running') AND id <> $3
@@ -775,30 +797,27 @@ export class TaskService {
           )).rows[0];
 
           if (!active) {
-            const agentRow = (await db.query('SELECT * FROM agents WHERE id=$1', [row.agent_id])).rows[0];
-            if (agentRow) {
-              const nextCap = runnerCapability(agentRow.runner, agentRow.edits);
-              const followUpId = newId();
-              const envelope = {
-                deploy: false, publish: false, purchase: false, local_patch: agentRow.edits,
-                read_project: true, send_messages: false, permission_changes: false, external_side_effects: false
-              };
-              const ctxVersions = { message_seq: Number(pendingHuman.seq) };
-              const reqHash = sha256(canonicalJson({
-                kind: 'turn', scope: agentRow.scope, agent_id: agentRow.id, thread_id: row.thread_id, seq: Number(pendingHuman.seq)
-              }));
-              await db.query(
-                `INSERT INTO tasks
-                   (id, tenant_id, scope, kind, agent_id, thread_id, objective, constraints, acceptance_criteria,
-                    permission_envelope, required_capability, resource_key, context_versions, status, created_by,
-                    idempotency_key, request_hash, max_attempts)
-                 VALUES ($1, $2, $3, 'turn', $4, $5, $6, '[]'::jsonb, '[]'::jsonb, $7::jsonb, $8, $9, $10::jsonb, 'queued', $11, $12, $13, 3)`,
-                [followUpId, p.tenantId, agentRow.scope, agentRow.id, row.thread_id, `Turn for agent ${agentRow.name}`,
-                 JSON.stringify(envelope), nextCap, `agent:${agentRow.id}`, JSON.stringify(ctxVersions), row.created_by, newId(), reqHash]
-              );
-              await audit(db, p, agentRow.scope, 'task.submitted', followUpId, { kind: 'turn', agent_id: agentRow.id });
-              await event(db, p, agentRow.scope, 'task.updated', followUpId, { task_id: followUpId, status: 'queued', action: 'submitted' });
-            }
+            const nextCap = runnerCapability(agentRow.runner, agentRow.edits);
+            const followUpId = newId();
+            const envelope = {
+              deploy: false, publish: false, purchase: false, local_patch: agentRow.edits,
+              read_project: true, send_messages: false, permission_changes: false, external_side_effects: false
+            };
+            const ctxVersions = { message_seq: Number(pendingHuman.seq) };
+            const reqHash = sha256(canonicalJson({
+              kind: 'turn', scope: agentRow.scope, agent_id: agentRow.id, thread_id: row.thread_id, seq: Number(pendingHuman.seq)
+            }));
+            await db.query(
+              `INSERT INTO tasks
+                 (id, tenant_id, scope, kind, agent_id, thread_id, objective, constraints, acceptance_criteria,
+                  permission_envelope, required_capability, resource_key, context_versions, status, created_by,
+                  idempotency_key, request_hash, max_attempts)
+               VALUES ($1, $2, $3, 'turn', $4, $5, $6, '[]'::jsonb, '[]'::jsonb, $7::jsonb, $8, $9, $10::jsonb, 'queued', $11, $12, $13, 3)`,
+              [followUpId, p.tenantId, agentRow.scope, agentRow.id, row.thread_id, `Turn for agent ${agentRow.name}`,
+               JSON.stringify(envelope), nextCap, `agent:${agentRow.id}`, JSON.stringify(ctxVersions), row.created_by, newId(), reqHash]
+            );
+            await audit(db, p, agentRow.scope, 'task.submitted', followUpId, { kind: 'turn', agent_id: agentRow.id });
+            await event(db, p, agentRow.scope, 'task.updated', followUpId, { task_id: followUpId, status: 'queued', action: 'submitted' });
           }
         }
       }
