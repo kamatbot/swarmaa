@@ -447,9 +447,6 @@ export function createHttpHandler(dependencies: HttpDependencies): (request: Inc
       onlyMethod(request, response, ['GET']);
       const principal = await authenticate(request, response, false);
       requirePermission(principal, 'events:read');
-      const count = principalStreams.get(principal.id) ?? 0;
-      if (count >= 4) throw new AppError(429, 'too_many_streams', 'Too many concurrent streams for this principal.');
-      principalStreams.set(principal.id, count + 1);
 
       const afterParam = url.searchParams.get('after') ?? (oneHeader(request, 'last-event-id') || '0.0');
       const parts = /^(?:([0-9]{1,20})\.)?([0-9]{1,19})$/.exec(afterParam);
@@ -476,6 +473,10 @@ export function createHttpHandler(dependencies: HttpDependencies): (request: Inc
       if (hasPermission(principal, 'task:read')) names.push('task.updated', 'swarm.updated');
       if (hasPermission(principal, 'memory:read')) names.push('memory.changed');
 
+      // Counted only once every check has passed, so a rejected request cannot leak a slot.
+      const count = principalStreams.get(principal.id) ?? 0;
+      if (count >= 4) throw new AppError(429, 'too_many_streams', 'Too many concurrent streams for this principal.');
+      principalStreams.set(principal.id, count + 1);
       request.socket.setNoDelay(true);
       response.statusCode = 200;
       response.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
@@ -489,8 +490,10 @@ export function createHttpHandler(dependencies: HttpDependencies): (request: Inc
       const heartbeatTimer = setInterval(async () => {
         if (!active || response.destroyed) return;
         try {
-          const fresh = await authenticate(request, response, false);
-          if (!hasPermission(fresh, 'events:read')) {
+          // Re-check without spending the request rate limit: revoked tokens, lost permission or lost scopes end the stream.
+          const fresh = await dependencies.auth.authenticate(oneHeader(request, 'authorization')?.match(/^Bearer (\S+)$/iu)?.[1] ?? '');
+          if (!fresh || !hasPermission(fresh, 'events:read')
+            || (allScopes ? !(fresh.role === 'admin' && fresh.scopes.includes('*')) : !scopes.every(s => canAccessScope(fresh, s)))) {
             cleanup();
             response.end();
             return;

@@ -952,6 +952,13 @@ describe('teams phase 1 service foundation', { skip: !connectionString, concurre
     });
     assert.equal(resForbidden.status, 403);
 
+    // Rejected requests must not hold a stream slot.
+    for (let i = 0; i < 4; i++) {
+      const bad = await fetch(`${origin}/api/stream?after=x`, { headers: { Authorization: `Bearer ${user.token}` } });
+      assert.equal(bad.status, 400);
+      await bad.body?.cancel();
+    }
+
     const streams: Response[] = [];
     for (let i = 0; i < 4; i++) {
       const s = await fetch(`${origin}/api/stream?after=0.0`, {

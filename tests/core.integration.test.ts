@@ -371,6 +371,15 @@ describe('core transactional invariants', {skip:!connectionString,concurrency:fa
     await rejects({...patcher,permissions:patcher.permissions.filter(p => p !== 'task:patch')},'task_heartbeat',{...lease(next)},'forbidden');
   });
 
+  it('lets a read task with an advisory resource_key heartbeat and finish',async () => {
+    const f = await fixture();
+    await call(f.front,'task_submit',{...submission(),kind:'review',resource_key:'repo:read',required_capability:'claude.read'});
+    const active = await call(f.worker,'task_claim',{scope:'project:a',capabilities:['claude.read'],lease_seconds:30});
+    assert.equal(active.task.resource_key,'repo:read');
+    await call(f.worker,'task_heartbeat',lease(active));
+    await call(f.worker,'task_finish',{...lease(active),outcome:'completed',result:{}});
+  });
+
   it('hashes artifacts, validates provenance, and makes terminal delivery idempotent across continuation',async () => {
     const f = await fixture();
     await call(f.front,'task_submit',submission());

@@ -245,6 +245,8 @@ export class TeamService {
     const expected = integer(input.expected_version, 'expected_version', 1, 2147483647);
 
     return transaction(this.pool, async db => {
+      // Lock order is thread, then agent, as in thread_post and task_finish, so a runner notice cannot deadlock a post.
+      await db.query(`SELECT 1 FROM threads WHERE id=(SELECT main_thread_id FROM agents WHERE id=$1 AND tenant_id=$2) FOR UPDATE`, [agentId, p.tenantId]);
       const existing = (await db.query<AgentRow>('SELECT * FROM agents WHERE id=$1 AND tenant_id=$2 FOR UPDATE', [agentId, p.tenantId])).rows[0];
       requireFound(existing, 'Agent');
       requireScope(p, existing.scope);

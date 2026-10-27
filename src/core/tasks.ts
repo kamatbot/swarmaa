@@ -153,7 +153,8 @@ async function requireLease(db:PoolClient,p:Principal,row:TaskRow,lease:LeaseInp
   if (isPatchLike) {
     requireCondition(hasPermission(p,'task:patch'),403,'forbidden','This worker no longer has task:patch permission.');
   }
-  if (row.resource_key !== null) {
+  // Only these kinds take a resource lease at claim; a read task's resource_key is advisory.
+  if (row.resource_key !== null && (row.kind === 'patch' || row.kind === 'check' || row.kind === 'turn')) {
     const resource = await db.query(`SELECT 1 FROM task_resource_leases WHERE tenant_id=$1 AND scope=$2
       AND resource_key=$3 AND task_id=$4 AND generation=$5 AND expires_at>clock_timestamp() FOR UPDATE`,
     [row.tenant_id,row.scope,row.resource_key,row.id,lease.generation]);
