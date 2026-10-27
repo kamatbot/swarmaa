@@ -449,12 +449,18 @@ export function createHttpHandler(dependencies: HttpDependencies): (request: Inc
       requirePermission(principal, 'events:read');
 
       const afterParam = url.searchParams.get('after') ?? (oneHeader(request, 'last-event-id') || '0.0');
-      const parts = /^(?:([0-9]{1,20})\.)?([0-9]{1,19})$/.exec(afterParam);
-      requireCondition(parts !== null && BigInt(parts[2]!) <= 9223372036854775807n &&
-        (parts[1] === undefined || BigInt(parts[1]) <= 18446744073709551615n), 400, 'invalid_arguments', 'after must be an xid.seq decimal cursor or a legacy nonnegative bigint sequence.');
-      let legacy = parts[1] === undefined;
-      let curXid = legacy ? '0' : parts[1]!;
-      let curSeq = parts[2]!;
+      const isNow = afterParam === 'now';
+      let legacy = false;
+      let curXid = '0';
+      let curSeq = '0';
+      if (!isNow) {
+        const parts = /^(?:([0-9]{1,20})\.)?([0-9]{1,19})$/.exec(afterParam);
+        requireCondition(parts !== null && BigInt(parts[2]!) <= 9223372036854775807n &&
+          (parts[1] === undefined || BigInt(parts[1]) <= 18446744073709551615n), 400, 'invalid_arguments', 'after must be an xid.seq decimal cursor, legacy nonnegative bigint sequence, or now.');
+        legacy = parts[1] === undefined;
+        curXid = legacy ? '0' : parts[1]!;
+        curSeq = parts[2]!;
+      }
 
       const scopeParam = url.searchParams.get('scopes') ?? url.searchParams.get('scope');
       let scopes: string[];
@@ -468,7 +474,7 @@ export function createHttpHandler(dependencies: HttpDependencies): (request: Inc
       }
 
       const names: string[] = [];
-      if (hasPermission(principal, 'thread:read')) names.push('message.created', 'message.updated', 'thread.read');
+      if (hasPermission(principal, 'thread:read')) names.push('message.created', 'message.updated', 'thread.read', 'question.created', 'question.answered');
       if (hasPermission(principal, 'agent:read')) names.push('agent.updated');
       if (hasPermission(principal, 'task:read')) names.push('task.updated', 'swarm.updated');
       if (hasPermission(principal, 'memory:read')) names.push('memory.changed');
@@ -484,6 +490,25 @@ export function createHttpHandler(dependencies: HttpDependencies): (request: Inc
       response.setHeader('Connection', 'keep-alive');
       response.setHeader('X-Accel-Buffering', 'no');
       response.flushHeaders?.();
+
+      if (isNow) {
+        const latest = await dependencies.pool.query<{ cursor: string; xid_str: string; seq: string }>(
+          `SELECT xid::text || '.' || seq::text AS cursor, xid::text AS xid_str, seq FROM events ORDER BY xid DESC, seq DESC LIMIT 1`
+        );
+        let cursorStr = '0.0';
+        if (latest.rows[0]) {
+          curXid = latest.rows[0].xid_str;
+          curSeq = latest.rows[0].seq;
+          cursorStr = latest.rows[0].cursor;
+        } else {
+          const xminRes = await dependencies.pool.query<{ xmin: string }>('SELECT pg_snapshot_xmin(pg_current_snapshot())::text AS xmin');
+          const xmin = xminRes.rows[0]?.xmin ?? '0';
+          curXid = xmin;
+          curSeq = '0';
+          cursorStr = `${xmin}.0`;
+        }
+        response.write(`id: ${cursorStr}\nevent: cursor\ndata: ${JSON.stringify({ cursor: cursorStr })}\n\n`);
+      }
 
       let active = true;
       let pollTimer: NodeJS.Timeout | undefined;

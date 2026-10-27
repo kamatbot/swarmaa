@@ -8,6 +8,7 @@ import { integer, object, optionalString, scopeName, string, uuid } from '../val
 import { booleanOption } from './memory.js';
 import { assertKnownScope, audit, canonicalJson, event, newId, noExtraKeys, requireFound, scopeLock, scopeSql, sha256, type Db } from './shared.js';
 import { runnerCapability, type RunnerConfig } from '../bridge/adapters.js';
+import { sectionView, type SectionRow } from './swarms.js';
 
 export function clipUtf8(value: string, maxBytes: number): string {
   const buf = Buffer.from(value.replaceAll('\0', '\uFFFD'), 'utf8');
@@ -84,6 +85,7 @@ export interface ThreadRow {
   agent_id: string | null;
   kind: 'agent_main' | 'agent_side' | 'channel';
   title: string | null;
+  lead_agent_id?: string | null;
   archived: boolean;
   version: number;
   created_at: Date;
@@ -148,13 +150,20 @@ function agentView(row: AgentRow, status = 'idle', unreadCount = 0): Record<stri
   };
 }
 
-function threadView(row: ThreadRow, unreadCount = 0): Record<string, unknown> {
+export function threadView(
+  row: ThreadRow,
+  unreadCount = 0,
+  members?: string[],
+  leadAgentId?: string | null
+): Record<string, unknown> {
   return {
     id: row.id,
     scope: row.scope,
     agent_id: row.agent_id,
     kind: row.kind,
     title: row.title,
+    lead_agent_id: leadAgentId !== undefined ? leadAgentId : (row.lead_agent_id ?? null),
+    ...(members !== undefined ? { members } : {}),
     archived: row.archived,
     version: row.version,
     unread_count: unreadCount,
@@ -360,8 +369,14 @@ export class TeamService {
       })
     );
 
+    const sections = (await this.pool.query<SectionRow>(
+      'SELECT * FROM sections WHERE tenant_id=$1 AND principal_id=$2 ORDER BY order_index ASC, created_at ASC',
+      [p.tenantId, p.id]
+    )).rows;
+
     return {
       agents,
+      sections: sections.map(sectionView),
       has_more: hasMore,
       next_cursor: hasMore ? paged.at(-1)?.id ?? null : null
     };
@@ -472,6 +487,71 @@ export class TeamService {
         }
       }
 
+      if (thread.kind === 'channel') {
+        const members = (await db.query<{ agent_id: string; name: string }>(
+          `SELECT m.agent_id, a.name
+           FROM thread_members m
+           JOIN agents a ON a.id = m.agent_id
+           WHERE m.thread_id=$1 AND NOT a.archived`,
+          [threadId]
+        )).rows;
+
+        const mentionRegex = /@([a-zA-Z0-9_-]+)/g;
+        const mentionedNames = new Set<string>();
+        let match: RegExpExecArray | null;
+        while ((match = mentionRegex.exec(body)) !== null) {
+          if (match[1]) mentionedNames.add(match[1].toLowerCase());
+        }
+
+        const targetAgents: string[] = [];
+        if (mentionedNames.size > 0) {
+          for (const m of members) {
+            if (mentionedNames.has(m.name.toLowerCase())) {
+              targetAgents.push(m.agent_id);
+            }
+          }
+        } else if (thread.lead_agent_id) {
+          targetAgents.push(thread.lead_agent_id);
+        }
+
+        for (const agentId of targetAgents) {
+          const activeTurn = (await db.query(
+            "SELECT id FROM tasks WHERE tenant_id=$1 AND agent_id=$2 AND status IN ('queued', 'running') LIMIT 1",
+            [p.tenantId, agentId]
+          )).rows[0];
+
+          if (!activeTurn) {
+            const agent = (await db.query<AgentRow>('SELECT * FROM agents WHERE id=$1 FOR UPDATE', [agentId])).rows[0];
+            if (!agent) continue;
+
+            const requiredCap = runnerCapability(agent.runner, agent.edits);
+            const taskId = newId();
+            const turnObjective = `Turn for agent ${agent.name} in #${thread.title ?? 'channel'}`;
+            const envelope = {
+              deploy: false, publish: false, purchase: false, local_patch: agent.edits,
+              read_project: true, send_messages: false, permission_changes: false, external_side_effects: false
+            };
+            const contextVersions = { message_seq: Number(nextSeq) };
+            const reqHash = sha256(canonicalJson({
+              kind: 'turn', scope: agent.scope, agent_id: agent.id, thread_id: threadId, seq: Number(nextSeq)
+            }));
+
+            await db.query(
+              `INSERT INTO tasks
+                 (id, tenant_id, scope, kind, agent_id, thread_id, objective, constraints, acceptance_criteria,
+                  permission_envelope, required_capability, resource_key, context_versions, status, created_by,
+                  idempotency_key, request_hash, max_attempts)
+               VALUES ($1, $2, $3, 'turn', $4, $5, $6, '[]'::jsonb, '[]'::jsonb, $7::jsonb, $8, $9, $10::jsonb, 'queued', $11, $12, $13, 3)`,
+              [taskId, p.tenantId, agent.scope, agent.id, threadId, turnObjective, JSON.stringify(envelope),
+               requiredCap, `agent:${agent.id}`, JSON.stringify(contextVersions), p.id, newId(), reqHash]
+            );
+
+            await audit(db, p, agent.scope, 'task.submitted', taskId, { kind: 'turn', agent_id: agent.id });
+            await event(db, p, agent.scope, 'task.updated', taskId, { task_id: taskId, status: 'queued', action: 'submitted' });
+          }
+        }
+      }
+
       return { message: messageView(inserted), replayed: false };
     });
   }
@@ -563,8 +643,9 @@ export class TeamService {
     const after = input.after !== undefined ? uuid(input.after, 'after') : null;
     const limit = input.limit !== undefined ? integer(input.limit, 'limit', 1, 100) : 50;
 
-    const rows = (await this.pool.query<ThreadRow & { unread_count: number }>(
+    const rows = (await this.pool.query<ThreadRow & { unread_count: number; members?: string[] }>(
       `SELECT t.*,
+         (SELECT array_agg(m.agent_id::text) FROM thread_members m WHERE m.thread_id = t.id) AS members,
          COALESCE((
            SELECT count(*)::int FROM messages m
            WHERE m.thread_id = t.id
@@ -589,10 +670,138 @@ export class TeamService {
     const paged = rows.slice(0, limit);
 
     return {
-      threads: paged.map(r => threadView(r, Number(r.unread_count))),
+      threads: paged.map(r => threadView(r, Number(r.unread_count), r.members ?? undefined, r.lead_agent_id)),
       has_more: hasMore,
       next_cursor: hasMore ? paged.at(-1)?.id ?? null : null
     };
+  }
+
+  async channelCreate(p: Principal, input: Record<string, unknown>): Promise<unknown> {
+    noExtraKeys(input, ['name', 'scope', 'members', 'lead_agent_id']);
+    requirePermission(p, 'agent:manage');
+    const name = string(input.name, 'name', 64);
+    const scope = scopeName(input.scope);
+    assertKnownScope(p, scope);
+    requireScope(p, scope);
+    if (!Array.isArray(input.members)) throw new AppError(400, 'invalid_arguments', 'members must be an array of agent ids.');
+    const memberIds = input.members.map(m => uuid(m, 'member'));
+    const leadAgentId = input.lead_agent_id !== undefined && input.lead_agent_id !== null ? uuid(input.lead_agent_id, 'lead_agent_id') : null;
+
+    return transaction(this.pool, async db => {
+      for (const mId of memberIds) {
+        const a = (await db.query('SELECT id FROM agents WHERE id=$1 AND tenant_id=$2 AND scope=$3 AND NOT archived', [mId, p.tenantId, scope])).rows[0];
+        requireCondition(Boolean(a), 400, 'agent_not_found', `Member agent ${mId} not found or archived in scope ${scope}`);
+      }
+      if (leadAgentId) {
+        const lead = (await db.query('SELECT id FROM agents WHERE id=$1 AND tenant_id=$2 AND scope=$3 AND NOT archived', [leadAgentId, p.tenantId, scope])).rows[0];
+        requireCondition(Boolean(lead), 400, 'agent_not_found', `Lead agent ${leadAgentId} not found or archived in scope ${scope}`);
+      }
+
+      const threadId = newId();
+      await db.query(
+        `INSERT INTO threads (id, tenant_id, scope, agent_id, kind, title, lead_agent_id)
+         VALUES ($1, $2, $3, NULL, 'channel', $4, $5)`,
+        [threadId, p.tenantId, scope, name, leadAgentId]
+      );
+
+      for (const mId of memberIds) {
+        await db.query(
+          `INSERT INTO thread_members (tenant_id, thread_id, agent_id) VALUES ($1, $2, $3)`,
+          [p.tenantId, threadId, mId]
+        );
+      }
+
+      const thread = (await db.query<ThreadRow>('SELECT * FROM threads WHERE id=$1', [threadId])).rows[0]!;
+      await audit(db, p, scope, 'channel.create', threadId, { name, members: memberIds });
+
+      return { channel: threadView(thread, 0, memberIds, leadAgentId) };
+    });
+  }
+
+  async channelUpdate(p: Principal, input: Record<string, unknown>): Promise<unknown> {
+    noExtraKeys(input, ['channel_id', 'expected_version', 'name', 'members', 'lead_agent_id']);
+    requirePermission(p, 'agent:manage');
+    const channelId = uuid(input.channel_id, 'channel_id');
+    const expected = integer(input.expected_version, 'expected_version', 1, 2147483647);
+
+    return transaction(this.pool, async db => {
+      const thread = (await db.query<ThreadRow>('SELECT * FROM threads WHERE id=$1 AND tenant_id=$2 FOR UPDATE', [channelId, p.tenantId])).rows[0];
+      requireFound(thread, 'Channel');
+      requireCondition(thread.kind === 'channel', 400, 'invalid_arguments', 'Target thread is not a channel.');
+      requireScope(p, thread.scope);
+      requireCondition(thread.version === expected, 409, 'version_conflict', 'Channel has changed; reload before updating.');
+
+      const nextTitle = input.name !== undefined ? string(input.name, 'name', 64) : thread.title;
+      let nextLead = thread.lead_agent_id;
+      if (input.lead_agent_id !== undefined) {
+        nextLead = input.lead_agent_id ? uuid(input.lead_agent_id, 'lead_agent_id') : null;
+        if (nextLead) {
+          const lead = (await db.query('SELECT id FROM agents WHERE id=$1 AND tenant_id=$2 AND scope=$3 AND NOT archived', [nextLead, p.tenantId, thread.scope])).rows[0];
+          requireCondition(Boolean(lead), 400, 'agent_not_found', `Lead agent ${nextLead} not found or archived in scope ${thread.scope}`);
+        }
+      }
+
+      let memberIds: string[];
+      if (input.members !== undefined) {
+        if (!Array.isArray(input.members)) throw new AppError(400, 'invalid_arguments', 'members must be an array.');
+        memberIds = input.members.map(m => uuid(m, 'member'));
+        for (const mId of memberIds) {
+          const a = (await db.query('SELECT id FROM agents WHERE id=$1 AND tenant_id=$2 AND scope=$3 AND NOT archived', [mId, p.tenantId, thread.scope])).rows[0];
+          requireCondition(Boolean(a), 400, 'agent_not_found', `Member agent ${mId} not found or archived in scope ${thread.scope}`);
+        }
+        await db.query('DELETE FROM thread_members WHERE thread_id=$1', [channelId]);
+        for (const mId of memberIds) {
+          await db.query('INSERT INTO thread_members (tenant_id, thread_id, agent_id) VALUES ($1, $2, $3)', [p.tenantId, channelId, mId]);
+        }
+      } else {
+        const existingMembers = await db.query<{ agent_id: string }>('SELECT agent_id FROM thread_members WHERE thread_id=$1', [channelId]);
+        memberIds = existingMembers.rows.map(r => r.agent_id);
+      }
+
+      const updated = (await db.query<ThreadRow>(
+        `UPDATE threads SET title=$1, lead_agent_id=$2, version=version+1, updated_at=clock_timestamp()
+         WHERE id=$3 RETURNING *`,
+        [nextTitle, nextLead, channelId]
+      )).rows[0]!;
+
+      await audit(db, p, updated.scope, 'channel.update', channelId, { version: updated.version });
+      return { channel: threadView(updated, 0, memberIds, nextLead) };
+    });
+  }
+
+  async sectionSet(p: Principal, input: Record<string, unknown>): Promise<unknown> {
+    noExtraKeys(input, ['sections']);
+    requirePermission(p, 'thread:read');
+    if (!Array.isArray(input.sections)) throw new AppError(400, 'invalid_arguments', 'sections must be an array.');
+    const rawSections = input.sections as Array<Record<string, unknown>>;
+    return transaction(this.pool, async db => {
+      await db.query('DELETE FROM sections WHERE tenant_id=$1 AND principal_id=$2', [p.tenantId, p.id]);
+      const inserted: SectionRow[] = [];
+      for (let i = 0; i < rawSections.length; i++) {
+        const s = object(rawSections[i]);
+        const secId = s.id !== undefined ? uuid(s.id, `sections[${i}].id`) : newId();
+        const name = string(s.name, `sections[${i}].name`, 100);
+        const items = Array.isArray(s.items) ? s.items.map(it => String(it)) : [];
+        const collapsed = s.collapsed !== undefined ? booleanOption(s.collapsed, 'collapsed') : false;
+        const row = (await db.query<SectionRow>(
+          `INSERT INTO sections (id, tenant_id, principal_id, name, order_index, items, collapsed)
+           VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7) RETURNING *`,
+          [secId, p.tenantId, p.id, name, i, JSON.stringify(items), collapsed]
+        )).rows[0]!;
+        inserted.push(row);
+      }
+      return { sections: inserted.map(sectionView) };
+    });
+  }
+
+  async sectionList(p: Principal, input: Record<string, unknown>): Promise<unknown> {
+    noExtraKeys(input, []);
+    requirePermission(p, 'thread:read');
+    const rows = (await this.pool.query<SectionRow>(
+      'SELECT * FROM sections WHERE tenant_id=$1 AND principal_id=$2 ORDER BY order_index ASC, created_at ASC',
+      [p.tenantId, p.id]
+    )).rows;
+    return { sections: rows.map(sectionView) };
   }
 
   private async computeAgentStatus(db: Db, agent: AgentRow): Promise<string> {

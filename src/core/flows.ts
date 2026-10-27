@@ -113,7 +113,8 @@ export class FlowService {
       const existing = (await db.query<FlowRun>('SELECT * FROM flow_runs WHERE tenant_id=$1 AND created_by=$2 AND idempotency_key=$3',[p.tenantId,p.id,key])).rows[0];
       if (existing) {
         requireCondition(existing.request_hash===hash,409,'idempotency_conflict','This key was used for another flow start.');
-        return {flow:view(existing,await tasksFor(db,existing.id)),replayed:true,idempotency_key:key};
+        const existingSwarm = (await db.query<{ id: string }>('SELECT id FROM swarms WHERE flow_id=$1', [existing.id])).rows[0];
+        return {flow:view(existing,await tasksFor(db,existing.id)),swarm_id:existingSwarm?.id ?? null,replayed:true,idempotency_key:key};
       }
       const id = typeof requested==='string' ? requested : requested.id;
       const saved = (await db.query<{definition:FlowDefinition}>('SELECT definition FROM flow_definitions WHERE tenant_id=$1 AND id=$2',[p.tenantId,id])).rows[0];
@@ -141,24 +142,60 @@ export class FlowService {
       requireCondition(canonicalJson(registered)===canonicalJson(definition),409,'flow_definition_conflict','Definition ID already exists with different content.');
       const run = (await db.query<FlowRun>(`INSERT INTO flow_runs(id,tenant_id,scope,definition,inputs,created_by,owner_id,idempotency_key,request_hash)
         VALUES($1,$2,$3,$4::jsonb,$5::jsonb,$6,$7,$8,$9) RETURNING *`,[newId(),p.tenantId,scope,JSON.stringify(definition),JSON.stringify(inputs),p.id,ownerId,key,hash])).rows[0]!;
-      let first!:TaskRow;
+
+      const flowThreadId = newId();
+      await db.query(
+        `INSERT INTO threads (id, tenant_id, scope, kind, title)
+         VALUES ($1, $2, $3, 'channel', $4)`,
+        [flowThreadId, p.tenantId, scope, `Flow: ${definition.title}`]
+      );
+
+      const swarmId = newId();
+      await db.query(
+        `INSERT INTO swarms (id, tenant_id, scope, title, goal, thread_id, status, flow_id, created_by, idempotency_key)
+         VALUES ($1, $2, $3, $4, $5, $6, 'running', $7, $8, $9)`,
+        [swarmId, p.tenantId, scope, definition.title, definition.title, flowThreadId, run.id, p.id, key]
+      );
+
+      const defaultAgent = (await db.query<{ id: string }>(
+        'SELECT id FROM agents WHERE tenant_id=$1 AND scope=$2 AND NOT archived LIMIT 1',
+        [p.tenantId, scope]
+      )).rows[0];
+
+      const stepKeyToId = new Map<string, string>();
       for (const step of definition.steps) {
+        stepKeyToId.set(step.id, newId());
+      }
+
+      let first!:TaskRow;
+      for (let i = 0; i < definition.steps.length; i++) {
+        const step = definition.steps[i]!;
+        const stepId = stepKeyToId.get(step.id)!;
+        const depIds = (step.needs ?? []).map(d => stepKeyToId.get(d) ?? d);
         const flow:FlowTask = {step_id:step.id,needs:step.needs,ready:false,commit:null,diff_base:null,provider:null,
           ...(step.pin ? {pin:step.pin} : {}),...(step.check ? {check:step.check} : {}),
           ...(typeof step.capability==='object' ? {different_provider_than:step.capability.different_provider_than} : {})};
         const capability = typeof step.capability==='string' ? step.capability : step.kind==='patch' ? 'auto.patch' : 'auto.read';
         const envelope = {read_project:true,local_patch:step.kind==='patch' || step.kind==='check',external_side_effects:false,
           deploy:false,publish:false,send_messages:false,purchase:false,permission_changes:false};
+        const taskId = newId();
+
         const task = (await db.query<TaskRow>(`INSERT INTO tasks(id,tenant_id,scope,kind,objective,permission_envelope,required_capability,status,
-          created_by,idempotency_key,request_hash,flow_id,flow,max_attempts)
-          VALUES($1,$2,$3,$4,$5,$6::jsonb,$7,'queued',$8,$9,$10,$11,$12::jsonb,3) RETURNING *`,
-        [newId(),p.tenantId,scope,step.kind,flowObjective(step,inputs,new Map(),step.kind==='approve' ? `Flow ${definition.title} needs your approval: ` : ''),JSON.stringify(envelope),capability,p.id,`flow:${run.id}:${step.id}`,hash,run.id,JSON.stringify(flow)])).rows[0]!;
+          created_by,idempotency_key,request_hash,flow_id,flow,max_attempts,initiator_kind,initiator_id,swarm_step_id)
+          VALUES($1,$2,$3,$4,$5,$6::jsonb,$7,'queued',$8,$9,$10,$11,$12::jsonb,3,'flow',$13,$14) RETURNING *`,
+        [taskId,p.tenantId,scope,step.kind,flowObjective(step,inputs,new Map(),step.kind==='approve' ? `Flow ${definition.title} needs your approval: ` : ''),JSON.stringify(envelope),capability,p.id,`flow:${run.id}:${step.id}`,hash,run.id,JSON.stringify(flow),run.id,stepId])).rows[0]!;
+
+        await db.query(
+          `INSERT INTO swarm_steps (id, tenant_id, swarm_id, step_key, title, assignee_agent_id, needs, order_index, status, task_id)
+           VALUES ($1, $2, $3, $4, $5, $6, $7::uuid[], $8, 'pending', $9)`,
+          [stepId, p.tenantId, swarmId, step.id, step.id, defaultAgent?.id ?? null, depIds, i, taskId]
+        );
         first ??= task;
         await taskChanged(db,p,task,'submitted',false);
       }
       await advanceFlow(db,p,first);
       await audit(db,p,scope,'flow.started',run.id,{definition:id});
-      return {flow:view(run,await tasksFor(db,run.id)),replayed:false,idempotency_key:key};
+      return {flow:view(run,await tasksFor(db,run.id)),swarm_id:swarmId,replayed:false,idempotency_key:key};
     });
   }
   async get(p:Principal,input:Record<string,unknown>):Promise<unknown> {
