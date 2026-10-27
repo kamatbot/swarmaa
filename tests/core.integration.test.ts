@@ -22,7 +22,7 @@ describe('core transactional invariants', {skip:!connectionString,concurrency:fa
     control = new pg.Pool({connectionString,max:2});
     await control.query(`CREATE SCHEMA "${schema}"`);
     pool = new pg.Pool({connectionString,max:8,options:`-c search_path=${schema},public`});
-    for (const file of ['001_identity.sql','002_core.sql','005_swarm.sql','006_sessions.sql','008_lessons.sql','010_routing_policy.sql','011_patch_routing.sql','012_session_task.sql','013_worker_slots.sql','016_worker_slots_drain.sql','019_inbox.sql','020_inbox_receipts.sql','021_flows.sql','018_events_xid.sql','023_failure_routing.sql']) {
+    for (const file of ['001_identity.sql','002_core.sql','005_swarm.sql','006_sessions.sql','008_lessons.sql','010_routing_policy.sql','011_patch_routing.sql','012_session_task.sql','013_worker_slots.sql','016_worker_slots_drain.sql','019_inbox.sql','020_inbox_receipts.sql','021_flows.sql','018_events_xid.sql','023_failure_routing.sql','024_teams.sql']) {
       await pool.query(await readFile(new URL(`../db/migrations/${file}`,import.meta.url),'utf8'));
     }
     core = new CoreService(pool);
@@ -369,6 +369,15 @@ describe('core transactional invariants', {skip:!connectionString,concurrency:fa
     const next = await call(patcher,'task_claim',args);
     assert.ok(next.task && next.task.id !== active.task.id);
     await rejects({...patcher,permissions:patcher.permissions.filter(p => p !== 'task:patch')},'task_heartbeat',{...lease(next)},'forbidden');
+  });
+
+  it('lets a read task with an advisory resource_key heartbeat and finish',async () => {
+    const f = await fixture();
+    await call(f.front,'task_submit',{...submission(),kind:'review',resource_key:'repo:read',required_capability:'claude.read'});
+    const active = await call(f.worker,'task_claim',{scope:'project:a',capabilities:['claude.read'],lease_seconds:30});
+    assert.equal(active.task.resource_key,'repo:read');
+    await call(f.worker,'task_heartbeat',lease(active));
+    await call(f.worker,'task_finish',{...lease(active),outcome:'completed',result:{}});
   });
 
   it('hashes artifacts, validates provenance, and makes terminal delivery idempotent across continuation',async () => {

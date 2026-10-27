@@ -19,7 +19,7 @@ export function requireScope(principal: Principal, scope: string): void {
 
 export const ROLE_PERMISSIONS: Record<Principal['role'], Permission[]> = {
   admin: ['admin'],
-  frontend: ['memory:read', 'memory:write', 'task:read', 'task:submit', 'task:cancel', 'artifact:read', 'events:read'],
+  frontend: ['memory:read', 'memory:write', 'task:read', 'task:submit', 'task:cancel', 'artifact:read', 'events:read', 'agent:manage', 'agent:read', 'thread:read', 'thread:write'],
   worker: ['memory:read', 'memory:write', 'task:read', 'task:claim', 'task:work', 'artifact:read', 'artifact:write', 'events:read'],
 };
 

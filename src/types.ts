@@ -4,7 +4,7 @@ import type { Pool } from 'pg';
 export const ARTIFACT_MAX_BYTES = 262144;
 
 export type Role = 'admin' | 'frontend' | 'worker';
-export type Permission = 'admin' | 'memory:read' | 'memory:write' | 'memory:moderate' | 'task:read' | 'task:submit' | 'task:claim' | 'task:work' | 'task:patch' | 'task:cancel' | 'artifact:read' | 'artifact:write' | 'events:read' | 'lesson:review' | 'routing:manage';
+export type Permission = 'admin' | 'memory:read' | 'memory:write' | 'memory:moderate' | 'task:read' | 'task:submit' | 'task:claim' | 'task:work' | 'task:patch' | 'task:cancel' | 'artifact:read' | 'artifact:write' | 'events:read' | 'lesson:review' | 'routing:manage' | 'agent:manage' | 'agent:read' | 'thread:read' | 'thread:write';
 
 export interface Principal {
   id: string;
@@ -64,6 +64,8 @@ export interface HttpDependencies {
   auth: AuthBackend;
   events?: EventBackend;
   config: ServerConfig;
+  streamHeartbeatMs?: number;
+  streamMaxDurationMs?: number;
 }
 
 export interface StoredEvent {

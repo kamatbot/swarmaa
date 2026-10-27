@@ -26,7 +26,7 @@ describe('failure codes and routing', { skip: !connectionString, concurrency: fa
       '008_lessons.sql', '010_routing_policy.sql', '011_patch_routing.sql',
       '012_session_task.sql', '013_worker_slots.sql', '016_worker_slots_drain.sql',
       '019_inbox.sql', '020_inbox_receipts.sql', '021_flows.sql', '018_events_xid.sql',
-      '023_failure_routing.sql'
+      '023_failure_routing.sql', '024_teams.sql'
     ]) {
       await pool.query(await readFile(new URL(`../db/migrations/${file}`, import.meta.url), 'utf8'));
     }

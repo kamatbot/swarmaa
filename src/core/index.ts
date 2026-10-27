@@ -13,6 +13,7 @@ import { SessionService } from './sessions.js';
 import { getPolicy, setPolicy } from './routing.js';
 import { SwarmService } from './swarm.js';
 import { findTask, TaskService, taskWithInstructions, type TaskRow } from './tasks.js';
+import { TeamService } from './teams.js';
 import { TOOL_PERMISSIONS, TOOLS } from './tools.js';
 
 const workerTools = new Set(['usage_report','task_claim','task_heartbeat','task_checkpoint','task_finish','artifact_put']);
@@ -23,6 +24,7 @@ const responseReadPermissions:Partial<Record<string,Permission>> = {
   task_submit:'task:read',task_continue:'task:read',task_claim:'task:read',task_heartbeat:'task:read',
   task_checkpoint:'task:read',task_finish:'task:read',task_cancel:'task:read',
   lesson_propose:'memory:read',lesson_review:'memory:read',
+  agent_create:'agent:read',agent_update:'agent:read',agent_archive:'agent:read',thread_post:'thread:read',
 };
 
 /** Transport-independent authorization and one implementation shared by MCP, REST and stdio proxy. */
@@ -34,6 +36,7 @@ export class CoreService implements ToolBackend {
   private readonly lessons:LessonService;
   private readonly inbox:InboxService;
   private readonly flows:FlowService;
+  private readonly teams:TeamService;
 
   constructor(private readonly pool:Pool) {
     this.memories = new MemoryService(pool);
@@ -43,6 +46,7 @@ export class CoreService implements ToolBackend {
     this.lessons = new LessonService(pool);
     this.inbox = new InboxService(pool);
     this.flows = new FlowService(pool);
+    this.teams = new TeamService(pool);
   }
 
   listTools(principal:Principal):ToolDefinition[] {
@@ -101,6 +105,15 @@ export class CoreService implements ToolBackend {
       case 'session_list': return this.sessions.list(principal,input);
       case 'session_get': return this.sessions.get(principal,input);
       case 'usage_report': return this.swarm.report(principal,input);
+      case 'agent_create': return this.teams.agentCreate(principal,input);
+      case 'agent_update': return this.teams.agentUpdate(principal,input);
+      case 'agent_get': return this.teams.agentGet(principal,input);
+      case 'agent_list': return this.teams.agentList(principal,input);
+      case 'agent_archive': return this.teams.agentArchive(principal,input);
+      case 'thread_post': return this.teams.threadPost(principal,input);
+      case 'thread_read': return this.teams.threadRead(principal,input);
+      case 'thread_mark_read': return this.teams.threadMarkRead(principal,input);
+      case 'thread_list': return this.teams.threadList(principal,input);
       default: throw new AppError(404,'unknown_tool','Unknown tool name.');
     }
   }
@@ -142,6 +155,8 @@ export class CoreService implements ToolBackend {
     const names:string[] = [];
     if (hasPermission(p,'memory:read')) names.push('memory.changed');
     if (hasPermission(p,'task:read')) names.push('task.updated');
+    if (hasPermission(p,'thread:read')) names.push('message.created','message.updated','thread.read');
+    if (hasPermission(p,'agent:read')) names.push('agent.updated');
     if (!names.length) return {scope,events:[],next_cursor:legacy ? '0.0' : after,has_more:false};
     return transaction(this.pool,async db => {
       // Capture the legacy upgrade fence before reading: an empty page can resume at xmin.0 safely.

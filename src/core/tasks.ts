@@ -11,13 +11,23 @@ import { enumValue, integer, object, optionalString, scopeName, string, strings,
 import { assertKnownScope, audit, canonicalJson, event, jsonObject, newId, noExtraKeys, requireFound, scopeLock, scopeSql, sha256, uuidArray, type Db } from './shared.js';
 import { decide, decideAll, getPolicy, policyAllows, scopeUsage, type RoutingKind } from './routing.js';
 import { AUTO_PATCH, AUTO_READ, touchWorker, workerProviders } from './swarm.js';
+import { runnerCapability } from '../bridge/adapters.js';
+import { redactSecrets } from '../safety/redact.js';
+import { clipUtf8, assignThreadSeq, getTurnWindow, type AgentRow } from './teams.js';
+
+function effectiveRoutingKind(row: { kind: string; required_capability: string }): RoutingKind {
+  return row.kind === 'turn'
+    ? (row.required_capability.endsWith('.patch') ? 'patch' : 'review')
+    : (row.kind as RoutingKind);
+}
 
 export const TASK_KINDS = ['research','review','patch'] as const;
 export const TASK_STATUSES = ['queued','running','blocked','completed','failed','cancelled'] as const;
-type TaskKind = typeof TASK_KINDS[number] | 'check' | 'approve';
+type TaskKind = typeof TASK_KINDS[number] | 'check' | 'approve' | 'turn';
 export interface TaskRow {
   id:string; tenant_id:string; scope:string; kind:TaskKind; objective:string;
   flow_id:string|null; flow:FlowTask|null;
+  agent_id?:string|null; thread_id?:string|null; swarm_step_id?:string|null;
   constraints:string[]; acceptance_criteria:string[]; permission_envelope:Record<string,unknown>;
   required_capability:string; resource_key:string|null; base_ref:string|null; context_refs:string[]; context_versions:Record<string,number>;
   status:typeof TASK_STATUSES[number]; version:number; created_by:string; idempotency_key:string; request_hash:string;
@@ -74,7 +84,10 @@ export function taskView(row:TaskRow):Record<string,unknown> {
     not_before: date(row.not_before ?? null),
     created_at:date(row.created_at),
     updated_at:date(row.updated_at), completed_at:date(row.completed_at),
-    ...(row.flow_id ? {flow_id:row.flow_id,flow:row.flow} : {}) };
+    ...(row.flow_id ? {flow_id:row.flow_id,flow:row.flow} : {}),
+    ...(row.agent_id ? {agent_id:row.agent_id} : {}),
+    ...(row.thread_id ? {thread_id:row.thread_id} : {}),
+    ...(row.swarm_step_id ? {swarm_step_id:row.swarm_step_id} : {}) };
 }
 
 export async function taskWithInstructions(db:Db, row:TaskRow):Promise<Record<string,unknown>> {
@@ -136,9 +149,12 @@ async function requireLease(db:PoolClient,p:Principal,row:TaskRow,lease:LeaseInp
     && sameHash(row.lease_hash,sha256(lease.token)),409,'lease_lost','Worker no longer owns this task lease.');
   const time = await db.query<{live:boolean}>('SELECT $1::timestamptz>clock_timestamp() AS live',[row.lease_expires_at]);
   requireCondition(time.rows[0]?.live,409,'lease_lost','Task lease expired; claim again instead of reviving it.');
-  if (row.kind === 'patch' || row.kind === 'check') {
+  const isPatchLike = row.kind === 'patch' || row.kind === 'check' || (row.kind === 'turn' && row.required_capability.endsWith('.patch'));
+  if (isPatchLike) {
     requireCondition(hasPermission(p,'task:patch'),403,'forbidden','This worker no longer has task:patch permission.');
-    if (row.resource_key === null) return;
+  }
+  // Only these kinds take a resource lease at claim; a read task's resource_key is advisory.
+  if (row.resource_key !== null && (row.kind === 'patch' || row.kind === 'check' || row.kind === 'turn')) {
     const resource = await db.query(`SELECT 1 FROM task_resource_leases WHERE tenant_id=$1 AND scope=$2
       AND resource_key=$3 AND task_id=$4 AND generation=$5 AND expires_at>clock_timestamp() FOR UPDATE`,
     [row.tenant_id,row.scope,row.resource_key,row.id,lease.generation]);
@@ -339,10 +355,11 @@ export class TaskService {
       requireCondition(capabilities.length>0,400,'invalid_arguments','At least one capability is required.');
       let kinds:TaskKind[] = ['research','review'];
       if (entry.kinds !== undefined) {
-        requireCondition(Array.isArray(entry.kinds) && entry.kinds.length>0 && entry.kinds.length<=4,400,'invalid_arguments','kinds must contain one to four supported task kinds.');
-        kinds = [...new Set(entry.kinds.map(v => enumValue(v,'kinds',[...TASK_KINDS,'check'] as const)))];
+        requireCondition(Array.isArray(entry.kinds) && entry.kinds.length>0 && entry.kinds.length<=5,400,'invalid_arguments','kinds must contain one to five supported task kinds.');
+        kinds = [...new Set(entry.kinds.map(v => enumValue(v,'kinds',[...TASK_KINDS,'check','turn'] as const)))];
       }
-      requireCondition(!(kinds.includes('patch') || kinds.includes('check')) || hasPermission(p,'task:patch'),403,'forbidden','Claiming patch/check work requires the task:patch permission.');
+      const wantsPatch = kinds.includes('patch') || kinds.includes('check') || capabilities.some(c => c.endsWith('.patch'));
+      requireCondition(!wantsPatch || hasPermission(p,'task:patch'),403,'forbidden','Claiming patch/check work requires the task:patch permission.');
       return {scope,capabilities,kinds};
     });
     const seconds = leaseSeconds(input.lease_seconds);
@@ -368,6 +385,7 @@ export class TaskService {
         if (row.kind === 'check') return true;
         const exclusions = row.excluded_providers ?? [];
         const policyForTask = exclusions.length ? { ...policy, providers: policy.providers.filter(x => !exclusions.includes(x.provider)) } : policy;
+        const effectiveKind: RoutingKind = effectiveRoutingKind(row);
         if (row.required_capability === AUTO_PATCH) {
           const d = decide(policyForTask, 'patch', usage);
           if (d.anyone) return servedPatch.some(s => policyAllows(policyForTask, s, 'patch') && !exclusions.includes(s));
@@ -379,12 +397,12 @@ export class TaskService {
         }
         if (row.kind === 'patch') return true;
         if (row.required_capability === AUTO_READ) {
-          const d = decide(policyForTask, row.kind as RoutingKind, usage);
-          if (d.anyone) return !served.length || served.some(s => policyAllows(policyForTask, s, row.kind) && !exclusions.includes(s));
+          const d = decide(policyForTask, effectiveKind, usage);
+          if (d.anyone) return !served.length || served.some(s => policyAllows(policyForTask, s, effectiveKind) && !exclusions.includes(s));
           return d.provider !== null && served.includes(d.provider) && !exclusions.includes(d.provider);
         }
         const prov = row.required_capability.slice(0, -5);
-        return !exclusions.includes(prov) && policyAllows(policy, prov, row.kind);
+        return !exclusions.includes(prov) && policyAllows(policy, prov, effectiveKind);
       };
       // Sweep expired attempts before selection. No process-local retry state is needed after a restart.
       const expired = await db.query<TaskRow>(`SELECT * FROM tasks WHERE tenant_id=$1 AND scope=$2 AND status='running'
@@ -404,11 +422,18 @@ export class TaskService {
       }
       const candidates = await db.query<TaskRow>(`SELECT * FROM tasks WHERE tenant_id=$1 AND scope=$2 AND status='queued'
         AND (not_before IS NULL OR not_before<=clock_timestamp())
-        AND attempt_count<max_attempts AND required_capability=ANY($3::text[]) AND kind=ANY($4::text[])
+        AND attempt_count<max_attempts AND required_capability=ANY($3::text[])
+        AND (
+          (kind<>'turn' AND kind=ANY($4::text[]))
+          OR (kind='turn' AND (
+            (NOT required_capability LIKE '%.patch' AND ('turn'=ANY($4::text[]) OR $4::text[] && ARRAY['research','review']::text[]))
+            OR (required_capability LIKE '%.patch' AND 'patch'=ANY($4::text[]))
+          ))
+        )
         AND kind<>'approve' AND (flow_id IS NULL OR ((flow->>'ready')::boolean
           AND NOT EXISTS (SELECT 1 FROM flow_runs f WHERE f.id=tasks.flow_id AND f.cancelled_at IS NOT NULL)
           AND NOT EXISTS (SELECT 1 FROM tasks sibling WHERE sibling.flow_id=tasks.flow_id AND sibling.status IN ('blocked','failed','cancelled'))))
-        AND (kind<>'patch' OR NOT EXISTS (SELECT 1 FROM task_resource_leases r WHERE r.tenant_id=tasks.tenant_id
+        AND (kind NOT IN ('patch', 'turn') OR NOT EXISTS (SELECT 1 FROM task_resource_leases r WHERE r.tenant_id=tasks.tenant_id
           AND r.scope=tasks.scope AND r.resource_key=tasks.resource_key AND r.expires_at>clock_timestamp()))
         ORDER BY created_at,id LIMIT 100 FOR UPDATE SKIP LOCKED`,[p.tenantId,scope,capabilities,kinds]);
       for (const row of candidates.rows) {
@@ -427,7 +452,7 @@ export class TaskService {
           if (!flowProvider) continue;
         } else if (!eligible(row)) continue;
         const generation = row.lease_generation+1;
-        if (row.kind === 'patch' && row.resource_key !== null) {
+        if ((row.kind === 'patch' || row.kind === 'turn') && row.resource_key !== null) {
           const resource = await db.query(`INSERT INTO task_resource_leases
             (tenant_id,scope,resource_key,task_id,generation,expires_at)
             VALUES ($1,$2,$3,$4,$5,clock_timestamp()+$6::integer*interval '1 second')
@@ -449,8 +474,10 @@ export class TaskService {
           await db.query('UPDATE tasks SET flow=$2::jsonb WHERE id=$1',[next.id,JSON.stringify(next.flow)]);
         }
         // Use exactly the task's expiry for the resource; the two clocks must not diverge.
-        if (row.kind === 'patch') await db.query(`UPDATE task_resource_leases SET expires_at=$4
-          WHERE tenant_id=$1 AND scope=$2 AND task_id=$3 AND generation=$5`,[p.tenantId,scope,row.id,next.lease_expires_at,generation]);
+        if ((row.kind === 'patch' || row.kind === 'turn') && row.resource_key !== null) {
+          await db.query(`UPDATE task_resource_leases SET expires_at=$4
+            WHERE tenant_id=$1 AND scope=$2 AND task_id=$3 AND generation=$5`,[p.tenantId,scope,row.id,next.lease_expires_at,generation]);
+        }
         await db.query(`INSERT INTO task_runs (id,task_id,generation,worker_id,lease_hash,status)
           VALUES ($1,$2,$3,$4,$5,'running')`,[newId(),row.id,generation,p.id,hash]);
         await taskChanged(db,p,next,'claimed');
@@ -458,10 +485,27 @@ export class TaskService {
         const auto = row.required_capability === AUTO_READ || row.required_capability === AUTO_PATCH;
         const exclusions = row.excluded_providers ?? [];
         const policyForTask = exclusions.length ? { ...policy, providers: policy.providers.filter(x => !exclusions.includes(x.provider)) } : policy;
-        const d = auto ? decide(policyForTask, row.kind as RoutingKind, usage) : undefined;
-        const allowed = policyForTask.providers.filter(x => x.enabled && (x.kinds as string[]).includes(row.kind)).map(x => x.provider);
+        const effKind = effectiveRoutingKind(row);
+        const d = auto ? decide(policyForTask, effKind, usage) : undefined;
+        const allowed = policyForTask.providers.filter(x => x.enabled && (x.kinds as string[]).includes(effKind)).map(x => x.provider);
         const route = flowProvider ? {provider:flowProvider,allowed:[flowProvider]} : auto ? {provider:d?.provider ?? null,allowed} : undefined;
-        return {task:await taskWithInstructions(db,next),lease_token:token,lease_generation:generation,...(route ? {route} : {})};
+        const baseTask = await taskWithInstructions(db,next);
+        let claimTask: Record<string, unknown> = baseTask;
+        if (next.kind === 'turn' && next.agent_id && next.thread_id) {
+          const aRes = await db.query('SELECT * FROM agents WHERE id=$1', [next.agent_id]);
+          const agent = aRes.rows[0] ?? null;
+          const window = await getTurnWindow(db, next.thread_id);
+          const maxSeq = window.reduce((max, m) => Math.max(max, Number((m as any).seq ?? 0)), 0);
+          if (maxSeq > 0) {
+            const nextVersions = { ...(next.context_versions ?? {}), message_seq: maxSeq };
+            await db.query('UPDATE tasks SET context_versions=$2::jsonb WHERE id=$1', [next.id, JSON.stringify(nextVersions)]);
+            next.context_versions = nextVersions;
+            claimTask = { ...baseTask, ...(agent ? { agent } : {}), context_versions: nextVersions, thread_messages: window };
+          } else {
+            claimTask = { ...baseTask, ...(agent ? { agent } : {}), thread_messages: window };
+          }
+        }
+        return {task:claimTask,lease_token:token,lease_generation:generation,...(route ? {route} : {})};
       }
       return {task:null};
     });
@@ -480,7 +524,7 @@ export class TaskService {
         WHERE id=$1 AND lease_expires_at>clock_timestamp() RETURNING *`,[row.id,seconds]);
       requireCondition(updated.rows[0],409,'lease_lost','Lease expired before renewal.');
       const next = updated.rows[0];
-      if (next.kind === 'patch') await db.query(`UPDATE task_resource_leases SET expires_at=$4
+      if ((next.kind === 'patch' || next.kind === 'turn') && next.resource_key !== null) await db.query(`UPDATE task_resource_leases SET expires_at=$4
         WHERE tenant_id=$1 AND scope=$2 AND task_id=$3 AND generation=$5`,[p.tenantId,next.scope,next.id,next.lease_expires_at,next.lease_generation]);
       // Heartbeats do not change semantic versions or emit an event for every timer tick.
       return {task:await taskWithInstructions(db,next)};
@@ -581,7 +625,7 @@ export class TaskService {
 
           const remainingUsage = await scopeUsage(db, p.tenantId, row.scope);
           const policyForRequeue = { ...policy, providers: policy.providers.filter(pr => !nextExclusions.includes(pr.provider)) };
-          const nextDecision = decide(policyForRequeue, row.kind as RoutingKind, remainingUsage);
+          const nextDecision = decide(policyForRequeue, effectiveRoutingKind(row), remainingUsage);
           const reroutedTo = nextDecision.provider ?? 'another provider';
 
           await taskChanged(db, p, next, 'requeued');
@@ -612,7 +656,7 @@ export class TaskService {
         } else {
           const nextExclusions = Array.from(new Set([...(row.excluded_providers || []), servedProvider]));
           const { policy } = await getPolicy(db, p.tenantId);
-          const candidates = policy.providers.filter(pr => pr.enabled && (pr.kinds as string[]).includes(row.kind));
+          const candidates = policy.providers.filter(pr => pr.enabled && (pr.kinds as string[]).includes(effectiveRoutingKind(row)));
           const usageRows = await db.query<{ provider: string; ok: boolean; headroom: number; windows: any }>(
             `SELECT provider, ok, headroom::float AS headroom, windows FROM provider_usage WHERE tenant_id=$1`, [p.tenantId]
           );
@@ -650,7 +694,7 @@ export class TaskService {
 
             const remainingUsage = await scopeUsage(db, p.tenantId, row.scope);
             const policyForRequeue = { ...policy, providers: policy.providers.filter(pr => !nextExclusions.includes(pr.provider)) };
-            const nextDecision = decide(policyForRequeue, row.kind as RoutingKind, remainingUsage);
+            const nextDecision = decide(policyForRequeue, effectiveRoutingKind(row), remainingUsage);
             const reroutedTo = nextDecision.provider ?? 'another provider';
 
             await taskChanged(db, p, next, 'requeued');
@@ -682,6 +726,103 @@ export class TaskService {
         WHERE task_id=$1 AND generation=$2`,[row.id,lease.generation,outcome,completionHash,JSON.stringify(result),artifactIds]);
       await releaseResource(db,row);
       const next = updated.rows[0];
+
+      if (row.kind === 'turn' && row.agent_id && row.thread_id) {
+        const targetThreadId = (result.thread_id as string | undefined) ?? row.thread_id;
+        const threadRow = (await db.query('SELECT * FROM threads WHERE id=$1 AND tenant_id=$2', [targetThreadId, p.tenantId])).rows[0];
+        requireCondition(threadRow && threadRow.agent_id === row.agent_id && threadRow.scope === row.scope, 403, 'turn_grant_forbidden', 'Turn grant refuses posting to another agent\'s thread.');
+
+        if (outcome === 'completed') {
+          const rawAnswer = [result.answer, result.summary, result.reason].find(v => typeof v === 'string') ?? '';
+          const answer = clipUtf8(redactSecrets(String(rawAnswer)), 16384);
+          const nextSeq = await assignThreadSeq(db, p.tenantId, targetThreadId);
+          const msgId = newId();
+          await db.query(
+            `INSERT INTO messages (id, tenant_id, scope, thread_id, seq, author, kind, body)
+             VALUES ($1, $2, $3, $4, $5, $6::jsonb, 'text', $7)`,
+            [msgId, p.tenantId, row.scope, targetThreadId, nextSeq, JSON.stringify({ kind: 'agent', id: row.agent_id }), answer]
+          );
+          await event(db, p, row.scope, 'message.created', msgId, {
+            thread_id: targetThreadId,
+            message_id: msgId,
+            seq: Number(nextSeq),
+            kind: 'text',
+            author: { kind: 'agent', id: row.agent_id }
+          });
+          if (result.native_session) {
+            await db.query(
+              `INSERT INTO agent_provider_sessions (tenant_id, agent_id, provider, session_data, updated_at)
+               VALUES ($1, $2, $3, $4::jsonb, clock_timestamp())
+               ON CONFLICT (tenant_id, agent_id, provider)
+               DO UPDATE SET session_data=EXCLUDED.session_data, updated_at=clock_timestamp()`,
+              [p.tenantId, row.agent_id, servedProvider, JSON.stringify(result.native_session)]
+            );
+          }
+        } else {
+          const failureObj = result.failure as { code?: string; detail?: string } | undefined;
+          const failCode = failureObj?.code || 'harness_error';
+          const detail = failureObj?.detail || result.summary || failCode;
+          const noticeBody = clipUtf8(redactSecrets(`Turn failed: ${failCode} - ${detail}`), 16384);
+          const nextSeq = await assignThreadSeq(db, p.tenantId, targetThreadId);
+          const msgId = newId();
+          await db.query(
+            `INSERT INTO messages (id, tenant_id, scope, thread_id, seq, author, kind, body)
+             VALUES ($1, $2, $3, $4, $5, $6::jsonb, 'notice', $7)`,
+            [msgId, p.tenantId, row.scope, targetThreadId, nextSeq, JSON.stringify({ kind: 'system', id: 'service' }), noticeBody]
+          );
+          await event(db, p, row.scope, 'message.created', msgId, {
+            thread_id: targetThreadId,
+            message_id: msgId,
+            seq: Number(nextSeq),
+            kind: 'notice',
+            author: { kind: 'system', id: 'service' }
+          });
+        }
+
+        const agentRow = (await db.query<AgentRow>('SELECT * FROM agents WHERE id=$1 FOR UPDATE', [row.agent_id])).rows[0];
+
+        const processedSeq = (row.context_versions as any)?.message_seq ?? 0;
+        const pendingHuman = (await db.query<{ seq: string }>(
+          `SELECT seq FROM messages
+           WHERE thread_id=$1 AND (author->>'kind')='human' AND seq > $2
+           ORDER BY seq DESC LIMIT 1`,
+          [row.thread_id, processedSeq]
+        )).rows[0];
+
+        if (pendingHuman && agentRow) {
+          const active = (await db.query(
+            `SELECT id FROM tasks
+             WHERE tenant_id=$1 AND agent_id=$2 AND status IN ('queued', 'running') AND id <> $3
+             LIMIT 1`,
+            [p.tenantId, row.agent_id, row.id]
+          )).rows[0];
+
+          if (!active) {
+            const nextCap = runnerCapability(agentRow.runner, agentRow.edits);
+            const followUpId = newId();
+            const envelope = {
+              deploy: false, publish: false, purchase: false, local_patch: agentRow.edits,
+              read_project: true, send_messages: false, permission_changes: false, external_side_effects: false
+            };
+            const ctxVersions = { message_seq: Number(pendingHuman.seq) };
+            const reqHash = sha256(canonicalJson({
+              kind: 'turn', scope: agentRow.scope, agent_id: agentRow.id, thread_id: row.thread_id, seq: Number(pendingHuman.seq)
+            }));
+            await db.query(
+              `INSERT INTO tasks
+                 (id, tenant_id, scope, kind, agent_id, thread_id, objective, constraints, acceptance_criteria,
+                  permission_envelope, required_capability, resource_key, context_versions, status, created_by,
+                  idempotency_key, request_hash, max_attempts)
+               VALUES ($1, $2, $3, 'turn', $4, $5, $6, '[]'::jsonb, '[]'::jsonb, $7::jsonb, $8, $9, $10::jsonb, 'queued', $11, $12, $13, 3)`,
+              [followUpId, p.tenantId, agentRow.scope, agentRow.id, row.thread_id, `Turn for agent ${agentRow.name}`,
+               JSON.stringify(envelope), nextCap, `agent:${agentRow.id}`, JSON.stringify(ctxVersions), row.created_by, newId(), reqHash]
+            );
+            await audit(db, p, agentRow.scope, 'task.submitted', followUpId, { kind: 'turn', agent_id: agentRow.id });
+            await event(db, p, agentRow.scope, 'task.updated', followUpId, { task_id: followUpId, status: 'queued', action: 'submitted' });
+          }
+        }
+      }
+
       await taskChanged(db,p,next,'finished');
       return {task:await taskWithInstructions(db,next),replayed:false};
     });
