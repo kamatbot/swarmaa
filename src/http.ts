@@ -2,12 +2,13 @@ import { isIP } from 'node:net';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import ipaddr from 'ipaddr.js';
-import { AppError, publicError } from './errors.js';
+import { AppError, publicError, requireCondition } from './errors.js';
 import { waitForInbox } from './inbox-wait.js';
 import { handleMcp } from './mcp.js';
 import { OAuthError, OAuthService, OAUTH_COOKIE, authorizationHtml, type AuthorizationForm } from './oauth.js';
 import { accountHtml, type AccountView } from './passkey-ui.js';
 import { BIND_COOKIE, OWNER_COOKIE, PasskeyService, bindCookie, newBinding, ownerCookie } from './passkeys.js';
+import { canAccessScope, hasPermission } from './policy.js';
 import type { HttpDependencies, Principal } from './types.js';
 
 const MAX_RESPONSE_BYTES = 6 * 1024 * 1024;
@@ -439,6 +440,123 @@ export function createHttpHandler(dependencies: HttpDependencies): (request: Inc
         const remaining = (principalWaiters.get(principal.id) ?? 1)-1;
         if (remaining) principalWaiters.set(principal.id,remaining); else principalWaiters.delete(principal.id);
       }
+      return;
+    }
+    if (path === '/api/stream') {
+      onlyMethod(request, response, ['GET']);
+      const principal = await authenticate(request, response, false);
+      const afterParam = url.searchParams.get('after') ?? (oneHeader(request, 'last-event-id') || '0.0');
+      const parts = /^(?:([0-9]{1,20})\.)?([0-9]{1,19})$/.exec(afterParam);
+      requireCondition(parts !== null && BigInt(parts[2]!) <= 9223372036854775807n &&
+        (parts[1] === undefined || BigInt(parts[1]) <= 18446744073709551615n), 400, 'invalid_arguments', 'after must be an xid.seq decimal cursor or a legacy nonnegative bigint sequence.');
+      let legacy = parts[1] === undefined;
+      let curXid = legacy ? '0' : parts[1]!;
+      let curSeq = parts[2]!;
+
+      const scopeParam = url.searchParams.get('scopes') ?? url.searchParams.get('scope');
+      let scopes: string[];
+      let allScopes = false;
+      if (scopeParam) {
+        scopes = scopeParam.split(',').map(s => s.trim()).filter(Boolean);
+        for (const s of scopes) requireCondition(canAccessScope(principal, s), 403, 'scope_forbidden', 'Cannot access requested scope.');
+      } else {
+        allScopes = principal.role === 'admin' && principal.scopes.includes('*');
+        scopes = principal.scopes;
+      }
+
+      const names: string[] = [];
+      if (hasPermission(principal, 'thread:read')) names.push('message.created', 'message.updated', 'thread.read');
+      if (hasPermission(principal, 'agent:read')) names.push('agent.updated');
+      if (hasPermission(principal, 'task:read')) names.push('task.updated', 'swarm.updated');
+      if (hasPermission(principal, 'memory:read')) names.push('memory.changed');
+
+      request.socket.setNoDelay(true);
+      response.statusCode = 200;
+      response.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+      response.setHeader('Cache-Control', 'no-cache, no-transform');
+      response.setHeader('Connection', 'keep-alive');
+      response.setHeader('X-Accel-Buffering', 'no');
+      response.flushHeaders?.();
+
+      let active = true;
+      let pollTimer: NodeJS.Timeout | undefined;
+      const heartbeatTimer = setInterval(() => {
+        if (active && !response.destroyed) response.write(': heartbeat\n\n');
+      }, 15_000);
+
+      const cleanup = () => {
+        if (!active) return;
+        active = false;
+        clearInterval(heartbeatTimer);
+        if (pollTimer) clearTimeout(pollTimer);
+      };
+      response.on('close', cleanup);
+
+      const poll = async () => {
+        if (!active || response.destroyed) return;
+        try {
+          if (names.length === 0) {
+            pollTimer = setTimeout(poll, 1000);
+            return;
+          }
+          const sql = legacy
+            ? `SELECT id, xid::text || '.' || seq::text AS cursor, xid::text AS xid_str, seq, scope, name, subject_id, payload, created_at
+               FROM events
+               WHERE tenant_id = $1
+                 AND ($2::boolean OR scope = ANY($3::text[]))
+                 AND seq > $4::bigint
+                 AND name = ANY($5::text[])
+                 AND xid < pg_snapshot_xmin(pg_current_snapshot())
+               ORDER BY xid, seq LIMIT 50`
+            : `SELECT id, xid::text || '.' || seq::text AS cursor, xid::text AS xid_str, seq, scope, name, subject_id, payload, created_at
+               FROM events
+               WHERE tenant_id = $1
+                 AND ($2::boolean OR scope = ANY($3::text[]))
+                 AND (xid, seq) > ($4::xid8, $5::bigint)
+                 AND name = ANY($6::text[])
+                 AND xid < pg_snapshot_xmin(pg_current_snapshot())
+               ORDER BY xid, seq LIMIT 50`;
+
+          const queryParams = legacy
+            ? [principal.tenantId, allScopes, scopes, curSeq, names]
+            : [principal.tenantId, allScopes, scopes, curXid, curSeq, names];
+
+          const result = await dependencies.pool.query<{
+            id: string; cursor: string; xid_str: string; seq: string; scope: string; name: string;
+            subject_id: string; payload: Record<string, unknown>; created_at: Date;
+          }>(sql, queryParams);
+
+          if (!active || response.destroyed) return;
+
+          for (const row of result.rows) {
+            const data = JSON.stringify({
+              id: row.id,
+              cursor: row.cursor,
+              scope: row.scope,
+              name: row.name,
+              subject_id: row.subject_id,
+              payload: row.payload,
+              created_at: row.created_at.toISOString()
+            });
+            response.write(`id: ${row.cursor}\nevent: ${row.name}\ndata: ${data}\n\n`);
+            legacy = false;
+            curXid = row.xid_str;
+            curSeq = row.seq;
+          }
+
+          if (result.rows.length > 0) {
+            pollTimer = setTimeout(poll, 10);
+          } else {
+            pollTimer = setTimeout(poll, 200);
+          }
+        } catch {
+          if (active && !response.destroyed) {
+            pollTimer = setTimeout(poll, 500);
+          }
+        }
+      };
+
+      void poll();
       return;
     }
     const toolMatch = path.match(/^\/api\/tools\/([a-z][a-z0-9_]{0,127})$/u);

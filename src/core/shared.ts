@@ -83,7 +83,9 @@ export async function audit(db: Db, p: Principal, scope: string, operation: stri
   await db.query('INSERT INTO audit_log (id,tenant_id,actor_id,scope,operation,subject_id,details) VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb)', [newId(), p.tenantId, p.id, scope, operation, subjectId, JSON.stringify(details)]);
 }
 
-export async function event(db: Db, p: Principal, scope: string, name: 'task.updated' | 'memory.changed', subjectId: string, metadata: Record<string, unknown>): Promise<void> {
+export type EventType = 'task.updated' | 'memory.changed' | 'message.created' | 'message.updated' | 'swarm.updated' | 'agent.updated' | 'question.created' | 'question.answered' | 'thread.read';
+
+export async function event(db: Db, p: Principal, scope: string, name: EventType, subjectId: string, metadata: Record<string, unknown>): Promise<void> {
   await db.query('INSERT INTO events (id,tenant_id,scope,name,subject_id,payload) VALUES ($1,$2,$3,$4,$5,$6::jsonb)', [newId(), p.tenantId, scope, name, subjectId, JSON.stringify(metadata)]);
 }
 

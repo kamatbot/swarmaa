@@ -37,8 +37,8 @@ function transient(error: unknown): boolean {
 function validateClaim(claim: Claim, project: ProjectConfig, agents: AgentConfig[], headroom: ReadonlyMap<string, number> = new Map()): { task: Task; lease: Lease; agent: AgentConfig } | null {
   if (!claim.task) return null;
   const task = claim.task;
-  if (task.scope !== project.scope || !['research', 'review', 'patch', 'check'].includes(task.kind) || typeof task.id !== 'string' || !claim.lease_token || !Number.isInteger(claim.lease_generation)) throw new Error('Invalid or misrouted task claim');
-  const patch = task.kind === 'patch' || task.kind === 'check';
+  if (task.scope !== project.scope || !['research', 'review', 'patch', 'check', 'turn'].includes(task.kind) || typeof task.id !== 'string' || !claim.lease_token || !Number.isInteger(claim.lease_generation)) throw new Error('Invalid or misrouted task claim');
+  const patch = task.kind === 'patch' || task.kind === 'check' || (task.kind === 'turn' && task.required_capability.endsWith('.patch'));
   const candidates = agents.filter(a => project.agents.includes(a.id) && (!patch || (project.allow_patch && a.enable_patch)));
   if (task.kind==='check') {
     if (!task.flow_id || !task.flow?.check || task.required_capability!=='bridge.check' || !project.checks || !candidates.length) throw new Error('Invalid check claim or local checks are not enabled');
@@ -193,6 +193,7 @@ export class BridgeWorker {
     let leaseLost = false;
     let finished = false;
     let completionAttempted = false;
+    let isPatchWork = task.kind === 'patch' || (task.kind === 'turn' && task.required_capability.endsWith('.patch'));
     let worktree: Worktree | undefined;
     let patchResult: PatchOutcome | undefined;
     let observedCommit:string|undefined;
@@ -257,7 +258,8 @@ export class BridgeWorker {
       const context = await this.client.call('context_get', { scope: task.scope, task_id: task.id, limit: 12 }, execution.signal);
       // Patch work gets its own worktree+branch, so parallel patch tasks on one project never share files.
       // ponytail: flow commits must exist locally; cross-host execution needs reviewed commit transfer.
-      if (task.kind === 'patch' || task.flow_id) {
+      const isPatchWork = task.kind === 'patch' || (task.kind === 'turn' && task.required_capability.endsWith('.patch'));
+      if (isPatchWork || task.flow_id) {
         worktree = await createWorktree(project.root, task.kind==='check' ? 'check' : agent.provider, task);
         if (task.flow_id) {
           const snapshot = await inspectWorktree(worktree);
@@ -291,7 +293,7 @@ export class BridgeWorker {
           catch (error) { cleanupNative(nativePlan); this.logger('native_session_failed', { task_id: task.id, phase: 'copy', message: error instanceof Error ? error.message.slice(0, 200) : '' }); }
         }
         // Whatever the provider did (even if aborted), commit it to the branch and drop the worktree.
-        if (worktree && task.kind==='patch') {
+        if (worktree && isPatchWork) {
           try { patchResult = await finishWorktree(project.root, agent.provider, task, worktree, this.config.max_output_bytes); }
           catch {
             // Finalization failed: the worktree stays on disk and the task must not read as completed.
@@ -351,7 +353,7 @@ export class BridgeWorker {
           answer: task.kind==='check' ? checkFact!.output_tail : untrusted(finalAnswer(agent.provider, result.stdout), 8 * 1024),
           ...(denied.length ? { denied_actions: denied, next_step: 'This worker cannot run those actions (read-only sandbox). Resubmit with a capability whose worker can, e.g. codex.read, or narrow the task.' } : {}),
           summary: task.kind==='check' ? `Deterministic bridge check ${outcome==='completed' ? 'passed' : 'did not pass'}. See the recorded check evidence.` : outcome === 'completed' ? 'Provider completed. Review the transcript and acceptance criteria before integrating changes.' : 'Provider did not complete successfully. Review the transcript before continuing the task.',
-          ...(task.kind === 'patch' ? { commands_allowed: true, ...(patchResult ? { branch: patchResult.branch, base_ref: patchResult.base_ref, base_commit: patchResult.base_commit, head_commit: patchResult.head_commit, changed_files: patchResult.changed_files, diffstat: patchResult.diffstat, ...(patchResult.continued ? { continued: true } : {}) } : {}), ...(diffArtifactError ? { diff_artifact_error: diffArtifactError } : {}), ...(finalizeFailure ?? {}) } : {}),
+          ...(isPatchWork ? { commands_allowed: true, ...(patchResult ? { branch: patchResult.branch, base_ref: patchResult.base_ref, base_commit: patchResult.base_commit, head_commit: patchResult.head_commit, changed_files: patchResult.changed_files, diffstat: patchResult.diffstat, ...(patchResult.continued ? { continued: true } : {}) } : {}), ...(diffArtifactError ? { diff_artifact_error: diffArtifactError } : {}), ...(finalizeFailure ?? {}) } : {}),
           ...(nativeSession ? { native_session: nativeSession } : {}),
           ...(task.flow_id ? {observed_commit:observedCommit} : {}),
           ...(checkFact ? {check:checkFact} : {}),
@@ -389,7 +391,7 @@ export class BridgeWorker {
         } catch { this.logger('task_finish_unconfirmed', { task_id: task.id }); }
       }
     } finally {
-      if (worktree && task.kind!=='patch') {
+      if (worktree && !isPatchWork) {
         try { await removeSnapshot(project.root,worktree); } catch { this.logger('snapshot_cleanup_failed',{task_id:task.id}); }
       }
       execution.abort();

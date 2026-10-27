@@ -1,6 +1,6 @@
 # Teams: persistent agents, channels and tracked swarms
 
-**Status:** design, not implemented. **Date:** 2026-10-27.
+**Status:** Phase 1 (service foundation) implemented; phases 2–4 in design. **Date:** 2026-10-27.
 **Inspired by:** OpenBot (openbot.run, `nightly-labs/openbot`, source-available under its own licence). Ideas only: no OpenBot code or text is copied.
 
 Today a Swarmaa swarm is a set of one-shot tasks. You submit, a worker runs, a result comes back, and the work is gone from view once you have read it. This design adds the layer people actually work in:
@@ -209,7 +209,7 @@ That bridges this layer into the CLIs people already use.
 
 ## 6. Phases
 
-1. **Service foundation:** agents, threads, messages, turns (including the turn prompt and the turn grant), read cursors, the SSE stream, migration 024, and tests. Acceptance: create Atlas, post to it, get a reply on two different providers, switch the runner mid-thread with the thread kept, all under tenant isolation.
+1. **Service foundation [Implemented]:** agents, threads, messages, turns (including the turn prompt and the turn grant), read cursors, the SSE stream, migration 024, and tests. Acceptance: create Atlas, post to it, get a reply on two different providers, switch the runner mid-thread with the thread kept, all under tenant isolation.
 2. **Swarms, handoffs and questions:** the tools above; `flow_start` returns a swarm; the notch shows open swarms and the question badge. Acceptance: the Friday-launch scenario runs end to end with one question answered, one step reassigned while running, and a restart in the middle.
 3. **Mac app main window:** sidebar sections, agent and channel threads, the four card types, a runner picker that shows quota, and an unread badge. Acceptance: every control is clicked in the real app and its result observed.
 4. **Later:** channels with invited humans (gateway tenants already exist), scheduled agent routines, side threads, Slack and Discord bridges.

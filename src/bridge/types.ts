@@ -1,5 +1,5 @@
 import type { FlowTask } from '../core/flow-definition.js';
-export type TaskKind = 'research' | 'review' | 'patch' | 'check';
+export type TaskKind = 'research' | 'review' | 'patch' | 'check' | 'turn';
 export type Provider = 'claude' | 'codex' | 'antigravity';
 
 export interface AgentConfig {
