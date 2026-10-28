@@ -1,6 +1,6 @@
 import type { Pool, PoolClient } from 'pg';
 import { transaction } from '../db.js';
-import { requireCondition } from '../errors.js';
+import { AppError, requireCondition } from '../errors.js';
 import type { Principal } from '../types.js';
 import { uuid } from '../validation.js';
 import { runnerCapability, type RunnerConfig } from '../bridge/adapters.js';
@@ -25,6 +25,8 @@ export function quotaLeft(windows:UsageRow['windows']):number {
 
 /** Tighten, never replace, the global limits. Unknown readings retain the router's existing fallback. */
 export function botPolicy(policy:RoutingPolicy, usage:UsageRow[], floor=0):RoutingPolicy {
+  // Floor 0 means "may run to empty": the global policy, fallback included, decides exactly as for any task.
+  if (floor <= 0) return policy;
   return {...policy, fallback:'none', providers:policy.providers.filter(p => {
     const u = usage.find(u => u.provider===p.provider && u.ok && u.fresh && u.live && u.windows.length);
     if (!u) return floor===0;
@@ -137,13 +139,21 @@ export function nextCronRun(schedule:string,after:Date):Date {
   let fmt:Intl.DateTimeFormat;
   try { fmt = new Intl.DateTimeFormat('en-US',{timeZone:tz,minute:'numeric',hour:'numeric',hourCycle:'h23',day:'numeric',month:'numeric',weekday:'short'}); }
   catch { requireCondition(false,400,'invalid_schedule','Unknown CRON_TZ time zone.'); }
-  // ponytail: eight-year search ceiling covers leap days; reject schedules with no occurrence in that horizon.
+  const local = (t:number) => Object.fromEntries(fmt!.formatToParts(new Date(t)).map(p => [p.type,p.value]));
+  const wall = (p:Record<string,string>) => `${p.month}/${p.day} ${p.hour}:${p.minute}`;
+  // A wall-clock time that repeats when clocks go back fires once, as in Vixie cron.
+  const afterWall = wall(local(after.getTime()));
+  // ponytail: eight-year ceiling covers leap days. Jump a whole day or hour when it cannot match, so a
+  // never-matching schedule costs a few thousand date conversions, not four million.
   const start = Math.floor(after.getTime()/60000)*60000+60000;
-  for (let t=start;t<start+8*366*86400000;t+=60000) {
-    const date = new Date(t), p = Object.fromEntries(fmt!.formatToParts(date).map(p => [p.type,p.value]));
-    if (!fields[0]!.values.has(Number(p.minute)) || !fields[1]!.values.has(Number(p.hour)) || !fields[3]!.values.has(Number(p.month))) continue;
+  for (let t=start;t<start+8*366*86400000;) {
+    const p = local(t), hour = Number(p.hour), minute = Number(p.minute);
     const dom = fields[2]!.values.has(Number(p.day)), dow = fields[4]!.values.has(['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].indexOf(p.weekday!));
-    if (fields[2]!.wildcard || fields[4]!.wildcard ? dom && dow : dom || dow) return date;
+    const dayOk = fields[3]!.values.has(Number(p.month)) && (fields[2]!.wildcard || fields[4]!.wildcard ? dom && dow : dom || dow);
+    if (!dayOk) { t += ((23-hour)*60 + (60-minute))*60000; continue; }
+    if (!fields[1]!.values.has(hour)) { t += (60-minute)*60000; continue; }
+    if (fields[0]!.values.has(minute) && wall(p) !== afterWall) return new Date(t);
+    t += 60000;
   }
   requireCondition(false,400,'invalid_schedule','Cron has no occurrence in the next eight years.');
   throw new Error('unreachable');
@@ -152,7 +162,23 @@ export function nextCronRun(schedule:string,after:Date):Date {
 /** One bounded sweep; locks are ordered scope, Teams, then rows just like task claims. */
 export async function tickBotSchedules(pool:Pool):Promise<void> {
   const bots = (await pool.query<BotRoutingRow>(`SELECT * FROM bots WHERE NOT archived AND schedule IS NOT NULL AND (next_run_at IS NULL OR next_run_at<=clock_timestamp()) ORDER BY next_run_at NULLS FIRST,id LIMIT 100`)).rows;
-  for (const candidate of bots) await transaction(pool,async db => {
+  for (const candidate of bots) {
+    try { await fireSchedule(pool,candidate); }
+    catch (err) {
+      if (!(err instanceof AppError) || err.code !== 'invalid_schedule') throw err;
+      // One bad schedule must not stop the sweep: park it ('infinity' is never due) and say why in its thread.
+      await transaction(pool,async db => {
+        const p:Principal = {id:candidate.created_by,tenantId:candidate.tenant_id,name:'bot-scheduler',role:'admin',scopes:[candidate.scope],permissions:[]};
+        await teamsLock(db,p.tenantId);
+        await db.query(`UPDATE bots SET next_run_at='infinity',updated_at=clock_timestamp() WHERE id=$1`,[candidate.id]);
+        await notice(db,p,candidate,`Schedule paused: ${err.message} Fix it in Bot settings.`);
+      });
+    }
+  }
+}
+
+async function fireSchedule(pool:Pool,candidate:BotRoutingRow):Promise<void> {
+  await transaction(pool,async db => {
     const p:Principal = {id:candidate.created_by,tenantId:candidate.tenant_id,name:'bot-scheduler',role:'admin',scopes:[candidate.scope],permissions:[]};
     await scopeLock(db,'tasks',p,candidate.scope);
     await teamsLock(db,p.tenantId);

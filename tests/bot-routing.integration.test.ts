@@ -58,11 +58,15 @@ describe('B2 bot routing', {skip:!connectionString,concurrency:false}, () => {
     assert.equal(c.task.id,normal.id);assert.equal(c.route.provider,'claude');
     const b = await claim(f.worker,['auto.read','codex.read']);assert.equal(b.task.id,botTask.id);assert.equal(b.route.provider,'codex');assert.ok(!b.route.allowed.includes('claude'));
   });
-  it('zero floor permits 99 percent use under global 100 limits and global limits still block',async () => {
+  it('zero floor permits 99 percent use and routes exactly like a non-bot task, global fallback included',async () => {
     const f = await fixture({quota_floor_pct:0});await report(f.worker,99,99);
     const policy = structuredClone(DEFAULT_POLICY);policy.providers.forEach(p => {p.max_five_hour_pct=100;p.max_weekly_pct=100;});
     await call(f.user,'routing_set',{policy});await submit(f);assert.equal((await claim(f.worker)).route.provider,'claude');
-    await call(f.user,'routing_set',{policy:DEFAULT_POLICY});await submit(f);assert.equal((await claim(f.worker)).task,null);
+    // Over the global maxima, most_headroom still places a plain auto task; a floor-0 bot task must not wait forever.
+    await call(f.user,'routing_set',{policy:DEFAULT_POLICY});
+    await submit(f,'review',false);const plain=await claim(f.worker);assert.ok(plain.task,'most_headroom places the plain task');
+    await submit(f);const bot=await claim(f.worker);assert.ok(bot.task,'and the floor-0 bot task too');
+    assert.equal(bot.route?.provider ?? null,plain.route?.provider ?? null);
   });
   it('named runners bypass the bot floor while preserving enabled-kind policy',async () => {
     const f=await fixture({quota_floor_pct:50});await report(f.worker,99,99);
@@ -96,6 +100,17 @@ describe('B2 bot routing', {skip:!connectionString,concurrency:false}, () => {
     await assert.rejects(call({...f.user,scopes:['project:other']},'bot_routing_preview',{bot_id:f.bot}),/not found/i);
     await assert.rejects(call({...f.user,permissions:[]},'bot_routing_preview',{bot_id:f.bot}),/agent:read/i);
     await assert.rejects(call(f.user,'bot_routing_preview',{bot_id:f.bot,extra:true}),/Unknown argument/);
+  });
+  it('a schedule that never fires is paused with a notice and does not stop other bots',async () => {
+    const bad=await fixture(),good=await fixture();
+    await pool.query(`UPDATE bots SET schedule='0 0 30 2 *',next_run_at=NULL WHERE id=$1`,[bad.bot]);
+    await pool.query(`UPDATE bots SET schedule='* * * * *',next_run_at=clock_timestamp()-interval '1 minute' WHERE id=$1`,[good.bot]);
+    await tickBotSchedules(pool);
+    assert.equal((await pool.query(`SELECT next_run_at='infinity' AS parked FROM bots WHERE id=$1`,[bad.bot])).rows[0].parked,true);
+    assert.equal((await pool.query(`SELECT count(*)::int AS n FROM messages m JOIN bots b ON b.thread_id=m.thread_id WHERE b.id=$1 AND m.kind='notice' AND m.body LIKE 'Schedule paused:%'`,[bad.bot])).rows[0].n,1);
+    assert.equal((await pool.query(`SELECT 1 FROM tasks WHERE bot_id=$1 AND initiator_kind='schedule'`,[good.bot])).rowCount,1,'the good bot still fired');
+    await tickBotSchedules(pool);
+    assert.equal((await pool.query(`SELECT count(*)::int AS n FROM messages m JOIN bots b ON b.thread_id=m.thread_id WHERE b.id=$1 AND m.kind='notice'`,[bad.bot])).rows[0].n,1,'parked, so no repeat notice');
   });
   it('schedule tick initializes, posts and queues once under concurrent ticks, skips busy lead and advances',async () => {
     const f=await fixture();await pool.query(`UPDATE bots SET schedule='* * * * *' WHERE id=$1`,[f.bot]);await tickBotSchedules(pool);let b=(await pool.query('SELECT next_run_at FROM bots WHERE id=$1',[f.bot])).rows[0];assert.ok(b.next_run_at>new Date());assert.equal((await pool.query('SELECT 1 FROM tasks WHERE bot_id=$1',[f.bot])).rowCount,0);

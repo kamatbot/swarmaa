@@ -17,7 +17,7 @@ test('cron day-of-month and weekday use POSIX OR for restricted fields', () => {
 test('cron CRON_TZ honours local offsets and DST missing and repeated hours', () => {
   assert.equal(next('CRON_TZ=Asia/Bangkok 0 9 * * *','2026-10-28T01:59:00Z'),'2026-10-28T02:00:00.000Z');
   assert.equal(next('CRON_TZ=America/New_York 30 2 * * *','2026-03-08T06:59:00Z'),'2026-03-09T06:30:00.000Z');
-  assert.equal(next('CRON_TZ=America/New_York 30 1 * * *','2026-11-01T05:30:00Z'),'2026-11-01T06:30:00.000Z');
+  assert.equal(next('CRON_TZ=America/New_York 30 1 * * *','2026-11-01T05:30:00Z'),'2026-11-02T06:30:00.000Z', 'the repeated 01:30 fires once');
 });
 test('cron rejects invalid fields, steps, ranges and time zones', () => {
   for (const c of ['* * * *','60 * * * *','*/0 * * * *','9-1 * * * *','* * * 13 *','CRON_TZ=Nope * * * * *']) assert.throws(() => next(c,'2026-01-01T00:00:00Z'));
@@ -30,7 +30,7 @@ test('bot floor uses most-used window, accepts exact floor and zero at 99, prese
   assert.deepEqual(botPolicy(policy,[usage('claude',85,1)],15).providers.map(p => p.provider),['claude']);
   assert.equal(botPolicy(policy,[usage('claude',86,1)],15).providers.length,0);
   assert.ok(botPolicy(policy,[usage('codex',99,99)],0).providers.some(p => p.provider==='codex'));
-  assert.ok(!botPolicy(DEFAULT_POLICY,[usage('codex',99,99)],0).providers.some(p => p.provider==='codex'));
+  assert.equal(botPolicy(DEFAULT_POLICY,[usage('codex',99,99)],0),DEFAULT_POLICY,'floor 0 leaves the global policy, fallback included');
 });
 test('routingNow reasons cover named runner, floor, quota and different author', async () => {
   const rows = [usage('claude',90,90),usage('codex',20,20)];
@@ -43,4 +43,13 @@ test('routingNow reasons cover named runner, floor, quota and different author',
   assert.equal(result.research.provider_now,'codex');
   bot.rules.quota_floor_pct=0;
   assert.equal((await routingNow(db,'tenant',bot)).research.reason,'most quota left');
+});
+
+test('a schedule that never fires is rejected fast instead of blocking the loop', () => {
+  const started = Date.now();
+  assert.throws(() => next('0 0 30 2 *','2026-01-01T00:00:00Z'));
+  assert.ok(Date.now()-started < 1000, `took ${Date.now()-started} ms`);
+  const leap = Date.now();
+  assert.equal(next('0 0 29 2 *','2026-03-01T00:00:00Z'),'2028-02-29T00:00:00.000Z');
+  assert.ok(Date.now()-leap < 500);
 });
