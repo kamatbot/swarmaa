@@ -165,6 +165,14 @@ final class TeamsModel: ObservableObject {
     /// Bot settings open over the thread pane.
     @Published var editingBotID: String?
     @Published private(set) var bots: [TeamsBot] = []
+    @Published var showHiddenBots = false {
+        didSet {
+            if !showHiddenBots, selectedBot?.archived == true || bot(id: editingBotID)?.archived == true {
+                select(threadID: nil)
+            }
+        }
+    }
+    private var botListGeneration = 0
     /// False while the service has no `bot_list`: agents stand in as one-member bots.
     @Published private(set) var botsSupported = true
     @Published private(set) var savingBot = false
@@ -295,8 +303,7 @@ final class TeamsModel: ObservableObject {
 
     /// Bots with something new first (needs you, then unread), then the rest by last activity.
     var sortedBots: [TeamsBot] {
-        let query = search.trimmingCharacters(in: .whitespaces).lowercased()
-        return bots.filter { !$0.archived && (query.isEmpty || $0.name.lowercased().contains(query) || $0.job.lowercased().contains(query)) }
+        return TeamsBotList.filter(bots, showHidden: showHiddenBots, search: search)
             .sorted {
                 let a = botNeedsYou($0), b = botNeedsYou($1)
                 if a != b { return a > b }
@@ -323,11 +330,16 @@ final class TeamsModel: ObservableObject {
     func crew(_ bot: TeamsBot) -> [TeamsAgent] { bot.crewIDs.compactMap { agent(id: $0) } }
 
     func loadBots() async {
+        botListGeneration += 1
+        let generation = botListGeneration
         do {
-            bots = try await client.botList()
+            let loaded = try await client.botList(includeArchived: showHiddenBots)
+            guard generation == botListGeneration else { return }
+            bots = loaded
             botsSupported = true
         } catch {
             let failure = SwarmaTeamsClient.Failure.map(error)
+            guard generation == botListGeneration else { return }
             guard failure == .serviceTooOld else { staleError = failure.message; return }
             botsSupported = false
             bots = agents.filter { $0.mainThreadID != nil }.map {
@@ -376,6 +388,44 @@ final class TeamsModel: ObservableObject {
             return true
         } catch {
             self.error = SwarmaTeamsClient.Failure.map(error).message
+            return false
+        }
+    }
+
+    @discardableResult
+    func setBotHidden(_ bot: TeamsBot, hidden: Bool) async -> Bool {
+        guard !bot.isLegacyAgent, !savingBot else { return false }
+        savingBot = true
+        defer { savingBot = false }
+        do {
+            let fresh = try await (hidden ? client.botArchive(id: bot.id) : client.botUnarchive(id: bot.id))
+            botListGeneration += 1 // An older list response must not undo this write.
+            replaceBot(fresh)
+            if hidden { select(threadID: nil) }
+            return true
+        } catch {
+            self.error = SwarmaTeamsClient.Failure.map(error).message
+            return false
+        }
+    }
+
+    func deleteBot(_ bot: TeamsBot, confirmName: String) async -> Bool {
+        guard !bot.isLegacyAgent, bot.archived, confirmName == bot.name, !savingBot else { return false }
+        savingBot = true
+        botError = nil
+        defer { savingBot = false }
+        do {
+            try await client.botDelete(id: bot.id, confirmName: confirmName)
+            botListGeneration += 1
+            bots.removeAll { $0.id == bot.id }
+            if selectedThreadID == bot.threadID || editingBotID == bot.id { select(threadID: nil) }
+            messages[bot.threadID] = nil
+            drafts[bot.threadID] = nil
+            typing[bot.threadID] = nil
+            previews[bot.threadID] = nil
+            return true
+        } catch {
+            botError = SwarmaTeamsClient.Failure.map(error).message
             return false
         }
     }
