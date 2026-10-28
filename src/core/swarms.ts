@@ -23,6 +23,8 @@ export interface TurnBudget {
   queued: number;
   threadId: string;
   scope: string;
+  /** A swarm's summary turn: it may only reply, so it can never start the work it summarises again. */
+  summary?: boolean;
 }
 
 /** Model output that should become a notice rather than roll back the finish: 4xx, or Postgres data (22) and constraint (23) errors. */
@@ -1075,6 +1077,7 @@ export class SwarmsService {
        WHERE tenant_id=$1 AND status='completed' AND resolved_at IS NULL
          AND kind IN ('patch', 'turn')
          AND (result->>'review_required')::boolean IS TRUE
+         AND result->>'head_commit' IS NOT NULL
          AND ($2::boolean OR scope = ANY($3::text[]))
          AND ($4::text IS NULL OR scope = $4)
        ORDER BY updated_at DESC LIMIT $5`,
@@ -1353,6 +1356,13 @@ export class SwarmsService {
           );
           if (claimed.rowCount) {
             if (budget) budget.queued++;
+            // The step results live in the assignees' threads; put them in the owner's so the summary turn sees them.
+            const results = (await db.query<{ title: string; name: string | null; body: string | null }>(
+              `SELECT s.title, a.name, m.body FROM swarm_steps s
+                 LEFT JOIN agents a ON a.id=s.assignee_agent_id LEFT JOIN messages m ON m.id=s.result_message_id
+               WHERE s.swarm_id=$1 ORDER BY s.order_index`, [swarm.id])).rows;
+            await this.postNotice(db, p, swarm.scope, swarm.thread_id, `"${swarm.title}" is done. Step results:\n\n`
+              + results.map((r, n) => `${n + 1}. ${r.title} (${r.name ?? 'unassigned'}): ${(r.body ?? '(no reply)').slice(0, 2000)}`).join('\n\n'));
             const requiredCap = runnerCapability(ownerAgent.runner, ownerAgent.edits);
             const envelope = {
               deploy: false, publish: false, purchase: false, local_patch: ownerAgent.edits,
@@ -1369,8 +1379,8 @@ export class SwarmsService {
                   idempotency_key, request_hash, max_attempts, initiator_kind, initiator_id)
                VALUES ($1, $2, $3, 'turn', $4, $5, $6, '[]'::jsonb, '[]'::jsonb, $7::jsonb, $8, $9, $10::jsonb, 'queued', $11, $12, $13, 3, 'swarm', $14)`,
               [followUpId, p.tenantId, ownerAgent.scope, ownerAgent.id, swarm.thread_id,
-               `Summarise swarm results: ${swarm.title}`, JSON.stringify(envelope),
-               requiredCap, `agent:${ownerAgent.id}`, JSON.stringify({ hop_depth: budget ? budget.hop + 1 : 0 }),
+               `Summarise the results of "${swarm.title}" for the user. Reply only; start no new work.`, JSON.stringify(envelope),
+               requiredCap, `agent:${ownerAgent.id}`, JSON.stringify({ hop_depth: budget ? budget.hop + 1 : 0, summary: true }),
                p.id, `swarm:summary:${swarm.id}`, reqHash, swarm.id]
             );
 
@@ -1400,6 +1410,10 @@ export class SwarmsService {
     actions: TurnAction[],
     budget: TurnBudget
   ): Promise<void> {
+    if (budget.summary) {
+      await this.postNotice(db, p, ctx.scope, ctx.thread.id, `A summary turn can only reply; its ${actions.length} action(s) were ignored.`);
+      return;
+    }
     for (const [i, act] of actions.entries()) {
       const queued = budget.queued;
       await db.query(`SAVEPOINT act_${i}`);
@@ -1492,6 +1506,7 @@ export class SwarmsService {
       await audit(db, p, targetAgent.scope, 'task.submitted', taskId, { kind: 'turn', agent_id: targetAgent.id, initiator_kind: 'handoff' });
       await event(db, p, targetAgent.scope, 'task.updated', taskId, { task_id: taskId, status: 'queued', action: 'submitted' });
     } else if (act.type === 'swarm_start') {
+      requireCondition(budget.hop < MAX_HANDOFF_HOPS, 409, 'hop_limit', `the hop depth limit of ${MAX_HANDOFF_HOPS} is reached`);
       await this.internalSwarmStart(db, p, {
         title: act.title,
         goal: act.goal,

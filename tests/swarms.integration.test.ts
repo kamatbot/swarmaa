@@ -936,7 +936,7 @@ describe('teams phase 2 swarms and coordination', { skip: !connectionString, con
     await pool.query(
       `INSERT INTO tasks (id, tenant_id, scope, kind, objective, status, version, created_by, idempotency_key, request_hash, max_attempts, permission_envelope, required_capability, result)
        VALUES ($1, $2, 'project:l2', 'patch', 'Review patch', 'completed', 1, $3, 'l2-k', 'l2-h', 3, '{}'::jsonb, 'codex.patch', $4::jsonb)`,
-      [taskId, tenantId, user.id, JSON.stringify({ review_required: true, branch: 'swarmaa/codex/1234', changed_files: 5 })]
+      [taskId, tenantId, user.id, JSON.stringify({ review_required: true, head_commit: 'abc123', branch: 'swarmaa/codex/1234', changed_files: 5 })]
     );
 
     const att = await call(user, 'attention_list', { scope: 'project:l2' });
@@ -1082,7 +1082,7 @@ describe('teams phase 2 swarms and coordination', { skip: !connectionString, con
     await pool.query(
       `INSERT INTO tasks (id, tenant_id, scope, kind, objective, status, version, created_by, idempotency_key, request_hash, max_attempts, permission_envelope, required_capability, result)
        VALUES ($1, $2, $3, 'patch', 'Implement feature X', 'completed', 1, $4, 'k1', 'h1', 3, '{}'::jsonb, 'codex.patch', $5::jsonb)`,
-      [reviewTaskId, tenantId, 'project:att', user.id, JSON.stringify({ review_required: true, branch: 'swarmaa/codex/1234', changed_files: 3 })]
+      [reviewTaskId, tenantId, 'project:att', user.id, JSON.stringify({ review_required: true, head_commit: 'abc123', branch: 'swarmaa/codex/1234', changed_files: 3 })]
     );
 
     const failedTaskId = randomUUID();
@@ -1506,6 +1506,36 @@ describe('teams phase 2 swarms and coordination', { skip: !connectionString, con
     assert.equal((await pool.query('SELECT status FROM swarm_steps WHERE id=$1', [s.id])).rows[0].status, 'done');
     assert.equal((await summaries()).length, 1);
     assert.ok((await pool.query('SELECT summary_task_id FROM swarms WHERE id=$1', [swarm.id])).rows[0].summary_task_id);
+  });
+
+  it('summary loop: the summary turn sees the step results and cannot start the swarm again', async () => {
+    const t = await team('project:loop', ['A', 'B']);
+    const { A, B } = t.agents;
+    await call(t.user, 'thread_post', { thread_id: A.main_thread_id, body: 'Plan a check', idempotency_key: 'plan' });
+    const start = [{ type: 'swarm_start', title: 'Check', goal: 'g', steps: [{ key: 's', title: 'List colours', assignee_agent_id: 'B' }] }];
+    await finishTurn(t.worker, await t.claim(), withActions('Planned.', start));
+    const step = await t.claim();
+    assert.equal(step.task.agent_id, B.id);
+    await finishTurn(t.worker, step, 'Red, green, blue.');
+    const summary = await t.claim();
+    assert.equal(summary.task.agent_id, A.id);
+    assert.ok((await threadMessages(t.user, A.main_thread_id)).some(m => m.kind === 'notice' && /List colours \(B\): Red, green, blue\./.test(m.body)),
+      'the step results are posted where the summary turn reads them');
+    // The live failure: the summary re-reads "Plan a check" and starts the same swarm again.
+    await finishTurn(t.worker, summary, withActions('Planned.', start));
+    assert.equal((await pool.query('SELECT count(*)::int AS n FROM swarms WHERE tenant_id=$1', [t.tenantId])).rows[0].n, 1);
+    assert.equal((await pool.query("SELECT count(*)::int AS n FROM tasks WHERE tenant_id=$1 AND status='queued'", [t.tenantId])).rows[0].n, 0);
+    assert.ok((await threadMessages(t.user, A.main_thread_id)).some(m => m.kind === 'notice' && /summary turn can only reply/.test(m.body)));
+  });
+
+  it('attention_list skips completed turns that changed nothing', async () => {
+    const t = await team('project:att', ['A']);
+    await call(t.user, 'thread_post', { thread_id: t.agents.A.main_thread_id, body: 'hi', idempotency_key: 'hi' });
+    const c = await t.claim();
+    await call(t.worker, 'task_finish', { task_id: c.task.id, lease_token: c.lease_token, lease_generation: c.lease_generation,
+      outcome: 'completed', result: { answer: 'hello', review_required: true } });
+    const items = (await call(t.user, 'attention_list', {})).items as any[];
+    assert.equal(items.filter(i => i.id === c.task.id).length, 0);
   });
 
   it('fixes-2 handoff grant refuses a done step and a closed swarm', async () => {

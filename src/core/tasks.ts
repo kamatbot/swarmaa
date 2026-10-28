@@ -820,7 +820,8 @@ export class TaskService {
       if (row.kind === 'turn' && row.agent_id && row.thread_id) {
         const targetThreadId = (result.thread_id as string | undefined) ?? row.thread_id;
         const hop = (row.context_versions as any)?.hop_depth;
-        budget = { hop: typeof hop === 'number' ? hop : 0, queued: 0, threadId: targetThreadId, scope: row.scope };
+        budget = { hop: typeof hop === 'number' ? hop : 0, queued: 0, threadId: targetThreadId, scope: row.scope,
+          summary: (row.context_versions as any)?.summary === true };
         const threadRow = (await db.query('SELECT * FROM threads WHERE id=$1 AND tenant_id=$2', [targetThreadId, p.tenantId])).rows[0];
         requireCondition(threadRow && (threadRow.agent_id === row.agent_id || threadRow.kind === 'channel') && threadRow.scope === row.scope, 403, 'turn_grant_forbidden', 'Turn grant refuses posting to another agent\'s thread.');
         if (threadRow.kind === 'channel') {
