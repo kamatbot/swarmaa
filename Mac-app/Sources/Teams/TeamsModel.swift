@@ -370,37 +370,44 @@ final class TeamsModel: ObservableObject {
         let jobs: [(String, String?)] = (status?.scopes ?? []).map(\.scope).filter { scopes == nil || scopes!.contains($0) }
             .flatMap { scope -> [(String, String?)] in [(scope, "running"), (scope, "queued"), (scope, nil)] }
         let client = self.client
-        await withTaskGroup(of: (String, String?, Result<(tasks: [TeamsTask], next: String?), Error>).self) { group in
+        await withTaskGroup(of: TaskPage.self) { group in
             func add(_ job: (String, String?)) {
                 group.addTask {
                     let (scope, state) = job
                     do {
-                        if let state { return (scope, state, .success((try await client.taskList(scope: scope, status: state), nil))) }
-                        return (scope, nil, .success(try await client.resolvedTaskPage(scope: scope)))
-                    } catch { return (scope, state, .failure(error)) }
+                        if let state { return TaskPage(scope: scope, state: state, tasks: try await client.taskList(scope: scope, status: state)) }
+                        let page = try await client.resolvedTaskPage(scope: scope)
+                        return TaskPage(scope: scope, state: nil, tasks: page.tasks, next: page.next)
+                    } catch { return TaskPage(scope: scope, state: state, error: error) }
                 }
             }
             var pending = jobs[...]
             // At most 8 `task_list` calls in flight.
             for _ in 0..<8 { if let job = pending.popFirst() { add(job) } }
-            for await (scope, state, result) in group {
+            for await page in group {
                 if let job = pending.popFirst() { add(job) }
-                switch result {
-                case .success(let page):
-                    if let state {
-                        workingTasks.removeAll { $0.scope == scope && $0.status == state }
-                        workingTasks += page.tasks
-                    } else {
-                        resolvedTasks.removeAll { $0.scope == scope }
-                        resolvedTasks += page.tasks
-                        resolvedCursors[scope] = page.next
-                    }
-                case .failure(let error): staleError = SwarmaTeamsClient.Failure.map(error).message
+                let scope = page.scope
+                if let error = page.error { staleError = SwarmaTeamsClient.Failure.map(error).message }
+                else if let state = page.state {
+                    workingTasks.removeAll { $0.scope == scope && $0.status == state }
+                    workingTasks += page.tasks
+                } else {
+                    resolvedTasks.removeAll { $0.scope == scope }
+                    resolvedTasks += page.tasks
+                    resolvedCursors[scope] = page.next
                 }
             }
         }
         do { attention = try await attentionNow }
         catch { staleError = SwarmaTeamsClient.Failure.map(error).message }
+    }
+
+    /// One `task_list` answer. A plain struct, not a tuple holding a `Result`:
+    /// that child type came back from `group.next()` uninitialized in Release
+    /// builds (ASan: 0xbe bytes), crashing launch in `TaskGroup::offer`.
+    private struct TaskPage {
+        let scope: String, state: String?
+        var tasks: [TeamsTask] = [], next: String? = nil, error: Error? = nil
     }
 
     func loadMoreResolved() async {
