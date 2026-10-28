@@ -210,4 +210,41 @@ describe('teams service performance fixes', { skip: !connectionString, concurren
       for (const at of received) assert.ok(at - committed! < 50, `delivery ${at - committed!} ms`);
     } finally { controllers.forEach(c => c.abort()); await Promise.all(readers); }
   });
+
+  it('an event in tenant A wakes no stream of tenant B (count polls)', async () => {
+    const a = await createPrincipal(randomUUID(), 'tenant-a');
+    const b = await createPrincipal(randomUUID(), 'tenant-b');
+    const controllers = [new AbortController(), new AbortController()];
+    const polls = new Map<string, number>();
+    const original = pool.query;
+    pool.query = function (this: Pool, ...args: any[]) {
+      if (typeof args[0] === 'string' && /FROM events\s+WHERE tenant_id/.test(args[0])) {
+        const tenant = args[1][0];
+        polls.set(tenant, (polls.get(tenant) ?? 0) + 1);
+      }
+      return (original as any).apply(this, args);
+    } as typeof pool.query;
+    try {
+      for (const [index, user] of [a, b].entries()) {
+        const response = await fetch(`${origin}/api/stream?after=now`, {
+          headers: { Authorization: `Bearer ${user.token}` }, signal: controllers[index]!.signal
+        });
+        await response.body!.getReader().read();
+      }
+      await pause(100); // LISTEN and initial polls settle, well before the 2 s safety poll.
+      assert.ok((polls.get(a.tenantId) ?? 0) > 0);
+      assert.ok((polls.get(b.tenantId) ?? 0) > 0);
+      polls.clear();
+      const { event } = await import('../src/core/shared.js');
+      await event(pool, a, 'project:a', 'message.created', randomUUID(), {});
+      await pause(100);
+      assert.ok((polls.get(a.tenantId) ?? 0) > 0, 'tenant A polls after its event');
+      assert.equal(polls.get(b.tenantId) ?? 0, 0, 'tenant B must remain idle');
+    } finally {
+      controllers.forEach(c => c.abort());
+      pool.query = original;
+      await pause(20);
+    }
+  });
+
 });
