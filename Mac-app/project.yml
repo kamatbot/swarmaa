@@ -15,7 +15,7 @@ settings:
     # silently pins every build to one version, so no customer ever sees an
     # update. Bump CURRENT_PROJECT_VERSION on every release.
     MARKETING_VERSION: "1.26.0"
-    CURRENT_PROJECT_VERSION: "38"
+    CURRENT_PROJECT_VERSION: "39"
     # Signed with a stable identity on purpose. The app reads Claude Code's
     # OAuth token out of the login keychain, and the keychain's ACL remembers
     # *which signed binary* was allowed. Ad-hoc or unsigned builds get a new
