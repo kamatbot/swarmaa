@@ -106,7 +106,7 @@ Detailed guides: [Agent & Worker Setup](docs/AGENT_SETUP.md), [Operations & HTTP
 
 ## Mac App
 
-The Swarmaa notch app for macOS shows each agent's quota, the swarms running in each project and live task updates, right in your Mac's notch. Its source is at **[kamatbot/NotchTrader](https://github.com/kamatbot/NotchTrader)**, built on **[Codenotch](https://github.com/vinzdg/codenotch)** by Vinz, the open-source macOS app that pins Claude Code, Cursor, Codex and Antigravity usage limits to a screen edge. The service in this repo works without it; the app is the easiest way to watch it.
+The Swarmaa notch app for macOS shows each agent's quota, the swarms running in each project and live task updates, right in your Mac's notch. Its source is in **[`Mac-app/`](Mac-app/)** in this repo, built on **[Codenotch](https://github.com/vinzdg/codenotch)** by Vinz, the open-source macOS app that pins Claude Code, Cursor, Codex and Antigravity usage limits to a screen edge. The service in this repo works without it; the app is the easiest way to watch it.
 
 ---
 

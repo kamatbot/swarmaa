@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="262" height="56" viewBox="0 0 262 56" role="img" aria-label="Download for Windows">
+  <title>Download for Windows</title>
+  <!-- Drawn to match download-macos.svg: the notch's black, the ring track as
+       its edge, and the same tray glyph rather than the Windows logo, which is
+       Microsoft's mark to spend, not ours. -->
+  <rect x="0.75" y="0.75" width="260.5" height="54.5" rx="13.25"
+        fill="#000000" stroke="#303030" stroke-width="1.5"/>
+  <g stroke="#00FF88" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" fill="none">
+    <path d="M26 17.5v13.5"/>
+    <path d="M20.5 25.5 26 31l5.5-5.5"/>
+    <path d="M19 35.5v2.2a2.3 2.3 0 0 0 2.3 2.3h9.4a2.3 2.3 0 0 0 2.3-2.3v-2.2"/>
+  </g>
+  <text x="48" y="33.5"
+        font-family="'Segoe UI Variable Text', 'Segoe UI', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Helvetica, Arial, sans-serif"
+        font-size="16" font-weight="600" fill="#FFFFFF">Download for Windows</text>
+</svg>

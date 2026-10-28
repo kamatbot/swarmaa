@@ -1,0 +1,80 @@
+{
+    "result": {
+        "thread_id": "0b704500-6f4b-4ec2-b199-aeaff6b3f0a5",
+        "messages": [
+            {
+                "id": "8942e6d9-01bd-4834-8e67-5339bceaa359",
+                "thread_id": "0b704500-6f4b-4ec2-b199-aeaff6b3f0a5",
+                "seq": 1,
+                "author": {
+                    "id": "ea906054-99f2-4480-98d5-7b9345ffd08b",
+                    "kind": "human"
+                },
+                "kind": "text",
+                "body": "Plan a two-step check: first list three colours, then pick the brightest one.",
+                "ref": null,
+                "created_at": "2026-10-28T01:32:18.057Z",
+                "edited_at": null
+            },
+            {
+                "id": "4326b4af-91fc-4867-a44d-b01b6c78493b",
+                "thread_id": "0b704500-6f4b-4ec2-b199-aeaff6b3f0a5",
+                "seq": 2,
+                "author": {
+                    "id": "480b1188-9ff6-49e7-891e-d00e8d0e67ca",
+                    "kind": "agent"
+                },
+                "kind": "text",
+                "body": "I have created a two-step plan for Scout to list three colours and select the brightest one.",
+                "ref": null,
+                "created_at": "2026-10-28T01:32:34.158Z",
+                "edited_at": null
+            },
+            {
+                "id": "66eaf9b2-1e4d-4cc5-af36-3dd141eb4625",
+                "thread_id": "0b704500-6f4b-4ec2-b199-aeaff6b3f0a5",
+                "seq": 3,
+                "author": {
+                    "id": "service",
+                    "kind": "system"
+                },
+                "kind": "swarm",
+                "body": "",
+                "ref": {
+                    "swarm_id": "57b129ff-2484-421d-bf3b-d95ff9b10f4c"
+                },
+                "created_at": "2026-10-28T01:32:34.196Z",
+                "edited_at": null
+            },
+            {
+                "id": "16feb33d-29fc-4a72-a613-3693d5fb5c23",
+                "thread_id": "0b704500-6f4b-4ec2-b199-aeaff6b3f0a5",
+                "seq": 4,
+                "author": {
+                    "id": "service",
+                    "kind": "system"
+                },
+                "kind": "notice",
+                "body": "\"Colour Brightness Check\" is done. Step results:\n\n1. List three colours (Scout): Red, green, and blue.\n\n\n2. Pick the brightest colour (Scout): Green is the brightest colour among red, green, and blue due to peak human visual sensitivity.\n",
+                "ref": null,
+                "created_at": "2026-10-28T01:32:59.826Z",
+                "edited_at": null
+            },
+            {
+                "id": "daa738f4-4844-4601-a276-c825f45d2702",
+                "thread_id": "0b704500-6f4b-4ec2-b199-aeaff6b3f0a5",
+                "seq": 5,
+                "author": {
+                    "id": "480b1188-9ff6-49e7-891e-d00e8d0e67ca",
+                    "kind": "agent"
+                },
+                "kind": "text",
+                "body": "The two-step colour brightness check has completed:\n\n1. **List colours:** Scout listed red, green, and blue.\n2. **Brightest colour:** Scout determined that green is the brightest colour among them due to peak human visual sensitivity.\n",
+                "ref": null,
+                "created_at": "2026-10-28T01:34:05.289Z",
+                "edited_at": null
+            }
+        ],
+        "has_more": false
+    }
+}

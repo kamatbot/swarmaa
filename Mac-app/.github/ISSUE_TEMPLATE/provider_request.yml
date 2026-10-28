@@ -1,0 +1,44 @@
+name: Provider Request
+description: Request support for a new AI provider or CLI tool.
+title: "feat(provider): add support for <Provider Name>"
+labels: ["provider-request", "enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for requesting a new AI provider integration for Codenotch!
+
+  - type: input
+    id: provider_name
+    attributes:
+      label: Provider Name
+      description: Name of the AI service or tool (e.g., Anthropic Claude, Perplexity, OpenRouter, Copilot).
+      placeholder: "e.g. OpenRouter"
+    validations:
+      required: true
+
+  - type: textarea
+    id: details
+    attributes:
+      label: Quota / Limit Mechanics
+      description: |
+        How does this provider structure its rate limits or quotas? (e.g. 5-hour rolling window, monthly token pool, request-per-minute ceiling, credit balance).
+    validations:
+      required: true
+
+  - type: textarea
+    id: endpoints_auth
+    attributes:
+      label: Available CLI / API Endpoints & Auth Method
+      description: |
+        How does the local client or CLI communicate with this provider? Where are credentials stored (macOS Keychain, config JSON in `~/.config/...`, environment variable)?
+    validations:
+      required: false
+
+  - type: textarea
+    id: documentation
+    attributes:
+      label: Documentation / References
+      description: Links to official documentation, CLI repositories, or API references.
+    validations:
+      required: false

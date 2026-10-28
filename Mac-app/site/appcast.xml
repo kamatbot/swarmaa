@@ -1,0 +1,26 @@
+<?xml version="1.0" standalone="yes"?>
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+    <channel>
+        <title>Codenotch</title>
+        <item>
+            <title>1.23.0</title>
+            <pubDate>Wed, 14 Oct 2026 12:14:05 +0700</pubDate>
+            <sparkle:version>25</sparkle:version>
+            <sparkle:shortVersionString>1.23.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <description><![CDATA[<p>Show what is left instead of what is used, a Dock style, oMLX, and Claude and Codex on your own servers.</p>
+<ul>
+<li><b>Show remaining instead of used</b>: rings and figures count down what is left, can shut when a window is spent, and can order themselves by what remains.</li>
+<li><b>Remote hosts and Muse</b>: Claude and Codex accounts on servers you reach over SSH, and Muse.</li>
+<li><b>A Dock style</b>: the notch floats just clear of the screen's edge.</li>
+<li><b>oMLX</b>: loaded models, phase and queue, speed, context fill and a daily token count.</li>
+<li><b>Breathing working indicator</b>, optional, in the provider's colour.</li>
+<li><b>Enterprise spend forecast</b>: whether the monthly limit lasts until it resets.</li>
+<li>OpenCode activity on Custom Endpoints, Grok Bot's weekly usage, DeepSeek off-peak on Chinese public holidays, gentler Claude retries, notches back on external displays after sleep.</li>
+<li><b>Windows</b>: the notch folds over full-screen apps, Enterprise spend limits, configs saved with a byte-order mark, no stale Claude arcs after a failed sign-in, and the Z.AI key from <code>GLM_API_KEY</code>.</li>
+</ul>
+]]></description>
+            <enclosure url="https://hivinz.com/Codenotch-1.23.0.dmg" length="13159964" type="application/octet-stream" sparkle:edSignature="HDbozJkzBtX0Nlhv1dmXreeVi/v+9wBrl0qCVPH4makMsxqPgNzdx6wmsuJHVY8YUey2KbjPl9KGVm32k7BPCw=="/>
+        </item>
+    </channel>
+</rss>

@@ -1,0 +1,60 @@
+{
+ "result": {
+  "swarm": {
+   "id": "8189aca5-f59b-4a14-b01d-dd49e617e259",
+   "scope": "project:swarma",
+   "title": "Two-step colour check",
+   "goal": "List three colours and pick the brightest one",
+   "owner_agent_id": "73004e49-fc55-4111-a0c7-a21795be4b76",
+   "thread_id": "54b186ab-54ff-4c06-987a-7dabe746256c",
+   "status": "done",
+   "flow_id": null,
+   "version": 3,
+   "created_at": "2026-10-28T01:26:00.525Z",
+   "updated_at": "2026-10-28T01:26:28.164Z",
+   "closed_at": "2026-10-28T01:26:28.164Z",
+   "steps": [
+    {
+     "id": "918a6560-1261-42e4-86b5-c51b5c48a954",
+     "step_key": "list_colours",
+     "title": "List three colours",
+     "assignee_agent_id": "8e6edba1-b977-460a-a895-303a6886a86d",
+     "needs": [],
+     "instructions": "List three distinct colours.",
+     "check": null,
+     "status": "done",
+     "task_id": "669fba90-04a5-449b-9fd1-f9885c667ed3",
+     "result_message_id": "46950143-6c89-4c11-bd21-dd66aa3d1f14",
+     "failure_code": null,
+     "failure_detail": null,
+     "order_index": 0,
+     "created_at": "2026-10-28T01:26:00.528Z",
+     "updated_at": "2026-10-28T01:26:15.116Z"
+    },
+    {
+     "id": "ca46535c-f5a9-4df3-aa50-268c80315347",
+     "step_key": "pick_brightest",
+     "title": "Pick the brightest colour",
+     "assignee_agent_id": "8e6edba1-b977-460a-a895-303a6886a86d",
+     "needs": [
+      "918a6560-1261-42e4-86b5-c51b5c48a954"
+     ],
+     "instructions": "Evaluate the colours listed in the previous step and pick the brightest one.",
+     "check": null,
+     "status": "done",
+     "task_id": "ac80f11a-f07a-4c0f-b8db-a10fac90662b",
+     "result_message_id": "8175143a-a276-4863-a314-c73417c4e61f",
+     "failure_code": null,
+     "failure_detail": null,
+     "order_index": 1,
+     "created_at": "2026-10-28T01:26:00.531Z",
+     "updated_at": "2026-10-28T01:26:28.160Z"
+    }
+   ],
+   "progress": {
+    "done": 2,
+    "total": 2
+   }
+  }
+ }
+}

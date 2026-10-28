@@ -1,0 +1,90 @@
+name: Bug Report
+description: Report an issue or unexpected behavior in Codenotch.
+title: "fix: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for reporting a bug! Please fill out the sections below to help us investigate.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Bug Description
+      description: A clear and concise description of what the bug is.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to Reproduce
+      description: Steps to reproduce the behavior.
+      placeholder: |
+        1. Open Codenotch with provider '...'
+        2. Perform action '...'
+        3. See error
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+      description: A clear description of what you expected to happen.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: provider
+    attributes:
+      label: Affected Provider (if applicable)
+      description: Which AI provider or subsystem is experiencing issues?
+      options:
+        - Claude (CLI / Desktop)
+        - OpenAI Codex
+        - Gemini API
+        - Ollama (Local)
+        - LM Studio (Local)
+        - UI / Notch Presentation
+        - Settings / Preferences
+        - Other / Not Provider-Specific
+    validations:
+      required: false
+
+  - type: input
+    id: environment
+    attributes:
+      label: Environment & macOS Version
+      description: e.g., macOS Sequoia 15.0, Apple Silicon M3 / Intel
+      placeholder: "macOS 15.0 (Apple Silicon)"
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Codenotch Version
+      description: The version of Codenotch where this occurred (e.g., 1.9.0, or git commit SHA).
+      placeholder: "1.9.0"
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant Logs (Unified Log)
+      description: |
+        Run `/usr/bin/log stream --predicate 'subsystem == "app.swarmaa.notch"' --level debug` and paste relevant lines.
+      render: shell
+    validations:
+      required: false
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional Context
+      description: Add any other context or screenshots about the problem here.
+    validations:
+      required: false
