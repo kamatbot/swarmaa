@@ -555,3 +555,56 @@ extension TeamsUXRegressionTests {
         XCTAssertEqual(lists.peak, 8, "task_list runs 8 at once, no more")
     }
 }
+
+extension TeamsUXRegressionTests {
+    /// Two scopes, one running task each ("project:a-running"), nothing queued or resolved.
+    @MainActor fileprivate func taskModel(_ stub: UXTransport, extra: @escaping (String, [String: Any]) -> (Int, String)? = { _, _ in nil }) async throws -> TeamsModel {
+        stub.respond = { tool, body in
+            if let reply = extra(tool, body) { return reply }
+            switch tool {
+            case "agent_list": return (200, #"{"result":{"agents":[]}}"#)
+            case "swarm_status": return (200, #"{"result":{"scopes":[{"scope":"project:a"},{"scope":"project:b"}]}}"#)
+            case "task_get": return (200, #"{"result":{"task":{"id":"project:a-running","scope":"project:a","status":"running","version":7}}}"#)
+            case "task_list":
+                guard body["status"] as? String == "running", let scope = body["scope"] as? String else { return (200, #"{"result":{"tasks":[]}}"#) }
+                return (200, "{\"result\":{\"tasks\":[{\"id\":\"\(scope)-running\",\"scope\":\"\(scope)\",\"status\":\"running\",\"version\":1}]}}")
+            default: return (200, #"{"result":{"items":[]}}"#)
+            }
+        }
+        let model = TeamsModel(client: try stub.client(self))
+        await model.refresh()
+        model.stopStream()
+        try await Task.sleep(for: .milliseconds(50))
+        return model
+    }
+
+    private func taskEvent(_ payload: String) throws -> TeamsEvent {
+        try XCTUnwrap(TeamsEvent(SSEParser.Frame(id: "1.1", event: "task.updated", data: "{\"scope\":\"project:a\",\"payload\":\(payload)}")))
+    }
+
+    @MainActor func testRunningTaskEventPatchesOneRowWithAtMostOneRequest() async throws {
+        let stub = UXTransport()
+        let model = try await taskModel(stub)
+        var before = stub.requests.count
+        // The service's own fields: no request at all.
+        await model.apply(try taskEvent(#"{"task_id":"project:a-running","status":"running","version":3,"action":"checkpointed"}"#))
+        try await Task.sleep(for: .milliseconds(400))
+        XCTAssertEqual(stub.requests.count - before, 0)
+        XCTAssertEqual(model.workingTasks.first { $0.id == "project:a-running" }?.version, 3)
+        // No status in the payload: one task_get, merged in, no lists and no bot_list.
+        before = stub.requests.count
+        await model.apply(try taskEvent(#"{"task_id":"project:a-running"}"#))
+        try await Task.sleep(for: .milliseconds(400))
+        XCTAssertEqual(stub.requests.dropFirst(before).map(\.0), ["task_get"])
+        XCTAssertEqual(model.workingTasks.first { $0.id == "project:a-running" }?.version, 7)
+        XCTAssertEqual(model.workingTasks.count, 2)
+        // It finished: it leaves the list, so that scope (and only it) is listed again, with the badges.
+        before = stub.requests.count
+        await model.apply(try taskEvent(#"{"task_id":"project:a-running","status":"completed","action":"finished"}"#))
+        try await Task.sleep(for: .milliseconds(400))
+        let after = stub.requests.dropFirst(before)
+        XCTAssertEqual(after.filter { $0.0 == "task_list" }.count, 3)
+        XCTAssertTrue(after.filter { $0.0 == "task_list" }.allSatisfy { $0.1["scope"] as? String == "project:a" })
+        XCTAssertEqual(after.filter { $0.0 == "bot_list" }.count, 1)
+    }
+}

@@ -438,6 +438,25 @@ final class TeamsModel: ObservableObject {
         }
     }
 
+    /// One task changed. Patch its cached row from the event's fields (or one `task_get` when they
+    /// lack a status), and re-list its scope, with the bot badges, only when the task enters or
+    /// leaves a list: submitted, resolved, finished, or not one we hold.
+    private func taskUpdated(_ event: TeamsEvent) async {
+        guard let id = event.subjectID, event.action != "submitted", event.resolved == nil,
+              workingTasks.contains(where: { $0.id == id }) else { return scheduleTaskRefresh(scope: event.scope) }
+        var fresh: TeamsTask?
+        if event.status == nil {
+            guard let got = try? await client.taskGet(id: id) else { return scheduleTaskRefresh(scope: event.scope) }
+            fresh = got
+        }
+        guard let status = fresh?.status ?? event.status, ["running", "queued"].contains(status),
+              let i = workingTasks.firstIndex(where: { $0.id == id }) else { return scheduleTaskRefresh(scope: event.scope) }
+        if let fresh { workingTasks[i] = fresh; return }
+        workingTasks[i].status = status
+        if let version = event.version { workingTasks[i].version = version }
+        workingTasks[i].updatedAt = Date()
+    }
+
     /// The thread an attention item opens: its own, else the question's or swarm's.
     func threadID(for item: TeamsAttentionItem) -> String? {
         item.threadID ?? openQuestions.first { $0.id == item.id }?.threadID
@@ -793,7 +812,7 @@ final class TeamsModel: ObservableObject {
             if let id = event.subjectID { markAnswered(id, nil) }
             scheduleTaskRefresh(scope: event.scope)
         case "task.updated":
-            scheduleTaskRefresh(scope: event.scope)
+            await taskUpdated(event)
         case "thread.read":
             // Stream events do not prove they belong to this principal. Only our
             // successful mark-read response (or authenticated refresh) clears badges.

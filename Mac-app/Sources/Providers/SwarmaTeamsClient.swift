@@ -456,10 +456,19 @@ struct TeamsEvent: Equatable {
     var seq: Int?
     var authorKind: String?
     var scope: String?
+    /// `task.updated`: the task's status, `action` (`submitted`, `checkpointed`, …),
+    /// `resolved` when it was folded in or out, and `kind` (`turn`, …) on newer services.
+    var status: String?
+    var action: String?
+    var resolved: Bool?
+    var kind: String?
+    var version: Int?
 
-    init(cursor: String?, name: String, subjectID: String? = nil, threadID: String? = nil, seq: Int? = nil, authorKind: String? = nil, scope: String? = nil) {
+    init(cursor: String?, name: String, subjectID: String? = nil, threadID: String? = nil, seq: Int? = nil, authorKind: String? = nil, scope: String? = nil,
+         status: String? = nil, action: String? = nil, resolved: Bool? = nil, kind: String? = nil, version: Int? = nil) {
         self.cursor = cursor; self.name = name; self.subjectID = subjectID
         self.threadID = threadID; self.seq = seq; self.authorKind = authorKind; self.scope = scope
+        self.status = status; self.action = action; self.resolved = resolved; self.kind = kind; self.version = version
     }
 
     /// Reads one SSE frame. The data is the `events_poll` row shape; its
@@ -469,11 +478,14 @@ struct TeamsEvent: Equatable {
         let payload = root["payload"] as? [String: Any] ?? [:]
         func string(_ key: String) -> String? { (root[key] as? String) ?? (payload[key] as? String) }
         guard let name = string("name") ?? frame.event else { return nil }
-        self.init(cursor: string("cursor") ?? frame.id, name: name, subjectID: string("subject_id"),
+        self.init(cursor: string("cursor") ?? frame.id, name: name, subjectID: string("subject_id") ?? string("task_id"),
                   threadID: string("thread_id"),
                   seq: (root["seq"] as? Int) ?? (payload["seq"] as? Int),
                   authorKind: string("author_kind") ?? ((payload["author"] as? [String: Any])?["kind"] as? String),
-                  scope: string("scope"))
+                  scope: string("scope"),
+                  status: payload["status"] as? String, action: payload["action"] as? String,
+                  resolved: payload["resolved"] as? Bool, kind: payload["kind"] as? String,
+                  version: payload["version"] as? Int)
     }
 }
 
