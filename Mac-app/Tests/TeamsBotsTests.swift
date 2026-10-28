@@ -90,4 +90,13 @@ final class TeamsBotsTests: XCTestCase {
         XCTAssertEqual(bot.badges.needsYou, 1)
         XCTAssertEqual(bot.routing.summary?.provider, "claude")
     }
+
+    func testChatReplyModelDefaultsToHaikuAndRoundTrips() throws {
+        let old = try SwarmaClient.decoder.decode(TeamsBotRules.self, from: Data(#"{"quota_floor_pct":0}"#.utf8))
+        XCTAssertEqual(old.firstReply, "claude-haiku-5-5", "a service without first_reply means the Haiku default")
+        var heavy = TeamsBotRules(); heavy.firstReply = "claude-opus-5-5"
+        let wire = try JSONSerialization.jsonObject(with: JSONEncoder().encode(heavy)) as! [String: Any]
+        XCTAssertEqual(wire["first_reply"] as? String, "claude-opus-5-5")
+        XCTAssertTrue(TeamsBotRules.firstReplyChoices.contains { $0.id == "claude-opus-5-5" })
+    }
 }

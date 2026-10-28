@@ -430,6 +430,14 @@ struct BotSettingsPane: View {
         VStack(alignment: .leading, spacing: 10) {
             KSLabel(L10n.t("04 — Rules"))
             VStack(spacing: 0) {
+                ruleRow(L10n.t("Chat replies"),
+                        TeamsBotRules.firstReplyChoices.first { $0.id == rules.firstReply }?.detail ?? "") {
+                    Picker("", selection: $rules.firstReply) {
+                        ForEach(TeamsBotRules.firstReplyChoices, id: \.id) { Text(verbatim: $0.title).tag($0.id) }
+                    }
+                    .labelsHidden().fixedSize()
+                    .accessibilityLabel(L10n.t("Chat replies"))
+                }
                 ruleRow(L10n.t("Keep a quota floor"),
                         rules.quotaFloorPct == 0 ? L10n.t("Off: a service may be used until it runs out")
                                                  : L10n.t("Auto work skips a service below \(rules.quotaFloorPct)% left")) {

@@ -174,9 +174,20 @@ struct TeamsBotRules: Codable, Equatable {
     var approvePublic = true
     var reviewEdits = true
     var requireTests = false
+    /// The model for chat replies (`rules.first_reply`). Haiku and Sonnet answer fast and hand off to the
+    /// full model when needed; Opus thinks hard on every reply; "off" uses the agent's own model.
+    var firstReply = Self.defaultFirstReply
+    static let defaultFirstReply = "claude-haiku-5-5"
+    static let firstReplyChoices: [(id: String, title: String, detail: String)] = [
+        ("claude-haiku-5-5", "Haiku 5.5", "Replies in seconds, hands off to Opus when it needs to"),
+        ("claude-sonnet-5-5", "Sonnet 5.5", "Fast with more depth, hands off when it needs to"),
+        ("claude-opus-5-5", "Opus 5.5", "Thinks hard on every reply, for heavy work"),
+        ("gemini-3.8-flash-high", "Gemini Flash", "Fast replies on Antigravity, hands off when it needs to"),
+        ("off", "Agent's own model", "No quick reply: every turn runs the full model"),
+    ]
     private enum CodingKeys: String, CodingKey {
         case quotaFloorPct = "quota_floor_pct", approvePublic = "approve_public"
-        case reviewEdits = "review_edits", requireTests = "require_tests"
+        case reviewEdits = "review_edits", requireTests = "require_tests", firstReply = "first_reply"
     }
     init() {}
     init(from decoder: Decoder) throws {
@@ -185,6 +196,7 @@ struct TeamsBotRules: Codable, Equatable {
         approvePublic = c.opt(Bool.self, .approvePublic) ?? true
         reviewEdits = c.opt(Bool.self, .reviewEdits) ?? true
         requireTests = c.opt(Bool.self, .requireTests) ?? false
+        firstReply = c.opt(String.self, .firstReply) ?? Self.defaultFirstReply
     }
 }
 
