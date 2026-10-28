@@ -11,7 +11,7 @@ import { agentView, assignThreadSeq, clipUtf8, threadView, type AgentRow, type T
 import { cancelTask, type TaskRow } from './tasks.js';
 import { AUTO_PATCH, AUTO_READ } from './swarm.js';
 import type { RunnerConfig } from '../bridge/adapters.js';
-import { nextCronRun, routingNow, type BotRoutingRow } from './bot-routing.js';
+import { nextCronRun, routingNow, syncScheduleCard, type BotRoutingRow } from './bot-routing.js';
 
 export interface BotRow {
   id: string;
@@ -42,6 +42,7 @@ export interface BotBadges {
 }
 
 export interface BotRules {
+  schedule_paused?: boolean;
   quota_floor_pct: number;
   approve_public: boolean;
   review_edits: boolean;
@@ -152,9 +153,10 @@ export function validateRules(raw: unknown, existing?: Record<string, unknown>):
       ? existing.first_reply as FirstReply : DEFAULT_FIRST_REPLY
   } : { ...DEFAULT_BOT_RULES };
 
+  if (typeof existing?.schedule_paused === 'boolean') base.schedule_paused = existing.schedule_paused;
   if (raw === undefined || raw === null) return base;
   const obj = object(raw);
-  noExtraKeys(obj, ['quota_floor_pct', 'approve_public', 'review_edits', 'require_tests', 'quiet_schedule', 'first_reply']);
+  noExtraKeys(obj, ['quota_floor_pct', 'approve_public', 'review_edits', 'require_tests', 'quiet_schedule', 'first_reply', 'schedule_paused']);
 
   if (obj.quota_floor_pct !== undefined) {
     base.quota_floor_pct = integer(obj.quota_floor_pct, 'quota_floor_pct', 0, 50);
@@ -171,6 +173,7 @@ export function validateRules(raw: unknown, existing?: Record<string, unknown>):
   if (obj.quiet_schedule !== undefined) {
     base.quiet_schedule = booleanOption(obj.quiet_schedule, 'quiet_schedule');
   }
+  if (obj.schedule_paused !== undefined) base.schedule_paused = booleanOption(obj.schedule_paused, 'schedule_paused');
   if (obj.first_reply !== undefined) {
     const v = string(obj.first_reply, 'first_reply', 60);
     requireCondition(v === 'off' || v in FIRST_REPLY_MODELS, 400, 'invalid_arguments',
@@ -627,6 +630,12 @@ export class BotService {
         [botId, p.tenantId, scope, name, job, avatar, threadId, leadAgentId, JSON.stringify(routing), JSON.stringify(rules), schedule, p.id, idempotency, starred]
       );
       const bot = botRes.rows[0]!;
+      if (schedule) {
+        const now = (await db.query<{now: Date}>('SELECT clock_timestamp() AS now')).rows[0]!.now;
+        bot.next_run_at = rules.schedule_paused ? null : nextCronRun(schedule, now);
+        await db.query('UPDATE bots SET next_run_at=$2 WHERE id=$1', [bot.id, bot.next_run_at]);
+        await syncScheduleCard(db, p, bot, now);
+      }
 
       const threadRes = await db.query<ThreadRow>('SELECT * FROM threads WHERE id=$1', [threadId]);
       const thread = threadRes.rows[0]!;
@@ -718,6 +727,13 @@ export class BotService {
       const nextRules = input.rules !== undefined ? validateRules(input.rules, existing.rules) : existing.rules;
       const nextSchedule = input.schedule !== undefined ? validateSchedule(input.schedule) : existing.schedule;
 
+      const scheduleChanged = nextSchedule !== existing.schedule ||
+        (nextRules.schedule_paused === true) !== (existing.rules.schedule_paused === true);
+      const now = (await db.query<{now: Date}>('SELECT clock_timestamp() AS now')).rows[0]!.now;
+      const nextRun = scheduleChanged
+        ? (nextSchedule && !nextRules.schedule_paused ? nextCronRun(nextSchedule, now) : null)
+        : existing.next_run_at;
+
       if (input.name !== undefined) {
         await db.query('UPDATE threads SET title=$1, updated_at=clock_timestamp() WHERE id=$2', [nextName, existing.thread_id]);
       }
@@ -760,11 +776,13 @@ export class BotService {
       const updated = (await db.query<BotRow>(
         `UPDATE bots
          SET name=$1, job=$2, avatar=$3, lead_agent_id=$4, routing=$5::jsonb, rules=$6::jsonb, schedule=$7, starred=$9,
-             next_run_at=CASE WHEN schedule IS DISTINCT FROM $7 THEN NULL ELSE next_run_at END,
+             next_run_at=$10,
              version=version+1, updated_at=clock_timestamp()
          WHERE id=$8 RETURNING *`,
-        [nextName, nextJob, nextAvatar, nextLeadId, JSON.stringify(nextRouting), JSON.stringify(nextRules), nextSchedule, botId, nextStarred]
+        [nextName, nextJob, nextAvatar, nextLeadId, JSON.stringify(nextRouting), JSON.stringify(nextRules), nextSchedule, botId, nextStarred, nextRun]
       )).rows[0]!;
+
+      if (scheduleChanged) await syncScheduleCard(db, p, updated, now);
 
       await audit(db, p, existing.scope, 'bot.update', botId, { version: updated.version });
       await event(db, p, existing.scope, 'bot.updated', botId, { bot_id: botId, reason: 'updated' });
