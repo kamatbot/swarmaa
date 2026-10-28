@@ -325,7 +325,7 @@ struct TeamsAnswer: Decodable, Equatable {
 }
 
 struct TeamsMessage: Decodable, Equatable, Identifiable {
-    enum Kind: String { case text, handoff, swarm, run, question, answer, notice, unknown }
+    enum Kind: String { case text, handoff, swarm, run, question, answer, notice, task, unknown }
     struct Author: Decodable, Equatable {
         /// `human`, `agent` or `system`.
         var kind: String
@@ -336,10 +336,11 @@ struct TeamsMessage: Decodable, Equatable, Identifiable {
         var swarmID: String?
         var taskIDs: [String]
         var questionID: String?
-        private enum CodingKeys: String, CodingKey { case swarmID = "swarm_id", taskIDs = "task_ids", questionID = "question_id" }
+        var taskID: String?
+        private enum CodingKeys: String, CodingKey { case swarmID = "swarm_id", taskIDs = "task_ids", questionID = "question_id", taskID = "task_id" }
         init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
-            swarmID = c.opt(String.self, .swarmID); taskIDs = c.list(.taskIDs); questionID = c.opt(String.self, .questionID)
+            swarmID = c.opt(String.self, .swarmID); taskIDs = c.list(.taskIDs); questionID = c.opt(String.self, .questionID); taskID = c.opt(String.self, .taskID)
         }
     }
 
@@ -360,11 +361,13 @@ struct TeamsMessage: Decodable, Equatable, Identifiable {
     /// `swarm` / `run`: the card snapshot `thread_read` resolves.
     var swarm: TeamsSwarm?
     var run: TeamsRun?
+    /// `task`: the bot task this card stands for.
+    var task: TeamsTaskCard?
 
     var isHuman: Bool { author.kind == "human" }
 
     private enum CodingKeys: String, CodingKey {
-        case id, seq, author, kind, body, ref, swarm, run, question, answer
+        case id, seq, author, kind, body, ref, swarm, run, question, answer, task
         case threadID = "thread_id", createdAt = "created_at", editedAt = "edited_at"
     }
 
@@ -377,7 +380,7 @@ struct TeamsMessage: Decodable, Equatable, Identifiable {
         kind = Kind(rawValue: c.opt(String.self, .kind) ?? "") ?? .unknown
         ref = c.opt(Ref.self, .ref)
         createdAt = c.opt(Date.self, .createdAt); editedAt = c.opt(Date.self, .editedAt)
-        swarm = c.opt(TeamsSwarm.self, .swarm); run = c.opt(TeamsRun.self, .run)
+        swarm = c.opt(TeamsSwarm.self, .swarm); run = c.opt(TeamsRun.self, .run); task = c.opt(TeamsTaskCard.self, .task)
         // `question` and `answer` carry an object body; every other kind a string.
         body = c.opt(String.self, .body)
         switch kind {
@@ -400,6 +403,7 @@ struct TeamsMessage: Decodable, Equatable, Identifiable {
         case .run: return run?.summary ?? L10n.t("Ran subagents")
         case .question: return question?.prompt ?? body ?? L10n.t("Question")
         case .answer: return L10n.t("Answers sent")
+        case .task: return body ?? task?.title ?? L10n.t("Task")
         case .unknown: return ""
         }
     }
@@ -610,6 +614,42 @@ actor SwarmaTeamsClient {
                                         "idempotency_key": UUID().uuidString], as: AgentWrapper.self).agent
     }
 
+    // MARK: Bots (docs/BOTS.md)
+
+    private struct BotWrapper: Decodable { let bot: TeamsBot }
+
+    /// Updates first, as the service orders them.
+    func botList() async throws -> [TeamsBot] {
+        try await allPages("bot_list", ["limit": 100], as: TeamsBot.self)
+    }
+
+    func botGet(id: String) async throws -> TeamsBot {
+        try await call("bot_get", ["bot_id": id], as: BotWrapper.self).bot
+    }
+
+    func botCreate(name: String, job: String, scope: String, leadAgentID: String, memberAgentIDs: [String],
+                   routing: TeamsBotRouting, rules: TeamsBotRules) async throws -> TeamsBot {
+        try await call("bot_create", ["name": name, "job": job, "scope": scope, "lead_agent_id": leadAgentID,
+                                      "member_agent_ids": memberAgentIDs, "routing": try json(routing),
+                                      "rules": try json(rules), "idempotency_key": UUID().uuidString],
+                       as: BotWrapper.self).bot
+    }
+
+    func botUpdate(id: String, expectedVersion: Int, name: String, job: String, leadAgentID: String,
+                   memberAgentIDs: [String], routing: TeamsBotRouting, rules: TeamsBotRules,
+                   schedule: String?) async throws -> TeamsBot {
+        try await call("bot_update", ["bot_id": id, "expected_version": expectedVersion, "name": name, "job": job,
+                                      "lead_agent_id": leadAgentID, "member_agent_ids": memberAgentIDs,
+                                      "routing": try json(routing), "rules": try json(rules),
+                                      "schedule": schedule.map { $0 as Any } ?? NSNull()],
+                       as: BotWrapper.self).bot
+    }
+
+    /// Returns the `routing_now` map itself, keyed by kind.
+    func botRoutingPreview(id: String) async throws -> [String: TeamsRoutingNow] {
+        try await call("bot_routing_preview", ["bot_id": id], as: [String: TeamsRoutingNow].self)
+    }
+
     // MARK: Threads
 
     struct MessagePage: Decodable { var messages: [TeamsMessage]; var hasMore: Bool?
@@ -782,10 +822,10 @@ actor SwarmaTeamsClient {
     private struct ListPage<T: Decodable>: Decodable {
         let items: [T]
         let next: String?
-        private enum K: String, CodingKey { case tasks, threads, swarms, questions, items, next_cursor, next_before_id }
+        private enum K: String, CodingKey { case tasks, threads, swarms, questions, bots, items, next_cursor, next_before_id }
         init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: K.self)
-            items = try c.decode([T].self, forKey: [.tasks, .threads, .swarms, .questions, .items].first { c.contains($0) } ?? .tasks)
+            items = try c.decode([T].self, forKey: [.tasks, .threads, .swarms, .questions, .bots, .items].first { c.contains($0) } ?? .tasks)
             next = try c.decodeIfPresent(String.self, forKey: .next_cursor) ?? c.decodeIfPresent(String.self, forKey: .next_before_id)
         }
     }

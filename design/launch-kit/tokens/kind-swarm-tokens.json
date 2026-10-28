@@ -1,0 +1,577 @@
+{
+  "name": "Kind Swarm",
+  "version": 1,
+  "meta": {
+    "source": "kind-swarm@1.0.0 · https://instalanding.ai/systems/kind-swarm/kind-swarm.css"
+  },
+  "color": {
+    "themes": [
+      {
+        "id": "light",
+        "name": "Paper"
+      }
+    ],
+    "tokens": [
+      {
+        "name": "ks-ink",
+        "value": "#15111F",
+        "usage": "Primary ink: all text on paper, white and the pastel stages; every 3px outline and every hard shadow; the dark band. 16.2:1 on ks-paper, 6:1 on ks-flame, 16:1 on ks-lime."
+      },
+      {
+        "name": "ks-paper",
+        "value": "#F4EFE6",
+        "usage": "Cream page ground, agent cards and paper buttons; also body text on ks-ink (16.2:1)."
+      },
+      {
+        "name": "ks-white",
+        "value": "#FFFFFF",
+        "usage": "Pricing plans, approval-queue panel, stage tags and queue buttons. Text on it is ks-ink."
+      },
+      {
+        "name": "ks-flame",
+        "value": "#FF5A3C",
+        "usage": "Hero and closing bands (the flame rings' light arc). Ground only: ks-ink text on it (6:1). Never text on paper (2.7:1)."
+      },
+      {
+        "name": "ks-flame-deep",
+        "value": "#F0361A",
+        "usage": "Dark arc of the flame rings (--c2 in .ks-hero-rings). Pattern only."
+      },
+      {
+        "name": "ks-flame-hot",
+        "value": "#FF3D1F",
+        "usage": "Hard shadow under the featured (ink) pricing plan and its lime button."
+      },
+      {
+        "name": "ks-lime",
+        "value": "#D4FF3A",
+        "usage": "Marquee and 'zero' bands, the lime button, active filter pill, the hard shadow under cream cards, highlight text on ink (16:1) and on ks-ink-raised (14.6:1)."
+      },
+      {
+        "name": "ks-lime-deep",
+        "value": "#C6F230",
+        "usage": "Dark arc of the lime rings (.ks-mq-rings). Pattern only."
+      },
+      {
+        "name": "ks-focus",
+        "value": "#3D7BFF",
+        "usage": "3px focus outline on every link and button. 3.35:1 on paper, 4.8:1 on ink, 3.3:1 on lime; FAILS on ks-flame (1.24:1): the source keeps it, so on flame bands rely on the 4px offset putting the ring over the ink outline and test it."
+      },
+      {
+        "name": "ks-text-soft",
+        "value": "#3A3347",
+        "usage": "Secondary body copy and card skills lines on ks-paper (10.5:1) and white."
+      },
+      {
+        "name": "ks-text-muted",
+        "value": "#5A5168",
+        "usage": "Metadata (price units, queue row meta) on ks-paper (6.5:1) and white (7.5:1)."
+      },
+      {
+        "name": "ks-text-card",
+        "value": "#2A2436",
+        "usage": "Agent-card description text on ks-paper (13:1)."
+      },
+      {
+        "name": "ks-on-ink-soft",
+        "value": "#CFC6E8",
+        "usage": "Soft lilac body copy and stat labels on ks-ink (11.4:1) and ks-ink-raised (10.4:1)."
+      },
+      {
+        "name": "ks-on-ink-muted",
+        "value": "#B9B0CC",
+        "usage": "Muted units on ks-ink, such as the featured plan's 'per caseworker / month' (9:1)."
+      },
+      {
+        "name": "ks-on-ink-faint",
+        "value": "#E4DEF2",
+        "usage": "The '/mo' unit inside the ink price pill (14.2:1 on ks-ink)."
+      },
+      {
+        "name": "ks-ink-raised",
+        "value": "#1F1A2E",
+        "usage": "Raised surface on ink: rule cards."
+      },
+      {
+        "name": "ks-ink-line",
+        "value": "#3B3358",
+        "usage": "2px border of rule cards on ks-ink-raised. Decorative edge, not a control border."
+      },
+      {
+        "name": "ks-ink-ring",
+        "value": "#221C3A",
+        "usage": "Second arc of the ink rings (.ks-ink-rings). Pattern only."
+      },
+      {
+        "name": "ks-flame-shadow",
+        "value": "#5A160C",
+        "usage": "Second arc of the ring pattern clipped into stencil type (.ks-wave-text), paired with ks-ink."
+      },
+      {
+        "name": "ks-moji-blue",
+        "value": "#3D7BFF",
+        "usage": "Start of the blue, violet characters' gradients (#ks-blue, #ks-violet) and the antenna stroke."
+      },
+      {
+        "name": "ks-moji-violet",
+        "value": "#B56CFF",
+        "usage": "End of #ks-blue, #ks-peri and #ks-lilac; the Records Clerk's eyelid."
+      },
+      {
+        "name": "ks-moji-violet-hot",
+        "value": "#C873FF",
+        "usage": "End of #ks-violet, the swarm lead's body."
+      },
+      {
+        "name": "ks-moji-peri",
+        "value": "#7AA8FF",
+        "usage": "Start of #ks-peri (periwinkle queue badge)."
+      },
+      {
+        "name": "ks-moji-lilac",
+        "value": "#E7A6FF",
+        "usage": "Start of #ks-lilac, the Records Clerk's body."
+      },
+      {
+        "name": "ks-moji-sun",
+        "value": "#FFD24A",
+        "usage": "Start of #ks-sun, the Benefits Navigator."
+      },
+      {
+        "name": "ks-moji-sun-deep",
+        "value": "#FF9A1C",
+        "usage": "End of #ks-sun."
+      },
+      {
+        "name": "ks-moji-peach",
+        "value": "#FFB36B",
+        "usage": "Start of #ks-peach, the Housing Scout."
+      },
+      {
+        "name": "ks-moji-pink",
+        "value": "#FF6FB5",
+        "usage": "End of #ks-peach."
+      },
+      {
+        "name": "ks-moji-eye",
+        "value": "#F6EFDC",
+        "usage": "Eye whites on every character."
+      },
+      {
+        "name": "ks-moji-blush",
+        "value": "#FF8FC4",
+        "usage": "Cheek blush on the swarm lead (at 80% opacity)."
+      },
+      {
+        "name": "ks-stage-1",
+        "value": "#9CC8FF",
+        "usage": "Stage 1 (blue) card stage ground; ks-ink on it."
+      },
+      {
+        "name": "ks-stage-1-ring",
+        "value": "#84B6F7",
+        "usage": "Stage 1 ring arc."
+      },
+      {
+        "name": "ks-stage-2",
+        "value": "#FFE08A",
+        "usage": "Stage 2 (butter) card stage ground; ks-ink on it."
+      },
+      {
+        "name": "ks-stage-2-ring",
+        "value": "#FFD15C",
+        "usage": "Stage 2 ring arc."
+      },
+      {
+        "name": "ks-stage-3",
+        "value": "#FFC4A8",
+        "usage": "Stage 3 (peach) card stage ground; ks-ink on it."
+      },
+      {
+        "name": "ks-stage-3-ring",
+        "value": "#FFAE8A",
+        "usage": "Stage 3 ring arc."
+      },
+      {
+        "name": "ks-stage-4",
+        "value": "#D6C2FF",
+        "usage": "Stage 4 (lilac) card stage ground; ks-ink on it."
+      },
+      {
+        "name": "ks-stage-4-ring",
+        "value": "#C3A8FF",
+        "usage": "Stage 4 ring arc."
+      },
+      {
+        "name": "ks-stage-5",
+        "value": "#FFB8D9",
+        "usage": "Stage 5 (pink) card stage ground; ks-ink on it."
+      },
+      {
+        "name": "ks-stage-5-ring",
+        "value": "#FF9CC8",
+        "usage": "Stage 5 ring arc."
+      },
+      {
+        "name": "ks-stage-6",
+        "value": "#C9F26B",
+        "usage": "Stage 6 (lime) card stage ground; ks-ink on it."
+      },
+      {
+        "name": "ks-stage-6-ring",
+        "value": "#B6E34A",
+        "usage": "Stage 6 ring arc."
+      },
+      {
+        "name": "ks-stage-7",
+        "value": "#A8E6FF",
+        "usage": "Stage 7 (sky) card stage ground; ks-ink on it."
+      },
+      {
+        "name": "ks-stage-7-ring",
+        "value": "#86D8F7",
+        "usage": "Stage 7 ring arc."
+      },
+      {
+        "name": "ks-stage-8",
+        "value": "#F2C4FF",
+        "usage": "Stage 8 (orchid) card stage ground; ks-ink on it."
+      },
+      {
+        "name": "ks-stage-8-ring",
+        "value": "#E6A8FA",
+        "usage": "Stage 8 ring arc."
+      }
+    ]
+  },
+  "type": {
+    "fonts": [],
+    "families": {
+      "display": "\"Stardos Stencil\", \"Courier New\", serif",
+      "body": "\"IBM Plex Sans Condensed\", \"Arial Narrow\", Arial, sans-serif",
+      "mono": "\"IBM Plex Mono\", ui-monospace, Menlo, monospace"
+    },
+    "groups": [
+      {
+        "name": "Display",
+        "family": "display",
+        "styles": [
+          {
+            "name": "type-display-xl",
+            "fontSize": "260px",
+            "lineHeight": 0.92,
+            "fontWeight": 700,
+            "letterSpacing": "0.01em",
+            "sample": "KIND SWARM",
+            "usage": "The one h1 per page. Fluid: --ks-display-xl, clamp(60px, 17vw, 260px); 260px is its cap. Uppercase."
+          },
+          {
+            "name": "type-display-lg",
+            "fontSize": "136px",
+            "lineHeight": 0.92,
+            "fontWeight": 700,
+            "letterSpacing": "0.01em",
+            "sample": "MANY HANDS.",
+            "usage": "Section headlines. Fluid: --ks-display-lg, clamp(48px, 8.4vw, 136px). Uppercase."
+          },
+          {
+            "name": "type-display-md",
+            "fontSize": "72px",
+            "lineHeight": 0.92,
+            "fontWeight": 700,
+            "letterSpacing": "0.01em",
+            "sample": "NOT ONE.",
+            "usage": "Band statements. Fluid: --ks-display-md, clamp(40px, 4.4vw, 72px). Uppercase."
+          },
+          {
+            "name": "type-display-sm",
+            "fontSize": "34px",
+            "lineHeight": 0.92,
+            "fontWeight": 700,
+            "letterSpacing": "0.01em",
+            "sample": "SAY IT PLAINLY",
+            "usage": "Step titles (--ks-display-sm). Uppercase."
+          },
+          {
+            "name": "type-step-numeral",
+            "fontSize": "96px",
+            "lineHeight": 0.8,
+            "fontWeight": 700,
+            "sample": "01",
+            "usage": "Outlined step numerals (.ks-num): transparent fill, 2.5px ks-ink stroke."
+          },
+          {
+            "name": "type-serif-accent",
+            "family": "body",
+            "fontStyle": "italic",
+            "fontSize": "0.72em",
+            "lineHeight": 1,
+            "fontWeight": 400,
+            "letterSpacing": "-0.02em",
+            "sample": "one desk.",
+            "usage": "The italic second line under a display line (.ks-serif), at .72em of the display size. Lower case, never uppercase."
+          }
+        ]
+      },
+      {
+        "name": "Text",
+        "family": "body",
+        "styles": [
+          {
+            "name": "type-body-lg",
+            "fontSize": "20px",
+            "lineHeight": 1.55,
+            "fontWeight": 400,
+            "sample": "Each agent does one job and hands the rest on.",
+            "usage": "Section intros (--ks-body-lg), in ks-text-soft on paper."
+          },
+          {
+            "name": "type-body",
+            "fontSize": "17px",
+            "lineHeight": 1.55,
+            "fontWeight": 400,
+            "sample": "You edit it, you sign it.",
+            "usage": "Default copy (--ks-body)."
+          },
+          {
+            "name": "type-card-name",
+            "fontSize": "30px",
+            "lineHeight": 1.05,
+            "fontWeight": 700,
+            "letterSpacing": "-0.01em",
+            "sample": "Intake Scribe",
+            "usage": "Agent card names (.ks-cname): condensed bold, sentence case."
+          },
+          {
+            "name": "type-button",
+            "fontSize": "17px",
+            "lineHeight": 1,
+            "fontWeight": 600,
+            "sample": "Book a demo",
+            "usage": "Button labels (.ks-btn); nav links are 16px/600."
+          }
+        ]
+      },
+      {
+        "name": "Mono",
+        "family": "mono",
+        "styles": [
+          {
+            "name": "type-label",
+            "fontSize": "13px",
+            "lineHeight": 1.35,
+            "fontWeight": 500,
+            "letterSpacing": "0.16em",
+            "sample": "02 — THE CREW",
+            "usage": "Section labels (.ks-label): uppercase, numbered with an em dash."
+          },
+          {
+            "name": "type-price",
+            "fontSize": "16px",
+            "lineHeight": 1,
+            "fontWeight": 600,
+            "sample": "$14/mo",
+            "usage": "Price pills (.ks-cprice) and the agent code chip (13px, .08em)."
+          }
+        ]
+      }
+    ]
+  },
+  "spacing": {
+    "tokens": [
+      {
+        "name": "ks-gap",
+        "value": "36px",
+        "usage": "Default grid gap between cards and plans."
+      },
+      {
+        "name": "ks-gap-lg",
+        "value": "56px",
+        "usage": "Wide grid and column gap."
+      },
+      {
+        "name": "ks-shadow-offset",
+        "value": "8px",
+        "usage": "Hard-shadow offset; a pressed button translates by exactly this."
+      },
+      {
+        "name": "ks-ring-size",
+        "value": "120px",
+        "usage": "Ring tile (--s) for flame, ink and wave-text rings."
+      },
+      {
+        "name": "ks-ring-size-sm",
+        "value": "90px",
+        "usage": "Ring tile for the lime marquee band."
+      },
+      {
+        "name": "ks-ring-size-stage",
+        "value": "76px",
+        "usage": "Ring tile inside agent-card stages."
+      },
+      {
+        "name": "ks-page-max",
+        "value": "1440px",
+        "usage": "Max width of .ks-wrap content."
+      }
+    ]
+  },
+  "radius": {
+    "tokens": [
+      {
+        "name": "ks-radius-pill",
+        "value": "999px",
+        "usage": "Buttons, pills, chips, tags, price pills."
+      },
+      {
+        "name": "ks-radius-card",
+        "value": "30px",
+        "usage": "Agent cards."
+      },
+      {
+        "name": "ks-radius-plan",
+        "value": "28px",
+        "usage": "Pricing plans."
+      },
+      {
+        "name": "ks-radius-panel",
+        "value": "24px",
+        "usage": "Approval queue, rule cards, ink panels."
+      },
+      {
+        "name": "ks-radius-stage",
+        "value": "22px",
+        "usage": "Card stages and ring swatches."
+      },
+      {
+        "name": "ks-radius-inset",
+        "value": "14px",
+        "usage": "Small inset tiles (stage swatches)."
+      }
+    ]
+  },
+  "shadow": {
+    "note": "Hard offset shadows only, never blurred. Resolved from --ks-shadow-offset (8px).",
+    "tokens": [
+      {
+        "name": "ks-shadow",
+        "value": "8px 8px 0 #15111F",
+        "usage": "Buttons, plans, queue panel, pokeable characters (as a drop-shadow)."
+      },
+      {
+        "name": "ks-shadow-hover",
+        "value": "10px 10px 0 #15111F",
+        "usage": "Hovered button: lifts 2px and the shadow grows to match."
+      },
+      {
+        "name": "ks-shadow-lime",
+        "value": "8px 8px 0 #D4FF3A",
+        "usage": "Cream agent cards on ink, and buttons inside .ks-on-ink."
+      },
+      {
+        "name": "ks-shadow-lime-hover",
+        "value": "11px 11px 0 #D4FF3A",
+        "usage": "Hovered agent card (lifts 3px)."
+      }
+    ]
+  },
+  "border": {
+    "note": "Outline everything in ks-ink.",
+    "tokens": [
+      {
+        "name": "ks-border",
+        "value": "3px",
+        "usage": "Buttons, plans, panels, band rules, step rules."
+      },
+      {
+        "name": "ks-border-stage",
+        "value": "2.5px",
+        "usage": "Agent-card stages."
+      },
+      {
+        "name": "ks-border-thin",
+        "value": "2px",
+        "usage": "Tags, codes, chips, queue buttons."
+      }
+    ]
+  },
+  "typescale": {
+    "note": "Fluid display sizes and type metrics, declared as custom properties.",
+    "tokens": [
+      {
+        "name": "ks-display-xl",
+        "value": "clamp(60px, 17vw, 260px)",
+        "usage": "Hero h1."
+      },
+      {
+        "name": "ks-display-lg",
+        "value": "clamp(48px, 8.4vw, 136px)",
+        "usage": "Section headlines."
+      },
+      {
+        "name": "ks-display-md",
+        "value": "clamp(40px, 4.4vw, 72px)",
+        "usage": "Band statements."
+      },
+      {
+        "name": "ks-display-sm",
+        "value": "34px",
+        "usage": "Step titles."
+      },
+      {
+        "name": "ks-body-lg",
+        "value": "20px",
+        "usage": "Intro copy."
+      },
+      {
+        "name": "ks-body",
+        "value": "17px",
+        "usage": "Body copy."
+      },
+      {
+        "name": "ks-label",
+        "value": "13px",
+        "usage": "Mono labels."
+      },
+      {
+        "name": "ks-label-tracking",
+        "value": ".16em",
+        "usage": "Label letter-spacing."
+      },
+      {
+        "name": "ks-leading-display",
+        "value": ".92",
+        "usage": "Display line-height."
+      },
+      {
+        "name": "ks-leading-body",
+        "value": "1.55",
+        "usage": "Body line-height."
+      }
+    ]
+  },
+  "layout": {
+    "note": "Fluid page rhythm.",
+    "tokens": [
+      {
+        "name": "ks-gutter",
+        "value": "clamp(16px, 4vw, 56px)",
+        "usage": "Side padding of .ks-wrap."
+      },
+      {
+        "name": "ks-section-y",
+        "value": "clamp(80px, 10vw, 160px)",
+        "usage": "Vertical padding of each band."
+      }
+    ]
+  },
+  "opacity": {
+    "tokens": [
+      {
+        "name": "ks-grain-opacity",
+        "value": ".22",
+        "usage": "feTurbulence grain over coloured bands, multiplied."
+      }
+    ]
+  }
+}

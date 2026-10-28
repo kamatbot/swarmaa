@@ -47,10 +47,10 @@ struct TeamsRow: Identifiable, Equatable {
 @MainActor
 final class TeamsModel: ObservableObject {
     enum Phase: Equatable { case loading, ready, serviceTooOld, failed(String) }
-    enum Pane: Hashable { case home, tasks, agents, flows, usage }
+    enum Pane: Hashable { case bots, tasks, usage }
 
     @Published var phase: Phase = .loading
-    @Published var pane: Pane = .home { didSet { if pane == .agents { markSelectedRead() } } }
+    @Published var pane: Pane = .bots { didSet { if pane == .bots { markSelectedRead() } } }
     @Published var search = ""
     @Published private(set) var agents: [TeamsAgent] = []
     @Published private(set) var channels: [TeamsThread] = []
@@ -97,11 +97,18 @@ final class TeamsModel: ObservableObject {
     @Published private(set) var streamState = "Connecting"
     @Published var targetQuestionID: String?
     @Published var creatingAgent = false
+    @Published var creatingBot = false
+    /// Bot settings open over the thread pane.
+    @Published var editingBotID: String?
+    @Published private(set) var bots: [TeamsBot] = []
+    /// False while the service has no `bot_list`: agents stand in as one-member bots.
+    @Published private(set) var botsSupported = true
+    @Published private(set) var savingBot = false
     struct PendingSend: Equatable {
         let body: String
         let key: String
     }
-    var threadIsVisible: Bool { isVisible && pane == .agents }
+    var threadIsVisible: Bool { isVisible && pane == .bots && editingBotID == nil }
     private var hasLoaded = false
     private var refreshing = false
     private var taskRefresh: Task<Void, Never>?
@@ -197,6 +204,7 @@ final class TeamsModel: ObservableObject {
         do { status = try await client.status() }
         catch { staleError = SwarmaTeamsClient.Failure.map(error).message }
         await loadTasks()
+        await loadBots()
         for a in agents { if let t = a.mainThreadID { seed(t, a.unread, a.lastSeq, a.lastReadSeq, a.lastMessage) } }
         for c in channels { seed(c.id, c.unread, c.lastSeq, c.lastReadSeq, c.lastMessage) }
         phase = .ready
@@ -209,6 +217,123 @@ final class TeamsModel: ObservableObject {
         badges.seed(threadID: thread, unread: TeamsUnread.count(unread: unread, lastSeq: last, lastReadSeq: read),
                     lastSeq: last)
         if let preview { previews[thread] = preview }
+    }
+
+    // MARK: Bots
+
+    /// Bots with something new first (needs you, then unread), then the rest by last activity.
+    var sortedBots: [TeamsBot] {
+        let query = search.trimmingCharacters(in: .whitespaces).lowercased()
+        return bots.filter { !$0.archived && (query.isEmpty || $0.name.lowercased().contains(query) || $0.job.lowercased().contains(query)) }
+            .sorted {
+                let a = botNeedsYou($0), b = botNeedsYou($1)
+                if a != b { return a > b }
+                let ua = botUnread($0), ub = botUnread($1)
+                if (ua > 0) != (ub > 0) { return ua > 0 }
+                return (botLatest($0)?.at ?? .distantPast) > (botLatest($1)?.at ?? .distantPast)
+            }
+    }
+
+    func botUnread(_ bot: TeamsBot) -> Int { max(badges.count(bot.threadID), bot.badges.unread) }
+    func botNeedsYou(_ bot: TeamsBot) -> Int { bot.badges.needsYou }
+    func botHasUpdates(_ bot: TeamsBot) -> Bool { botNeedsYou(bot) > 0 || botUnread(bot) > 0 }
+    func botLatest(_ bot: TeamsBot) -> TeamsBot.Badges.Latest? {
+        if bot.badges.needsYou == 0, let p = previews[bot.threadID], let body = p.body, !body.isEmpty {
+            return TeamsBot.Badges.Latest(kind: p.kind, line: body, at: p.createdAt)
+        }
+        return bot.badges.latest
+    }
+    var botsWithUpdates: Int { bots.filter { !$0.archived && botHasUpdates($0) }.count }
+
+    func bot(threadID: String?) -> TeamsBot? { threadID.flatMap { t in bots.first { $0.threadID == t } } }
+    func bot(id: String?) -> TeamsBot? { id.flatMap { id in bots.first { $0.id == id } } }
+    var selectedBot: TeamsBot? { bot(threadID: selectedThreadID) }
+    func crew(_ bot: TeamsBot) -> [TeamsAgent] { bot.crewIDs.compactMap { agent(id: $0) } }
+
+    func loadBots() async {
+        do {
+            bots = try await client.botList()
+            botsSupported = true
+        } catch {
+            let failure = SwarmaTeamsClient.Failure.map(error)
+            guard failure == .serviceTooOld else { staleError = failure.message; return }
+            botsSupported = false
+            bots = agents.filter { $0.mainThreadID != nil }.map {
+                TeamsBot(legacy: $0, unread: badges.count($0.mainThreadID), preview: previews[$0.mainThreadID ?? ""] ?? $0.lastMessage)
+            }
+        }
+        if selectedThreadID == nil, let first = sortedBots.first { select(threadID: first.threadID) }
+    }
+
+    #if DEBUG
+    func setBotsForTesting(_ bots: [TeamsBot]) { self.bots = bots }
+    /// Snapshot renders and previews: example data, no service.
+    func loadFixture(agents: [TeamsAgent], bots: [TeamsBot], messages: [String: [TeamsMessage]],
+                     status: SwarmaStatus?, attention: [TeamsAttentionItem] = [], select threadID: String?) {
+        self.agents = agents; self.bots = bots; self.messages = messages; self.status = status
+        self.attention = attention
+        for (t, list) in messages { if let last = list.last { previews[t] = TeamsPreview(body: last.preview, createdAt: last.createdAt) } }
+        selectedThreadID = threadID
+        streamState = "Live"
+        phase = .ready
+    }
+    #endif
+
+    /// `bot_list` carries no `routing_now`; the settings pane fetches it with `bot_get`.
+    func refreshBot(_ id: String) async {
+        guard botsSupported, let fresh = try? await client.botGet(id: id) else { return }
+        replaceBot(fresh)
+    }
+
+    private func replaceBot(_ bot: TeamsBot) {
+        if let i = bots.firstIndex(where: { $0.id == bot.id }) { bots[i] = bot } else { bots.append(bot) }
+    }
+
+    func saveBot(_ bot: TeamsBot, name: String, job: String, leadAgentID: String, memberAgentIDs: [String],
+                 routing: TeamsBotRouting, rules: TeamsBotRules, schedule: String?) async -> Bool {
+        guard bot.isLegacyAgent == false, let version = bot.version else {
+            error = L10n.t("Update the Swarmaa service to configure bots")
+            return false
+        }
+        savingBot = true
+        defer { savingBot = false }
+        do {
+            replaceBot(try await client.botUpdate(id: bot.id, expectedVersion: version, name: name, job: job,
+                                                  leadAgentID: leadAgentID, memberAgentIDs: memberAgentIDs,
+                                                  routing: routing, rules: rules, schedule: schedule))
+            return true
+        } catch {
+            self.error = SwarmaTeamsClient.Failure.map(error).message
+            return false
+        }
+    }
+
+    /// A bot needs a lead: an existing agent, or a new one made for it from the bot's job.
+    func createBot(name: String, job: String, scope: String, leadAgentID: String?, memberAgentIDs: [String]) async -> Bool {
+        savingBot = true
+        defer { savingBot = false }
+        do {
+            var lead = leadAgentID
+            if lead == nil {
+                let agent = try await client.agentCreate(name: name, role: L10n.t("Lead"), instructions: job,
+                                                         scope: scope, runner: .auto, edits: false)
+                replace(agent)
+                lead = agent.id
+            }
+            guard botsSupported else {
+                await loadBots()
+                if let a = agent(id: lead), let t = a.mainThreadID { select(threadID: t) }
+                return true
+            }
+            let bot = try await client.botCreate(name: name, job: job, scope: scope, leadAgentID: lead!,
+                                                 memberAgentIDs: memberAgentIDs, routing: TeamsBotRouting(), rules: TeamsBotRules())
+            replaceBot(bot)
+            select(threadID: bot.threadID)
+            return true
+        } catch {
+            self.error = SwarmaTeamsClient.Failure.map(error).message
+            return false
+        }
     }
 
     // MARK: Needs you and Tasks
@@ -274,6 +399,7 @@ final class TeamsModel: ObservableObject {
                 let scopes = taskRefreshScopes
                 taskRefreshScopes = []
                 await loadTasks(scopes: scopes)
+                await loadBots()
             } while taskRefreshNeeded && !Task.isCancelled
             taskRefresh = nil
         }
@@ -362,7 +488,8 @@ final class TeamsModel: ObservableObject {
         if selectedThreadID != threadID { targetQuestionID = nil }
         if refreshHistory, let threadID { staleThreads.insert(threadID) }
         selectedThreadID = threadID
-        pane = .agents
+        pane = .bots
+        editingBotID = nil
         guard let threadID else { return }
         Task {
             if refreshHistory { await loadLatest(threadID) }
@@ -605,6 +732,7 @@ final class TeamsModel: ObservableObject {
                 staleError = SwarmaTeamsClient.Failure.map(error).message
             }
             if isOpen { markSelectedRead() }
+            scheduleTaskRefresh(scope: event.scope)
         case "swarm.updated":
             guard let id = event.subjectID else { return }
             guard let s = try? await client.swarmGet(id: id) else { return }
@@ -612,6 +740,8 @@ final class TeamsModel: ObservableObject {
             if ["done", "cancelled"].contains(s.status) { openSwarms.removeAll { $0.id == id } }
             else if let i = openSwarms.firstIndex(where: { $0.id == id }) { openSwarms[i] = s }
             else { openSwarms.append(s) }
+        case "bot.updated":
+            scheduleTaskRefresh(scope: event.scope)
         case "agent.updated":
             guard let id = event.subjectID, let a = try? await client.agentGet(id: id) else { return }
             replace(a)

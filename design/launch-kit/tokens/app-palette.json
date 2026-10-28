@@ -1,0 +1,25 @@
+{
+  "name": "Swarmaa app (muted Kind Swarm)",
+  "source": "Mac-app/Sources/Teams/KS.swift",
+  "colors": {
+    "ink": "#15111F",
+    "paper": "#F4EFE6",
+    "white": "#FFFFFF",
+    "lime": "#CFE08A",
+    "coral": "#E8836B",
+    "coral-tint": "#FBEFE7",
+    "sage": "#D6E3A6",
+    "sage-tint": "#F1F5E2",
+    "sky": "#B7CCE8",
+    "butter": "#EAD9A6",
+    "lilac": "#D9CDEE",
+    "text-soft": "#3A3347",
+    "text-muted": "#5A5168",
+    "on-ink-soft": "#CFC6E8",
+    "on-ink-muted": "#B9B0CC",
+    "ink-line": "#3B3358"
+  },
+  "providers": { "claude": "#CFE08A", "antigravity": "#B7CCE8", "codex": "#E8836B", "grok": "#EAD9A6" },
+  "shape": { "border": "2.5px ink", "shadow": "5px 5px 0 ink, never blurred", "card_radius": "20-24px", "pills": "capsule, 2px ink border" },
+  "type": { "display": "stencil / heavy compressed, upper case, ends with a full stop", "body": "condensed sans", "labels": "mono, upper case, tracked, numbered '01 — '" }
+}
