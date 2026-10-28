@@ -21,11 +21,11 @@
         "HostRoom"
       ]
     }
+  ],
+  "routes": [
+    {
+      "pattern": "relay.swarmaa.com",
+      "custom_domain": true
+    }
   ]
-  // "routes": [
-  //   {
-  //     "pattern": "relay.swarmaa.com",
-  //     "custom_domain": true
-  //   }
-  // ]
 }
