@@ -419,6 +419,17 @@ final class TeamsModel: ObservableObject {
         }
     }
 
+    private var botRefresh: Task<Void, Never>?
+    /// Coalesced `bot_list` for message events: badges and previews, no task lists.
+    private func scheduleBotRefresh() {
+        guard botRefresh == nil else { return }
+        botRefresh = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(250))
+            await self?.loadBots()
+            self?.botRefresh = nil
+        }
+    }
+
     private func scheduleTaskRefresh(scope: String?) {
         taskRefreshNeeded = true
         if let scope { taskRefreshScopes?.insert(scope) }
@@ -832,7 +843,9 @@ final class TeamsModel: ObservableObject {
                 staleError = SwarmaTeamsClient.Failure.map(error).message
             }
             if isOpen { markSelectedRead() }
-            scheduleTaskRefresh(scope: event.scope)
+            // Only task cards and questions change the task lists; any other message only moves a bot's preview.
+            if event.kind == nil || ["task", "question", "answer", "swarm"].contains(event.kind!) { scheduleTaskRefresh(scope: event.scope) }
+            else if bot(threadID: t) != nil { scheduleBotRefresh() }
         case "swarm.updated":
             guard let id = event.subjectID else { return }
             guard let s = try? await client.swarmGet(id: id) else { return }
