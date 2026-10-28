@@ -8,6 +8,7 @@ struct ThreadView: View {
 
     @State private var nearBottom = true
     @State private var answeringQuestion: TeamsQuestion?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// Cached history stays on screen while it refreshes, goes stale or fails; the state shows as a banner above it.
     private var messages: [TeamsMessage] { model.messages[threadID] ?? [] }
@@ -64,7 +65,7 @@ struct ThreadView: View {
                 }
                 .onChange(of: messages.last?.id) { _, last in
                     guard let last, nearBottom else { return }
-                    withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(last, anchor: .bottom) }
+                    withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) { proxy.scrollTo(last, anchor: .bottom) }
                     model.markSelectedRead()
                 }
                 .task(id: "\(threadID):\(model.targetQuestionID ?? "")") {
@@ -145,7 +146,7 @@ struct ThreadHeader: View {
         }
         .padding(.horizontal, 20).padding(.vertical, 12)
         .background(KS.paper)
-        .overlay(alignment: .bottom) { Rectangle().fill(KS.ink).frame(height: 2.5) }
+        .overlay(alignment: .bottom) { Rectangle().fill(KS.ink).frame(height: 2) }
     }
 
     static func status(_ status: String?) -> String {
@@ -248,7 +249,6 @@ struct TypingBubble: View {
                 HStack(spacing: 6) {
                     Text(verbatim: name).font(KS.body(14, .bold))
                     Image(systemName: "ellipsis").font(.system(size: 11, weight: .bold)).foregroundStyle(KS.textMuted)
-                        .symbolEffect(.variableColor.iterative, options: .repeating)
                     Text(verbatim: L10n.t("typing")).font(KS.mono(10)).foregroundStyle(KS.textMuted)
                 }
                 Text(verbatim: typing.text).textSelection(.enabled)
@@ -615,7 +615,7 @@ struct Composer: View {
             ZStack(alignment: .topLeading) {
                 if text.wrappedValue.isEmpty {
                     Text(verbatim: L10n.t("Message · Return to send, Shift-Return for a new line"))
-                        .foregroundStyle(Palette.textSecondary).padding(.horizontal, 5).padding(.vertical, 8)
+                        .font(KS.body(16)).foregroundStyle(KS.textMuted).padding(.horizontal, 5).padding(.vertical, 8)
                         .allowsHitTesting(false)
                 }
                 TextEditor(text: text)
@@ -640,7 +640,7 @@ struct Composer: View {
         .ksCard(radius: 22, shadow: true)
         .padding(.horizontal, 20).padding(.top, 10).padding(.bottom, 16)
         .background(KS.paper)
-        .overlay(alignment: .top) { Rectangle().fill(KS.ink).frame(height: 2.5) }
+        .overlay(alignment: .top) { Rectangle().fill(KS.ink).frame(height: 2) }
 
     }
 

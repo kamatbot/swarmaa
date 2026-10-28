@@ -1,6 +1,65 @@
 import XCTest
 
 @MainActor final class NavigationTests: XCTestCase {
+    func testSearchAndUsageWithLargerText() {
+        let app = XCUIApplication()
+        app.launchArguments = ["-demo", "-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityL"]
+        app.launch()
+        let search = app.textFields["Search bots"]
+        XCTAssertTrue(search.waitForExistence(timeout: 10))
+        search.tap()
+        search.typeText("No matching bot")
+        XCTAssertTrue(app.staticTexts["No bots match “No matching bot”. Try another name or job."].exists)
+        app.buttons["Clear search"].tap()
+        XCTAssertTrue(app.buttons["bot-launch"].exists)
+        app.buttons["Usage"].tap()
+        XCTAssertTrue(app.staticTexts["USAGE."].waitForExistence(timeout: 3))
+        let refresh = app.buttons["Refresh usage"]
+        for _ in 0..<8 {
+            if refresh.isHittable { break }
+            app.scrollViews.firstMatch.swipeUp()
+        }
+        XCTAssertTrue(refresh.isHittable, "Routing and refresh remain reachable with larger text")
+        let capture = XCTAttachment(screenshot: app.screenshot())
+        capture.name = "Usage — accessibility text"
+        capture.lifetime = .keepAlways
+        add(capture)
+        app.buttons["Close"].tap()
+        app.buttons["You"].tap()
+        let hosts = app.buttons.containing(.staticText, identifier: "Hosts and devices").firstMatch
+        XCTAssertTrue(hosts.waitForExistence(timeout: 3))
+        if !hosts.isHittable { app.scrollViews.firstMatch.swipeUp() }
+        XCTAssertTrue(hosts.isHittable, "The account sheet scrolls at larger text sizes")
+
+        app.terminate()
+        app.launchArguments += ["-screen", "newBot"]
+        app.launch()
+        XCTAssertTrue(app.buttons["close-sheet"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["close-sheet"].isHittable)
+        let fields = app.scrollViews["new-bot-fields"]
+        let project = app.buttons["project-picker"]
+        let lead = app.buttons["lead-picker"]
+        for _ in 0..<5 {
+            if project.isHittable && lead.isHittable { break }
+            fields.swipeUp()
+        }
+        XCTAssertTrue(project.isHittable)
+        XCTAssertTrue(lead.isHittable)
+        XCTAssertGreaterThan(lead.frame.minY, project.frame.maxY, "Large-text pickers stack without overlap")
+        let formCapture = XCTAttachment(screenshot: app.screenshot())
+        formCapture.name = "New bot — accessibility text"
+        formCapture.lifetime = .keepAlways
+        add(formCapture)
+
+        app.terminate()
+        app.launchArguments = ["-demo", "-screen", "settings", "-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityL"]
+        app.launch()
+        XCTAssertTrue(app.buttons["Close"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["Close"].isHittable)
+        app.buttons["Close"].tap()
+        XCTAssertTrue(app.textFields["composer"].waitForExistence(timeout: 3))
+    }
+
     func testHiddenOptionAndSettingsActionsAtBottom() {
         let app = XCUIApplication()
         app.launchArguments = ["-demo", "-hidden-bot-demo"]

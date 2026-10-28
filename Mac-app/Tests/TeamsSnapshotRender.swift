@@ -92,14 +92,24 @@ final class TeamsSnapshotRender: XCTestCase {
     func testRenderScreens() throws {
         let model = try fixture()
         try render(TeamsRootView(model: model), "1-bots-home", size: CGSize(width: 1440, height: 900))
+        try render(TeamsRootView(model: model), "1b-bots-compact", size: CGSize(width: 900, height: 650))
+        let empty = TeamsModel()
+        empty.phase = .ready
+        try render(TeamsRootView(model: empty), "1c-empty", size: CGSize(width: 900, height: 650))
+        let failed = TeamsModel()
+        failed.phase = .failed("Could not load bots")
+        try render(TeamsRootView(model: failed), "1d-error", size: CGSize(width: 900, height: 650))
         model.editingBotID = "1"
         try render(TeamsRootView(model: model), "2-bot-settings", size: CGSize(width: 1440, height: 900))
+        try render(TeamsRootView(model: model), "2b-bot-settings-compact", size: CGSize(width: 900, height: 650))
         model.editingBotID = nil
         model.pane = .tasks
         model.taskSort = .state
         try render(TeamsRootView(model: model), "3-tasks", size: CGSize(width: 1440, height: 900))
+        try render(TeamsRootView(model: model), "3b-tasks-compact", size: CGSize(width: 900, height: 650))
         model.pane = .usage
         try render(TeamsRootView(model: model), "4-usage", size: CGSize(width: 1440, height: 900))
+        try render(TeamsRootView(model: model), "4b-usage-compact", size: CGSize(width: 900, height: 650))
         try render(UsageCard(model: model, usage: model.status!.usage[1]), "5-usage-hover-card", size: CGSize(width: 290, height: 300))
     }
 }

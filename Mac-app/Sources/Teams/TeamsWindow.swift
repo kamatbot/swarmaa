@@ -136,7 +136,7 @@ struct TeamsRail: View {
             Button { AppDelegate.shared?.openSettings() } label: {
                 Image(systemName: "gearshape").font(.system(size: 18)).frame(width: 46, height: 46)
             }
-            .buttonStyle(.plain).foregroundStyle(KS.onInkSoft)
+            .buttonStyle(RailButtonStyle()).foregroundStyle(KS.onInkSoft)
             .help(L10n.t("Settings")).accessibilityLabel(L10n.t("Settings"))
             .padding(.bottom, 12)
         }
@@ -155,10 +155,26 @@ struct TeamsRail: View {
                 .overlay(alignment: .topTrailing) { if badge > 0 { KSBadge(count: badge).offset(x: 6, y: -4) } }
                 .contentShape(Circle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(RailButtonStyle())
         .help(title)
         .accessibilityLabel(badge > 0 ? title + ", " + L10n.t("\(badge) with updates") : title)
         .accessibilityAddTraits(on ? .isSelected : [])
+    }
+}
+
+private struct RailButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        RailButtonFace(configuration: configuration)
+    }
+
+    private struct RailButtonFace: View {
+        let configuration: ButtonStyleConfiguration
+        @State private var hovered = false
+        var body: some View {
+            configuration.label
+                .background(Circle().fill(KS.paper.opacity(configuration.isPressed ? 0.18 : hovered ? 0.10 : 0)))
+                .onHover { hovered = $0 }
+        }
     }
 }
 

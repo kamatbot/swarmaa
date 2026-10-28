@@ -28,6 +28,7 @@ private struct SettingsButtonBody: View {
     let compact: Bool
 
     @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isHovered = false
 
     private static let destructiveRed = Color(red: 1, green: 0.42, blue: 0.4)
@@ -63,12 +64,12 @@ private struct SettingsButtonBody: View {
                 }
             }
             .contentShape(Capsule())
-            .scaleEffect(configuration.isPressed ? 0.97 : 1)
+            .scaleEffect(configuration.isPressed && !reduceMotion ? 0.97 : 1)
             .opacity(isEnabled ? 1 : 0.4)
             .onHover { hovering in
-                withAnimation(.easeOut(duration: 0.12)) { isHovered = hovering && isEnabled }
+                withAnimation(reduceMotion ? nil : .easeOut(duration: 0.12)) { isHovered = hovering && isEnabled }
             }
-            .animation(.easeOut(duration: 0.1), value: configuration.isPressed)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.1), value: configuration.isPressed)
     }
 }
 
@@ -83,6 +84,7 @@ struct SettingsIconButtonStyle: ButtonStyle {
 private struct SettingsIconButtonBody: View {
     let configuration: ButtonStyleConfiguration
     @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isHovered = false
 
     var body: some View {
@@ -93,12 +95,12 @@ private struct SettingsIconButtonBody: View {
             .frame(width: 24, height: 24)
             .background(Circle().fill(.white.opacity(configuration.isPressed ? 0.16 : isHovered ? 0.09 : 0)))
             .contentShape(Circle())
-            .scaleEffect(configuration.isPressed ? 0.92 : 1)
+            .scaleEffect(configuration.isPressed && !reduceMotion ? 0.92 : 1)
             .opacity(isEnabled ? 1 : 0.4)
             .onHover { hovering in
-                withAnimation(.easeOut(duration: 0.12)) { isHovered = hovering && isEnabled }
+                withAnimation(reduceMotion ? nil : .easeOut(duration: 0.12)) { isHovered = hovering && isEnabled }
             }
-            .animation(.easeOut(duration: 0.1), value: configuration.isPressed)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.1), value: configuration.isPressed)
     }
 }
 

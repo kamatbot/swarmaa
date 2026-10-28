@@ -3,9 +3,8 @@ import SwiftUI
 
 /// Kind Swarm, toned down for an app window: ink outlines, hard offset
 /// shadows, paper ground, muted lime and coral. Matches the "Swarmaa main
-/// window" design canvas. System condensed and monospaced type stand in for
-/// IBM Plex Sans Condensed and Plex Mono; heavy condensed for the stencil
-/// display lines.
+/// window" design canvas. Normal-width system type keeps body copy legible;
+/// compressed type is reserved for the stencil display lines.
 enum KS {
     static let ink = Color(hex: 0x15111F)
     static let paper = Color(hex: 0xF4EFE6)
@@ -27,11 +26,11 @@ enum KS {
     static let inkLine = Color(hex: 0x3B3358)
     static let dash = Color(hex: 0xCFC6E8)
 
-    static let border: CGFloat = 2.5
-    static let shadow: CGFloat = 5
+    static let border: CGFloat = 2
+    static let shadow: CGFloat = 3
 
     static func body(_ size: CGFloat = 15, _ weight: Font.Weight = .regular) -> Font {
-        .system(size: size, weight: weight).width(.condensed)
+        .system(size: size, weight: weight)
     }
     static func display(_ size: CGFloat) -> Font { .system(size: size, weight: .black).width(.compressed) }
     static func mono(_ size: CGFloat = 11, _ weight: Font.Weight = .medium) -> Font {
@@ -65,11 +64,11 @@ struct KSChip: View {
     var ink: Color = KS.ink
     init(_ text: String, fill: Color = KS.white, ink: Color = KS.ink) { self.text = text; self.fill = fill; self.ink = ink }
     var body: some View {
-        Text(verbatim: text.uppercased()).font(KS.mono(10, .semibold)).tracking(0.6).lineLimit(1)
+        Text(verbatim: text.uppercased()).font(KS.mono(10, .semibold)).tracking(0.4).lineLimit(1)
             .foregroundStyle(ink)
             .padding(.horizontal, 7).padding(.vertical, 3)
             .background(Capsule().fill(fill))
-            .overlay(Capsule().stroke(KS.ink, lineWidth: 2))
+            .overlay(Capsule().strokeBorder(KS.ink, lineWidth: 2))
             .fixedSize()
     }
 }
@@ -81,7 +80,7 @@ struct KSBadge: View {
         Text(verbatim: count > 99 ? "99+" : "\(count)").font(KS.mono(11, .bold)).foregroundStyle(KS.ink)
             .padding(.horizontal, 5).frame(minWidth: 20, minHeight: 20)
             .background(Capsule().fill(KS.lime))
-            .overlay(Capsule().stroke(KS.ink, lineWidth: 2))
+            .overlay(Capsule().strokeBorder(KS.ink, lineWidth: 2))
             .fixedSize()
             .accessibilityLabel(L10n.t("\(count) new"))
     }
@@ -92,11 +91,11 @@ extension View {
     func ksCard(fill: Color = KS.white, radius: CGFloat = 20, shadow: Bool = false, line: CGFloat = KS.border) -> some View {
         background(
             ZStack {
-                if shadow { RoundedRectangle(cornerRadius: radius).fill(KS.ink).offset(x: KS.shadow, y: KS.shadow) }
-                RoundedRectangle(cornerRadius: radius).fill(fill)
+                if shadow { RoundedRectangle(cornerRadius: radius, style: .continuous).fill(KS.ink).offset(x: KS.shadow, y: KS.shadow) }
+                RoundedRectangle(cornerRadius: radius, style: .continuous).fill(fill)
             }
         )
-        .overlay(RoundedRectangle(cornerRadius: radius).stroke(KS.ink, lineWidth: line))
+        .overlay(RoundedRectangle(cornerRadius: radius, style: .continuous).strokeBorder(KS.ink, lineWidth: line))
     }
 }
 
@@ -107,6 +106,7 @@ struct KSButtonStyle: ButtonStyle {
     var kind: Kind = .white
     var compact = false
     @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     func makeBody(configuration: Configuration) -> some View {
         let pressed = configuration.isPressed && isEnabled
@@ -120,15 +120,15 @@ struct KSButtonStyle: ButtonStyle {
             .frame(minHeight: compact ? 30 : 36)
             .background(
                 ZStack {
-                    if raised { Capsule().fill(KS.ink).offset(x: 3, y: 3) }
+                    if raised { Capsule().fill(KS.ink).offset(x: 2, y: 2) }
                     Capsule().fill(fill)
                 }
             )
-            .overlay(Capsule().stroke(kind == .danger ? KS.danger : KS.ink, lineWidth: 2))
-            .offset(x: kind == .primary && pressed ? 3 : 0, y: kind == .primary && pressed ? 3 : 0)
+            .overlay(Capsule().strokeBorder(kind == .danger ? KS.danger : KS.ink, lineWidth: 2))
+            .offset(x: kind == .primary && pressed && !reduceMotion ? 2 : 0, y: kind == .primary && pressed && !reduceMotion ? 2 : 0)
             .contentShape(Capsule())
             .opacity(isEnabled ? 1 : 0.45)  // a disabled button must look it
-            .animation(.easeOut(duration: 0.12), value: pressed)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: pressed)
     }
 }
 
@@ -184,13 +184,23 @@ struct KSMoji: View {
 struct KSSearchField: View {
     let prompt: String
     @Binding var text: String
+    @FocusState private var focused: Bool
     var body: some View {
         HStack(spacing: 8) {
             Image(systemName: "magnifyingglass").font(.system(size: 13, weight: .semibold)).foregroundStyle(KS.ink)
-            TextField(prompt, text: $text).textFieldStyle(.plain).font(KS.body(15))
+            TextField(prompt, text: $text).textFieldStyle(.plain).font(KS.body(15)).focused($focused)
+            if !text.isEmpty {
+                Button { text = ""; focused = true } label: {
+                    Image(systemName: "xmark.circle.fill").foregroundStyle(KS.textMuted)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(L10n.t("Clear search"))
+                .help(L10n.t("Clear search"))
+            }
         }
         .padding(.horizontal, 14).frame(height: 38)
         .background(Capsule().fill(KS.white))
-        .overlay(Capsule().stroke(KS.ink, lineWidth: 2))
+        .overlay(Capsule().strokeBorder(KS.ink, lineWidth: 2))
+        .overlay(Capsule().strokeBorder(KS.lime, lineWidth: focused ? 3 : 0).padding(3))
     }
 }

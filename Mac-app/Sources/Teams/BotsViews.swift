@@ -23,7 +23,7 @@ struct BotsHome: View {
             } else {
                 HStack(spacing: 0) {
                     BotsSidebar(model: model).frame(width: 300)
-                    Rectangle().fill(KS.ink).frame(width: 2.5)
+                    Rectangle().fill(KS.ink).frame(width: 2)
                     Group {
                         if let id = model.editingBotID, let bot = model.bot(id: id) {
                             BotSettingsPane(model: model, bot: bot).id(id)
@@ -94,6 +94,7 @@ struct BotsSidebar: View {
 struct BotRow: View {
     @ObservedObject var model: TeamsModel
     let bot: TeamsBot
+    @State private var hovered = false
 
     private var selected: Bool { model.selectedThreadID == bot.threadID }
 
@@ -111,32 +112,33 @@ struct BotRow: View {
         Button { model.select(threadID: bot.threadID) } label: {
             HStack(spacing: 11) {
                 KSMoji(seed: bot.avatar ?? bot.leadAgentID, size: 40)
-                VStack(alignment: .leading, spacing: 3) {
+                VStack(alignment: .leading, spacing: 4) {
                     HStack(spacing: 6) {
                         Text(verbatim: bot.name).font(KS.body(16, .bold)).lineLimit(1)
                         Spacer(minLength: 2)
+                        if unread > 0, needs == 0 { KSBadge(count: unread) }
                         if needs == 0, unread == 0, let at = latest?.at {
                             Text(at, format: .relative(presentation: .numeric, unitsStyle: .narrow))
                                 .font(KS.mono(10)).foregroundStyle(KS.textMuted).lineLimit(1)
                         }
                     }
                     HStack(spacing: 6) {
-                        Text(verbatim: tag.uppercased()).font(KS.mono(9, .semibold)).tracking(0.6).foregroundStyle(KS.textMuted).fixedSize()
+                        Text(verbatim: tag.uppercased()).font(KS.mono(10, .semibold)).tracking(0.3).foregroundStyle(KS.textMuted).lineLimit(1)
                         Text(verbatim: latest?.line ?? bot.job).font(KS.body(13)).foregroundStyle(KS.textSoft).lineLimit(1)
                     }
+                    if needs > 0 { KSChip(L10n.t("Needs you"), fill: KS.coral) }
                 }
-                if needs > 0 { KSChip(L10n.t("Needs you"), fill: KS.coral) }
-                else if unread > 0 { KSBadge(count: unread) }
             }
-            .padding(.horizontal, 10).padding(.vertical, 9)
+            .padding(.horizontal, 10).padding(.vertical, 10)
             .background {
-                if selected { RoundedRectangle(cornerRadius: 16).fill(KS.ink).offset(x: 3, y: 3) }
-                RoundedRectangle(cornerRadius: 16).fill(selected ? KS.white : .clear)
+                if selected { RoundedRectangle(cornerRadius: 16).fill(KS.ink).offset(x: 2, y: 2) }
+                RoundedRectangle(cornerRadius: 16).fill(selected ? KS.white : hovered ? KS.sageTint : .clear)
             }
             .overlay(RoundedRectangle(cornerRadius: 16).stroke(selected ? KS.ink : .clear, lineWidth: 2))
             .contentShape(RoundedRectangle(cornerRadius: 16))
         }
         .buttonStyle(.plain)
+        .onHover { hovered = $0 }
         .opacity(bot.archived ? 0.55 : 1)
         .contextMenu {
             Button(L10n.t("Bot settings")) { model.editingBotID = bot.id }
@@ -188,25 +190,36 @@ struct BotThreadHeader: View {
         HStack(spacing: 12) {
             KSMoji(seed: bot.avatar ?? bot.leadAgentID, size: 36)
             VStack(alignment: .leading, spacing: 3) {
-                Text(verbatim: bot.name).font(KS.body(21, .bold))
+                Text(verbatim: bot.name).font(KS.body(21, .bold)).lineLimit(1)
                 Text(verbatim: crewLine.uppercased()).font(KS.mono(10)).tracking(1).foregroundStyle(KS.textMuted).lineLimit(1)
             }
-            HStack(spacing: -8) { ForEach(crew.dropFirst().prefix(5)) { KSMoji(seed: $0.avatar ?? $0.id, size: 26) } }
-                .padding(.leading, 4)
+            .layoutPriority(1)
             Spacer(minLength: 8)
-            Button { model.editingBotID = bot.id } label: {
-                HStack(spacing: 7) {
-                    Circle().fill(KS.lime).frame(width: 9, height: 9).overlay(Circle().stroke(KS.ink, lineWidth: 2))
-                    Text(verbatim: routingLine).lineLimit(1)
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 8) {
+                    HStack(spacing: -8) { ForEach(crew.dropFirst().prefix(5)) { KSMoji(seed: $0.avatar ?? $0.id, size: 26) } }
+                    Button { model.editingBotID = bot.id } label: {
+                        HStack(spacing: 7) {
+                            Circle().fill(KS.lime).frame(width: 9, height: 9).overlay(Circle().stroke(KS.ink, lineWidth: 2))
+                            Text(verbatim: routingLine).lineLimit(1)
+                        }
+                    }
+                    .buttonStyle(.ks(.white)).help(L10n.t("Which service does what, from Bot settings"))
+                    Button { model.editingBotID = bot.id } label: { Label(L10n.t("Bot settings"), systemImage: "slider.horizontal.3") }
+                        .buttonStyle(.ks(.paper))
                 }
-            }
-            .buttonStyle(.ks(.white)).help(L10n.t("Which service does what, from Bot settings"))
-            Button { model.editingBotID = bot.id } label: { Label(L10n.t("Bot settings"), systemImage: "slider.horizontal.3") }
+                .fixedSize(horizontal: true, vertical: false)
+                Button { model.editingBotID = bot.id } label: {
+                    Image(systemName: "slider.horizontal.3")
+                }
                 .buttonStyle(.ks(.paper))
+                .accessibilityLabel(L10n.t("Bot settings"))
+                .help(L10n.t("Bot settings"))
+            }
         }
         .padding(.horizontal, 20).padding(.vertical, 12)
         .background(KS.paper)
-        .overlay(alignment: .bottom) { Rectangle().fill(KS.ink).frame(height: 2.5) }
+        .overlay(alignment: .bottom) { Rectangle().fill(KS.ink).frame(height: 2) }
     }
 }
 
@@ -313,6 +326,11 @@ struct BotSettingsPane: View {
                 .disabled(bot.isLegacyAgent)
             }
 
+            Text(verbatim: L10n.t("Changes apply from the next turn. Running work keeps its settings."))
+                .font(KS.body(14)).foregroundStyle(KS.textMuted)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 20).padding(.top, 12).padding(.bottom, 2)
+                .background(KS.white)
             KSBottomBar {
                 if !bot.isLegacyAgent {
                     if bot.archived {
@@ -324,8 +342,6 @@ struct BotSettingsPane: View {
                     }
                     Button(L10n.t("Delete bot…")) { deleting = true }.buttonStyle(.ks(.danger)).disabled(model.savingBot)
                 }
-                Text(verbatim: L10n.t("Changes apply from the next turn. Running work keeps its settings."))
-                    .font(KS.body(14)).foregroundStyle(KS.textMuted).lineLimit(1)
                 Spacer()
                 Button(L10n.t("Cancel")) { model.editingBotID = nil }.buttonStyle(.ks(.paper)).keyboardShortcut(.cancelAction)
                 Button(L10n.t("Save changes")) {
