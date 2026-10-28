@@ -266,13 +266,15 @@ export function createHttpHandler(dependencies: HttpDependencies): (request: Inc
     json(response, 200, { ok: true });
   }
 
-  async function authenticate(request: IncomingMessage, response: ServerResponse, mcp: boolean): Promise<Principal> {
+  // `oauthStream`: the read-only event stream also takes OAuth tokens, so remote OAuth
+  // sign-ins get live updates. Tool routes stay MCP-only for OAuth.
+  async function authenticate(request: IncomingMessage, response: ServerResponse, mcp: boolean, oauthStream = false): Promise<Principal> {
     const header = oneHeader(request, 'authorization');
     const match = header?.match(/^Bearer ([A-Za-z0-9._~+\/-]+=*)$/iu);
     const token = match?.[1];
     let principal: Principal | null = null;
     if (token && token.length <= 4096) {
-      if (token.startsWith('cn_access_')) principal = mcp && oauth ? await oauth.authenticate(token) : null;
+      if (token.startsWith('cn_access_')) principal = (mcp || oauthStream) && oauth ? await oauth.authenticate(token) : null;
       else principal = await dependencies.auth.authenticate(token);
     }
     if (!principal) {
@@ -446,7 +448,7 @@ export function createHttpHandler(dependencies: HttpDependencies): (request: Inc
     }
     if (path === '/api/stream') {
       onlyMethod(request, response, ['GET']);
-      const principal = await authenticate(request, response, false);
+      const principal = await authenticate(request, response, false, true);
       requirePermission(principal, 'events:read');
 
       const afterParam = url.searchParams.get('after') ?? (oneHeader(request, 'last-event-id') || '0.0');

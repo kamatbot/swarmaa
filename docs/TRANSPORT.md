@@ -54,7 +54,7 @@ curl --fail-with-body https://memory.example.com/api/tools/context_get \
   --data '{"scope":"project:demo"}'
 ```
 
-An OAuth-issued `cn_access_...` token is accepted only at `/mcp`. It cannot authenticate a REST tool request. This prevents a token issued for the MCP resource from silently becoming a credential for another API.
+An OAuth-issued `cn_access_...` token is accepted at `/mcp` and at the read-only event stream `GET /api/stream`, which carries ids and metadata, never bodies, and still requires `events:read` in the grant. That lets apps signed in remotely with OAuth receive live updates. It cannot authenticate a REST tool request, so a token issued for the MCP resource never becomes a credential for the tool API.
 
 ## Legacy MCP request example
 
