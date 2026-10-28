@@ -92,6 +92,50 @@ actor IOSRelaySocket: SwarmaRelayTransport.SwarmaWebSocket {
         try await model.signOut()
         XCTAssertNil(try keychain.load())
     }
+    func testPairingLinkParsingRejectsBadAndAmbiguousLinks() throws {
+        let host = String(repeating: "a", count: 26)
+        let code = "amberarch-applebay-autumnbird-beachbell-birchbeam-blueboat"
+        let link = try PairingLink(XCTUnwrap(URL(string: "swarmaa://pair?host=\(host)&code=\(code)")))
+        XCTAssertTrue(link.host == host)
+        XCTAssertTrue(link.code == code.replacingOccurrences(of: "-", with: " "))
+        for value in [
+            "https://pair?host=\(host)&code=\(code)",
+            "swarmaa://other?host=\(host)&code=\(code)",
+            "swarmaa://pair/path?host=\(host)&code=\(code)",
+            "swarmaa://pair?host=bad&code=\(code)",
+            "swarmaa://pair?host=\(host)&code=one-two",
+            "swarmaa://pair?host=\(host)&code=\(code)&code=\(code)",
+            "swarmaa://pair?host=\(host)&code=\(code)&relay=evil.example",
+            "swarmaa://pair?host=\(host)&code=\(code)#fragment",
+            "swarmaa://pair:443?host=\(host)&code=\(code)",
+            "swarmaa://user@pair?host=\(host)&code=\(code)",
+            "swarmaa://pair?code=\(code)",
+            "swarmaa://pair?host=\(host)&code=one-two-three-four-five-%20six"
+        ] {
+            guard let url = URL(string: value) else { continue }
+            do { _ = try PairingLink(url); XCTFail("Malformed pairing link accepted") } catch {}
+        }
+    }
+    func testURLHandlerPairsThroughRelayAndPersistsConnection() async throws {
+        let keychain = ConnectionKeychain(service: "app.swarmaa.ios.tests." + UUID().uuidString)
+        defer { try? keychain.delete() }
+        let model = AppModel(keychain: keychain)
+        let host = String(repeating: "a", count: 26)
+        let socket = IOSRelaySocket()
+        let transport = SwarmaRelayTransport(hostID: host, socket: socket)
+        let url = try XCTUnwrap(URL(string: "swarmaa://pair?host=\(host)&code=amberarch-applebay-autumnbird-beachbell-birchbeam-blueboat"))
+        try await model.handlePairingURL(url, transport: transport)
+        XCTAssertTrue(model.connected)
+        XCTAssertTrue(try keychain.load()?.hostID == host)
+        XCTAssertTrue(try keychain.load()?.token == socket.pairToken)
+        try await model.signOut()
+    }
+    func testLiveReplyUsesReplyingAgentRatherThanLead() {
+        let model = AppModel(keychain: ConnectionKeychain(service: "app.swarmaa.ios.tests." + UUID().uuidString))
+        model.agents = [.object(["id": .string("scout"), "name": .string("Scout")])]
+        let agent = model.replyingAgent(.object(["agent_id": .string("scout")]))
+        XCTAssertEqual(agent.id, "scout"); XCTAssertEqual(agent.name, "Scout")
+    }
     func testInvalidPairingDoesNotWriteKeychain() async throws {
         let keychain = ConnectionKeychain(service: "app.swarmaa.ios.tests." + UUID().uuidString)
         defer { try? keychain.delete() }

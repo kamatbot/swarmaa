@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { spawn, execFile } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { createHash, createPublicKey, randomBytes, verify } from 'node:crypto';
 import { chmod, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from 'node:http';
@@ -8,7 +10,7 @@ import type { Duplex } from 'node:stream';
 import { test, type TestContext } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 import { RelayAgent, loadHostKey, hostId } from '../src/relay-agent.js';
-import { createPairing, codeHash, PAIR_WORDS } from '../scripts/relay-pair.js';
+import { createPairing, codeHash, PAIR_WORDS, createPairingDisplay, cleanupPairingDisplay, pairingLink } from '../scripts/relay-pair.js';
 import { deployLocal, type DeployIO } from '../scripts/deploy-local.js';
 
 type Frame = Record<string, any>;
@@ -204,4 +206,69 @@ test('relay launchd wiring is opt-in and dry-run performs no install', async () 
   await deployLocal(['--dry-run', '--relay'], io); assert.ok(!calls.includes('install'));
   calls.length = 0; await deployLocal(['--relay'], io);
   assert.ok(calls.includes('install')); assert.ok(calls.includes('launchctl bootstrap gui/501 /fixture/relay.plist')); assert.ok(calls.includes('launchctl kickstart -k gui/501/com.swarma.relay'));
+});
+
+
+test('pair link QR is a 0600 CoreImage PNG and disappears on consumption or expiry', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'relay-pair-qr-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const host = 'a'.repeat(26);
+  const display = await createPairingDisplay(host, directory);
+  // Boolean assertions keep generated pairing secrets out of failure output.
+  assert.ok(display.link === `swarmaa://pair?host=${host}&code=${display.code.replaceAll(' ', '-')}`);
+  assert.equal((await stat(display.path)).mode & 0o777, 0o600);
+  assert.ok((await readFile(display.path)).subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])));
+  const decoded = await new Promise<Buffer>((resolve, reject) => {
+    const child = execFile('/usr/bin/swift', ['-e', `
+import Foundation
+import CoreImage
+let image = CIImage(data: FileHandle.standardInput.readDataToEndOfFile())!
+let detector = CIDetector(ofType: CIDetectorTypeQRCode, context: CIContext(), options: [CIDetectorAccuracy: CIDetectorAccuracyHigh])!
+let qr = detector.features(in: image).first as! CIQRCodeFeature
+FileHandle.standardOutput.write(qr.messageString!.data(using: .utf8)!)
+`], { encoding: 'buffer', timeout: 60000 }, (error, output) => error ? reject(new Error('QR fixture decode failed')) : resolve(output));
+    child.stdin!.end(display.png);
+  });
+  assert.ok(decoded.equals(Buffer.from(display.link)));
+  assert.equal(await cleanupPairingDisplay(display, directory), false);
+  await rm(join(directory, 'relay-pairing.json'));
+  assert.equal(await cleanupPairingDisplay(display, directory), true);
+  await assert.rejects(stat(display.path), { code: 'ENOENT' });
+  const expired = await createPairingDisplay(host, directory);
+  assert.equal(await cleanupPairingDisplay(expired, directory, Date.now() + 300001), true);
+  await assert.rejects(stat(expired.path), { code: 'ENOENT' });
+  assert.throws(() => pairingLink('invalid', 'fixture fixture fixture fixture fixture fixture'));
+});
+
+
+test('relay-pair --no-open displays words and link once and cleans the consumed QR', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'relay-pair-owner-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  loadHostKey(join(directory, '.local')); // Fresh test identity only.
+  const child = spawn(process.execPath, ['--import', import.meta.resolve('tsx'), fileURLToPath(new URL('../scripts/relay-pair.ts', import.meta.url)), '--no-open'], {
+    cwd: directory, env: { ...process.env, NODE_PATH: undefined }, stdio: ['ignore', 'pipe', 'pipe']
+  });
+  t.after(() => { if (child.exitCode === null) child.kill(); });
+  let output = '';
+  const completed = new Promise<number | null>((resolve, reject) => {
+    child.on('error', reject); child.on('exit', resolve);
+  });
+  const displayed = new Promise<void>((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error('Owner output timed out')), 60000);
+    child.stdout.on('data', data => {
+      output += data.toString();
+      if (output.split('\n').length >= 3) { clearTimeout(timeout); resolve(); }
+    });
+    child.on('exit', () => { clearTimeout(timeout); if (!output) reject(new Error('Owner command exited before display')); });
+  });
+  await displayed;
+  const lines = output.trim().split('\n');
+  assert.equal(lines.length, 2);
+  assert.ok(lines[1] === pairingLink(loadHostKey(join(directory, '.local')).id, lines[0]));
+  const png = join(directory, '.local', 'relay-pairing-qr.png');
+  assert.equal((await stat(png)).mode & 0o777, 0o600);
+  await rm(join(directory, '.local', 'relay-pairing.json'));
+  assert.equal(await completed, 0);
+  await assert.rejects(stat(png), { code: 'ENOENT' });
+  assert.equal(output.trim().split('\n').length, 2);
 });

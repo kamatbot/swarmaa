@@ -20,6 +20,13 @@ targets:
       - Sources
       - Resources
       - path: ../Mac-app/Sources/Providers/SwarmaRelayTransport.swift
+    info:
+      path: Info.plist
+      properties:
+        NSCameraUsageDescription: Scan the pairing QR code displayed on your Mac to connect securely.
+        CFBundleURLTypes:
+          - CFBundleURLName: app.swarmaa.ios.pair
+            CFBundleURLSchemes: [swarmaa]
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: app.swarmaa.ios

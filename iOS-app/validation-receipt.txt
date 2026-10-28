@@ -1,60 +1,37 @@
-Final local xcodebuild evidence, 2026-10-28 (Asia/Bangkok)
-Base: e64e029; branch: swarmaa/codex/9bb23f32
-Merged without committing: swarmaa/antigravity/c3058682 at 465431ed5122920f9184e5bebb0e72e4e1f02dd3
-Command: xcodebuild -project Swarmaa.xcodeproj -scheme Swarmaa -destination "platform=iOS Simulator,name=Piano Review iPhone SE" -derivedDataPath DerivedData -parallel-testing-enabled NO -test-timeouts-enabled YES -maximum-test-execution-time-allowance 60 test
-Exit code: 0
-/Users/mk/.swarma/worktrees/swarma/9bb23f32-2d1c-4f1e-8ddf-c645d6247bbb/iOS-app/DerivedData/Logs/Test/Test-Swarmaa-2026.10.28_18-33-37-+0700.xcresult
-
-Test Case '-[SwarmaaTests.AppTests testAskRejectsBlankMessageBeforePosting]' passed (0.027 seconds).
-Test Case '-[SwarmaaTests.AppTests testAskStarredBotPostsOnceAndReturnsReply]' passed (0.006 seconds).
-Test Case '-[SwarmaaTests.AppTests testAskTimeoutReturnsInAppWithoutReposting]' passed (0.052 seconds).
-Test Case '-[SwarmaaTests.AppTests testCancellationUnblocksRelayRequest]' passed (0.003 seconds).
-Test Case '-[SwarmaaTests.AppTests testHomeOrderingAndSingleShortcut]' passed (0.010 seconds).
-Test Case '-[SwarmaaTests.AppTests testInvalidPairingDoesNotWriteKeychain]' passed (0.009 seconds).
-Test Case '-[SwarmaaTests.AppTests testNewBotValidationTrimsWhitespace]' passed (0.000 seconds).
-Test Case '-[SwarmaaTests.AppTests testPairingPersistsTokenAndHostOnlyInTestKeychain]' passed (0.007 seconds).
-Test Case '-[SwarmaaTests.AppTests testRelayStreamFeedsModel]' passed (0.026 seconds).
-Test Case '-[SwarmaaTests.AppTests testSSEParserSplitUTF8CRLFAndMultipleFrames]' passed (0.001 seconds).
-Test Case '-[SwarmaaTests.AppTests testStreamEventsRefreshOpenThreadTypingAndOneTask]' passed (0.004 seconds).
-Test Case '-[RelayCompatibilityTests.SwarmaRelayTransportTests testConcurrentRequestsDemultiplexedBySID]' passed (0.042 seconds).
-Test Case '-[RelayCompatibilityTests.SwarmaRelayTransportTests testFrameCodecBothDirections]' passed (0.001 seconds).
-Test Case '-[RelayCompatibilityTests.SwarmaRelayTransportTests testHostOfflineMappedToHostOffline]' passed (0.017 seconds).
-Test Case '-[RelayCompatibilityTests.SwarmaRelayTransportTests testLiveStreamMatchesSwarmaTeamsClient]' passed (0.025 seconds).
-Test Case '-[RelayCompatibilityTests.SwarmaRelayTransportTests testMultiChunkResponseAssembledCorrectlyWithStatusAndHeaders]' passed (0.017 seconds).
-Test Case '-[RelayCompatibilityTests.SwarmaRelayTransportTests testPairSuccessAndBadCodePaths]' passed (0.025 seconds).
-Test Case '-[RelayCompatibilityTests.SwarmaRelayTransportTests testPresenceUpdates]' passed (0.001 seconds).
-Test Case '-[RelayCompatibilityTests.SwarmaRelayTransportTests testSendProducesReqFrameWithStrippedHeaders]' passed (0.014 seconds).
-Test Case '-[RelayCompatibilityTests.SwarmaRelayTransportTests testServerPingTriggersPong]' passed (0.016 seconds).
-Test Case '-[RelayCompatibilityTests.SwarmaRelayTransportTests testSocketDropFailsInFlightRequests]' passed (0.017 seconds).
-Test Case '-[RelayCompatibilityTests.SwarmaRelayTransportTests testSSEStreamYieldsChunksAndCancelSendsEnd]' passed (0.033 seconds).
-Test Case '-[RelayCompatibilityTests.SwarmaRelayTransportTests testTokensAndCodesNeverLogged]' passed (0.001 seconds).
-Test Case '-[SwarmaaUITests.NavigationTests testDemoNavigationAndSingleStarredShortcut]' passed (24.468 seconds).
-
-Executed 11 tests, with 0 failures (0 unexpected) in 0.145 (0.151) seconds
-Executed 11 tests, with 0 failures (0 unexpected) in 0.145 (0.151) seconds
-Executed 11 tests, with 0 failures (0 unexpected) in 0.145 (0.152) seconds
-Executed 12 tests, with 0 failures (0 unexpected) in 0.210 (0.217) seconds
-Executed 12 tests, with 0 failures (0 unexpected) in 0.210 (0.217) seconds
-Executed 12 tests, with 0 failures (0 unexpected) in 0.210 (0.218) seconds
-Executed 1 test, with 0 failures (0 unexpected) in 24.468 (24.470) seconds
-Executed 1 test, with 0 failures (0 unexpected) in 24.468 (24.471) seconds
-Executed 1 test, with 0 failures (0 unexpected) in 24.468 (24.472) seconds
-** TEST SUCCEEDED **
-
-Source hashes:
-e1a4053eb67b444dedbe67fab68ed2e3dc490e224f5f11275cfc454445c90ca4  iOS-app/Sources/AppCore.swift
-4672eab3cce3ccfc2ae78e1990dc16e9edbd9efe6fd2be593f8fcd33a8ac4de3  iOS-app/Sources/SwarmaaApp.swift
-5909bf29bf8c04b824bb8f612e6ce7fe5937767a104b9aa07d1926675b314e7b  iOS-app/Tests/AppTests.swift
-b8f608271bef81f24e1dc48b13a49a3f2f85d5c1d10e8b42c975a4ceff9fcabc  iOS-app/UITests/NavigationTests.swift
-e23cf62a982c456c86fe5eda6d472f70ebda75306d01344bcfef37fdce4ef6aa  iOS-app/project.yml
-
-Visually inspected screenshots (demo fixtures):
-design/launch-kit/screens-ios/01-bots-home.png: 750x1334; sha256=9223dfa0bd25f0c21a51802b2f0ede84ee61a77b979a83a021e15af0ea397b83
-design/launch-kit/screens-ios/02-bot-thread.png: 750x1334; sha256=375fd3f1015dccf8194959ecd2620aa1461659ab03f7428f4b305111ac87066c
-design/launch-kit/screens-ios/03-tasks.png: 750x1334; sha256=0c5311c2c7dc25f14dc3f0e1b860388a072af67a2a3474cce892dee8887667f7
-design/launch-kit/screens-ios/04-usage.png: 750x1334; sha256=edfdae9a005c1993a8c9dec7fb9646df4c5d4f2b9f78972618f999e086c03f67
-design/launch-kit/screens-ios/05-connect.png: 750x1334; sha256=36dfa0a4d5f79ac723f09304176ee955c4e7b86ef0260bfd9fe7107031a03cc9
-design/launch-kit/screens-ios/06-question.png: 750x1334; sha256=6af6d9cfe4f25658691b4ea3994ac70321ff165887c7d15b3503e51f0fe6952e
-design/launch-kit/screens-ios/07-new-bot.png: 750x1334; sha256=83626ea34bac3bda495c0d1a7ec8f91294fe359f6237ece7e0c83b311d9723e4
-design/launch-kit/screens-ios/08-bot-settings.png: 750x1334; sha256=48a4283ca9a89d83df1269982cabeedd1e8a82c499f24eac8f09a88b0a34a370
-design/launch-kit/screens-ios/09-you.png: 750x1334; sha256=99789d8ee354060bc1850e7afd2dba2fd38e85123140e1efe9536ae8c8aacbdc
+Round 2 dd765573 validation receipt
+baseline: e0cc45c26ffd94066ba75fd7ff3ab9207dad793d
+node: v24.21.0 (/opt/homebrew/opt/node@24/bin first in PATH)
+simulator: pre-existing booted SE B2EE62FA-1CD0-4F71-8FCD-9FE73EA59B56; iOS 27.0; 375x667 pt
+no simulator created/booted; no larger iPhone available
+source SHA256:
+8804bb70c36679749ce059308264820088b85d7fa882af6610b1309c9299345f  iOS-app/Sources/AppCore.swift
+be999379f8fbf9f90e50125acdbbbefc603cd04ba2553cbf219a7f951bb449f0  iOS-app/Sources/SwarmaaApp.swift
+73b0416478a4ab3c3cbd7441b3266a97f31a541b3df8fd3e8e2cdf22cb527787  iOS-app/project.yml
+c78739a59afbeda78ff99296a32af3167dd2052b0a51b3c5f202ee353742f79d  iOS-app/Info.plist
+beb084d68f617e7e31d384f049f4044c0394b8f30be916314e5f0e0ed023c8f7  scripts/relay-pair.ts
+97119d21246d6e2e1cf57fbde0b89f155c9b18a89fea2575db82358800de2a36  tests/relay-agent.test.ts
+Node: 13/13 passed in relay-round2.log; final affected QR/CLI checks 2/2 in relay-round2-final.log.
+Exact requested Node env command could not start: .env.test absent. Empty /dev/null env file substituted; no database/production credentials loaded.
+Initial full iOS: 27 tests passed (14+12+1), test-round2.log.
+Intermediate iOS: units 26 passed; UI runtime crash/timeout; interrupted automatic retry; test-round2-final.log NOT green.
+Final fresh UI-only: 2/2 passed; ui-round2-recovery.log.
+No commit/push/merge/service writes/messages/publish/deploy/account changes performed.
+Final screenshots: each individually inspected; SHA256 and pixel dimensions:
+8a26cb59515e5e222c3201905c74d373a149136037812a1f296dd337d7af298d  design/launch-kit/screens-ios/01-bots-home.png  750x1334
+95f37e02dc33c3c7bf6722f64f976dc26117559d402fb704614cb91c677e795f  design/launch-kit/screens-ios/02-bot-thread.png  750x1334
+b435a8889f81b1cc2428ca82fa4e8d9987694b938c9cd873f6dfd5db55c30c72  design/launch-kit/screens-ios/03-tasks.png  750x1334
+66020379f94b90e6279c07f46af3c8df485abfd6bb5dab016b012c0e6d705372  design/launch-kit/screens-ios/04-usage.png  750x1334
+1b9cd29c9288f5f946477cbdbf87f56d0c735696eda1f7551e0e58073402f610  design/launch-kit/screens-ios/05-connect.png  750x1334
+dd0a95cf17f41c67f34e9a9899666aa70d69d79b63619433fce108835ca75c42  design/launch-kit/screens-ios/06-question.png  750x1334
+c5e727c88f044bfd9b4f063e90310cc1e110ed34359fa44afc786a217f6bc62d  design/launch-kit/screens-ios/07-new-bot.png  750x1334
+fbc06c44c1236ca847abe2ceba4997b3c005a2669d84d4244c91e7f20a427b33  design/launch-kit/screens-ios/08-bot-settings.png  750x1334
+e4de747dd8b05224d730771f5816caf0857f8df320f060ce19e9323fb35d000f  design/launch-kit/screens-ios/09-you.png  750x1334
+Final full iOS acceptance: EXIT 0 / TEST SUCCEEDED, 28 tests (14 app + 12 compatibility + 2 UI), zero failures.
+Xcode testing elapsed: 57.751 seconds. No hosted CI/Actions used.
+Commands:
+xcodegen --spec iOS-app/project.yml
+xcodebuild -project iOS-app/Swarmaa.xcodeproj -scheme Swarmaa -destination platform=iOS\ Simulator,id=B2EE62FA-1CD0-4F71-8FCD-9FE73EA59B56 -derivedDataPath iOS-app/DerivedData/Recovery -parallel-testing-enabled NO -test-timeouts-enabled YES -maximum-test-execution-time-allowance 60 test
+Log: iOS-app/acceptance-round2.log
+Result: iOS-app/DerivedData/Recovery/Logs/Test/Test-Swarmaa-2026.10.28_18-49-38-+0700.xcresult
+Remaining: physical-device camera/permission handling and live host pairing/paste smoke test; larger iPhone absent; native fonts approximate web design.
+Final diff whitespace check passed. Only task-allowed paths changed. Bridge must review/commit; worker did not commit or push.

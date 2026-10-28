@@ -1,6 +1,14 @@
 import XCTest
 
 @MainActor final class NavigationTests: XCTestCase {
+    func testSchemeURLReachesPairingHandlerAndRejectsBadLink() {
+        let app = XCUIApplication()
+        app.launchArguments = ["-demo"]
+        app.launch()
+        app.open(URL(string: "swarmaa://pair?host=invalid&code=invalid")!)
+        XCTAssertTrue(app.staticTexts["This pairing link or code is invalid. Scan or paste a fresh link from your Mac."].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["Paste link"].exists)
+    }
     func testDemoNavigationAndSingleStarredShortcut() {
         let app = XCUIApplication()
         app.launchArguments = ["-demo"]
@@ -17,6 +25,9 @@ import XCTest
         app.buttons["Close"].tap()
         app.buttons["starred-shortcut"].tap()
         XCTAssertTrue(app.textFields["composer"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.staticTexts["Scout"].exists)
+        app.scrollViews.firstMatch.swipeDown()
+        XCTAssertTrue(app.staticTexts["Plan Friday’s launch. Ask me before anything goes public."].exists)
         app.buttons["Bot settings"].tap()
         XCTAssertTrue(app.buttons["Save changes"].waitForExistence(timeout: 3))
         app.buttons["Close"].tap()
@@ -26,12 +37,35 @@ import XCTest
         app.buttons.containing(.staticText, identifier: "New bot").firstMatch.tap()
         XCTAssertTrue(app.staticTexts["NEW BOT."].waitForExistence(timeout: 3))
         XCTAssertFalse(app.buttons["Make bot"].isEnabled)
+        let fields = app.scrollViews["new-bot-fields"]
+        XCTAssertTrue(app.textFields["01 — Name"].exists)
+        XCTAssertTrue(app.textFields["02 — What it does"].exists)
+        fields.swipeUp()
+        XCTAssertTrue(app.buttons["project-picker"].isHittable)
+        app.buttons["project-picker"].tap()
+        app.buttons["swarma"].tap()
+        app.buttons["lead-picker"].tap()
+        XCTAssertTrue(app.buttons["A new agent"].exists)
+        XCTAssertTrue(app.buttons["Atlas"].exists)
+        XCTAssertTrue(app.buttons["Scout"].exists)
+        app.buttons["A new agent"].tap()
+        let replies = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Haiku 5.5")).firstMatch
+        XCTAssertTrue(replies.isHittable)
+        replies.tap()
+        for choice in ["Haiku 5.5", "Sonnet 5.5", "Opus 5.5", "Gemini Flash", "Agent’s own model"] {
+            XCTAssertTrue(app.buttons[choice].exists)
+        }
+        app.buttons["Haiku 5.5"].tap()
+        XCTAssertTrue(app.buttons["Make bot"].isHittable)
         app.buttons["close-sheet"].tap()
         app.buttons["You"].tap()
         app.buttons.containing(.staticText, identifier: "Hosts and devices").firstMatch.tap()
-        XCTAssertTrue(app.buttons["Connect"].waitForExistence(timeout: 3))
-        XCTAssertTrue(app.buttons["Connect"].isHittable)
-        app.buttons["Connect"].tap()
+        XCTAssertTrue(app.buttons["Paste link"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.buttons["Scan QR code"].exists)
+        XCTAssertFalse(app.textFields["Host ID from your Mac"].exists)
+        app.buttons["Type the code instead"].tap()
+        XCTAssertTrue(app.textFields["Host ID from your Mac"].exists)
+        app.buttons["Close"].tap()
         app.buttons["starred-shortcut"].tap()
         app.buttons["Answer question"].tap()
         XCTAssertTrue(app.buttons["Blog and changelog"].waitForExistence(timeout: 3))

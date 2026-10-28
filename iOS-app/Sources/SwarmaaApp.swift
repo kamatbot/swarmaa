@@ -1,6 +1,7 @@
 import SwiftUI
 import UIKit
 import AppIntents
+import VisionKit
 
 @MainActor enum Runtime {
     static let model = AppModel()
@@ -150,8 +151,8 @@ struct RootView: View {
                 if model.connected || model.isDemo {
                     switch screen {
                     case .home: home
-                    case .thread: thread(height: geo.size.height)
-                    case .tasks: tasks(height: geo.size.height)
+                    case .thread: thread
+                    case .tasks: tasks
                     case .usage: usage
                     case .connect: ConnectView(model: model) { screen = .home }
                     case .settings:
@@ -170,7 +171,11 @@ struct RootView: View {
             }
         }
         .sheet(item: $sheet) { item in
-            ContentSheet {
+            if case .newBot = item {
+                NewBotView(model: model) { sheet = nil }
+                    .padding(20).background(KS.paper).foregroundStyle(KS.ink).tint(KS.ink)
+                    .presentationDetents([.large]).presentationDragIndicator(.hidden).presentationCornerRadius(28)
+            } else { ContentSheet {
                 switch item {
                 case .you: you
                 case .question(let question): AnswerView(model: model, question: question) { sheet = nil }
@@ -181,6 +186,13 @@ struct RootView: View {
                         ScrollView { Text(changes).font(KS.mono(12)).frame(maxWidth: .infinity, alignment: .leading) }.frame(maxHeight: 300)
                     }
                 }
+            } }
+        }
+        .onOpenURL { url in
+            sheet = nil; screen = .connect
+            Task {
+                do { try await model.handlePairingURL(url); screen = .home }
+                catch { model.error = safeError(error) }
             }
         }
         .task {
@@ -286,7 +298,7 @@ struct RootView: View {
             }.padding(18).padding(.bottom, 6)
         }
     }
-    private func thread(height: CGFloat) -> some View {
+    private var thread: some View {
         VStack(spacing: 0) {
             HStack(spacing: 12) {
                 CloseButton { screen = .home; model.openBot = nil }
@@ -297,7 +309,6 @@ struct RootView: View {
                 }
                 Spacer()
             }.padding(18)
-            Spacer(minLength: 0)
             ScrollViewReader { proxy in
                 ScrollView {
                     VStack(alignment: .leading, spacing: 12) {
@@ -305,14 +316,20 @@ struct RootView: View {
                             messageView(message).id(message.id)
                         }
                         ForEach(Array(model.typing.enumerated()), id: \.offset) { _, typing in
-                            VStack(alignment: .leading, spacing: 4) {
-                                Eyebrow("Replying live")
-                                Text(typing["text"].string.isEmpty ? "Thinking…" : typing["text"].string)
-                            }.padding(14).card(.white)
+                            let agent = model.replyingAgent(typing)
+                            HStack(alignment: .bottom, spacing: 8) {
+                                Moji(seed: agent.id, size: 28)
+                                VStack(alignment: .leading, spacing: 5) {
+                                    Text(agent.name).font(KS.body(13, .bold))
+                                    Eyebrow("Replying live")
+                                    Text(typing["text"].string.isEmpty ? "Thinking…" : typing["text"].string).fixedSize(horizontal: false, vertical: true)
+                                }.padding(14).background(.white, in: RoundedRectangle(cornerRadius: 18))
+                                    .overlay(RoundedRectangle(cornerRadius: 18).stroke(KS.ink, style: StrokeStyle(lineWidth: 2, dash: [5, 4])))
+                            }
                         }
                         Color.clear.frame(height: 1).id("bottom")
                     }.padding(18).frame(maxWidth: .infinity, alignment: .leading)
-                }.frame(maxHeight: height * 0.32)
+                }.frame(maxHeight: .infinity)
                     .defaultScrollAnchor(.bottom)
                     .onChange(of: model.messages.count) { _, _ in proxy.scrollTo("bottom", anchor: .bottom) }
                     .onChange(of: model.typing) { _, _ in proxy.scrollTo("bottom", anchor: .bottom) }
@@ -377,7 +394,7 @@ struct RootView: View {
             }
         }
     }
-    private func tasks(height: CGFloat) -> some View {
+    private var tasks: some View {
         VStack(spacing: 0) {
             header("Tasks") { screen = .home }
             HStack {
@@ -385,7 +402,6 @@ struct RootView: View {
                 countCard("WORKING", count: model.tasks.filter { ["running", "queued"].contains($0["status"].string) }.count, color: .white)
                 countCard("DONE", count: model.tasks.filter { $0["status"].string == "completed" }.count, color: KS.sage)
             }.padding(.horizontal, 18)
-            Spacer(minLength: 20)
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 12) {
                     ForEach(Array(filteredTasks.enumerated()), id: \.offset) { _, row in
@@ -402,7 +418,7 @@ struct RootView: View {
                     }
                     if filteredTasks.isEmpty { empty("Nothing here right now.") }
                 }.padding(18)
-            }.frame(maxHeight: height * 0.43)
+            }.frame(maxHeight: .infinity)
             HStack(spacing: 6) {
                 ForEach(["All", "Needs you", "Working", "Done"], id: \.self) { item in
                     Button(item) { filter = item }.font(KS.body(14, .semibold)).frame(maxWidth: .infinity, minHeight: 44).card(filter == item ? KS.lime : .white, radius: 24).accessibilityAddTraits(filter == item ? .isSelected : [])
@@ -502,11 +518,22 @@ struct ConnectView: View {
     @State private var words = Array(repeating: "", count: 6)
     @State private var error: String?
     @State private var connecting = false
+    @State private var manual = false
+    @State private var scanning = false
+    private func connect(_ url: URL) {
+        guard !connecting else { return }
+        scanning = false; connecting = true; error = nil
+        Task {
+            defer { connecting = false }
+            do { try await model.handlePairingURL(url); close() }
+            catch { self.error = safeError(error) }
+        }
+    }
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             if model.connected { CloseButton(action: close) }
             ScrollView {
-                VStack(alignment: .leading, spacing: 10) {
+                VStack(alignment: .leading, spacing: 16) {
                     HStack(alignment: .top, spacing: 12) {
                         Moji(seed: "", size: 56, mark: true)
                         VStack(alignment: .leading, spacing: 2) {
@@ -514,36 +541,81 @@ struct ConnectView: View {
                             Text("in your pocket.").font(KS.body(27)).italic()
                         }
                     }
-                    Text("Your agents run on your Mac. This phone talks to them through the Swarmaa relay, from anywhere.").foregroundStyle(KS.soft).fixedSize(horizontal: false, vertical: true)
+                    Text("Your agents run on your Mac. This phone talks to them through the Swarmaa relay, from anywhere.").foregroundStyle(KS.soft)
                     Eyebrow("01 — On your Mac, choose Pair a phone")
-                    Text("Type its host ID and six words below. The words work once, for five minutes.").font(KS.body(15)).fixedSize(horizontal: false, vertical: true)
-                }.frame(maxWidth: .infinity, alignment: .leading)
+                    Text("Scan its QR code or paste its pairing link. The link works once, for five minutes.")
+                    Button("Scan QR code") { scanning = true }
+                        .buttonStyle(Pill(fill: KS.lime, primary: true))
+                        .disabled(!DataScannerViewController.isSupported || !DataScannerViewController.isAvailable || connecting || model.isDemo)
+                    if !DataScannerViewController.isSupported || !DataScannerViewController.isAvailable {
+                        Text("Camera scanning is unavailable here. Paste the link or type the code instead.").font(KS.body(14))
+                    }
+                    Button("Paste link") {
+                        guard let text = UIPasteboard.general.string?.trimmingCharacters(in: .whitespacesAndNewlines), let url = URL(string: text) else { error = safeError(AppFailure.invalidPairing); return }
+                        connect(url)
+                    }.buttonStyle(Pill(primary: true)).disabled(connecting || model.isDemo)
+                    DisclosureGroup("Type the code instead", isExpanded: $manual) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Eyebrow("Host ID")
+                            TextField("Host ID from your Mac", text: $host).font(KS.mono(13)).textInputAutocapitalization(.never).autocorrectionDisabled().padding(12).card(.white, radius: 12).privacySensitive()
+                            Eyebrow("Pairing code")
+                            LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 3), spacing: 8) {
+                                ForEach(0..<6) { i in
+                                    SecureField("Word \(i + 1)", text: $words[i]).font(KS.mono(13)).textInputAutocapitalization(.never).autocorrectionDisabled().padding(10).frame(minHeight: 44).card(.white, radius: 12).accessibilityLabel("Pairing word \(i + 1)")
+                                }
+                            }
+                            Button("Connect with code") {
+                                connecting = true; error = nil
+                                Task {
+                                    defer { connecting = false }
+                                    do { try await model.pair(host: host.trimmingCharacters(in: .whitespacesAndNewlines), code: words.joined(separator: " ")); words = Array(repeating: "", count: 6); host = ""; close() }
+                                    catch { self.error = safeError(error) }
+                                }
+                            }.buttonStyle(Pill(fill: KS.lime, primary: true)).disabled(connecting || model.isDemo || host.isEmpty || words.contains(where: { $0.isEmpty }))
+                        }.padding(.top, 12)
+                    }
+                }.padding(4).frame(maxWidth: .infinity, alignment: .leading)
             }
-            VStack(alignment: .leading, spacing: 8) {
-                Eyebrow("Host ID")
-                TextField("Host ID from your Mac", text: $host).font(KS.mono(13)).textInputAutocapitalization(.never).autocorrectionDisabled().padding(.horizontal, 12).frame(minHeight: 44).card(.white, radius: 12).privacySensitive()
-                Eyebrow("Pairing code")
-                LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 3), spacing: 8) {
-                    ForEach(0..<6) { i in
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(String(format: "%02d", i + 1)).font(KS.mono(10))
-                            SecureField("Word \(i + 1)", text: $words[i]).font(KS.mono(13)).textInputAutocapitalization(.never).autocorrectionDisabled().padding(.horizontal, 10).frame(minHeight: 44).card(.white, radius: 12).accessibilityLabel("Pairing word \(i + 1)")
-                        }
-                    }
-                }
-                if let error { Text(error).font(KS.body(14)).foregroundStyle(KS.soft) }
-                if connecting { ProgressView("Connecting securely…") }
-                Button("Connect") {
-                    guard !model.isDemo else { close(); return }
-                    connecting = true; error = nil
-                    Task {
-                        defer { connecting = false }
-                        do { try await model.pair(host: host.trimmingCharacters(in: .whitespacesAndNewlines), code: words.joined(separator: " ")); words = Array(repeating: "", count: 6); close() }
-                        catch { self.error = safeError(error) }
-                    }
-                }.buttonStyle(Pill(fill: KS.lime, primary: true)).disabled(connecting || (!model.isDemo && (host.isEmpty || words.contains(where: { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }))))
-            }.layoutPriority(1)
+            if let error { Text(error).font(KS.body(14)) }
+            if connecting { ProgressView("Connecting securely…") }
         }.padding(20).background(KS.paper)
+            .sheet(isPresented: $scanning) {
+                VStack {
+                    HStack { Text("Scan your Mac’s pairing QR"); Spacer(); CloseButton { scanning = false } }.padding()
+                    PairingScanner { text in
+                        guard let url = URL(string: text) else { scanning = false; error = safeError(AppFailure.invalidPairing); return }
+                        connect(url)
+                    } failed: { scanning = false; error = "Camera scanning is unavailable. Paste the link instead." }
+                }.background(KS.paper)
+            }
+    }
+}
+struct PairingScanner: UIViewControllerRepresentable {
+    var found: (String) -> Void
+    var failed: () -> Void
+    func makeCoordinator() -> Coordinator { Coordinator(found: found, failed: failed) }
+    func makeUIViewController(context: Context) -> DataScannerViewController {
+        let scanner = DataScannerViewController(recognizedDataTypes: [.barcode(symbologies: [.qr])], recognizesMultipleItems: false, isHighlightingEnabled: true)
+        scanner.delegate = context.coordinator
+        do { try scanner.startScanning() } catch { Task { @MainActor in failed() } }
+        return scanner
+    }
+    func updateUIViewController(_ controller: DataScannerViewController, context: Context) {}
+    static func dismantleUIViewController(_ controller: DataScannerViewController, coordinator: Coordinator) { controller.stopScanning() }
+    final class Coordinator: NSObject, DataScannerViewControllerDelegate {
+        let found: (String) -> Void
+        let failed: () -> Void
+        var delivered = false
+        init(found: @escaping (String) -> Void, failed: @escaping () -> Void) { self.found = found; self.failed = failed }
+        func dataScanner(_ scanner: DataScannerViewController, didAdd addedItems: [RecognizedItem], allItems: [RecognizedItem]) {
+            guard !delivered else { return }
+            for item in addedItems {
+                if case .barcode(let barcode) = item, let text = barcode.payloadStringValue {
+                    delivered = true; scanner.stopScanning(); found(text); return
+                }
+            }
+        }
+        func dataScanner(_ scanner: DataScannerViewController, becameUnavailableWithError error: DataScannerViewController.ScanningUnavailable) { failed() }
     }
 }
 
@@ -570,13 +642,19 @@ struct NewBotView: View {
                     field("01 — Name", text: $draft.name, prompt: "e.g. Launch")
                     field("02 — What it does", text: $draft.job, prompt: "Plans each product launch…", lines: 2...3)
                     Eyebrow("03 — Project and lead")
-                    HStack {
-                        Picker("Project", selection: $draft.project) { Text("Choose project").tag(""); ForEach(model.scopes, id: \.self) { Text($0.replacingOccurrences(of: "project:", with: "")).tag($0) } }.frame(minHeight: 44)
-                        Picker("Lead", selection: $draft.lead) { Text("A new agent").tag(""); ForEach(model.agents.filter { $0["scope"].string == draft.project }, id: \.self) { Text($0["name"].string).tag($0["id"].string) } }.frame(minHeight: 44)
+                    HStack(spacing: 10) {
+                        VStack(alignment: .leading, spacing: 4) {
+                        Eyebrow("Project")
+                        Picker("Project", selection: $draft.project) { Text("Choose project").tag(""); ForEach(model.scopes, id: \.self) { Text($0.replacingOccurrences(of: "project:", with: "")).tag($0) } }.pickerStyle(.menu).frame(maxWidth: .infinity, minHeight: 44).card(.white, radius: 14).accessibilityIdentifier("project-picker")
+                        }
+                        VStack(alignment: .leading, spacing: 4) {
+                        Eyebrow("Lead")
+                        Picker("Lead", selection: $draft.lead) { Text("A new agent").tag(""); ForEach(model.agents.filter { $0["scope"].string == draft.project }, id: \.self) { Text($0["name"].string).tag($0["id"].string) } }.pickerStyle(.menu).frame(maxWidth: .infinity, minHeight: 44).card(.white, radius: 14).accessibilityIdentifier("lead-picker")
+                        }
                     }
                     Eyebrow("04 — Chat replies"); ReplyPicker(value: $draft.firstReply)
                 }.padding(3)
-            }.frame(height: 220)
+            }.frame(maxHeight: .infinity).accessibilityIdentifier("new-bot-fields")
             Text(error ?? draft.missing ?? "Your bot is ready to make.").font(KS.body(14)).foregroundStyle(KS.muted)
             Button(saving ? "Making bot…" : "Make bot") {
                 saving = true
@@ -652,7 +730,6 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 14) {
                 HStack { CloseButton(action: close); Moji(seed: draft.raw["lead_agent_id"].string, size: 40); Text(draft.name.uppercased() + ".").font(KS.display(30)) }
                 Text(draft.job).foregroundStyle(KS.soft)
-                Spacer(minLength: 0)
                 ScrollView {
                     VStack(alignment: .leading, spacing: 14) {
                         field("Name", text: string("name"), prompt: "Bot name")
@@ -684,7 +761,7 @@ struct SettingsView: View {
                         Toggle("Review every edit", isOn: rule("review_edits")).frame(minHeight: 44)
                         Toggle("Run tests before an edit is done", isOn: rule("require_tests")).frame(minHeight: 44)
                     }.padding(14).card(.white).padding(4)
-                }.frame(maxHeight: geo.size.height * 0.32)
+                }.frame(maxHeight: .infinity)
                 if let error { Text(error).font(KS.body(14)) }
                 Text("Changes apply from the next turn. Running work keeps its settings.").font(KS.body(14)).foregroundStyle(KS.muted)
                 Button(saving ? "Saving…" : "Save changes") {
@@ -722,7 +799,7 @@ private extension AppModel {
         tasks = [Demo.task("banner", "Draft the launch banner", "completed", "claude"), Demo.task("pricing", "Summarise competitor pricing", "failed", "codex"), Demo.task("calendar", "Check the launch calendar", "running", "antigravity"), Demo.task("limits", "Fix the plan limits on the pricing page", "running", "claude")]
         attention = Array(tasks.prefix(2))
         messages = [Demo.message("m1", 1, "text", .string("Plan Friday’s launch. Ask me before anything goes public."), human: true), Demo.message("m2", 2, "text", .string("On it. Scout reads the brief, Forge drafts the banner. I’ll ask before anything goes out.")), Demo.message("m3", 3, "task", tasks[0]), Demo.message("m4", 4, "question", Demo.question)]
-        typing = [.object(["task_id": .string("demo-turn"), "text": .string("I’m checking the launch calendar…")])]
+        typing = [.object(["agent_id": .string("scout"), "task_id": .string("demo-turn"), "text": .string("I’m checking the launch calendar…")])]
         let providers = ["antigravity", "claude", "codex"]
         status = .object(["scopes": .array([.object(["scope": .string("project:swarma")])]), "usage": .array(zip(providers, [79, 61, 11]).map { provider, left in
             .object(["provider": .string(provider), "ok": .bool(true), "headroom": .number(Double(left)), "plan": .string(provider == "claude" ? "MAX" : "PRO"), "windows": .array([.object(["name": .string("5 h"), "used_percent": .number(Double(100 - left))]), .object(["name": .string("Week"), "used_percent": .number(provider == "codex" ? 89 : 21)])])])

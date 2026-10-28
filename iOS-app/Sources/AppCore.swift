@@ -97,6 +97,26 @@ struct NewBotDraft {
     }
 }
 
+// Pairing URLs carry secrets: reject ambiguous inputs and never include them in errors.
+struct PairingLink {
+    let host: String
+    let code: String
+    init(_ url: URL) throws {
+        guard let parts = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              parts.scheme == "swarmaa", parts.host == "pair", parts.path.isEmpty,
+              parts.user == nil, parts.password == nil, parts.port == nil, parts.fragment == nil,
+              let items = parts.queryItems, items.count == 2,
+              items.filter({ $0.name == "host" }).count == 1,
+              items.filter({ $0.name == "code" }).count == 1,
+              let host = items.first(where: { $0.name == "host" })?.value,
+              host.range(of: "^[a-z2-7]{26}$", options: .regularExpression) != nil,
+              let code = items.first(where: { $0.name == "code" })?.value,
+              code.range(of: "^[a-z]+(-[a-z]+){5}$", options: .regularExpression) != nil
+        else { throw AppFailure.invalidPairing }
+        self.host = host; self.code = code.replacingOccurrences(of: "-", with: " ")
+    }
+}
+
 struct HostConnection: Codable, Sendable {
     let hostID: String
     let relay: String
@@ -138,7 +158,7 @@ enum AppFailure: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .keychain: "Could not access this device’s secure connection. Unlock your phone and try again."
-        case .invalidPairing: "Enter the host ID and all six words from your Mac."
+        case .invalidPairing: "This pairing link or code is invalid. Scan or paste a fresh link from your Mac."
         case .invalidResponse: "The host returned an unreadable response."
         case .unauthorized: "This connection was revoked. Pair with your Mac again."
         case .offline: "Your host is offline. Try again when your Mac is connected."
@@ -321,6 +341,16 @@ struct EventParser {
             }
         }
         startStream()
+    }
+    func handlePairingURL(_ url: URL, transport: SwarmaRelayTransport? = nil) async throws {
+        let link = try PairingLink(url)
+        try await pair(host: link.host, code: link.code, transport: transport)
+    }
+    func replyingAgent(_ typing: JSON) -> (id: String, name: String) {
+        let id = typing["agent_id"].string.isEmpty ? typing["author"]["id"].string : typing["agent_id"].string
+        let agent = agents.first { $0["id"].string == id }
+        let name = agent?["name"].string ?? typing["author"]["name"].string
+        return (id, name.isEmpty ? "Agent" : name)
     }
     func pair(host: String, code: String, relay: String = "relay.swarmaa.com", transport supplied: SwarmaRelayTransport? = nil) async throws {
         guard host.range(of: "^[a-z2-7]{26}$", options: .regularExpression) != nil,
