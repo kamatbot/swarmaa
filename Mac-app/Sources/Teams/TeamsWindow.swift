@@ -124,7 +124,7 @@ struct TeamsRail: View {
 
     var body: some View {
         VStack(spacing: 8) {
-            KSMoji(seed: "swarmaa", size: 36).padding(.top, 14).padding(.bottom, 8)
+            KSMoji(seed: "swarmaa", size: 42, kind: .mark).padding(.top, 14).padding(.bottom, 8)
             item("person.2.fill", L10n.t("Bots"), .bots, badge: model.botsWithUpdates)
             item("checklist", L10n.t("Tasks"), .tasks, badge: 0)
             item("chart.bar.fill", L10n.t("Usage"), .usage, badge: 0)
@@ -181,7 +181,7 @@ struct UsageRingButton: View {
                         .stroke(KS.providerTint(usage.provider), style: StrokeStyle(lineWidth: 4.5, lineCap: .butt))
                         .rotationEffect(.degrees(-90))
                 }
-                Text(verbatim: String(name.prefix(1))).font(KS.mono(11, .bold)).foregroundStyle(KS.paper)
+                Text(verbatim: TeamsCopy.providerShort(usage.provider)).font(KS.mono(10, .bold)).foregroundStyle(KS.paper)
             }
             .frame(width: 34, height: 34).frame(width: 46, height: 42).contentShape(Rectangle())
         }
@@ -313,7 +313,7 @@ struct UsagePane: View {
                             .font(KS.body(16)).foregroundStyle(KS.textSoft)
                     }
                     if let usage = model.status?.usage, !usage.isEmpty {
-                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 280), spacing: 22)], alignment: .leading, spacing: 22) {
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 280), spacing: 22, alignment: .top)], alignment: .leading, spacing: 22) {
                             ForEach(usage, id: \.provider) { u in UsageProviderCard(usage: u) }
                         }
                         RoutingOrderBand(usage: usage)
@@ -406,6 +406,17 @@ enum TeamsCopy {
         case "failed": return L10n.t("Failed")
         case "pending": return L10n.t("Pending")
         default: return status
+        }
+    }
+
+    /// Two letters, so Claude and Codex differ in the rail.
+    static func providerShort(_ provider: String) -> String {
+        switch provider {
+        case "claude": return "CL"
+        case "codex": return "CX"
+        case "antigravity": return "AG"
+        case "grok": return "GK"
+        default: return String(SwarmaCells.vendorName(provider).prefix(2)).uppercased()
         }
     }
 

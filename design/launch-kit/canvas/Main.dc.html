@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Swarmaa — Atlas thread</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="ds/kindswarm/components/bundle.css">
+<script src="ds/kindswarm/components/bundle.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500;600&amp;family=IBM+Plex+Sans+Condensed:ital,wght@0,400;0,500;0,600;0,700;1,400&amp;family=Stardos+Stencil:wght@400;700&amp;display=swap">
+<style>
+:root{--ks-ink:#15111F;--ks-paper:#F4EFE6;--ks-white:#FFFFFF;--ks-flame:#E8836B;--ks-lime:#CFE08A;--ks-focus:#3D7BFF;--ks-text-soft:#3A3347;--ks-text-muted:#5A5168;--ks-on-ink-soft:#CFC6E8;--ks-ink-raised:#1F1A2E;--ks-ink-line:#3B3358;--ks-stage-1:#B7CCE8;--ks-stage-2:#EAD9A6;--ks-stage-4:#D9CDEE;--ks-stage-6:#D6E3A6}
+body{margin:0;background:#F4EFE6;font-family:"IBM Plex Sans Condensed","Arial Narrow",Arial,sans-serif;color:#15111F}
+a{color:#15111F}a:hover{color:#3A3347}
+.lbl{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:12px;font-weight:500;letter-spacing:.14em;text-transform:uppercase;color:#5A5168}
+.railbtn{width:48px;height:48px;border-radius:999px;border:2px solid transparent;background:transparent;color:#CFC6E8;display:flex;align-items:center;justify-content:center;cursor:pointer;position:relative}
+.railbtn:hover{border-color:#3B3358;color:#F4EFE6}
+.railbtn:focus-visible,.pill:focus-visible,.row:focus-visible,.opt:focus-visible{outline:3px solid #3D7BFF;outline-offset:3px}
+.pill{font-family:inherit;font-size:15px;font-weight:600;border-radius:999px;border:2px solid #15111F;padding:9px 18px;cursor:pointer;line-height:1;display:inline-flex;align-items:center;gap:8px;min-height:44px;box-sizing:border-box}
+.row{display:flex;gap:12px;align-items:center;padding:10px 12px;border-radius:18px;border:2px solid transparent;background:transparent;width:100%;text-align:left;font-family:inherit;color:#15111F;cursor:pointer;box-sizing:border-box}
+.row:hover{border-color:#15111F;background:#FFFFFF}
+.chip{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;border:2px solid #15111F;border-radius:999px;padding:3px 8px;background:#FFFFFF;white-space:nowrap}
+.badge{min-width:22px;height:22px;border-radius:999px;background:#CFE08A;border:2px solid #15111F;font-family:"IBM Plex Mono",monospace;font-size:12px;font-weight:600;display:inline-flex;align-items:center;justify-content:center;box-sizing:border-box;padding:0 5px}
+.opt{display:flex;gap:14px;align-items:center;padding:12px 14px;border:2px solid #15111F;border-radius:16px;background:#FFFFFF;font-family:inherit;text-align:left;cursor:pointer;width:100%;box-sizing:border-box;color:#15111F}
+.key{width:30px;height:30px;border-radius:9px;border:2px solid #15111F;font-family:"IBM Plex Mono",monospace;font-weight:600;font-size:13px;display:flex;align-items:center;justify-content:center;flex:none;background:#F4EFE6}
+.ellip{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+</style>
+</helmet>
+<div class="ks" style="height: 100vh; min-height: 760px; display: flex; flex-wrap: wrap; background: #F4EFE6; color: #15111F;">
+
+  <nav aria-label="Swarmaa" style="width: 76px; flex: none; background: #15111F; display: flex; flex-direction: column; align-items: center; padding: 14px 0; gap: 8px; box-sizing: border-box;">
+    <div style="padding-bottom: 10px;"><x-import component-from-global-scope="KindSwarm.Character" kind="mark" size="{{s40}}"></x-import></div>
+    <button class="railbtn" aria-label="Bots, 3 with updates" aria-current="page" style="background: #CFE08A; color: #15111F; border-color: #CFE08A;"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="7" width="16" height="12" rx="4"></rect><path d="M12 3v4"></path><circle cx="9" cy="13" r="1"></circle><circle cx="15" cy="13" r="1"></circle></svg><span class="badge" style="position: absolute; top: -2px; right: -4px;">3</span></button>
+    <button class="railbtn" aria-label="Tasks"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6h11M9 12h11M9 18h11"></path><path d="M4 6l1 1 2-2M4 12l1 1 2-2M4 18l1 1 2-2"></path></svg></button>
+    <button class="railbtn" aria-label="Usage"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"></path></svg></button>
+    <div style="flex-grow: 1;"></div>
+    <div role="group" aria-label="Provider usage" style="display: flex; flex-direction: column; gap: 6px; align-items: center; padding-bottom: 8px; position: relative;">
+      <span class="lbl" style="font-size: 9px; color: #B9B0CC; letter-spacing: .1em;">Usage</span>
+      <button class="railbtn" aria-label="Claude: 80 percent of the session left. Show usage" aria-expanded="true" style="border-color: #CFE08A;"><svg width="40" height="40" viewBox="0 0 40 40" aria-hidden="true"><circle cx="20" cy="20" r="16" fill="none" stroke="#3B3358" stroke-width="5"></circle><circle cx="20" cy="20" r="16" fill="none" stroke="#CFE08A" stroke-width="5" stroke-dasharray="80 100" pathLength="100" transform="rotate(-90 20 20)"></circle><text x="20" y="24" text-anchor="middle" font-family="IBM Plex Mono" font-size="11" font-weight="600" fill="#F4EFE6">C</text></svg></button>
+      <button class="railbtn" aria-label="Antigravity: 83 percent left. Show usage"><svg width="40" height="40" viewBox="0 0 40 40" aria-hidden="true"><circle cx="20" cy="20" r="16" fill="none" stroke="#3B3358" stroke-width="5"></circle><circle cx="20" cy="20" r="16" fill="none" stroke="#B7CCE8" stroke-width="5" stroke-dasharray="83 100" pathLength="100" transform="rotate(-90 20 20)"></circle><text x="20" y="24" text-anchor="middle" font-family="IBM Plex Mono" font-size="11" font-weight="600" fill="#F4EFE6">A</text></svg></button>
+      <button class="railbtn" aria-label="Codex: 12 percent of the week left. Show usage"><svg width="40" height="40" viewBox="0 0 40 40" aria-hidden="true"><circle cx="20" cy="20" r="16" fill="none" stroke="#3B3358" stroke-width="5"></circle><circle cx="20" cy="20" r="16" fill="none" stroke="#E8836B" stroke-width="5" stroke-dasharray="12 100" pathLength="100" transform="rotate(-90 20 20)"></circle><text x="20" y="24" text-anchor="middle" font-family="IBM Plex Mono" font-size="11" font-weight="600" fill="#F4EFE6">X</text></svg></button>
+      <button class="railbtn" aria-label="Grok: 39 percent of the week left. Show usage"><svg width="40" height="40" viewBox="0 0 40 40" aria-hidden="true"><circle cx="20" cy="20" r="16" fill="none" stroke="#3B3358" stroke-width="5"></circle><circle cx="20" cy="20" r="16" fill="none" stroke="#EAD9A6" stroke-width="5" stroke-dasharray="39 100" pathLength="100" transform="rotate(-90 20 20)"></circle><text x="20" y="24" text-anchor="middle" font-family="IBM Plex Mono" font-size="11" font-weight="600" fill="#F4EFE6">G</text></svg></button>
+
+      <div role="tooltip" style="position: absolute; left: 66px; top: 6px; width: 300px; z-index: 5; background: #15111F; color: #F4EFE6; border: 3px solid #15111F; border-radius: 22px; box-shadow: 6px 6px 0 #CFE08A; padding: 16px 18px; display: flex; flex-direction: column; gap: 12px; text-align: left;">
+        <div style="display: flex; align-items: center; gap: 10px;">
+          <strong style="font-size: 18px; flex: 1;">Claude</strong>
+          <span class="chip" style="background: #CFE08A;">Max</span>
+        </div>
+        <div style="display: flex; flex-direction: column; gap: 6px;">
+          <div style="display: flex; justify-content: space-between; font-size: 14px;"><span>Session · 5 h</span><span style="font-family: 'IBM Plex Mono', monospace; font-weight: 600;">20% used</span></div>
+          <div style="height: 10px; border-radius: 999px; background: #3B3358; overflow: hidden;"><div style="width: 20%; height: 100%; background: #CFE08A;"></div></div>
+          <span style="font-size: 13px; color: #CFC6E8;">Resets in 2 h 14 min, at 08:19</span>
+        </div>
+        <div style="display: flex; flex-direction: column; gap: 6px;">
+          <div style="display: flex; justify-content: space-between; font-size: 14px;"><span>Week · all models</span><span style="font-family: 'IBM Plex Mono', monospace; font-weight: 600;">13% used</span></div>
+          <div style="height: 10px; border-radius: 999px; background: #3B3358; overflow: hidden;"><div style="width: 13%; height: 100%; background: #B7CCE8;"></div></div>
+          <span style="font-size: 13px; color: #CFC6E8;">Resets Monday 02:59</span>
+        </div>
+        <div style="border-top: 2px solid #3B3358; padding-top: 10px; display: flex; justify-content: space-between; align-items: center; font-size: 13px; color: #CFC6E8;">
+          <span>Auto routes here first</span><span class="lbl" style="font-size: 10px; color: #CFE08A;">2 workers live</span>
+        </div>
+      </div>
+    </div>
+    <button class="railbtn" aria-label="Settings"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"></path></svg></button>
+  </nav>
+
+  <aside aria-label="Agents and channels" style="width: 320px; flex: 1 1 280px; max-width: 340px; border-right: 3px solid #15111F; display: flex; flex-direction: column; padding: 16px 14px; gap: 6px; box-sizing: border-box; overflow: auto;">
+    <label style="display: flex; align-items: center; gap: 10px; border: 2px solid #15111F; border-radius: 999px; padding: 0 16px; height: 44px; background: #FFFFFF; margin-bottom: 10px;">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#15111F" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="M20 20l-4-4"></path></svg>
+      <span style="position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0);">Search agents and channels</span>
+      <input placeholder="Search" style="border: none; outline: none; background: transparent; font-family: inherit; font-size: 16px; width: 100%; color: #15111F;">
+    </label>
+
+    <div style="display: flex; align-items: center; gap: 8px; padding: 6px 6px 2px;"><span class="lbl">01 — Updates</span><span class="badge">3</span></div>
+    <button class="row" aria-current="true" style="background: #FFFFFF; border-color: #15111F; box-shadow: 4px 4px 0 #15111F;">
+      <x-import component-from-global-scope="KindSwarm.Character" kind="lead" size="{{s44}}"></x-import>
+      <span style="display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1;">
+        <span style="display: flex; gap: 8px; align-items: center;"><strong style="font-size: 17px;">Launch</strong><span class="chip">Swarm · 4</span></span>
+        <span class="ellip" style="font-size: 14px; color: #3A3347;">Atlas: which channels should we use?</span>
+      </span>
+      <span class="chip" style="background: #E8836B;">Needs you</span>
+    </button>
+    <button class="row">
+      <x-import component-from-global-scope="KindSwarm.Character" kind="runner" size="{{s44}}" delay="{{d1}}"></x-import>
+      <span style="display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1;">
+        <span style="display: flex; gap: 8px; align-items: center;"><strong style="font-size: 17px;">Pricing fix</strong><span class="chip">Swarm · 2</span></span>
+        <span class="ellip" style="font-size: 14px; color: #3A3347;">Forge: ready for review · 3 files</span>
+      </span>
+      <span class="badge">1</span>
+    </button>
+    <button class="row">
+      <x-import component-from-global-scope="KindSwarm.Character" kind="clerk" size="{{s44}}" delay="{{d2}}"></x-import>
+      <span style="display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1;">
+        <span style="display: flex; gap: 8px; align-items: center;"><strong style="font-size: 17px;">Competitor watch</strong><span class="chip">Daily</span></span>
+        <span class="ellip" style="font-size: 14px; color: #3A3347;">Failed: Codex quota. Retry routes to Claude.</span>
+      </span>
+      <span class="badge">1</span>
+    </button>
+    <div class="lbl" style="padding: 16px 6px 2px;">02 — All bots</div>
+    <button class="row">
+      <x-import component-from-global-scope="KindSwarm.Character" kind="navigator" size="{{s44}}" delay="{{d3}}"></x-import>
+      <span style="display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1;">
+        <span style="display: flex; gap: 8px; align-items: center;"><strong style="font-size: 17px;">Signals</strong><span class="chip">Hourly</span></span>
+        <span class="ellip" style="font-size: 14px; color: #3A3347;">Mentions of agent teams are up this week.</span>
+      </span>
+      <span class="lbl" style="font-size: 11px;">10:31</span>
+    </button>
+    <button class="row">
+      <x-import component-from-global-scope="KindSwarm.Character" kind="scout" size="{{s44}}" delay="{{d4}}"></x-import>
+      <span style="display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1;">
+        <span style="display: flex; gap: 8px; align-items: center;"><strong style="font-size: 17px;">Release notes</strong><span class="chip">On merge</span></span>
+        <span class="ellip" style="font-size: 14px; color: #3A3347;">Drafted notes for 1.25.0.</span>
+      </span>
+      <span class="lbl" style="font-size: 11px;">09:12</span>
+    </button>
+    <button class="row">
+      <x-import component-from-global-scope="KindSwarm.Character" kind="scribe" size="{{s44}}" delay="{{d1}}"></x-import>
+      <span style="display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1;">
+        <span style="display: flex; gap: 8px; align-items: center;"><strong style="font-size: 17px;">Inbox triage</strong><span class="chip">Swarm · 3</span></span>
+        <span class="ellip" style="font-size: 14px; color: #3A3347;">Nothing new since 08:00.</span>
+      </span>
+      <span class="lbl" style="font-size: 11px;">08:00</span>
+    </button>
+
+    <div style="flex-grow: 1;"></div>
+    <button class="pill" style="background: #FFFFFF; box-shadow: 4px 4px 0 #15111F; justify-content: center; width: 100%;"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg>New bot</button>
+  </aside>
+
+  <main style="flex: 999 1 560px; min-width: 0; display: flex; flex-direction: column; height: 100%;">
+    <header style="display: flex; align-items: center; gap: 14px; padding: 12px 24px; border-bottom: 3px solid #15111F; flex-wrap: wrap;">
+      <x-import component-from-global-scope="KindSwarm.Character" kind="lead" size="{{s36}}" delay="{{d2}}"></x-import>
+      <div style="display: flex; flex-direction: column; gap: 2px;">
+        <h1 style="margin: 0; font-size: 22px; font-weight: 700; line-height: 1;">Launch</h1>
+        <span class="lbl" style="font-size: 11px;">Swarm · Atlas leads Scout, Forge and Pulse · project:swarma</span>
+      </div>
+      <div aria-label="Crew" style="display: flex; align-items: center; margin-left: 6px;">
+        <span style="margin-right: -8px;"><x-import component-from-global-scope="KindSwarm.Character" kind="scout" size="{{s28}}" delay="{{d1}}"></x-import></span>
+        <span style="margin-right: -8px;"><x-import component-from-global-scope="KindSwarm.Character" kind="runner" size="{{s28}}" delay="{{d3}}"></x-import></span>
+        <span><x-import component-from-global-scope="KindSwarm.Character" kind="navigator" size="{{s28}}" delay="{{d4}}"></x-import></span>
+      </div>
+      <div style="flex-grow: 1;"></div>
+      <a href="BotSettings.dc.html" class="pill" style="background: #FFFFFF; text-decoration: none;" aria-label="Routing: auto, research on Antigravity, edits on Claude. Open bot settings">
+        <span style="width: 10px; height: 10px; border-radius: 999px; background: #CFE08A; border: 2px solid #15111F;"></span>Auto · Antigravity researches, Claude edits
+      </a>
+      <a href="BotSettings.dc.html" class="pill" style="background: #F4EFE6; padding: 9px 14px; text-decoration: none;"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"></path><circle cx="16" cy="6" r="2"></circle><circle cx="10" cy="12" r="2"></circle><circle cx="18" cy="18" r="2"></circle></svg>Bot settings</a>
+    </header>
+
+    <section aria-label="Conversation" style="flex: 1; overflow: auto; padding: 24px; display: flex; flex-direction: column; gap: 16px;">
+      <div class="lbl" style="text-align: center;">Today · 11:24</div>
+      <div style="align-self: flex-end; max-width: 560px; background: #15111F; color: #F4EFE6; border-radius: 22px 22px 6px 22px; padding: 12px 18px; font-size: 16px; line-height: 1.45;">Plan Friday's launch across the team. Keep me in the loop on anything public.</div>
+
+      <article aria-label="Swarm: Friday's launch" style="max-width: 680px; background: #FFFFFF; border: 3px solid #15111F; border-radius: 24px; box-shadow: 6px 6px 0 #15111F; overflow: hidden;">
+        <div style="display: flex; align-items: center; gap: 12px; padding: 14px 18px; background: #D6E3A6; border-bottom: 3px solid #15111F;">
+          <span class="lbl" style="color: #15111F;">Swarm</span>
+          <strong style="font-size: 18px; flex: 1;">Friday's launch, split across the team.</strong>
+          <span style="font-family: 'Stardos Stencil', serif; font-weight: 700; font-size: 26px; line-height: 1;">3/5</span>
+        </div>
+        <ol style="list-style: none; margin: 0; padding: 8px 18px 14px; display: flex; flex-direction: column;">
+          <li style="display: flex; gap: 12px; align-items: center; padding: 8px 0; border-bottom: 2px dashed #CFC6E8;"><span class="chip" style="background: #15111F; color: #F4EFE6;">Done</span><span style="flex: 1;">Read the launch brief and this week's updates</span><span class="lbl" style="font-size: 11px;">Scout</span></li>
+          <li style="display: flex; gap: 12px; align-items: center; padding: 8px 0; border-bottom: 2px dashed #CFC6E8;"><span class="chip" style="background: #15111F; color: #F4EFE6;">Done</span><span style="flex: 1;">Draft the banner and release notes</span><span class="lbl" style="font-size: 11px;">Forge</span></li>
+          <li style="display: flex; gap: 12px; align-items: center; padding: 8px 0; border-bottom: 2px dashed #CFC6E8;"><span class="chip" style="background: #15111F; color: #F4EFE6;">Done</span><span style="flex: 1;">Check nobody else launches that day</span><span class="lbl" style="font-size: 11px;">Pulse</span></li>
+          <li style="display: flex; gap: 12px; align-items: center; padding: 8px 0; border-bottom: 2px dashed #CFC6E8;"><span class="chip" style="background: #E8836B;">Needs you</span><span style="flex: 1;">Pick the launch channels</span><span class="lbl" style="font-size: 11px;">Atlas</span></li>
+          <li style="display: flex; gap: 12px; align-items: center; padding: 8px 0;"><span class="chip">Waiting</span><span style="flex: 1;">Schedule the posts</span><span class="lbl" style="font-size: 11px;">Pulse</span></li>
+        </ol>
+      </article>
+
+      <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+        <span class="chip" style="background: #D9CDEE;">Ran 2 subagents</span><span class="chip">2 done</span><span class="lbl" style="font-size: 11px;">6 s · Claude, Antigravity</span>
+      </div>
+      <div class="lbl" style="font-size: 11px; display: flex; gap: 8px; align-items: center;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#5A5168" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"></path></svg>Atlas gave Forge: draft the banner</div>
+
+      <article aria-label="Ready for review: launch banner" style="max-width: 680px; background: #FFFFFF; border: 3px solid #15111F; border-radius: 24px; padding: 16px 18px; display: flex; flex-direction: column; gap: 10px;">
+        <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
+          <x-import component-from-global-scope="KindSwarm.Character" kind="runner" size="{{s28}}" delay="{{d1}}"></x-import>
+          <strong style="font-size: 17px; flex: 1;">Forge finished the launch banner.</strong>
+          <span class="chip" style="background: #D6E3A6;">Ready for review</span>
+        </div>
+        <span style="font-size: 14px; color: #3A3347;">Branch <code style="font-family: 'IBM Plex Mono', monospace; font-size: 13px;">swarmaa/claude/4f1e</code> · 7 files · tests pass</span>
+        <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+          <button class="pill" style="background: #F4EFE6;">Copy review command</button>
+          <button class="pill" style="background: #FFFFFF;">Mark resolved</button>
+        </div>
+      </article>
+
+      <div role="status" style="max-width: 680px; display: flex; gap: 12px; align-items: center; border: 2px dashed #15111F; border-radius: 18px; padding: 10px 14px; flex-wrap: wrap;">
+        <span class="chip" style="background: #15111F; color: #F4EFE6;">Failed</span>
+        <span style="flex: 1; font-size: 15px;">Pulse's first try hit the Codex weekly limit (quota_exhausted).</span>
+        <button class="pill" style="background: #FFFFFF; min-height: 36px; padding: 6px 14px;">Retry on Claude</button>
+      </div>
+
+      <article aria-label="Question from Atlas" style="max-width: 680px; background: #FFFFFF; border: 3px solid #15111F; border-radius: 24px; box-shadow: 6px 6px 0 #15111F; padding: 18px; display: flex; flex-direction: column; gap: 10px;">
+        <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
+          <x-import component-from-global-scope="KindSwarm.Character" kind="lead" size="{{s28}}" delay="{{d4}}"></x-import>
+          <h2 style="margin: 0; font-size: 19px; font-weight: 700; flex: 1;">Which channels should the launch use?</h2>
+          <span class="chip" style="background: #E8836B;">Needs you</span>
+        </div>
+        <span class="lbl" style="font-size: 11px;">Pick any · Atlas waits for you</span>
+        <button class="opt" aria-pressed="true" style="background: #CFE08A;"><span class="key" style="background: #15111F; color: #CFE08A;">A</span><span style="display: flex; flex-direction: column; gap: 2px;"><strong>Blog and changelog</strong><span style="font-size: 14px; color: #3A3347;">The draft is ready.</span></span></button>
+        <button class="opt" aria-pressed="false"><span class="key">B</span><span style="display: flex; flex-direction: column; gap: 2px;"><strong>X</strong><span style="font-size: 14px; color: #3A3347;">The draft is ready.</span></span></button>
+        <button class="opt" aria-pressed="true" style="background: #CFE08A;"><span class="key" style="background: #15111F; color: #CFE08A;">C</span><span style="display: flex; flex-direction: column; gap: 2px;"><strong>LinkedIn</strong><span style="font-size: 14px; color: #3A3347;">The draft is ready.</span></span></button>
+        <button class="opt" aria-pressed="false"><span class="key">D</span><span style="display: flex; flex-direction: column; gap: 2px;"><strong>Product Hunt</strong><span style="font-size: 14px; color: #3A3347;">Needs a hunter, so next week at the earliest.</span></span></button>
+        <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap; padding-top: 4px;">
+          <label style="flex: 1 1 220px; display: flex; align-items: center; border: 2px solid #15111F; border-radius: 999px; padding: 0 16px; height: 44px; background: #F4EFE6;">
+            <span style="position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0);">Your own answer</span>
+            <input placeholder="Or type your own answer" style="border: none; outline: none; background: transparent; font-family: inherit; font-size: 15px; width: 100%;">
+          </label>
+          <button class="pill" style="background: #FFFFFF;">Skip</button>
+          <button class="pill" style="background: #CFE08A; box-shadow: 4px 4px 0 #15111F;">Send answer</button>
+        </div>
+      </article>
+    </section>
+
+    <form aria-label="Message Atlas" style="margin: 0; padding: 14px 24px 18px; border-top: 3px solid #15111F; background: #F4EFE6;">
+      <div style="display: flex; align-items: flex-end; gap: 10px; border: 3px solid #15111F; border-radius: 24px; background: #FFFFFF; padding: 8px 8px 8px 10px; box-shadow: 6px 6px 0 #15111F;">
+        <button type="button" class="pill" style="background: #F4EFE6; padding: 9px 12px;" aria-label="Attach a file"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg></button>
+        <label style="flex: 1; display: flex;">
+          <span style="position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0);">Message</span>
+          <textarea rows="2" placeholder="Message Atlas · Return to send, Shift-Return for a new line" style="border: none; outline: none; resize: none; font-family: inherit; font-size: 16px; line-height: 1.45; width: 100%; padding: 8px 4px; background: transparent; color: #15111F;"></textarea>
+        </label>
+        <button type="submit" class="pill" style="background: #15111F; color: #F4EFE6;">Send<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"></path></svg></button>
+      </div>
+    </form>
+  </main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":900}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return { s28: 28, s36: 36, s40: 40, s44: 44, d1: 1, d2: 2, d3: 3, d4: 4 };
+  }
+}
+</script>
+</body>
+</html>

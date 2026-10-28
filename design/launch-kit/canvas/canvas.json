@@ -1,0 +1,70 @@
+{
+  "v": 3,
+  "createdOnFiles": {
+    "v": 1,
+    "at": "2026-10-28T05:10:00Z"
+  },
+  "title": "Swarmaa main window",
+  "launch": {
+    "view": "canvas"
+  },
+  "pages": [],
+  "boards": {
+    "Main.dc.html": {
+      "x": 0,
+      "y": 0,
+      "w": 1440,
+      "h": 900,
+      "title": "Bots (home) \u00b7 Launch thread",
+      "expand": "fill"
+    },
+    "Tasks.dc.html": {
+      "x": 0,
+      "y": 1020,
+      "w": 1440,
+      "h": 900,
+      "title": "Tasks",
+      "expand": "fill"
+    },
+    "Usage.dc.html": {
+      "x": 1520,
+      "y": 1020,
+      "w": 1440,
+      "h": 900,
+      "title": "Usage",
+      "expand": "fill"
+    },
+    "BotSettings.dc.html": {
+      "x": 1520,
+      "y": 0,
+      "w": 1440,
+      "h": 900,
+      "title": "Bot settings \u00b7 Launch",
+      "expand": "fill"
+    }
+  },
+  "order": [
+    "Main.dc.html",
+    "BotSettings.dc.html",
+    "Tasks.dc.html",
+    "Usage.dc.html"
+  ],
+  "notes": {
+    "t1": {
+      "x": 0,
+      "y": -300,
+      "text": "Swarmaa \u00b7 main window",
+      "kind": "title1",
+      "maxW": 2960
+    }
+  },
+  "designSystems": [
+    {
+      "title": "Kind Swarm",
+      "namespace": "kindswarm",
+      "artifact": "https://claude.ai/artifact/GTtCTSDLFihHmqgY9kJnYf",
+      "version": "1793161881-3d67",
+      "copiedAt": "2026-10-28T05:10:00Z"
+    }
+  ]
+}

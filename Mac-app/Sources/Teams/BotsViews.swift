@@ -92,14 +92,16 @@ struct BotRow: View {
                 VStack(alignment: .leading, spacing: 3) {
                     HStack(spacing: 6) {
                         Text(verbatim: bot.name).font(KS.body(16, .bold)).lineLimit(1)
-                        KSChip(tag)
                         Spacer(minLength: 2)
                         if needs == 0, unread == 0, let at = latest?.at {
                             Text(at, format: .relative(presentation: .numeric, unitsStyle: .narrow))
                                 .font(KS.mono(10)).foregroundStyle(KS.textMuted).lineLimit(1)
                         }
                     }
-                    Text(verbatim: latest?.line ?? bot.job).font(KS.body(13)).foregroundStyle(KS.textSoft).lineLimit(1)
+                    HStack(spacing: 6) {
+                        Text(verbatim: tag.uppercased()).font(KS.mono(9, .semibold)).tracking(0.6).foregroundStyle(KS.textMuted).fixedSize()
+                        Text(verbatim: latest?.line ?? bot.job).font(KS.body(13)).foregroundStyle(KS.textSoft).lineLimit(1)
+                    }
                 }
                 if needs > 0 { KSChip(L10n.t("Needs you"), fill: KS.coral) }
                 else if unread > 0 { KSBadge(count: unread) }

@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// Kind Swarm, toned down for an app window: ink outlines, hard offset
@@ -131,47 +132,47 @@ extension ButtonStyle where Self == KSButtonStyle {
     static func ks(_ kind: KSButtonStyle.Kind = .white, compact: Bool = false) -> KSButtonStyle { KSButtonStyle(kind: kind, compact: compact) }
 }
 
-/// A glossy rounded "moji" face, coloured from the seed so an agent keeps its
-/// colour everywhere. Decorative: the name always sits next to it.
+/// Kind Swarm's characters (bundled SVGs from the design system). Each
+/// agent gets one, picked from its id so it keeps the same face everywhere.
+/// Decorative: the name always sits next to it.
 struct KSMoji: View {
+    enum Kind: String, CaseIterable {
+        case lead, scribe, scout, runner, clerk, navigator, mark
+        case badgeSun = "badge-sun", badgePeri = "badge-peri", badgePeach = "badge-peach"
+    }
+
     let seed: String
     var size: CGFloat = 40
+    var kind: Kind? = nil
 
-    private static let gradients: [(UInt32, UInt32)] = [
-        (0x3D7BFF, 0xB56CFF), (0xB56CFF, 0xC873FF), (0xFFD24A, 0xFF9A1C),
-        (0xFFB36B, 0xFF6FB5), (0x7AA8FF, 0xB56CFF), (0xE7A6FF, 0xB56CFF),
-    ]
+    /// The faces agents draw from; `mark` is the app's own.
+    private static let agentKinds: [Kind] = [.lead, .runner, .scout, .navigator, .clerk, .scribe, .badgeSun, .badgePeri, .badgePeach]
+    private static var cache: [Kind: NSImage] = [:]
 
-    private var pick: (UInt32, UInt32) {
-        Self.gradients[Int(seed.unicodeScalars.reduce(UInt32(5381)) { ($0 &* 33) &+ $1.value } % UInt32(Self.gradients.count))]
+    static func kind(for seed: String) -> Kind {
+        agentKinds[Int(seed.unicodeScalars.reduce(UInt32(5381)) { ($0 &* 33) &+ $1.value } % UInt32(agentKinds.count))]
+    }
+
+    static func image(_ kind: Kind) -> NSImage? {
+        if let hit = cache[kind] { return hit }
+        guard let url = Bundle.main.url(forResource: "moji-" + kind.rawValue, withExtension: "svg"),
+              let image = NSImage(contentsOf: url) else { return nil }
+        cache[kind] = image
+        return image
     }
 
     var body: some View {
-        let (a, b) = pick
-        ZStack {
-            RoundedRectangle(cornerRadius: size * 0.34)
-                .fill(KS.ink).offset(x: size * 0.06, y: size * 0.06)
-            RoundedRectangle(cornerRadius: size * 0.34)
-                .fill(LinearGradient(colors: [Color(hex: a), Color(hex: b)], startPoint: .topLeading, endPoint: .bottomTrailing))
-                .overlay(RoundedRectangle(cornerRadius: size * 0.34).stroke(KS.ink, lineWidth: max(1.5, size * 0.05)))
-            Ellipse().fill(Color.white.opacity(0.35))
-                .frame(width: size * 0.42, height: size * 0.18)
-                .offset(x: -size * 0.12, y: -size * 0.26)
-            HStack(spacing: size * 0.14) {
-                eye
-                eye
+        Group {
+            if let image = Self.image(kind ?? Self.kind(for: seed)) {
+                Image(nsImage: image).resizable().interpolation(.high).aspectRatio(contentMode: .fit)
+            } else {
+                RoundedRectangle(cornerRadius: size * 0.3).fill(KS.lilac)
+                    .overlay(RoundedRectangle(cornerRadius: size * 0.3).stroke(KS.ink, lineWidth: 2))
+                    .padding(size * 0.1)
             }
-            .offset(y: -size * 0.02)
         }
         .frame(width: size, height: size)
         .accessibilityHidden(true)
-    }
-
-    private var eye: some View {
-        ZStack {
-            Ellipse().fill(Color(hex: 0xF6EFDC)).frame(width: size * 0.2, height: size * 0.26)
-            Circle().fill(KS.ink).frame(width: size * 0.1).offset(x: size * 0.02, y: size * 0.03)
-        }
     }
 }
 

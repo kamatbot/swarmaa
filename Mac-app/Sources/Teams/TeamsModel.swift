@@ -267,6 +267,16 @@ final class TeamsModel: ObservableObject {
 
     #if DEBUG
     func setBotsForTesting(_ bots: [TeamsBot]) { self.bots = bots }
+    /// Snapshot renders and previews: example data, no service.
+    func loadFixture(agents: [TeamsAgent], bots: [TeamsBot], messages: [String: [TeamsMessage]],
+                     status: SwarmaStatus?, attention: [TeamsAttentionItem] = [], select threadID: String?) {
+        self.agents = agents; self.bots = bots; self.messages = messages; self.status = status
+        self.attention = attention
+        for (t, list) in messages { if let last = list.last { previews[t] = TeamsPreview(body: last.preview, createdAt: last.createdAt) } }
+        selectedThreadID = threadID
+        streamState = "Live"
+        phase = .ready
+    }
     #endif
 
     private func replaceBot(_ bot: TeamsBot) {

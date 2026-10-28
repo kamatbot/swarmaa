@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Swarmaa — Tasks</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="ds/kindswarm/components/bundle.css">
+<script src="ds/kindswarm/components/bundle.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500;600&amp;family=IBM+Plex+Sans+Condensed:ital,wght@0,400;0,500;0,600;0,700;1,400&amp;family=Stardos+Stencil:wght@400;700&amp;display=swap">
+<style>
+body{margin:0;background:#F4EFE6;font-family:"IBM Plex Sans Condensed","Arial Narrow",Arial,sans-serif;color:#15111F}
+a{color:#15111F}a:hover{color:#3A3347}
+.lbl{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:12px;font-weight:500;letter-spacing:.14em;text-transform:uppercase;color:#5A5168}
+.railbtn{width:48px;height:48px;border-radius:999px;border:2px solid transparent;background:transparent;color:#CFC6E8;display:flex;align-items:center;justify-content:center;cursor:pointer;position:relative}
+.railbtn:hover{border-color:#3B3358;color:#F4EFE6}
+.railbtn:focus-visible,.pill:focus-visible,.trow:focus-visible,.tick:focus-visible{outline:3px solid #3D7BFF;outline-offset:3px}
+.pill{font-family:inherit;font-size:15px;font-weight:600;border-radius:999px;border:2px solid #15111F;padding:9px 18px;cursor:pointer;line-height:1;display:inline-flex;align-items:center;gap:8px;min-height:44px;box-sizing:border-box;color:#15111F;background:#FFFFFF}
+.chip{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;border:2px solid #15111F;border-radius:999px;padding:3px 8px;background:#FFFFFF;white-space:nowrap}
+.trow{display:flex;gap:14px;align-items:center;padding:12px 16px;border-bottom:2px solid #15111F;background:#FFFFFF;cursor:pointer}
+.trow:hover{background:#F4EFE6}
+.tick{width:28px;height:28px;flex:none;border-radius:999px;border:2.5px solid #15111F;background:#FFFFFF;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0}
+.ellip{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.panel{border:3px solid #15111F;border-radius:22px;overflow:hidden;background:#FFFFFF}
+</style>
+</helmet>
+<div class="ks" style="height: 100vh; min-height: 760px; display: flex; flex-wrap: wrap; background: #F4EFE6; color: #15111F;">
+
+  <nav aria-label="Swarmaa" style="width: 76px; flex: none; background: #15111F; display: flex; flex-direction: column; align-items: center; padding: 14px 0; gap: 8px; box-sizing: border-box;">
+    <div style="padding-bottom: 10px;"><x-import component-from-global-scope="KindSwarm.Character" kind="mark" size="{{s40}}"></x-import></div>
+    <button class="railbtn" aria-label="Bots, 3 with updates"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="7" width="16" height="12" rx="4"></rect><path d="M12 3v4"></path><circle cx="9" cy="13" r="1"></circle><circle cx="15" cy="13" r="1"></circle></svg><span class="badge" style="position: absolute; top: -2px; right: -4px; min-width: 22px; height: 22px; border-radius: 999px; background: #CFE08A; border: 2px solid #15111F; font-family: 'IBM Plex Mono', monospace; font-size: 12px; font-weight: 600; display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; padding: 0 5px; color: #15111F;">3</span></button>
+    <button class="railbtn" aria-label="Tasks" aria-current="page" style="background: #CFE08A; color: #15111F; border-color: #CFE08A;"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6h11M9 12h11M9 18h11"></path><path d="M4 6l1 1 2-2M4 12l1 1 2-2M4 18l1 1 2-2"></path></svg></button>
+    <button class="railbtn" aria-label="Usage"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"></path></svg></button>
+    <div style="flex-grow: 1;"></div>
+    <div role="group" aria-label="Provider usage" style="display: flex; flex-direction: column; gap: 6px; align-items: center; padding-bottom: 8px;">
+      <span class="lbl" style="font-size: 9px; color: #B9B0CC; letter-spacing: .1em;">Usage</span>
+      <button class="railbtn" aria-label="Claude: 80 percent left. Show usage"><svg width="40" height="40" viewBox="0 0 40 40" aria-hidden="true"><circle cx="20" cy="20" r="16" fill="none" stroke="#3B3358" stroke-width="5"></circle><circle cx="20" cy="20" r="16" fill="none" stroke="#CFE08A" stroke-width="5" stroke-dasharray="80 100" pathLength="100" transform="rotate(-90 20 20)"></circle><text x="20" y="24" text-anchor="middle" font-family="IBM Plex Mono" font-size="11" font-weight="600" fill="#F4EFE6">C</text></svg></button>
+      <button class="railbtn" aria-label="Antigravity: 83 percent left. Show usage"><svg width="40" height="40" viewBox="0 0 40 40" aria-hidden="true"><circle cx="20" cy="20" r="16" fill="none" stroke="#3B3358" stroke-width="5"></circle><circle cx="20" cy="20" r="16" fill="none" stroke="#B7CCE8" stroke-width="5" stroke-dasharray="83 100" pathLength="100" transform="rotate(-90 20 20)"></circle><text x="20" y="24" text-anchor="middle" font-family="IBM Plex Mono" font-size="11" font-weight="600" fill="#F4EFE6">A</text></svg></button>
+      <button class="railbtn" aria-label="Codex: 12 percent left. Show usage"><svg width="40" height="40" viewBox="0 0 40 40" aria-hidden="true"><circle cx="20" cy="20" r="16" fill="none" stroke="#3B3358" stroke-width="5"></circle><circle cx="20" cy="20" r="16" fill="none" stroke="#E8836B" stroke-width="5" stroke-dasharray="12 100" pathLength="100" transform="rotate(-90 20 20)"></circle><text x="20" y="24" text-anchor="middle" font-family="IBM Plex Mono" font-size="11" font-weight="600" fill="#F4EFE6">X</text></svg></button>
+      <button class="railbtn" aria-label="Grok: 39 percent left. Show usage"><svg width="40" height="40" viewBox="0 0 40 40" aria-hidden="true"><circle cx="20" cy="20" r="16" fill="none" stroke="#3B3358" stroke-width="5"></circle><circle cx="20" cy="20" r="16" fill="none" stroke="#EAD9A6" stroke-width="5" stroke-dasharray="39 100" pathLength="100" transform="rotate(-90 20 20)"></circle><text x="20" y="24" text-anchor="middle" font-family="IBM Plex Mono" font-size="11" font-weight="600" fill="#F4EFE6">G</text></svg></button>
+    </div>
+    <button class="railbtn" aria-label="Settings"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="3"></circle><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"></path></svg></button>
+  </nav>
+
+  <main style="flex: 999 1 560px; min-width: 0; display: flex; flex-direction: column; height: 100%;">
+    <section style="flex: 1; overflow: auto; padding: 32px 40px 24px; display: flex; flex-direction: column; gap: 22px;">
+      <header style="display: flex; align-items: flex-end; gap: 18px; flex-wrap: wrap;">
+        <h1 style="margin: 0; font-family: 'Stardos Stencil', serif; font-weight: 700; text-transform: uppercase; font-size: 64px; line-height: .92;">Tasks.</h1>
+        <span style="font-size: 17px; color: #3A3347; padding-bottom: 6px;">Everything your agents are doing, done or stuck on.</span>
+      </header>
+
+      <div style="display: flex; flex-direction: column; gap: 10px;">
+        <div style="display: flex; gap: 10px; align-items: center;"><span class="lbl">01 — Needs input</span><span class="chip" style="background: #E8836B;">1</span></div>
+        <div class="panel" style="box-shadow: 6px 6px 0 #15111F;">
+          <div class="trow" style="border-bottom: none; background: #FBEFE7;">
+            <button class="tick" aria-label="Resolve: Pick the launch channels" disabled style="opacity: .4;"></button>
+            <span style="display: flex; flex-direction: column; gap: 3px; flex: 1; min-width: 0;"><strong class="ellip" style="font-size: 17px;">Pick the launch channels</strong><span class="ellip" style="font-size: 14px; color: #3A3347;"><b style="color: #15111F;">Needs input</b> · Atlas asked which channels to use</span></span>
+            <span class="lbl" style="font-size: 11px;">2 min</span>
+          </div>
+        </div>
+      </div>
+
+      <div style="display: flex; flex-direction: column; gap: 10px;">
+        <div style="display: flex; gap: 10px; align-items: center;"><span class="lbl">02 — Ready for review</span><span class="chip" style="background: #D6E3A6;">2</span></div>
+        <div class="panel">
+          <div class="trow" style="background: #F1F5E2; outline: 3px solid #15111F; outline-offset: -3px;">
+            <button class="tick" aria-label="Resolve: Draft the launch banner"></button>
+            <span style="display: flex; flex-direction: column; gap: 3px; flex: 1; min-width: 0;"><strong class="ellip" style="font-size: 17px;">Draft the launch banner</strong><span class="ellip" style="font-size: 14px; color: #3A3347;"><b style="color: #15111F;">Ready for review</b> · swarmaa/claude/4f1e · 7 files</span></span>
+            <span class="lbl" style="font-size: 11px;">18 min</span>
+          </div>
+          <div class="trow" style="border-bottom: none;">
+            <button class="tick" aria-label="Resolve: Fix the plan limits on the pricing page"></button>
+            <span style="display: flex; flex-direction: column; gap: 3px; flex: 1; min-width: 0;"><strong class="ellip" style="font-size: 17px;">Fix the plan limits on the pricing page</strong><span class="ellip" style="font-size: 14px; color: #3A3347;"><b style="color: #15111F;">Ready for review</b> · swarmaa/codex/9b20 · 3 files</span></span>
+            <span class="lbl" style="font-size: 11px;">1 h</span>
+          </div>
+        </div>
+      </div>
+
+      <div style="display: flex; flex-direction: column; gap: 10px;">
+        <div style="display: flex; gap: 10px; align-items: center;"><span class="lbl">03 — Working</span><span class="chip" style="background: #B7CCE8;">2</span></div>
+        <div class="panel">
+          <div class="trow">
+            <span style="width: 28px; height: 28px; flex: none; border-radius: 999px; border: 2.5px solid #15111F; background: #B7CCE8;" aria-hidden="true"></span>
+            <span style="display: flex; flex-direction: column; gap: 3px; flex: 1; min-width: 0;"><strong class="ellip" style="font-size: 17px;">Schedule the launch posts</strong><span class="ellip" style="font-size: 14px; color: #3A3347;"><b style="color: #15111F;">Queued</b> · Pulse · starts once the channels are picked</span></span>
+            <span class="lbl" style="font-size: 11px;">now</span>
+          </div>
+          <div class="trow" style="border-bottom: none;">
+            <span style="width: 28px; height: 28px; flex: none; border-radius: 999px; border: 2.5px solid #15111F; background: #B7CCE8;" aria-hidden="true"></span>
+            <span style="display: flex; flex-direction: column; gap: 3px; flex: 1; min-width: 0;"><strong class="ellip" style="font-size: 17px;">Run the pricing tests</strong><span class="ellip" style="font-size: 14px; color: #3A3347;"><b style="color: #15111F;">Running</b> · Forge on Claude Opus 5.5 · 4 min</span></span>
+            <span class="lbl" style="font-size: 11px;">4 min</span>
+          </div>
+        </div>
+      </div>
+
+      <div style="display: flex; flex-direction: column; gap: 10px;">
+        <div style="display: flex; gap: 10px; align-items: center;"><span class="lbl">04 — Failed</span><span class="chip" style="background: #15111F; color: #F4EFE6;">1</span></div>
+        <div class="panel">
+          <div class="trow" style="border-bottom: none;">
+            <button class="tick" aria-label="Resolve: Summarise competitor pricing"></button>
+            <span style="display: flex; flex-direction: column; gap: 3px; flex: 1; min-width: 0;"><strong class="ellip" style="font-size: 17px;">Summarise competitor pricing</strong><span class="ellip" style="font-size: 14px; color: #3A3347;"><b style="color: #15111F;">Failed</b> · quota_exhausted on Codex · retry routes to Claude</span></span>
+            <span class="lbl" style="font-size: 11px;">1 h</span>
+          </div>
+        </div>
+      </div>
+
+      <button class="pill" aria-expanded="false" style="align-self: flex-start; background: #F4EFE6;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" aria-hidden="true"><path d="M9 6l6 6-6 6"></path></svg>05 — Resolved · 36</button>
+    </section>
+
+    <div role="toolbar" aria-label="Tasks" style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap; padding: 14px 40px 18px; border-top: 3px solid #15111F; background: #FFFFFF;">
+      <label style="flex: 1 1 220px; display: flex; align-items: center; gap: 10px; border: 2px solid #15111F; border-radius: 999px; padding: 0 16px; height: 44px; background: #F4EFE6;">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#15111F" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="M20 20l-4-4"></path></svg>
+        <span style="position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0);">Search tasks</span>
+        <input placeholder="Search tasks" style="border: none; outline: none; background: transparent; font-family: inherit; font-size: 15px; width: 100%;">
+      </label>
+      <div role="group" aria-label="Sort" style="display: flex; border: 2px solid #15111F; border-radius: 999px; overflow: hidden;">
+        <button class="pill" aria-pressed="true" style="border: none; border-radius: 0; background: #15111F; color: #F4EFE6;">By state</button>
+        <button class="pill" aria-pressed="false" style="border: none; border-radius: 0;">Newest</button>
+      </div>
+      <span style="width: 2px; height: 32px; background: #15111F;" aria-hidden="true"></span>
+      <button class="pill" style="background: #F4EFE6;">Copy review command</button>
+      <button class="pill" style="background: #CFE08A; box-shadow: 4px 4px 0 #15111F;">Mark resolved</button>
+    </div>
+  </main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":900}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return { s40: 40 };
+  }
+}
+</script>
+</body>
+</html>

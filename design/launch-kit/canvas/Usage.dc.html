@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Swarmaa — Usage</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="ds/kindswarm/components/bundle.css">
+<script src="ds/kindswarm/components/bundle.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500;600&amp;family=IBM+Plex+Sans+Condensed:ital,wght@0,400;0,500;0,600;0,700;1,400&amp;family=Stardos+Stencil:wght@400;700&amp;display=swap">
+<style>
+body{margin:0;background:#F4EFE6;font-family:"IBM Plex Sans Condensed","Arial Narrow",Arial,sans-serif;color:#15111F}
+a{color:#15111F}a:hover{color:#3A3347}
+.lbl{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:12px;font-weight:500;letter-spacing:.14em;text-transform:uppercase;color:#5A5168}
+.railbtn{width:48px;height:48px;border-radius:999px;border:2px solid transparent;background:transparent;color:#CFC6E8;display:flex;align-items:center;justify-content:center;cursor:pointer;position:relative}
+.railbtn:hover{border-color:#3B3358;color:#F4EFE6}
+.railbtn:focus-visible,.pill:focus-visible{outline:3px solid #3D7BFF;outline-offset:3px}
+.pill{font-family:inherit;font-size:15px;font-weight:600;border-radius:999px;border:2px solid #15111F;padding:9px 18px;cursor:pointer;line-height:1;display:inline-flex;align-items:center;gap:8px;min-height:44px;box-sizing:border-box;color:#15111F;background:#FFFFFF}
+.chip{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;border:2px solid #15111F;border-radius:999px;padding:3px 8px;background:#FFFFFF;white-space:nowrap}
+.pcard{border:3px solid #15111F;border-radius:24px;background:#FFFFFF;padding:18px 20px;display:flex;flex-direction:column;gap:14px}
+.bar{height:10px;border-radius:999px;background:#F4EFE6;border:2px solid #15111F;overflow:hidden}
+.num{font-family:"Stardos Stencil",serif;font-weight:700;font-size:56px;line-height:.9}
+</style>
+</helmet>
+<div class="ks" style="height: 100vh; min-height: 760px; display: flex; flex-wrap: wrap; background: #F4EFE6; color: #15111F;">
+
+  <nav aria-label="Swarmaa" style="width: 76px; flex: none; background: #15111F; display: flex; flex-direction: column; align-items: center; padding: 14px 0; gap: 8px; box-sizing: border-box;">
+    <div style="padding-bottom: 10px;"><x-import component-from-global-scope="KindSwarm.Character" kind="mark" size="{{s40}}"></x-import></div>
+    <button class="railbtn" aria-label="Bots, 3 with updates"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="7" width="16" height="12" rx="4"></rect><path d="M12 3v4"></path><circle cx="9" cy="13" r="1"></circle><circle cx="15" cy="13" r="1"></circle></svg><span class="badge" style="position: absolute; top: -2px; right: -4px; min-width: 22px; height: 22px; border-radius: 999px; background: #CFE08A; border: 2px solid #15111F; font-family: 'IBM Plex Mono', monospace; font-size: 12px; font-weight: 600; display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; padding: 0 5px; color: #15111F;">3</span></button>
+    <button class="railbtn" aria-label="Tasks"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6h11M9 12h11M9 18h11"></path><path d="M4 6l1 1 2-2M4 12l1 1 2-2M4 18l1 1 2-2"></path></svg></button>
+    <button class="railbtn" aria-label="Usage" aria-current="page" style="background: #CFE08A; color: #15111F; border-color: #CFE08A;"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"></path></svg></button>
+    <div style="flex-grow: 1;"></div>
+    <div role="group" aria-label="Provider usage" style="display: flex; flex-direction: column; gap: 6px; align-items: center; padding-bottom: 8px;">
+      <span class="lbl" style="font-size: 9px; color: #B9B0CC; letter-spacing: .1em;">Usage</span>
+      <button class="railbtn" aria-label="Claude: 80 percent left. Show usage"><svg width="40" height="40" viewBox="0 0 40 40" aria-hidden="true"><circle cx="20" cy="20" r="16" fill="none" stroke="#3B3358" stroke-width="5"></circle><circle cx="20" cy="20" r="16" fill="none" stroke="#CFE08A" stroke-width="5" stroke-dasharray="80 100" pathLength="100" transform="rotate(-90 20 20)"></circle><text x="20" y="24" text-anchor="middle" font-family="IBM Plex Mono" font-size="11" font-weight="600" fill="#F4EFE6">C</text></svg></button>
+      <button class="railbtn" aria-label="Antigravity: 83 percent left. Show usage"><svg width="40" height="40" viewBox="0 0 40 40" aria-hidden="true"><circle cx="20" cy="20" r="16" fill="none" stroke="#3B3358" stroke-width="5"></circle><circle cx="20" cy="20" r="16" fill="none" stroke="#B7CCE8" stroke-width="5" stroke-dasharray="83 100" pathLength="100" transform="rotate(-90 20 20)"></circle><text x="20" y="24" text-anchor="middle" font-family="IBM Plex Mono" font-size="11" font-weight="600" fill="#F4EFE6">A</text></svg></button>
+      <button class="railbtn" aria-label="Codex: 12 percent left. Show usage"><svg width="40" height="40" viewBox="0 0 40 40" aria-hidden="true"><circle cx="20" cy="20" r="16" fill="none" stroke="#3B3358" stroke-width="5"></circle><circle cx="20" cy="20" r="16" fill="none" stroke="#E8836B" stroke-width="5" stroke-dasharray="12 100" pathLength="100" transform="rotate(-90 20 20)"></circle><text x="20" y="24" text-anchor="middle" font-family="IBM Plex Mono" font-size="11" font-weight="600" fill="#F4EFE6">X</text></svg></button>
+      <button class="railbtn" aria-label="Grok: 39 percent left. Show usage"><svg width="40" height="40" viewBox="0 0 40 40" aria-hidden="true"><circle cx="20" cy="20" r="16" fill="none" stroke="#3B3358" stroke-width="5"></circle><circle cx="20" cy="20" r="16" fill="none" stroke="#EAD9A6" stroke-width="5" stroke-dasharray="39 100" pathLength="100" transform="rotate(-90 20 20)"></circle><text x="20" y="24" text-anchor="middle" font-family="IBM Plex Mono" font-size="11" font-weight="600" fill="#F4EFE6">G</text></svg></button>
+    </div>
+    <button class="railbtn" aria-label="Settings"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="3"></circle><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"></path></svg></button>
+  </nav>
+
+  <main style="flex: 999 1 560px; min-width: 0; display: flex; flex-direction: column; height: 100%;">
+    <section style="flex: 1; overflow: auto; padding: 32px 40px 24px; display: flex; flex-direction: column; gap: 24px;">
+      <header style="display: flex; align-items: flex-end; gap: 18px; flex-wrap: wrap;">
+        <h1 style="margin: 0; font-family: 'Stardos Stencil', serif; font-weight: 700; text-transform: uppercase; font-size: 64px; line-height: .92;">Usage.</h1>
+        <span style="font-size: 17px; color: #3A3347; padding-bottom: 6px;">What each subscription has left, and where auto routing sends work next.</span>
+      </header>
+
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); gap: 24px;">
+        <article class="pcard" style="box-shadow: 6px 6px 0 #15111F;">
+          <div style="display: flex; align-items: center; gap: 10px;"><strong style="font-size: 20px; flex: 1;">Antigravity</strong><span class="chip" style="background: #CFE08A;">Routes first</span></div>
+          <div style="display: flex; align-items: baseline; gap: 8px;"><span class="num">83%</span><span class="lbl">left</span></div>
+          <div style="display: flex; flex-direction: column; gap: 6px;"><div style="display: flex; justify-content: space-between; font-size: 14px;"><span>5-hour</span><span style="font-family: 'IBM Plex Mono', monospace; font-weight: 600;">18% used</span></div><div class="bar"><div style="width: 18%; height: 100%; background: #B7CCE8;"></div></div><span style="font-size: 13px; color: #5A5168;">Resets 10:57</span></div>
+          <div style="display: flex; flex-direction: column; gap: 6px;"><div style="display: flex; justify-content: space-between; font-size: 14px;"><span>Week</span><span style="font-family: 'IBM Plex Mono', monospace; font-weight: 600;">12% used</span></div><div class="bar"><div style="width: 12%; height: 100%; background: #B7CCE8;"></div></div><span style="font-size: 13px; color: #5A5168;">Resets Sunday 10:10 · Gemini 3.8 Flash</span></div>
+        </article>
+
+        <article class="pcard">
+          <div style="display: flex; align-items: center; gap: 10px;"><strong style="font-size: 20px; flex: 1;">Claude</strong><span class="chip">Max</span></div>
+          <div style="display: flex; align-items: baseline; gap: 8px;"><span class="num">80%</span><span class="lbl">left</span></div>
+          <div style="display: flex; flex-direction: column; gap: 6px;"><div style="display: flex; justify-content: space-between; font-size: 14px;"><span>Session · 5 h</span><span style="font-family: 'IBM Plex Mono', monospace; font-weight: 600;">20% used</span></div><div class="bar"><div style="width: 20%; height: 100%; background: #CFE08A;"></div></div><span style="font-size: 13px; color: #5A5168;">Resets 08:19</span></div>
+          <div style="display: flex; flex-direction: column; gap: 6px;"><div style="display: flex; justify-content: space-between; font-size: 14px;"><span>Week · all models</span><span style="font-family: 'IBM Plex Mono', monospace; font-weight: 600;">13% used</span></div><div class="bar"><div style="width: 13%; height: 100%; background: #CFE08A;"></div></div><span style="font-size: 13px; color: #5A5168;">Resets Monday 02:59 · Opus 5.5</span></div>
+        </article>
+
+        <article class="pcard">
+          <div style="display: flex; align-items: center; gap: 10px;"><strong style="font-size: 20px; flex: 1;">Grok</strong><span class="chip">Bot</span></div>
+          <div style="display: flex; align-items: baseline; gap: 8px;"><span class="num">39%</span><span class="lbl">left</span></div>
+          <div style="display: flex; flex-direction: column; gap: 6px;"><div style="display: flex; justify-content: space-between; font-size: 14px;"><span>Week</span><span style="font-family: 'IBM Plex Mono', monospace; font-weight: 600;">61% used</span></div><div class="bar"><div style="width: 61%; height: 100%; background: #EAD9A6;"></div></div><span style="font-size: 13px; color: #5A5168;">Resets Wednesday 22:08</span></div>
+        </article>
+
+        <article class="pcard" style="background: #FBEFE7;">
+          <div style="display: flex; align-items: center; gap: 10px;"><strong style="font-size: 20px; flex: 1;">Codex</strong><span class="chip" style="background: #E8836B;">Avoided</span></div>
+          <div style="display: flex; align-items: baseline; gap: 8px;"><span class="num">12%</span><span class="lbl">left</span></div>
+          <div style="display: flex; flex-direction: column; gap: 6px;"><div style="display: flex; justify-content: space-between; font-size: 14px;"><span>Week</span><span style="font-family: 'IBM Plex Mono', monospace; font-weight: 600;">88% used</span></div><div class="bar"><div style="width: 88%; height: 100%; background: #E8836B;"></div></div><span style="font-size: 13px; color: #5A5168;">Resets Monday 13:53 · GPT-6 Astra · Medium</span></div>
+          <span style="font-size: 14px; color: #3A3347;">Below the routing floor: auto work goes elsewhere until it resets. Tasks that name Codex still run.</span>
+        </article>
+      </div>
+
+      <div style="background: #15111F; color: #F4EFE6; border-radius: 24px; padding: 20px 22px; display: flex; flex-direction: column; gap: 12px;">
+        <span class="lbl" style="color: #CFC6E8;">01 — Auto routing order, right now</span>
+        <ol style="margin: 0; padding: 0; list-style: none; display: flex; gap: 10px; flex-wrap: wrap; align-items: center; font-size: 16px;">
+          <li style="display: flex; gap: 8px; align-items: center;"><span class="chip" style="background: #CFE08A;">1</span>Antigravity</li>
+          <li aria-hidden="true" style="color: #5A5168;">→</li>
+          <li style="display: flex; gap: 8px; align-items: center;"><span class="chip">2</span>Claude</li>
+          <li aria-hidden="true" style="color: #5A5168;">→</li>
+          <li style="display: flex; gap: 8px; align-items: center;"><span class="chip">3</span>Grok</li>
+          <li aria-hidden="true" style="color: #5A5168;">→</li>
+          <li style="display: flex; gap: 8px; align-items: center; color: #B9B0CC;"><span class="chip" style="background: #E8836B;">—</span>Codex, held back</li>
+        </ol>
+      </div>
+    </section>
+
+    <div role="toolbar" aria-label="Usage" style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap; padding: 14px 40px 18px; border-top: 3px solid #15111F; background: #FFFFFF;">
+      <span style="font-size: 15px; color: #5A5168; flex: 1; min-width: 200px;">Updated 1 min ago from each provider</span>
+      <button class="pill" style="background: #F4EFE6;">Routing rules</button>
+      <button class="pill" style="background: #CFE08A; box-shadow: 4px 4px 0 #15111F;">Refresh all</button>
+    </div>
+  </main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":900}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return { s40: 40 };
+  }
+}
+</script>
+</body>
+</html>
