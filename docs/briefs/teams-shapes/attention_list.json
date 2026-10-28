@@ -1,0 +1,32 @@
+{
+    "result": {
+        "items": [
+            {
+                "kind": "task",
+                "id": "aa96efb9-0b7f-4c3c-af2f-60804842b2f9",
+                "title": "Implement /Users/mk/Projects/swarma/docs/briefs/teams-phase2-fixes-2.md (read it by that absolute path; it is on main a\u2026",
+                "state": "completed",
+                "next_step": "Ready for review \u00b7 branch swarmaa/claude/aa96efb9 \u00b7 12 files",
+                "at": "2026-10-28T01:11:11.894Z"
+            },
+            {
+                "kind": "task",
+                "id": "4b624e83-5026-456a-b5ac-e52703399d32",
+                "title": "Fix the Claude Opus review findings on Teams phase 2. The full brief, with the review text and hard requirements, is at\u2026",
+                "state": "completed",
+                "next_step": "Ready for review \u00b7 branch swarmaa/antigravity/4b624e83 \u00b7 8 files",
+                "at": "2026-10-28T00:47:44.312Z"
+            },
+            {
+                "kind": "task",
+                "id": "12aaee4d-4e2e-434b-86db-6f5df085fe62",
+                "title": "Implement docs/briefs/teams-phase2-swarms.md in this repo in full on current main (28858e0): migration 025_teams_swarms\u2026",
+                "state": "completed",
+                "next_step": "Ready for review \u00b7 branch swarmaa/antigravity/12aaee4d \u00b7 21 files",
+                "at": "2026-10-27T23:55:43.086Z"
+            }
+        ],
+        "has_more": true,
+        "next_cursor": "12aaee4d-4e2e-434b-86db-6f5df085fe62"
+    }
+}
