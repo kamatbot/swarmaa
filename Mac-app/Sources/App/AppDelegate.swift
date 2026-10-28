@@ -123,6 +123,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             runSetup()
         } else {
             startNotch()
+            openTeams()  // the main window is home, not just the notch
         }
     }
 
@@ -139,6 +140,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self else { return }
             self.onboarding = nil
             if !self.notchStarted { self.startNotch() }
+            self.openTeams()
         }
         onboarding = controller
         controller.show()
