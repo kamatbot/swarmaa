@@ -594,14 +594,38 @@ struct PairingScanner: UIViewControllerRepresentable {
     var found: (String) -> Void
     var failed: () -> Void
     func makeCoordinator() -> Coordinator { Coordinator(found: found, failed: failed) }
-    func makeUIViewController(context: Context) -> DataScannerViewController {
+    func makeUIViewController(context: Context) -> ScannerHost {
         let scanner = DataScannerViewController(recognizedDataTypes: [.barcode(symbologies: [.qr])], recognizesMultipleItems: false, isHighlightingEnabled: true)
         scanner.delegate = context.coordinator
-        do { try scanner.startScanning() } catch { Task { @MainActor in failed() } }
-        return scanner
+        return ScannerHost(scanner: scanner, failed: failed)
     }
-    func updateUIViewController(_ controller: DataScannerViewController, context: Context) {}
-    static func dismantleUIViewController(_ controller: DataScannerViewController, coordinator: Coordinator) { controller.stopScanning() }
+    func updateUIViewController(_ controller: ScannerHost, context: Context) {}
+    static func dismantleUIViewController(_ controller: ScannerHost, coordinator: Coordinator) { controller.scanner.stopScanning() }
+
+    /// `startScanning()` only works once the scanner's view is on screen; called while the
+    /// representable is being made, it left a blank camera. So: embed it, start it in viewDidAppear.
+    final class ScannerHost: UIViewController {
+        let scanner: DataScannerViewController
+        let failed: () -> Void
+        init(scanner: DataScannerViewController, failed: @escaping () -> Void) {
+            self.scanner = scanner; self.failed = failed
+            super.init(nibName: nil, bundle: nil)
+        }
+        required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+        override func viewDidLoad() {
+            super.viewDidLoad()
+            addChild(scanner)
+            scanner.view.frame = view.bounds
+            scanner.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+            view.addSubview(scanner.view)
+            scanner.didMove(toParent: self)
+        }
+        override func viewDidAppear(_ animated: Bool) {
+            super.viewDidAppear(animated)
+            guard !scanner.isScanning else { return }
+            do { try scanner.startScanning() } catch { failed() }
+        }
+    }
     final class Coordinator: NSObject, DataScannerViewControllerDelegate {
         let found: (String) -> Void
         let failed: () -> Void
