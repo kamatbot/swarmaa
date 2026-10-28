@@ -733,6 +733,19 @@ describe('bots core service (Brief B1)', { skip: !connectionString, concurrency:
     assert.ok(list.bots[1].badges.unread >= 1);
     assert.equal(list.bots[0].badges.latest?.kind, 'task');
 
+    await call(user, 'bot_update', { bot_id: bot1.id, expected_version: bot1.version, starred: true });
+    const ordered = (await call(user, 'bot_list', { scope: 'project:a' })).bots;
+    assert.deepEqual(ordered.map((b: any) => b.id), [bot3.id, bot1.id, bot2.id]);
+    assert.equal(ordered[1].starred, true, 'star precedes unread but follows needs-you');
+    const paginated: string[] = [];
+    let after: string | undefined;
+    do {
+      const page = await call(user, 'bot_list', { scope: 'project:a', limit: 1, ...(after ? { after } : {}) });
+      paginated.push(...page.bots.map((b: any) => b.id));
+      after = page.next_cursor ?? undefined;
+    } while (after);
+    assert.deepEqual(paginated, ordered.map((b: any) => b.id));
+
     // Test bot_get badges
     const getBot3 = (await call(user, 'bot_get', { bot_id: bot3.id })).bot;
     assert.equal(getBot3.badges.needs_you, 1);
@@ -742,6 +755,109 @@ describe('bots core service (Brief B1)', { skip: !connectionString, concurrency:
     await call(user, 'thread_mark_read', { thread_id: bot2.thread_id, seq: 10 });
     const getBot2AfterRead = (await call(user, 'bot_get', { bot_id: bot2.id })).bot;
     assert.equal(getBot2AfterRead.badges.unread, 0);
+  });
+
+  it('moves the star atomically on create/update, preserves retries and clears it on archive', async () => {
+    const user = await createPrincipal(randomUUID(), 'star-owner');
+    const lead = (await call(user, 'agent_create', {
+      name: 'StarLead', role: 'Lead', instructions: 'Help', scope: 'project:a', runner: { provider: 'codex' }
+    })).agent;
+    const create = (name: string, extra: Record<string, unknown> = {}) => call(user, 'bot_create', {
+      name, job: 'Help', scope: 'project:a', lead_agent_id: lead.id, member_agent_ids: [], ...extra
+    });
+    const first = (await create('First', { starred: true, idempotency_key: 'first-star' })).bot;
+    assert.equal(first.starred, true);
+    const second = (await create('Second', { starred: true })).bot;
+    let firstNow = (await call(user, 'bot_get', { bot_id: first.id })).bot;
+    assert.equal(firstNow.starred, false);
+    assert.equal(firstNow.version, first.version + 1);
+    const replay = await create('First', { starred: true, idempotency_key: 'first-star' });
+    assert.equal(replay.replayed, true);
+    assert.equal(replay.bot.starred, false);
+    assert.equal((await call(user, 'bot_get', { bot_id: second.id })).bot.starred, true);
+
+    const before = Number((await pool.query('SELECT COALESCE(max(seq),0) AS seq FROM events')).rows[0].seq);
+    firstNow = (await call(user, 'bot_update', {
+      bot_id: first.id, expected_version: firstNow.version, starred: true
+    })).bot;
+    assert.equal(firstNow.starred, true);
+    const secondNow = (await call(user, 'bot_get', { bot_id: second.id })).bot;
+    assert.equal(secondNow.starred, false);
+    assert.equal(secondNow.version, second.version + 1);
+    const events = (await pool.query(
+      "SELECT subject_id FROM events WHERE tenant_id=$1 AND name='bot.updated' AND seq>$2", [user.tenantId, before]
+    )).rows;
+    assert.deepEqual(events.map(e => e.subject_id).sort(), [first.id, second.id].sort());
+    await assert.rejects(call(user, 'bot_update', {
+      bot_id: second.id, expected_version: second.version, starred: true
+    }), (e: any) => e.status === 409);
+    await assert.rejects(call(user, 'bot_update', {
+      bot_id: second.id, expected_version: secondNow.version, starred: true, name: first.name
+    }), (e: any) => e.status === 409);
+    assert.equal((await call(user, 'bot_get', { bot_id: first.id })).bot.starred, true, 'failed writes roll back star changes');
+    const cleared = (await call(user, 'bot_update', {
+      bot_id: first.id, expected_version: firstNow.version, starred: false
+    })).bot;
+    assert.equal(cleared.starred, false);
+    const starred = (await call(user, 'bot_update', {
+      bot_id: first.id, expected_version: cleared.version, starred: true
+    })).bot;
+    assert.equal(starred.starred, true);
+    assert.equal((await call(user, 'bot_archive', { bot_id: first.id })).bot.starred, false);
+    assert.equal((await call(user, 'bot_get', { bot_id: first.id })).bot.starred, false);
+    await assert.rejects(create('Invalid', { starred: 'true' }), (e: any) => e.status === 400);
+  });
+
+  it('serializes concurrent star updates per tenant and leaves other tenants untouched', async () => {
+    const user = await createPrincipal(randomUUID(), 'concurrent-star-owner');
+    const other = await createPrincipal(randomUUID(), 'other-star-owner');
+    async function make(p: Principal, name: string, starred = false) {
+      const lead = (await call(p, 'agent_create', {
+        name, role: 'Lead', instructions: 'Help', scope: 'project:a', runner: { provider: 'codex' }
+      })).agent;
+      return (await call(p, 'bot_create', {
+        name, job: 'Help', scope: 'project:a', lead_agent_id: lead.id, member_agent_ids: [], starred
+      })).bot;
+    }
+    const otherBot = await make(other, 'Other', true);
+    const bots = await Promise.all(['A', 'B', 'C', 'D'].map(name => make(user, name)));
+    const results = await Promise.all(bots.map(bot => call(user, 'bot_update', {
+      bot_id: bot.id, expected_version: bot.version, starred: true
+    })));
+    assert.ok(results.every(r => r.bot.starred === true));
+    const stars = (await pool.query('SELECT id FROM bots WHERE tenant_id=$1 AND starred AND NOT archived', [user.tenantId])).rows;
+    assert.equal(stars.length, 1);
+    assert.equal((await call(other, 'bot_get', { bot_id: otherBot.id })).bot.starred, true);
+    assert.equal((await call(other, 'bot_get', { bot_id: otherBot.id })).bot.version, otherBot.version);
+    const loser = bots.find(b => b.id !== stars[0].id)!;
+    await assert.rejects(pool.query('UPDATE bots SET starred=true WHERE id=$1', [loser.id]),
+      (e: any) => e.code === '23505', 'database enforces the invariant too');
+  });
+
+  it('requires access to the previous star scope and moves stars across authorized scopes', async () => {
+    const owner = await createPrincipal(randomUUID(), 'scoped-star-owner');
+    const limited = await createPrincipal(owner.tenantId, 'limited-star-owner', 'frontend', ['project:a']);
+    async function make(scope: string, name: string, starred: boolean) {
+      const lead = (await call(owner, 'agent_create', {
+        name, role: 'Lead', instructions: 'Help', scope, runner: { provider: 'codex' }
+      })).agent;
+      return (await call(owner, 'bot_create', {
+        name, job: 'Help', scope, lead_agent_id: lead.id, member_agent_ids: [], starred
+      })).bot;
+    }
+    const hidden = await make('project:b', 'Hidden', true);
+    const visible = await make('project:a', 'Visible', false);
+    await assert.rejects(call(limited, 'bot_update', {
+      bot_id: visible.id, expected_version: visible.version, starred: true
+    }), (e: any) => e.status === 403);
+    await assert.rejects(call(limited, 'bot_create', {
+      name: 'Denied', job: 'Help', scope: 'project:a', lead_agent_id: visible.lead_agent_id,
+      member_agent_ids: [], starred: true
+    }), (e: any) => e.status === 403);
+    assert.equal((await call(owner, 'bot_get', { bot_id: hidden.id })).bot.starred, true);
+    assert.equal((await call(limited, 'bot_list', {})).bots.length, 1, 'failed create rolls back');
+    await call(owner, 'bot_update', { bot_id: visible.id, expected_version: visible.version, starred: true });
+    assert.equal((await call(owner, 'bot_get', { bot_id: hidden.id })).bot.starred, false);
   });
 
   it('the bot_list query count stays constant', async () => {

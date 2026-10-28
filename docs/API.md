@@ -700,7 +700,7 @@ accepts exact floor and zero at 99, preserves global maxima`. Integration servic
 include migration 027 alongside its prerequisites. The isolated migration-020 backfill test
 intentionally reconstructs its historical schema before applying migration 020.
 
-## Bots: persistent, configured swarms (migration 027)
+## Bots: persistent, configured swarms (migrations 027–028)
 
 A **bot** is a persistent, configured swarm that performs a designated job. A bot ties together:
 - **a crew of agents:** one lead agent plus member agents;
@@ -708,6 +708,8 @@ A **bot** is a persistent, configured swarm that performs a designated job. A bo
 - **its own routing and standing rules,** governing research, patch, review, and summary work across tasks created by the bot.
 
 Tasks started by a bot propagate `tasks.bot_id`. When bot tasks finish review-ready (`completed` with `result.head_commit`) or `failed`, the service automatically posts a task card message (`kind: 'task'`) into the bot thread.
+
+A bot's `starred` boolean is returned by create, update, get and list. At most one live bot per tenant can be starred, across all scopes (migration 028). Setting `starred: true` on create or update atomically clears the previous star and emits `bot.updated` for both bots; clearing the previous star also increments its version. The caller must have access to both scopes or the entire write fails. Setting `starred: false` clears the star; archiving also clears it. Create retries with the same idempotency key do not move the star again.
 
 ### Tools
 
@@ -722,6 +724,7 @@ Tasks started by a bot propagate `tasks.bot_id`. When bot tasks finish review-re
   - `routing` (optional): object mapping kinds (`research`, `patch`, `review`, `summary`) to runner configurations (`{mode:'auto'}` or `{provider, model?, effort?}`, with `review` also allowing `{mode:'different_from_author'}`)
   - `rules` (optional): object with `quota_floor_pct` (0..50, default 0), `approve_public` (boolean, default true), `review_edits` (boolean, default true), `require_tests` (boolean, default false)
   - `schedule` (optional): 5-field cron string, optionally prefixed with `CRON_TZ=<zone> `
+  - `starred` (optional): boolean, default false
   - `avatar` (optional): string (<= 200)
   - `idempotency_key` (optional): string (<= 200)
 - **Returns:** `{ bot, thread, replayed?: boolean }`. Creates the `kind: 'bot'` thread with members for lead and members. All crew agents must be live and in the bot's scope. Live bot names must be unique within a scope (returns 409 `name_taken`).
@@ -731,7 +734,7 @@ Tasks started by a bot propagate `tasks.bot_id`. When bot tasks finish review-re
 - **Arguments:**
   - `bot_id`: UUID
   - `expected_version`: integer (>= 1)
-  - Any of: `name`, `job`, `avatar`, `lead_agent_id`, `member_agent_ids`, `routing`, `rules`, `schedule`
+  - Any of: `name`, `job`, `avatar`, `lead_agent_id`, `member_agent_ids`, `routing`, `rules`, `schedule`, `starred`
 - **Returns:** `{ bot }`. Optimistically versioned. A routing or crew change posts an explanatory `notice` message into the bot thread and emits `bot.updated`.
 
 #### `bot_get`
@@ -742,12 +745,12 @@ Tasks started by a bot propagate `tasks.bot_id`. When bot tasks finish review-re
 #### `bot_list`
 - **Permission:** `agent:read`
 - **Arguments:** `scope?`, `include_archived?` (boolean), `after?` (UUID), `limit?` (1..100, default 50)
-- **Returns:** `{ bots, has_more, next_cursor }`. Ordered with **updates first**: bots with `badges.needs_you > 0`, then `badges.unread > 0`, then by last activity. Uses a constant number of queries per page.
+- **Returns:** `{ bots, has_more, next_cursor }`. Ordered with **updates first**: bots with `badges.needs_you > 0`, then `starred = true`, then `badges.unread > 0`, then by last activity. Uses a constant number of queries per page.
 
 #### `bot_archive`
 - **Permission:** `agent:manage` (response read requires `agent:read`)
 - **Arguments:** `bot_id: UUID`
-- **Returns:** `{ bot }`. Marks the bot archived and cancels its queued tasks. The thread remains readable.
+- **Returns:** `{ bot }`. Marks the bot archived, clears its star and cancels its queued tasks. The thread remains readable.
 
 ### Task cards: message kind `task`
 

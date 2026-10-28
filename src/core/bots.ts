@@ -27,6 +27,7 @@ export interface BotRow {
   schedule: string | null;
   next_run_at: Date | null;
   archived: boolean;
+  starred: boolean;
   version: number;
   created_by: string;
   idempotency_key: string | null;
@@ -271,6 +272,7 @@ export function botView(
     schedule: row.schedule,
     next_run_at: row.next_run_at ? row.next_run_at.toISOString() : null,
     archived: row.archived,
+    starred: row.starred,
     version: row.version,
     created_at: row.created_at.toISOString(),
     updated_at: row.updated_at.toISOString(),
@@ -284,6 +286,23 @@ async function requireFreeBotName(db: Db, tenantId: string, scope: string, name:
     excludeId ? [tenantId, scope, name, excludeId] : [tenantId, scope, name]
   );
   requireCondition(!taken.rowCount, 409, 'name_taken', `A bot named ${name} already exists in ${scope}.`);
+}
+
+/** Call under teamsLock so clearing and assigning the tenant's star cannot race. */
+async function clearPreviousStar(db: Db, p: Principal, botId: string): Promise<void> {
+  const previous = (await db.query<BotRow>(
+    'SELECT * FROM bots WHERE tenant_id=$1 AND starred AND NOT archived AND id<>$2 FOR UPDATE',
+    [p.tenantId, botId]
+  )).rows;
+  for (const bot of previous) {
+    requireScope(p, bot.scope);
+    await db.query(
+      'UPDATE bots SET starred=false, version=version+1, updated_at=clock_timestamp() WHERE id=$1',
+      [bot.id]
+    );
+    await audit(db, p, bot.scope, 'bot.update', bot.id, { reason: 'unstarred' });
+    await event(db, p, bot.scope, 'bot.updated', bot.id, { bot_id: bot.id, reason: 'unstarred' });
+  }
 }
 
 export async function postBotTaskCard(
@@ -510,7 +529,7 @@ export class BotService {
   }
 
   async botCreate(p: Principal, input: Record<string, unknown>): Promise<unknown> {
-    noExtraKeys(input, ['name', 'job', 'scope', 'lead_agent_id', 'member_agent_ids', 'routing', 'rules', 'schedule', 'avatar', 'idempotency_key']);
+    noExtraKeys(input, ['name', 'job', 'scope', 'lead_agent_id', 'member_agent_ids', 'routing', 'rules', 'schedule', 'avatar', 'idempotency_key', 'starred']);
     requirePermission(p, 'agent:manage');
 
     const name = string(input.name, 'name', 64);
@@ -530,6 +549,7 @@ export class BotService {
     const rules = validateRules(input.rules);
     const schedule = validateSchedule(input.schedule);
     const avatar = input.avatar !== undefined ? string(input.avatar, 'avatar', 200) : null;
+    const starred = input.starred !== undefined ? booleanOption(input.starred, 'starred') : false;
     const idempotency = input.idempotency_key !== undefined ? string(input.idempotency_key, 'idempotency_key', 200) : null;
 
     return transaction(this.pool, async db => {
@@ -591,12 +611,14 @@ export class BotService {
         );
       }
 
+      if (starred) await clearPreviousStar(db, p, botId);
+
       const botRes = await db.query<BotRow>(
         `INSERT INTO bots
-           (id, tenant_id, scope, name, job, avatar, thread_id, lead_agent_id, routing, rules, schedule, next_run_at, archived, version, created_by, idempotency_key)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10::jsonb, $11, NULL, false, 1, $12, $13)
+           (id, tenant_id, scope, name, job, avatar, thread_id, lead_agent_id, routing, rules, schedule, next_run_at, archived, version, created_by, idempotency_key, starred)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10::jsonb, $11, NULL, false, 1, $12, $13, $14)
          RETURNING *`,
-        [botId, p.tenantId, scope, name, job, avatar, threadId, leadAgentId, JSON.stringify(routing), JSON.stringify(rules), schedule, p.id, idempotency]
+        [botId, p.tenantId, scope, name, job, avatar, threadId, leadAgentId, JSON.stringify(routing), JSON.stringify(rules), schedule, p.id, idempotency, starred]
       );
       const bot = botRes.rows[0]!;
 
@@ -614,7 +636,7 @@ export class BotService {
   }
 
   async botUpdate(p: Principal, input: Record<string, unknown>): Promise<unknown> {
-    noExtraKeys(input, ['bot_id', 'expected_version', 'name', 'job', 'avatar', 'lead_agent_id', 'member_agent_ids', 'routing', 'rules', 'schedule']);
+    noExtraKeys(input, ['bot_id', 'expected_version', 'name', 'job', 'avatar', 'lead_agent_id', 'member_agent_ids', 'routing', 'rules', 'schedule', 'starred']);
     requirePermission(p, 'agent:manage');
 
     const botId = uuid(input.bot_id, 'bot_id');
@@ -628,6 +650,9 @@ export class BotService {
       requireScope(p, existing.scope);
       requireCondition(!existing.archived, 400, 'bot_archived', 'Cannot update an archived bot.');
       requireCondition(existing.version === expectedVersion, 409, 'conflict', 'Expected version does not match.');
+
+      const nextStarred = input.starred !== undefined ? booleanOption(input.starred, 'starred') : existing.starred;
+      if (nextStarred) await clearPreviousStar(db, p, botId);
 
       const nextName = input.name !== undefined ? string(input.name, 'name', 64) : existing.name;
       if (input.name !== undefined && nextName.toLowerCase() !== existing.name.toLowerCase()) {
@@ -728,11 +753,11 @@ export class BotService {
 
       const updated = (await db.query<BotRow>(
         `UPDATE bots
-         SET name=$1, job=$2, avatar=$3, lead_agent_id=$4, routing=$5::jsonb, rules=$6::jsonb, schedule=$7,
+         SET name=$1, job=$2, avatar=$3, lead_agent_id=$4, routing=$5::jsonb, rules=$6::jsonb, schedule=$7, starred=$9,
              next_run_at=CASE WHEN schedule IS DISTINCT FROM $7 THEN NULL ELSE next_run_at END,
              version=version+1, updated_at=clock_timestamp()
          WHERE id=$8 RETURNING *`,
-        [nextName, nextJob, nextAvatar, nextLeadId, JSON.stringify(nextRouting), JSON.stringify(nextRules), nextSchedule, botId]
+        [nextName, nextJob, nextAvatar, nextLeadId, JSON.stringify(nextRouting), JSON.stringify(nextRules), nextSchedule, botId, nextStarred]
       )).rows[0]!;
 
       await audit(db, p, existing.scope, 'bot.update', botId, { version: updated.version });
@@ -835,12 +860,14 @@ export class BotService {
        FROM bot_badges
        WHERE ($7::uuid IS NULL OR (
          (CASE WHEN needs_you_count > 0 THEN 1 ELSE 0 END),
+         starred,
          (CASE WHEN unread_count > 0 THEN 1 ELSE 0 END),
          GREATEST(updated_at, thread_updated_at),
          id
        ) < (
          SELECT
            (CASE WHEN needs_you_count > 0 THEN 1 ELSE 0 END),
+           starred,
            (CASE WHEN unread_count > 0 THEN 1 ELSE 0 END),
            GREATEST(updated_at, thread_updated_at),
            id
@@ -848,6 +875,7 @@ export class BotService {
        ))
        ORDER BY
          (CASE WHEN needs_you_count > 0 THEN 1 ELSE 0 END) DESC,
+         starred DESC,
          (CASE WHEN unread_count > 0 THEN 1 ELSE 0 END) DESC,
          GREATEST(updated_at, thread_updated_at) DESC,
          id DESC
@@ -896,7 +924,7 @@ export class BotService {
       }
 
       const updated = (await db.query<BotRow>(
-        'UPDATE bots SET archived=true, version=version+1, updated_at=clock_timestamp() WHERE id=$1 RETURNING *',
+        'UPDATE bots SET archived=true, starred=false, version=version+1, updated_at=clock_timestamp() WHERE id=$1 RETURNING *',
         [botId]
       )).rows[0]!;
 

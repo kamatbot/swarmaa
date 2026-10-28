@@ -13,7 +13,7 @@ Design: the "Swarmaa main window" canvas (Bots home, Bot settings, Tasks, Usage)
 
 | Thing | What it is |
 |---|---|
-| **Bot** | `bots` row (migration 027): `name`, `job` (≤ 8 KB, the lead's standing brief), `scope`, `avatar`, `thread_id`, `lead_agent_id`, `routing`, `rules`, `schedule`, `version`. |
+| **Bot** | `bots` row (migration 027): `name`, `job` (≤ 8 KB, the lead's standing brief), `scope`, `avatar`, `thread_id`, `lead_agent_id`, `routing`, `rules`, `schedule`, `starred` (migration 028, default false), `version`. |
 | **Crew** | The bot thread's `thread_members` (migration 025), with `threads.lead_agent_id` = the bot's lead. Members are ordinary agents, and one agent may serve several bots. |
 | **Bot thread** | A `threads` row with `kind = 'bot'`. It routes like a channel: a human post goes to the `@`mentioned member, or else to the lead. Everything the bot does lands here as messages. |
 | **Bot task** | Any task with `tasks.bot_id`: the lead's turns, swarm steps started from the bot thread, handoffs, reviews, checks and scheduled runs. |
@@ -62,17 +62,19 @@ It is set once, at insert, and never changed.
 | `require_tests` | false | When a bot `patch` task finishes with a commit, the service queues a `check` task with `initiator_kind = 'bot_check'`. It runs the project's tests on that branch, reusing the flows `tests_pass` check. A failing check posts a `task` card with **Send back**, which queues a follow-up turn for the author with the failure. |
 | `schedule` | null | A 5-field cron in the owner's time zone (`CRON_TZ=…` prefix allowed). The service's tick posts a notice "Scheduled run" into the bot thread and queues the lead's turn with `initiator_kind = 'schedule'`, then sets `next_run_at`. It skips a run while the lead already has a queued or running turn. |
 
+A bot's `starred` boolean is returned by create, update, get and list. At most one live bot per tenant can be starred, across all scopes (migration 028). Setting `starred: true` on create or update atomically clears the previous star and emits `bot.updated` for both bots; clearing the previous star also increments its version. The caller must have access to both scopes or the entire write fails. Setting `starred: false` clears the star; archiving also clears it. Create retries with the same idempotency key do not move the star again.
+
 ## 4. Tools (`POST /api/tools/<name>` and MCP)
 
 All follow the Teams conventions: closed schemas, `idempotency_key` on writes, `expected_version`, `teamsLock` first on every write, tenant and scope checks.
 
 | Tool | Permission | Input → output |
 |---|---|---|
-| `bot_create` | `agent:manage` | `name, job, scope, lead_agent_id, member_agent_ids[], routing?, rules?, schedule?, avatar?, idempotency_key` → `{bot, thread}`. Creates the `bot` thread with lead and members. |
-| `bot_update` | `agent:manage` | `bot_id, expected_version`, plus any of `name, job, avatar, lead_agent_id, member_agent_ids, routing, rules, schedule` → `{bot}`. A routing or crew change posts a `notice` such as "Edits now run on Claude Opus 5.5 · High". |
+| `bot_create` | `agent:manage` | `name, job, scope, lead_agent_id, member_agent_ids[], routing?, rules?, schedule?, avatar?, starred?, idempotency_key` → `{bot, thread}`. Creates the `bot` thread with lead and members. |
+| `bot_update` | `agent:manage` | `bot_id, expected_version`, plus any of `name, job, avatar, lead_agent_id, member_agent_ids, routing, rules, schedule, starred` → `{bot}`. A routing or crew change posts a `notice` such as "Edits now run on Claude Opus 5.5 · High". |
 | `bot_get` | `agent:read` | `bot_id` → `{bot}` with `crew` (agents, lead first), `routing_now` and `badges`. |
-| `bot_list` | `agent:read` | `scope?, include_archived?, after?, limit?` → `{bots, has_more, next_cursor}`. Ordered with **updates first**: bots with `badges.needs_you > 0`, then `badges.unread > 0`, then by last activity. |
-| `bot_archive` | `agent:manage` | `bot_id` → `{bot}`. Its thread stays readable, and its queued tasks are cancelled. |
+| `bot_list` | `agent:read` | `scope?, include_archived?, after?, limit?` → `{bots, has_more, next_cursor}`. Ordered with **updates first**: bots with `badges.needs_you > 0`, then `starred = true`, then `badges.unread > 0`, then by last activity. |
+| `bot_archive` | `agent:manage` | `bot_id` → `{bot}`. Clears its star. Its thread stays readable, and its queued tasks are cancelled. |
 | `bot_routing_preview` | `agent:read` | `bot_id` → `routing_now`. |
 
 **`routing_now`:** for each kind, `{runner, provider_now, reason}`, where `provider_now` is the provider the router would choose right now under current quota and the bot's rules. It feeds the header line "Auto · Antigravity researches, Claude edits".
@@ -87,7 +89,7 @@ All follow the Teams conventions: closed schemas, `idempotency_key` on writes, `
 ```jsonc
 {"id","scope","name","job","avatar","thread_id","lead_agent_id","member_agent_ids":[...],
  "routing":{...},"rules":{"quota_floor_pct":0,"approve_public":true,"review_edits":true,"require_tests":false},
- "schedule":null,"next_run_at":null,"archived":false,"version":1,"created_at","updated_at",
+ "schedule":null,"next_run_at":null,"archived":false,"starred":false,"version":1,"created_at","updated_at",
  "badges":{"unread":2,"needs_you":1,"latest":{"kind":"question","line":"Which channels should the launch use?","at":"..."}}}
 ```
 
