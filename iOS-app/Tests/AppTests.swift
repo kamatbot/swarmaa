@@ -242,6 +242,31 @@ actor IOSRelaySocket: SwarmaRelayTransport.SwarmaWebSocket {
         XCTAssertEqual(before, after)
         await service.transport.disconnect()
     }
+    func testBackgroundSocketDropIsQuietAndOtherStreamErrorsClearOnReconnect() async throws {
+        @MainActor final class Flaky: HostService {
+            var failures: [Error]
+            init(_ failures: [Error]) { self.failures = failures }
+            func call(_ tool: String, _ input: [String: JSON]) async throws -> JSON { .object([:]) }
+            func events(after: String) -> AsyncThrowingStream<Data, Error> {
+                let failure = failures.isEmpty ? nil : failures.removeFirst()
+                return AsyncThrowingStream { c in
+                    if let failure { c.finish(throwing: failure) } else { c.yield(Data(": ok\n\n".utf8)) }
+                }
+            }
+        }
+        let model = AppModel(keychain: ConnectionKeychain(service: "app.swarmaa.ios.tests." + UUID().uuidString))
+        model.service = Flaky([SwarmaRelayTransport.Failure.closed])
+        model.startStream()
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertNil(model.error, "a background socket close is not shown")
+        let flaky = Flaky([URLError(.notConnectedToInternet)])
+        model.service = flaky
+        model.startStream()
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertNotNil(model.error)
+        try await Task.sleep(for: .milliseconds(1200))
+        XCTAssertNil(model.error, "the stream coming back clears its own error")
+    }
     func testSSEParserSplitUTF8CRLFAndMultipleFrames() throws {
         var parser = EventParser()
         let bytes = Array("id: c1\r\nevent: message.created\r\ndata: {\"payload\":{\"thread_id\":\"café\"}}\r\n\r\n: heartbeat\n\ndata: {\"name\":\"task.updated\"}\n\n".utf8)

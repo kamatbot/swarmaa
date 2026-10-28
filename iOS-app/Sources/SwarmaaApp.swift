@@ -244,6 +244,7 @@ struct RootView: View {
         .onChange(of: model.openBot?.id) { _, value in if value != nil, Runtime.openStarRequested { screen = .thread; Runtime.openStarRequested = false } }
         .onChange(of: phase) { _, phase in
             guard phase == .active else { return }
+            Task { await model.refresh() }
             if Runtime.openStarRequested, model.openBot != nil { screen = .thread; Runtime.openStarRequested = false }
             openPushBot()
         }

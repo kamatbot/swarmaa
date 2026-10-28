@@ -523,11 +523,14 @@ enum PushNotification {
         streamTask?.cancel()
         streamTask = Task { [weak self] in
             var delay = 1.0
+            var shown: String?
             while !Task.isCancelled {
                 guard let self else { return }
                 do {
                     var parser = EventParser()
                     for try await chunk in service.events(after: self.cursor) {
+                        // The stream is back: drop the error its last drop put up.
+                        if let message = shown { if self.error == message { self.error = nil }; shown = nil }
                         for event in try parser.feed(chunk) {
                             try await self.handle(event)
                             if !event["cursor"].string.isEmpty { self.cursor = event["cursor"].string }
@@ -536,8 +539,11 @@ enum PushNotification {
                         if Task.isCancelled { return }
                     }
                 } catch {
-                    self.error = safeError(error)
-                    if case AppFailure.unauthorized = error { return }
+                    if case AppFailure.unauthorized = error { self.error = safeError(error); return }
+                    // iOS closes the socket while the app is in the background; the loop reconnects on its own.
+                    if (error as? SwarmaRelayTransport.Failure) != .closed {
+                        shown = safeError(error); self.error = shown
+                    }
                 }
                 do { try await Task.sleep(for: .seconds(delay)) } catch { return }
                 delay = min(30, delay * 2)
