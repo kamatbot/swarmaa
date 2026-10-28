@@ -94,6 +94,11 @@ export async function scopeLock(db: PoolClient, namespace: string, p: Principal,
   await db.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [JSON.stringify([namespace, p.tenantId, scope, key])]);
 }
 
+// ponytail: one Teams writer per tenant; per-swarm or per-agent keys if one tenant's throughput ever matters.
+export async function teamsLock(db: Db, tenantId: string): Promise<void> {
+  await db.query("SELECT pg_advisory_xact_lock(hashtextextended('teams:' || $1, 0))", [tenantId]);
+}
+
 export function requireFound<T>(row: T | undefined, label: string): T {
   if (!row) throw new AppError(404, 'not_found', `${label} was not found in your permitted scopes.`);
   return row;

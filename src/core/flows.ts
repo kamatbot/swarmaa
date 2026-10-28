@@ -6,7 +6,8 @@ import type { Principal } from '../types.js';
 import { object, scopeName, string, uuid } from '../validation.js';
 import { BUILTIN_FLOWS, COMMIT, flowObjective, validateFlow, type FlowDefinition, type FlowTask } from './flow-definition.js';
 import { flowApprovalNotice } from './inbox.js';
-import { assertKnownScope, audit, canonicalJson, jsonObject, newId, noExtraKeys, requireFound, scopeLock, scopeSql, sha256, type Db } from './shared.js';
+import { SwarmsService } from './swarms.js';
+import { assertKnownScope, audit, canonicalJson, jsonObject, newId, noExtraKeys, requireFound, scopeLock, scopeSql, sha256, teamsLock, type Db } from './shared.js';
 import { cancelTask, taskChanged, taskView, type TaskRow } from './tasks.js';
 
 interface FlowRun {
@@ -113,7 +114,8 @@ export class FlowService {
       const existing = (await db.query<FlowRun>('SELECT * FROM flow_runs WHERE tenant_id=$1 AND created_by=$2 AND idempotency_key=$3',[p.tenantId,p.id,key])).rows[0];
       if (existing) {
         requireCondition(existing.request_hash===hash,409,'idempotency_conflict','This key was used for another flow start.');
-        return {flow:view(existing,await tasksFor(db,existing.id)),replayed:true,idempotency_key:key};
+        const existingSwarm = (await db.query<{ id: string }>('SELECT id FROM swarms WHERE flow_id=$1', [existing.id])).rows[0];
+        return {flow:view(existing,await tasksFor(db,existing.id)),swarm_id:existingSwarm?.id ?? null,replayed:true,idempotency_key:key};
       }
       const id = typeof requested==='string' ? requested : requested.id;
       const saved = (await db.query<{definition:FlowDefinition}>('SELECT definition FROM flow_definitions WHERE tenant_id=$1 AND id=$2',[p.tenantId,id])).rows[0];
@@ -133,6 +135,7 @@ export class FlowService {
         requireCondition(ownerId,409,'flow_owner_required','Approval flows need an unambiguous scoped owner identity (name owner, or the sole admin).');
       }
       await scopeLock(db,'tasks',p,scope);
+      await teamsLock(db,p.tenantId);
       const count = (await db.query(`SELECT count(*)::int AS n FROM tasks WHERE tenant_id=$1 AND scope=$2 AND status IN ('queued','running','blocked')`,[p.tenantId,scope])).rows[0].n;
       requireCondition(count+definition.steps.length<=1000,429,'queue_full','Flow would exceed 1000 open tasks in this scope.');
       await db.query(`INSERT INTO flow_definitions(tenant_id,id,definition,created_by) VALUES($1,$2,$3::jsonb,$4) ON CONFLICT DO NOTHING`,[p.tenantId,id,JSON.stringify(definition),p.id]);
@@ -141,24 +144,52 @@ export class FlowService {
       requireCondition(canonicalJson(registered)===canonicalJson(definition),409,'flow_definition_conflict','Definition ID already exists with different content.');
       const run = (await db.query<FlowRun>(`INSERT INTO flow_runs(id,tenant_id,scope,definition,inputs,created_by,owner_id,idempotency_key,request_hash)
         VALUES($1,$2,$3,$4::jsonb,$5::jsonb,$6,$7,$8,$9) RETURNING *`,[newId(),p.tenantId,scope,JSON.stringify(definition),JSON.stringify(inputs),p.id,ownerId,key,hash])).rows[0]!;
-      let first!:TaskRow;
+
+      // A flow's swarm tracks its steps; it has no channel thread.
+      const swarmId = newId();
+      await db.query(
+        `INSERT INTO swarms (id, tenant_id, scope, title, goal, thread_id, status, flow_id, created_by, idempotency_key)
+         VALUES ($1, $2, $3, $4, $5, NULL, 'running', $6, $7, NULL)`,
+        [swarmId, p.tenantId, scope, definition.title, definition.title, run.id, p.id]
+      );
+
+      const stepKeyToId = new Map<string, string>();
       for (const step of definition.steps) {
+        stepKeyToId.set(step.id, newId());
+      }
+
+      let first!:TaskRow;
+      for (let i = 0; i < definition.steps.length; i++) {
+        const step = definition.steps[i]!;
+        const stepId = stepKeyToId.get(step.id)!;
+        const depIds = (step.needs ?? []).map(d => stepKeyToId.get(d) ?? d);
         const flow:FlowTask = {step_id:step.id,needs:step.needs,ready:false,commit:null,diff_base:null,provider:null,
           ...(step.pin ? {pin:step.pin} : {}),...(step.check ? {check:step.check} : {}),
           ...(typeof step.capability==='object' ? {different_provider_than:step.capability.different_provider_than} : {})};
         const capability = typeof step.capability==='string' ? step.capability : step.kind==='patch' ? 'auto.patch' : 'auto.read';
         const envelope = {read_project:true,local_patch:step.kind==='patch' || step.kind==='check',external_side_effects:false,
           deploy:false,publish:false,send_messages:false,purchase:false,permission_changes:false};
+        const taskId = newId();
+
+        await db.query(
+          `INSERT INTO swarm_steps (id, tenant_id, swarm_id, step_key, title, assignee_agent_id, needs, order_index, status, task_id)
+           VALUES ($1, $2, $3, $4, $5, NULL, $6::uuid[], $7, 'pending', NULL)`,
+          [stepId, p.tenantId, swarmId, step.id, step.id, depIds, i]
+        );
+
         const task = (await db.query<TaskRow>(`INSERT INTO tasks(id,tenant_id,scope,kind,objective,permission_envelope,required_capability,status,
-          created_by,idempotency_key,request_hash,flow_id,flow,max_attempts)
-          VALUES($1,$2,$3,$4,$5,$6::jsonb,$7,'queued',$8,$9,$10,$11,$12::jsonb,3) RETURNING *`,
-        [newId(),p.tenantId,scope,step.kind,flowObjective(step,inputs,new Map(),step.kind==='approve' ? `Flow ${definition.title} needs your approval: ` : ''),JSON.stringify(envelope),capability,p.id,`flow:${run.id}:${step.id}`,hash,run.id,JSON.stringify(flow)])).rows[0]!;
+          created_by,idempotency_key,request_hash,flow_id,flow,max_attempts,initiator_kind,initiator_id,swarm_step_id)
+          VALUES($1,$2,$3,$4,$5,$6::jsonb,$7,'queued',$8,$9,$10,$11,$12::jsonb,3,'flow',$13,$14) RETURNING *`,
+        [taskId,p.tenantId,scope,step.kind,flowObjective(step,inputs,new Map(),step.kind==='approve' ? `Flow ${definition.title} needs your approval: ` : ''),JSON.stringify(envelope),capability,p.id,`flow:${run.id}:${step.id}`,hash,run.id,JSON.stringify(flow),run.id,stepId])).rows[0]!;
+
+        await db.query('UPDATE swarm_steps SET task_id=$1 WHERE id=$2', [taskId, stepId]);
+
         first ??= task;
         await taskChanged(db,p,task,'submitted',false);
       }
       await advanceFlow(db,p,first);
       await audit(db,p,scope,'flow.started',run.id,{definition:id});
-      return {flow:view(run,await tasksFor(db,run.id)),replayed:false,idempotency_key:key};
+      return {flow:view(run,await tasksFor(db,run.id)),swarm_id:swarmId,replayed:false,idempotency_key:key};
     });
   }
   async get(p:Principal,input:Record<string,unknown>):Promise<unknown> {
@@ -174,6 +205,7 @@ export class FlowService {
     return transaction(this.pool,async db => {
       const run = await findFlow(db,p,uuid(input.flow_id,'flow_id'));
       await scopeLock(db,'tasks',p,run.scope);
+      await teamsLock(db,p.tenantId);
       await db.query('UPDATE flow_runs SET cancelled_at=coalesce(cancelled_at,clock_timestamp()) WHERE id=$1',[run.id]);
       for (const task of await tasksFor(db,run.id)) if (!['completed','cancelled'].includes(task.status)) await cancelTask(db,p,task,false);
       await db.query(`UPDATE inbox SET read_at=coalesce(read_at,clock_timestamp()) WHERE kind='flow_approval' AND task_id IN (SELECT id FROM tasks WHERE flow_id=$1)`,[run.id]);
@@ -191,6 +223,7 @@ export class FlowService {
       const run = await findFlow(db,p,uuid(input.flow_id,'flow_id'));
       requireCondition(run.owner_id===p.id,403,'owner_required','Only this flow’s owner identity can approve it.');
       await scopeLock(db,'tasks',p,run.scope);
+      await teamsLock(db,p.tenantId);
       const current = await findFlow(db,p,run.id), tasks = await tasksFor(db,run.id);
       const task = requireFound(tasks.find(t => t.flow!.step_id===step && t.kind==='approve'),'Approval step');
       if (task.result?.approved===input.approve && task.result?.approved_by===p.id) return {flow:view(current,tasks),replayed:true};
@@ -200,6 +233,9 @@ export class FlowService {
       [task.id,input.approve ? 'completed' : 'blocked',JSON.stringify({approved:input.approve,approved_by:p.id,reason:input.approve ? 'Owner approved.' : 'Owner rejected.'})])).rows[0]!;
       await db.query("UPDATE inbox SET read_at=coalesce(read_at,clock_timestamp()) WHERE kind='flow_approval' AND task_id=$1",[task.id]);
       await taskChanged(db,p,next,input.approve ? 'approved' : 'rejected');
+      // The approval step resolves with its decision, so an approved flow's swarm can close.
+      if (next.swarm_step_id) await new SwarmsService(this.pool).onStepTaskFinished(db,p,next.swarm_step_id,next.id,next.scope,next.status,
+        undefined,input.approve ? undefined : {code:'rejected',detail:'Owner rejected.'});
       return {flow:view(current,await tasksFor(db,run.id)),replayed:false};
     });
   }

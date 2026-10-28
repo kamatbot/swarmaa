@@ -8,12 +8,15 @@ import { requireCondition } from '../errors.js';
 import { hasPermission } from '../policy.js';
 import { ARTIFACT_MAX_BYTES, type Principal } from '../types.js';
 import { enumValue, integer, object, optionalString, scopeName, string, strings, uuid } from '../validation.js';
-import { assertKnownScope, audit, canonicalJson, event, jsonObject, newId, noExtraKeys, requireFound, scopeLock, scopeSql, sha256, uuidArray, type Db } from './shared.js';
+import { assertKnownScope, audit, canonicalJson, event, jsonObject, newId, noExtraKeys, requireFound, scopeLock, scopeSql, sha256, teamsLock, uuidArray, type Db } from './shared.js';
 import { decide, decideAll, getPolicy, policyAllows, scopeUsage, type RoutingKind } from './routing.js';
 import { AUTO_PATCH, AUTO_READ, touchWorker, workerProviders } from './swarm.js';
 import { runnerCapability } from '../bridge/adapters.js';
 import { redactSecrets } from '../safety/redact.js';
 import { clipUtf8, assignThreadSeq, getTurnWindow, type AgentRow } from './teams.js';
+import { booleanOption } from './memory.js';
+import { extractActionsBlock, validateTurnGrant, type TurnGrantContext } from './actions.js';
+import { SwarmsService, deriveSwarmStatus, type SwarmRow, type SwarmStepRow, type TurnBudget } from './swarms.js';
 
 function effectiveRoutingKind(row: { kind: string; required_capability: string }): RoutingKind {
   return row.kind === 'turn'
@@ -28,6 +31,9 @@ export interface TaskRow {
   id:string; tenant_id:string; scope:string; kind:TaskKind; objective:string;
   flow_id:string|null; flow:FlowTask|null;
   agent_id?:string|null; thread_id?:string|null; swarm_step_id?:string|null;
+  initiator_kind?: 'person' | 'handoff' | 'swarm' | 'answer' | 'flow';
+  initiator_id?: string | null;
+  resolved_at?: Date | null;
   constraints:string[]; acceptance_criteria:string[]; permission_envelope:Record<string,unknown>;
   required_capability:string; resource_key:string|null; base_ref:string|null; context_refs:string[]; context_versions:Record<string,number>;
   status:typeof TASK_STATUSES[number]; version:number; created_by:string; idempotency_key:string; request_hash:string;
@@ -87,7 +93,10 @@ export function taskView(row:TaskRow):Record<string,unknown> {
     ...(row.flow_id ? {flow_id:row.flow_id,flow:row.flow} : {}),
     ...(row.agent_id ? {agent_id:row.agent_id} : {}),
     ...(row.thread_id ? {thread_id:row.thread_id} : {}),
-    ...(row.swarm_step_id ? {swarm_step_id:row.swarm_step_id} : {}) };
+    ...(row.swarm_step_id ? {swarm_step_id:row.swarm_step_id} : {}),
+    ...(row.initiator_kind ? {initiator_kind:row.initiator_kind} : {}),
+    ...(row.initiator_id ? {initiator_id:row.initiator_id} : {}),
+    ...(row.resolved_at ? {resolved_at:date(row.resolved_at)} : {}) };
 }
 
 export async function taskWithInstructions(db:Db, row:TaskRow):Promise<Record<string,unknown>> {
@@ -105,10 +114,12 @@ export async function findTask(db:Db,p:Principal,id:string,lock=false):Promise<T
   return requireFound(result.rows[0], 'Task');
 }
 
-/** All queue/resource mutations acquire scope then task locks, including retraction of context references. */
-async function lockedTask(db:PoolClient,p:Principal,id:string):Promise<TaskRow> {
+/** All queue/resource mutations acquire scope then task locks, including retraction of context references.
+ * Writes that can touch Teams state take teamsLock between the two when the task belongs to an agent or a swarm step. */
+async function lockedTask(db:PoolClient,p:Principal,id:string,teams=false):Promise<TaskRow> {
   const visible = await findTask(db,p,id);
   await scopeLock(db,'tasks',p,visible.scope);
+  if (teams && (visible.agent_id || visible.swarm_step_id)) await teamsLock(db,p.tenantId);
   return findTask(db,p,id,true);
 }
 
@@ -186,12 +197,41 @@ export async function cancelTask(db:PoolClient,p:Principal,row:TaskRow,advance=t
     lease_generation=lease_generation+1,lease_owner=NULL,lease_hash=NULL,lease_expires_at=NULL,
     updated_at=clock_timestamp(),completed_at=clock_timestamp() WHERE id=$1 RETURNING *`,[id]);
   const next = updated.rows[0]!;
+  if (row.swarm_step_id) {
+    await db.query("UPDATE swarm_steps SET status='cancelled', updated_at=clock_timestamp() WHERE id=$1", [row.swarm_step_id]);
+    const stepRow = (await db.query<{ swarm_id: string }>('SELECT swarm_id FROM swarm_steps WHERE id=$1', [row.swarm_step_id])).rows[0];
+    if (stepRow) {
+      const swSteps = (await db.query<SwarmStepRow>('SELECT * FROM swarm_steps WHERE swarm_id=$1 ORDER BY id ASC', [stepRow.swarm_id])).rows;
+      const swRow = (await db.query<SwarmRow>('SELECT * FROM swarms WHERE id=$1', [stepRow.swarm_id])).rows[0];
+      if (swRow) {
+        const derived = deriveSwarmStatus(swSteps, Boolean(swRow.closed_at), swRow.status === 'cancelled');
+        await db.query('UPDATE swarms SET status=$1, version=version+1, updated_at=clock_timestamp() WHERE id=$2', [derived, swRow.id]);
+        await event(db, p, swRow.scope, 'swarm.updated', swRow.id, { swarm_id: swRow.id, status: derived });
+        const cardMsg = (await db.query<{ id: string; seq: string }>(
+          `SELECT id, seq FROM messages WHERE thread_id=$1 AND kind='swarm' AND (ref->>'swarm_id')=$2 ORDER BY seq DESC LIMIT 1`,
+          [swRow.thread_id, swRow.id]
+        )).rows[0];
+        if (cardMsg) {
+          await event(db, p, swRow.scope, 'message.updated', cardMsg.id, {
+            thread_id: swRow.thread_id,
+            message_id: cardMsg.id,
+            seq: Number(cardMsg.seq),
+            kind: 'swarm',
+            ref: { swarm_id: swRow.id }
+          });
+        }
+      }
+    }
+  }
   await taskChanged(db,p,next,'cancelled',advance);
   return next;
 }
 
 export class TaskService {
-  constructor(private readonly pool:Pool) {}
+  private readonly swarms: SwarmsService;
+  constructor(private readonly pool:Pool, swarms?: SwarmsService) {
+    this.swarms = swarms ?? new SwarmsService(pool);
+  }
 
   async submit(p:Principal,input:Record<string,unknown>):Promise<unknown> {
     noExtraKeys(input,['scope','kind','objective','idempotency_key','required_capability','resource_key','base_ref','constraints','acceptance_criteria','context_refs','max_attempts']);
@@ -278,20 +318,25 @@ export class TaskService {
   }
 
   async list(p:Principal,input:Record<string,unknown>):Promise<unknown> {
-    noExtraKeys(input,['scope','status','limit','before_id']);
+    noExtraKeys(input,['scope','status','limit','before_id','resolved','initiator_kind']);
     const scope = scopeName(input.scope);
     assertKnownScope(p,scope);
     const status = input.status === undefined ? null : enumValue(input.status,'status',TASK_STATUSES);
     const limit = input.limit === undefined ? 20 : integer(input.limit,'limit',1,100);
     const before = input.before_id === undefined ? null : uuid(input.before_id,'before_id');
+    const resolved = input.resolved !== undefined ? booleanOption(input.resolved,'resolved') : null;
+    const initiatorKind = input.initiator_kind !== undefined ? enumValue(input.initiator_kind,'initiator_kind',['person','handoff','swarm','answer','flow'] as const) : null;
     let beforeDate:Date|null = null;
     if (before) {
       const cursor = await this.pool.query<{created_at:Date}>('SELECT created_at FROM tasks WHERE id=$1 AND tenant_id=$2 AND scope=$3',[before,p.tenantId,scope]);
       beforeDate = requireFound(cursor.rows[0],'Task cursor').created_at;
     }
     const result = await this.pool.query<TaskRow>(`SELECT * FROM tasks WHERE tenant_id=$1 AND scope=$2
-      AND ($3::text IS NULL OR status=$3) AND ($4::timestamptz IS NULL OR (created_at,id)<($4::timestamptz,$5::uuid))
-      ORDER BY created_at DESC,id DESC LIMIT $6`,[p.tenantId,scope,status,beforeDate,before,limit+1]);
+      AND ($3::text IS NULL OR status=$3)
+      AND ($4::boolean IS NULL OR (CASE WHEN $4 THEN resolved_at IS NOT NULL ELSE resolved_at IS NULL END))
+      AND ($5::text IS NULL OR initiator_kind=$5)
+      AND ($6::timestamptz IS NULL OR (created_at,id)<($6::timestamptz,$7::uuid))
+      ORDER BY created_at DESC,id DESC LIMIT $8`,[p.tenantId,scope,status,resolved,initiatorKind,beforeDate,before,limit+1]);
     const rows = result.rows.slice(0,limit);
     return {tasks:rows.map(taskView),next_before_id:result.rows.length>limit ? rows.at(-1)!.id : null};
   }
@@ -305,7 +350,7 @@ export class TaskService {
     const key = string(input.idempotency_key,'idempotency_key',200);
     const requestHash = sha256(canonicalJson({instruction,expected_version:expected}));
     return transaction(this.pool,async db => {
-      const row = await lockedTask(db,p,id);
+      const row = await lockedTask(db,p,id,true);
       const existing = await db.query<{request_hash:string}>(`SELECT request_hash FROM task_instructions
         WHERE task_id=$1 AND actor_id=$2 AND idempotency_key=$3`,[id,p.id,key]);
       if (existing.rows[0]) {
@@ -404,10 +449,23 @@ export class TaskService {
         const prov = row.required_capability.slice(0, -5);
         return !exclusions.includes(prov) && policyAllows(policy, prov, effectiveKind);
       };
+      // Questions past their expiry are expired here and by question_answer, never by a read.
+      const dueQuestion = await db.query(`SELECT 1 FROM questions WHERE tenant_id=$1 AND scope=$2 AND status='open'
+        AND expires_at<=clock_timestamp() LIMIT 1`,[p.tenantId,scope]);
+      if (dueQuestion.rowCount) {
+        await teamsLock(db,p.tenantId);
+        await this.swarms.expireDueQuestions(db,p,scope);
+      }
       // Sweep expired attempts before selection. No process-local retry state is needed after a restart.
-      const expired = await db.query<TaskRow>(`SELECT * FROM tasks WHERE tenant_id=$1 AND scope=$2 AND status='running'
-        AND lease_expires_at<=clock_timestamp() ORDER BY created_at,id FOR UPDATE`,[p.tenantId,scope]);
-      for (const row of expired.rows) {
+      // Agent and step tasks take teamsLock before their row lock, one task at a time.
+      const expired = await db.query<{id:string;teams:boolean}>(`SELECT id,(agent_id IS NOT NULL OR swarm_step_id IS NOT NULL) AS teams
+        FROM tasks WHERE tenant_id=$1 AND scope=$2 AND status='running'
+        AND lease_expires_at<=clock_timestamp() ORDER BY created_at,id`,[p.tenantId,scope]);
+      for (const candidate of expired.rows) {
+        if (candidate.teams) await teamsLock(db,p.tenantId);
+        const row = (await db.query<TaskRow>(`SELECT * FROM tasks WHERE id=$1 AND status='running'
+          AND lease_expires_at<=clock_timestamp() FOR UPDATE`,[candidate.id])).rows[0];
+        if (!row) continue;
         await db.query(`UPDATE task_runs SET status='abandoned',ended_at=clock_timestamp()
           WHERE task_id=$1 AND generation=$2 AND status='running'`,[row.id,row.lease_generation]);
         await retireResource(db,row);
@@ -419,6 +477,35 @@ export class TaskService {
           WHERE id=$1 RETURNING *`,[row.id,exhausted ? 'failed':'queued',exhausted,
           JSON.stringify({error:'attempts_exhausted',message:'Worker lease expired after the configured attempt limit.',checkpoint_available:row.checkpoint !== null})]);
         await taskChanged(db,p,result.rows[0]!,exhausted ? 'attempts_exhausted':'lease_expired');
+        if (exhausted && row.swarm_step_id) {
+          await db.query(
+            `UPDATE swarm_steps SET status='failed', failure_code='attempts_exhausted', failure_detail='Worker lease expired after the configured attempt limit.', updated_at=clock_timestamp() WHERE id=$1`,
+            [row.swarm_step_id]
+          );
+          const stepRow = (await db.query<{ swarm_id: string }>('SELECT swarm_id FROM swarm_steps WHERE id=$1', [row.swarm_step_id])).rows[0];
+          if (stepRow) {
+            const swSteps = (await db.query<SwarmStepRow>('SELECT * FROM swarm_steps WHERE swarm_id=$1 ORDER BY id ASC', [stepRow.swarm_id])).rows;
+            const swRow = (await db.query<SwarmRow>('SELECT * FROM swarms WHERE id=$1', [stepRow.swarm_id])).rows[0];
+            if (swRow) {
+              const derived = deriveSwarmStatus(swSteps, Boolean(swRow.closed_at), swRow.status === 'cancelled');
+              await db.query('UPDATE swarms SET status=$1, version=version+1, updated_at=clock_timestamp() WHERE id=$2', [derived, swRow.id]);
+              await event(db, p, swRow.scope, 'swarm.updated', swRow.id, { swarm_id: swRow.id, status: derived });
+              const cardMsg = (await db.query<{ id: string; seq: string }>(
+                `SELECT id, seq FROM messages WHERE thread_id=$1 AND kind='swarm' AND (ref->>'swarm_id')=$2 ORDER BY seq DESC LIMIT 1`,
+                [swRow.thread_id, swRow.id]
+              )).rows[0];
+              if (cardMsg) {
+                await event(db, p, swRow.scope, 'message.updated', cardMsg.id, {
+                  thread_id: swRow.thread_id,
+                  message_id: cardMsg.id,
+                  seq: Number(cardMsg.seq),
+                  kind: 'swarm',
+                  ref: { swarm_id: swRow.id }
+                });
+              }
+            }
+          }
+        }
       }
       const candidates = await db.query<TaskRow>(`SELECT * FROM tasks WHERE tenant_id=$1 AND scope=$2 AND status='queued'
         AND (not_before IS NULL OR not_before<=clock_timestamp())
@@ -557,7 +644,7 @@ export class TaskService {
     patchResult(result);
     const completionHash = sha256(canonicalJson({outcome,result_json:canonicalJson(result),artifact_ids:[...artifactIds].sort()}));
     return transaction(this.pool,async db => {
-      const row = await lockedTask(db,p,lease.taskId);
+      const row = await lockedTask(db,p,lease.taskId,true);
       const runResult = await db.query<RunRow>('SELECT * FROM task_runs WHERE task_id=$1 AND generation=$2 FOR UPDATE',[row.id,lease.generation]);
       const run = runResult.rows[0];
       requireCondition(run && run.worker_id === p.id && sameHash(run.lease_hash,sha256(lease.token)),409,'lease_lost','This connection does not own that execution attempt.');
@@ -727,24 +814,37 @@ export class TaskService {
       await releaseResource(db,row);
       const next = updated.rows[0];
 
+      let replyMsgId: string | undefined;
+      let budget: TurnBudget | undefined;
+
       if (row.kind === 'turn' && row.agent_id && row.thread_id) {
         const targetThreadId = (result.thread_id as string | undefined) ?? row.thread_id;
+        const hop = (row.context_versions as any)?.hop_depth;
+        budget = { hop: typeof hop === 'number' ? hop : 0, queued: 0, threadId: targetThreadId, scope: row.scope };
         const threadRow = (await db.query('SELECT * FROM threads WHERE id=$1 AND tenant_id=$2', [targetThreadId, p.tenantId])).rows[0];
-        requireCondition(threadRow && threadRow.agent_id === row.agent_id && threadRow.scope === row.scope, 403, 'turn_grant_forbidden', 'Turn grant refuses posting to another agent\'s thread.');
+        requireCondition(threadRow && (threadRow.agent_id === row.agent_id || threadRow.kind === 'channel') && threadRow.scope === row.scope, 403, 'turn_grant_forbidden', 'Turn grant refuses posting to another agent\'s thread.');
+        if (threadRow.kind === 'channel') {
+          const isMember = (await db.query<{ count: string }>(
+            'SELECT count(*)::int AS count FROM thread_members WHERE thread_id=$1 AND agent_id=$2',
+            [targetThreadId, row.agent_id]
+          )).rows[0]?.count ?? 0;
+          requireCondition(Number(isMember) > 0, 403, 'turn_grant_forbidden', 'Turn grant refuses posting to a channel the agent is not a member of.');
+        }
 
         if (outcome === 'completed') {
           const rawAnswer = [result.answer, result.summary, result.reason].find(v => typeof v === 'string') ?? '';
-          const answer = clipUtf8(redactSecrets(String(rawAnswer)), 16384);
+          const extracted = extractActionsBlock(String(rawAnswer));
+          const answer = clipUtf8(redactSecrets(extracted.cleanText), 16384);
           const nextSeq = await assignThreadSeq(db, p.tenantId, targetThreadId);
-          const msgId = newId();
+          replyMsgId = newId();
           await db.query(
             `INSERT INTO messages (id, tenant_id, scope, thread_id, seq, author, kind, body)
              VALUES ($1, $2, $3, $4, $5, $6::jsonb, 'text', $7)`,
-            [msgId, p.tenantId, row.scope, targetThreadId, nextSeq, JSON.stringify({ kind: 'agent', id: row.agent_id }), answer]
+            [replyMsgId, p.tenantId, row.scope, targetThreadId, nextSeq, JSON.stringify({ kind: 'agent', id: row.agent_id }), answer]
           );
-          await event(db, p, row.scope, 'message.created', msgId, {
+          await event(db, p, row.scope, 'message.created', replyMsgId, {
             thread_id: targetThreadId,
-            message_id: msgId,
+            message_id: replyMsgId,
             seq: Number(nextSeq),
             kind: 'text',
             author: { kind: 'agent', id: row.agent_id }
@@ -757,6 +857,58 @@ export class TaskService {
                DO UPDATE SET session_data=EXCLUDED.session_data, updated_at=clock_timestamp()`,
               [p.tenantId, row.agent_id, servedProvider, JSON.stringify(result.native_session)]
             );
+          }
+
+          // Process turn actions under turn grant
+          const agentRow = (await db.query<AgentRow>('SELECT * FROM agents WHERE id=$1 FOR UPDATE', [row.agent_id])).rows[0];
+          if (agentRow && threadRow) {
+            const currentHop = (row.context_versions as any)?.hop_depth ?? 0;
+            const turnCtx: TurnGrantContext & { hopDepth?: number } = {
+              agent: agentRow,
+              thread: threadRow as any,
+              tenantId: p.tenantId,
+              scope: row.scope,
+              hopDepth: typeof currentHop === 'number' ? currentHop : 0
+            };
+
+            if (extracted.error) {
+              const noticeSeq = await assignThreadSeq(db, p.tenantId, targetThreadId);
+              const noticeMsgId = newId();
+              const noticeBody = clipUtf8(`Turn action rejected: ${extracted.error}`, 16384);
+              await db.query(
+                `INSERT INTO messages (id, tenant_id, scope, thread_id, seq, author, kind, body)
+                 VALUES ($1, $2, $3, $4, $5, $6::jsonb, 'notice', $7)`,
+                [noticeMsgId, p.tenantId, row.scope, targetThreadId, noticeSeq, JSON.stringify({ kind: 'system', id: 'service' }), noticeBody]
+              );
+              await event(db, p, row.scope, 'message.created', noticeMsgId, {
+                thread_id: targetThreadId,
+                message_id: noticeMsgId,
+                seq: Number(noticeSeq),
+                kind: 'notice',
+                author: { kind: 'system', id: 'service' }
+              });
+            } else if (extracted.actions && extracted.actions.length > 0) {
+              const grant = await validateTurnGrant(db, turnCtx, extracted.actions);
+              if (!grant.valid) {
+                const noticeSeq = await assignThreadSeq(db, p.tenantId, targetThreadId);
+                const noticeMsgId = newId();
+                const noticeBody = clipUtf8(`Turn action rejected: ${grant.action.type}: ${grant.reason}`, 16384);
+                await db.query(
+                  `INSERT INTO messages (id, tenant_id, scope, thread_id, seq, author, kind, body)
+                   VALUES ($1, $2, $3, $4, $5, $6::jsonb, 'notice', $7)`,
+                  [noticeMsgId, p.tenantId, row.scope, targetThreadId, noticeSeq, JSON.stringify({ kind: 'system', id: 'service' }), noticeBody]
+                );
+                await event(db, p, row.scope, 'message.created', noticeMsgId, {
+                  thread_id: targetThreadId,
+                  message_id: noticeMsgId,
+                  seq: Number(noticeSeq),
+                  kind: 'notice',
+                  author: { kind: 'system', id: 'service' }
+                });
+              } else {
+                await this.swarms.applyTurnActions(db, p, turnCtx, extracted.actions, budget);
+              }
+            }
           }
         } else {
           const failureObj = result.failure as { code?: string; detail?: string } | undefined;
@@ -823,6 +975,11 @@ export class TaskService {
         }
       }
 
+      if (row.swarm_step_id) {
+        const failureObj = result.failure as { code?: string; detail?: string } | undefined;
+        await this.swarms.onStepTaskFinished(db, p, row.swarm_step_id, row.id, row.scope, outcome, replyMsgId, failureObj, budget);
+      }
+
       await taskChanged(db,p,next,'finished');
       return {task:await taskWithInstructions(db,next),replayed:false};
     });
@@ -833,7 +990,7 @@ export class TaskService {
     const id = uuid(input.task_id,'task_id');
     const expected = expectedVersion(input.expected_version);
     return transaction(this.pool,async db => {
-      const row = await lockedTask(db,p,id);
+      const row = await lockedTask(db,p,id,true);
       requireCondition(row.version === expected,409,'version_conflict','Task changed; read it before cancelling.');
       if (row.status === 'cancelled') return {task:await taskWithInstructions(db,row)};
       const next = await cancelTask(db,p,row);

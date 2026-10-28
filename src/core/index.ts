@@ -12,12 +12,13 @@ import { assertKnownScope, noExtraKeys } from './shared.js';
 import { SessionService } from './sessions.js';
 import { getPolicy, setPolicy } from './routing.js';
 import { SwarmService } from './swarm.js';
+import { SwarmsService } from './swarms.js';
 import { findTask, TaskService, taskWithInstructions, type TaskRow } from './tasks.js';
 import { TeamService } from './teams.js';
 import { TOOL_PERMISSIONS, TOOLS } from './tools.js';
 
 const workerTools = new Set(['usage_report','task_claim','task_heartbeat','task_checkpoint','task_finish','artifact_put']);
-const ownerTools = new Set(['memory_promote','memory_retract','flow_approve']);
+const ownerTools = new Set(['memory_promote','memory_retract','flow_approve','task_resolve']);
 const responseReadPermissions:Partial<Record<string,Permission>> = {
   task_watch:'events:read',flow_start:'task:read',flow_cancel:'task:read',flow_approve:'task:read',
   memory_propose:'memory:read',memory_promote:'memory:read',memory_retract:'memory:read',
@@ -25,6 +26,9 @@ const responseReadPermissions:Partial<Record<string,Permission>> = {
   task_checkpoint:'task:read',task_finish:'task:read',task_cancel:'task:read',
   lesson_propose:'memory:read',lesson_review:'memory:read',
   agent_create:'agent:read',agent_update:'agent:read',agent_archive:'agent:read',thread_post:'thread:read',
+  swarm_start:'task:read',swarm_update:'task:read',swarm_cancel:'task:read',question_answer:'thread:read',
+  channel_create:'agent:read',channel_update:'agent:read',section_set:'thread:read',task_resolve:'task:read',
+  attention_list:'thread:read',
 };
 
 /** Transport-independent authorization and one implementation shared by MCP, REST and stdio proxy. */
@@ -32,6 +36,7 @@ export class CoreService implements ToolBackend {
   private readonly memories:MemoryService;
   private readonly tasks:TaskService;
   private readonly swarm:SwarmService;
+  private readonly swarms:SwarmsService;
   private readonly sessions:SessionService;
   private readonly lessons:LessonService;
   private readonly inbox:InboxService;
@@ -40,7 +45,8 @@ export class CoreService implements ToolBackend {
 
   constructor(private readonly pool:Pool) {
     this.memories = new MemoryService(pool);
-    this.tasks = new TaskService(pool);
+    this.swarms = new SwarmsService(pool);
+    this.tasks = new TaskService(pool, this.swarms);
     this.swarm = new SwarmService(pool);
     this.sessions = new SessionService(pool);
     this.lessons = new LessonService(pool);
@@ -114,6 +120,19 @@ export class CoreService implements ToolBackend {
       case 'thread_read': return this.teams.threadRead(principal,input);
       case 'thread_mark_read': return this.teams.threadMarkRead(principal,input);
       case 'thread_list': return this.teams.threadList(principal,input);
+      case 'channel_create': return this.teams.channelCreate(principal,input);
+      case 'channel_update': return this.teams.channelUpdate(principal,input);
+      case 'section_set': return this.teams.sectionSet(principal,input);
+      case 'section_list': return this.teams.sectionList(principal,input);
+      case 'swarm_start': return this.swarms.swarmStart(principal,input);
+      case 'swarm_update': return this.swarms.swarmUpdate(principal,input);
+      case 'swarm_get': return this.swarms.swarmGet(principal,input);
+      case 'swarm_list': return this.swarms.swarmList(principal,input);
+      case 'swarm_cancel': return this.swarms.swarmCancel(principal,input);
+      case 'question_answer': return this.swarms.questionAnswer(principal,input);
+      case 'question_list': return this.swarms.questionList(principal,input);
+      case 'attention_list': return this.swarms.attentionList(principal,input);
+      case 'task_resolve': return this.swarms.taskResolve(principal,input);
       default: throw new AppError(404,'unknown_tool','Unknown tool name.');
     }
   }
@@ -154,8 +173,8 @@ export class CoreService implements ToolBackend {
     const limit = input.limit === undefined ? 50 : integer(input.limit,'limit',1,100);
     const names:string[] = [];
     if (hasPermission(p,'memory:read')) names.push('memory.changed');
-    if (hasPermission(p,'task:read')) names.push('task.updated');
-    if (hasPermission(p,'thread:read')) names.push('message.created','message.updated','thread.read');
+    if (hasPermission(p,'task:read')) names.push('task.updated','swarm.updated');
+    if (hasPermission(p,'thread:read')) names.push('message.created','message.updated','thread.read','question.created','question.answered');
     if (hasPermission(p,'agent:read')) names.push('agent.updated');
     if (!names.length) return {scope,events:[],next_cursor:legacy ? '0.0' : after,has_more:false};
     return transaction(this.pool,async db => {

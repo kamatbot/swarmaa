@@ -1,6 +1,6 @@
 # Teams: persistent agents, channels and tracked swarms
 
-**Status:** Phase 1 (service foundation) implemented; phases 2–4 in design. **Date:** 2026-10-27.
+**Status:** Phases 1 and 2 implemented; phases 3–4 in design. **Date:** 2026-10-27.
 **Inspired by:** OpenBot (openbot.run, `nightly-labs/openbot`, source-available under its own licence). Ideas only: no OpenBot code or text is copied.
 
 Today a Swarmaa swarm is a set of one-shot tasks. You submit, a worker runs, a result comes back, and the work is gone from view once you have read it. This design adds the layer people actually work in:
@@ -104,20 +104,25 @@ The answer is posted as an `answer` message and starts the agent's next turn. Qu
 ## 3. How work flows
 
 1. The user writes to Atlas. `thread_post` stores a `text` message, and the service queues a `turn` task for Atlas.
-2. A worker claims the turn, runs Atlas's runner with the turn prompt, and gives the model a small **turn toolset**. The tools are MCP and always scoped to this turn:
-   - `thread_reply {body}`: post into the current thread;
-   - `channel_post {channel, body}`: post into a channel Atlas belongs to;
-   - `handoff {to_agent, body, swarm_step_id?}`: give work to another agent;
-   - `swarm_start {title, goal, steps[]}` and `swarm_update {…}`;
-   - `question_ask {prompt, options, multi, free_text}`;
-   - plus the existing `task_submit`, `memory_*` and `context_get`, under the same grants as today.
-3. Atlas calls `swarm_start` with five steps for Forge, Scout and Pulse. The service:
+2. A worker claims the turn and runs Atlas's runner with the turn prompt.
+   **Design decision: turn actions, not a turn MCP server.** Adding an MCP server to worker CLIs would alter local configs and violate worker independence. Instead:
+   - The turn prompt informs the agent it may end its answer with **one** fenced block: ` ```swarmaa-actions `, holding a JSON array of up to 10 actions.
+   - The bridge passes the final answer through unchanged.
+   - In `task_finish`, the service extracts and parses the actions block, strips it from the posted `text` message, and validates each action against the **turn grant**.
+   - All valid actions are applied atomically with the reply. On refusal, a `notice` message is posted specifying the rejected action.
+   The turn actions are:
+   - `{type:'handoff', to_agent, body, swarm_step_id?}`: give work to another agent;
+   - `{type:'swarm_start', title, goal, steps:[{key, title, assignee_agent_id, needs:[key], instructions?, check?}]}`;
+   - `{type:'swarm_update', swarm_id, ops:[…]}`;
+   - `{type:'question_ask', prompt, options, multi, free_text, swarm_step_id?, expires_in?}`;
+   - `{type:'channel_post', channel_id, body}`: post into a channel the agent belongs to.
+3. Atlas outputs a `swarm_start` action with five steps for Forge, Scout and Pulse. The service:
    - creates the swarm;
    - posts a `swarm` card into Atlas's thread;
    - queues a turn for each step whose `needs` are complete;
    - posts a `handoff` line into each assignee's thread ("Atlas gave you: Draft the banner").
 4. When each step's turn ends, the result is linked to the step (`result_message_id`). The step moves to `done`, `failed` or `blocked`, the card re-renders, and newly unblocked steps start.
-5. Pulse calls `question_ask` ("Which channels should the launch use?"). The step reads `waiting_on_you`, a question card appears in Atlas's thread, and the notch shows a badge. The user's answer resumes Pulse.
+5. Pulse outputs a `question_ask` action ("Which channels should the launch use?"). The step reads `waiting_on_you`, a question card appears in Atlas's thread, and the notch shows a badge. The user's answer resumes Pulse.
 6. When every step is done, the owner agent gets a final turn to summarise, and the swarm reads `done 5/5`.
 
 **Turn grant.** A worker's turn token is scoped to that turn. It can post only to that agent's threads and the channels that agent belongs to, start or update only swarms that agent owns or holds a step in, and ask only on its own behalf. A model can't post as another agent or into another project. This is enforced in the service, not in the prompt.
@@ -170,7 +175,7 @@ All new ids are UUIDs with a readable prefix in the UI only.
 | Tool | Permission | Input | Notes |
 |---|---|---|---|
 | `question_ask` | turn grant only | `prompt ≤ 500, options[] ≤ 8 (each ≤ 80), multi, free_text, expires_in?` | Agents only, from inside a turn. |
-| `question_answer` | `thread:write` (owner) | `question_id, choices[], text?, idempotency_key` | Posts the `answer` message and queues the agent's next turn. |
+| `question_answer` | `thread:write` + `answer_questions` (owner) | `question_id, choices[], text?, idempotency_key` | Posts the `answer` message and queues the agent's next turn. |
 | `question_list` | `thread:read` | `status?=open` | Everything waiting on you; the notch badge counts these. |
 
 ### Live stream for the UI
@@ -210,7 +215,7 @@ That bridges this layer into the CLIs people already use.
 ## 6. Phases
 
 1. **Service foundation [Implemented]:** agents, threads, messages, turns (including the turn prompt and the turn grant), read cursors, the SSE stream, migration 024, and tests. Acceptance: create Atlas, post to it, get a reply on two different providers, switch the runner mid-thread with the thread kept, all under tenant isolation.
-2. **Swarms, handoffs and questions:** the tools above; `flow_start` returns a swarm; the notch shows open swarms and the question badge. Acceptance: the Friday-launch scenario runs end to end with one question answered, one step reassigned while running, and a restart in the middle.
+2. **Swarms, handoffs and questions [Implemented]:** the tools above; `flow_start` returns a swarm; the notch shows open swarms and the question badge. Acceptance: the Friday-launch scenario runs end to end with one question answered, one step reassigned while running, and a restart in the middle.
 3. **Mac app main window:** sidebar sections, agent and channel threads, the four card types, a runner picker that shows quota, and an unread badge. Acceptance: every control is clicked in the real app and its result observed.
 4. **Later:** channels with invited humans (gateway tenants already exist), scheduled agent routines, side threads, Slack and Discord bridges.
 
