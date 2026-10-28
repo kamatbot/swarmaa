@@ -201,6 +201,113 @@ describe('bots core service (Brief B1)', { skip: !connectionString, concurrency:
     assert.notEqual(recreated.bot.id, bot.id);
   });
 
+  it('unarchives with schedule recomputed, preserving cancelled tasks and the cleared star', async () => {
+    const user = await createPrincipal(randomUUID(), 'unarchive-owner');
+    const lead = (await call(user, 'agent_create', {
+      name: 'Lead', role: 'Lead', instructions: 'Help', scope: 'project:a', runner: { provider: 'codex' }
+    })).agent;
+    for (const paused of [false, true]) {
+      const bot = (await call(user, 'bot_create', {
+        name: `Scheduled ${paused}`, job: 'Help', scope: 'project:a', lead_agent_id: lead.id,
+        member_agent_ids: [], starred: true, schedule: '0 9 * * *', rules: { schedule_paused: paused }
+      })).bot;
+      await call(user, 'thread_post', { thread_id: bot.thread_id, body: 'Help', idempotency_key: `post-${paused}` });
+      await call(user, 'bot_archive', { bot_id: bot.id });
+      assert.ok(!(await call(user, 'bot_list', {})).bots.some((b: any) => b.id === bot.id));
+      assert.equal((await call(user, 'bot_list', { include_archived: true })).bots.find((b: any) => b.id === bot.id).archived, true);
+      await pool.query("UPDATE bots SET next_run_at='2000-01-01' WHERE id=$1", [bot.id]);
+      const restored = (await call(user, 'bot_unarchive', { bot_id: bot.id })).bot;
+      assert.equal(restored.archived, false);
+      assert.equal(restored.starred, false);
+      assert.equal(restored.schedule, bot.schedule);
+      assert.equal(restored.rules.schedule_paused, paused);
+      assert.equal(restored.version, bot.version + 2);
+      if (paused) assert.equal(restored.next_run_at, null);
+      else assert.ok(Date.parse(restored.next_run_at) > Date.now());
+      assert.deepEqual((await pool.query('SELECT status FROM tasks WHERE bot_id=$1', [bot.id])).rows.map(r => r.status), ['cancelled']);
+    }
+    const original = (await call(user, 'bot_list', {})).bots[0];
+    await call(user, 'bot_archive', { bot_id: original.id });
+    await call(user, 'bot_create', { name: original.name, job: 'Help', scope: 'project:a', lead_agent_id: lead.id, member_agent_ids: [] });
+    await assert.rejects(call(user, 'bot_unarchive', { bot_id: original.id }), (e: any) => e.code === 'name_taken');
+  });
+
+  it('deletes only an archived, exactly confirmed bot and preserves tasks and agents', async () => {
+    const user = await createPrincipal(randomUUID(), 'delete-owner');
+    const lead = (await call(user, 'agent_create', {
+      name: 'Lead', role: 'Lead', instructions: 'Help', scope: 'project:a', runner: { provider: 'codex' }
+    })).agent;
+    const bot = (await call(user, 'bot_create', {
+      name: 'Delete Me', job: 'Help', scope: 'project:a', lead_agent_id: lead.id, member_agent_ids: []
+    })).bot;
+    await call(user, 'thread_post', { thread_id: bot.thread_id, body: 'Keep my task', idempotency_key: 'delete-post' });
+    const task = (await pool.query('SELECT * FROM tasks WHERE bot_id=$1', [bot.id])).rows[0];
+    assert.ok(task);
+    await pool.query(`INSERT INTO questions(id,tenant_id,scope,thread_id,agent_id,prompt) VALUES($1,$2,'project:a',$3,$4,'Question')`,
+      [randomUUID(), user.tenantId, bot.thread_id, lead.id]);
+    await assert.rejects(call(user, 'bot_delete', { bot_id: bot.id, confirm_name: bot.name }),
+      (e: any) => e.status === 409 && e.code === 'bot_not_archived');
+    await call(user, 'bot_archive', { bot_id: bot.id });
+    for (const name of ['delete me', 'Delete Me ', '', undefined]) {
+      await assert.rejects(call(user, 'bot_delete', { bot_id: bot.id, confirm_name: name }),
+        (e: any) => e.status === 400 && e.code === 'confirm_mismatch');
+    }
+    assert.ok((await call(user, 'thread_read', { thread_id: bot.thread_id })).messages.length > 0);
+    assert.deepEqual(await call(user, 'bot_delete', { bot_id: bot.id, confirm_name: bot.name }), { deleted: true });
+    for (const [table, key, id] of [['bots', 'id', bot.id], ['threads', 'id', bot.thread_id],
+      ['messages', 'thread_id', bot.thread_id], ['questions', 'thread_id', bot.thread_id], ['thread_members', 'thread_id', bot.thread_id]]) {
+      assert.equal((await pool.query(`SELECT 1 FROM ${table} WHERE ${key}=$1`, [id])).rowCount, 0);
+    }
+    const retained = (await pool.query('SELECT * FROM tasks WHERE id=$1', [task.id])).rows[0];
+    assert.equal(retained.bot_id, null);
+    assert.equal(retained.thread_id, null);
+    assert.equal(retained.status, 'cancelled');
+    assert.equal((await call(user, 'agent_get', { agent_id: lead.id })).agent.id, lead.id);
+    assert.equal((await pool.query("SELECT 1 FROM events WHERE subject_id=$1 AND name='bot.updated' AND payload->>'reason'='deleted'", [bot.id])).rowCount, 1);
+    assert.equal((await pool.query("SELECT 1 FROM audit_log WHERE subject_id=$1 AND operation='bot.delete'", [bot.id])).rowCount, 1);
+  });
+
+  it('posts crew notices only for a changed lead or member set', async () => {
+    const user = await createPrincipal(randomUUID(), 'crew-owner');
+    const agents = [];
+    for (const name of ['Lead', 'One', 'Two']) agents.push((await call(user, 'agent_create', {
+      name, role: 'Member', instructions: 'Help', scope: 'project:a', runner: { provider: 'codex' }
+    })).agent);
+    let bot = (await call(user, 'bot_create', {
+      name: 'Crew', job: 'Help', scope: 'project:a', lead_agent_id: agents[0].id,
+      member_agent_ids: [agents[1].id, agents[2].id], schedule: '0 9 * * *'
+    })).bot;
+    const notices = async () => (await pool.query("SELECT body FROM messages WHERE thread_id=$1 AND kind='notice' AND body LIKE '%Crew updated%'", [bot.thread_id])).rows;
+    bot = (await call(user, 'bot_update', { bot_id: bot.id, expected_version: bot.version,
+      lead_agent_id: agents[0].id, member_agent_ids: [agents[2].id, agents[1].id, agents[1].id], rules: { schedule_paused: true } })).bot;
+    assert.deepEqual(await notices(), []);
+    bot = (await call(user, 'bot_update', { bot_id: bot.id, expected_version: bot.version, member_agent_ids: [agents[1].id] })).bot;
+    assert.equal((await notices()).length, 1);
+    bot = (await call(user, 'bot_update', { bot_id: bot.id, expected_version: bot.version,
+      lead_agent_id: agents[1].id, member_agent_ids: [agents[0].id] })).bot;
+    assert.equal((await notices()).length, 2);
+  });
+
+  it('guards unarchive and delete with archive-equivalent permissions, tenant and scope', async () => {
+    const user = await createPrincipal(randomUUID(), 'guards-owner');
+    const other = await createPrincipal(randomUUID(), 'guards-other');
+    const limited = await createPrincipal(user.tenantId, 'guards-limited', 'frontend', ['project:b']);
+    const lead = (await call(user, 'agent_create', { name: 'Lead', role: 'Lead', instructions: 'Help', scope: 'project:a', runner: { provider: 'codex' } })).agent;
+    const bot = (await call(user, 'bot_create', { name: 'Guarded', job: 'Help', scope: 'project:a', lead_agent_id: lead.id, member_agent_ids: [] })).bot;
+    await call(user, 'bot_archive', { bot_id: bot.id });
+    for (const tool of ['bot_unarchive', 'bot_delete']) {
+      const args = { bot_id: bot.id, ...(tool === 'bot_delete' ? { confirm_name: bot.name } : {}) };
+      await assert.rejects(call(other, tool, args), (e: any) => e.status === 404);
+      await assert.rejects(call(limited, tool, args), (e: any) => e.status === 403);
+      for (const permission of ['agent:read', 'agent:manage']) {
+        const denied = { ...user, permissions: user.permissions.filter(p => p !== permission) };
+        assert.ok(!core.listTools(denied).some(t => t.name === tool));
+        await assert.rejects(call(denied, tool, args), (e: any) => e.status === 403);
+      }
+      assert.ok(core.listTools(user).some(t => t.name === tool));
+    }
+  });
+
   it('crew validation, including another scope agent', async () => {
     const tenantId = randomUUID();
     const user = await createPrincipal(tenantId, 'user-2');

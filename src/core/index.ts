@@ -29,7 +29,7 @@ const responseReadPermissions:Partial<Record<string,Permission>> = {
   task_checkpoint:'task:read',task_finish:'task:read',task_cancel:'task:read',
   lesson_propose:'memory:read',lesson_review:'memory:read',
   agent_create:'agent:read',agent_update:'agent:read',agent_archive:'agent:read',thread_post:'thread:read',
-  bot_create:'agent:read',bot_update:'agent:read',bot_archive:'agent:read',
+  bot_create:'agent:read',bot_update:'agent:read',bot_archive:'agent:read',bot_unarchive:'agent:read',bot_delete:'agent:read',
   swarm_start:'task:read',swarm_update:'task:read',swarm_cancel:'task:read',question_answer:'thread:read',
   channel_create:'agent:read',channel_update:'agent:read',section_set:'thread:read',task_resolve:'task:read',
   attention_list:'thread:read',
@@ -146,6 +146,8 @@ export class CoreService implements ToolBackend {
       case 'bot_update': return this.bots.botUpdate(principal,input);
       case 'bot_get': return this.bots.botGet(principal,input);
       case 'bot_list': return this.bots.botList(principal,input);
+      case 'bot_unarchive': return this.bots.botUnarchive(principal,input);
+      case 'bot_delete': return this.bots.botDelete(principal,input);
       case 'bot_archive': return this.bots.botArchive(principal,input);
       default: throw new AppError(404,'unknown_tool','Unknown tool name.');
     }

@@ -684,19 +684,21 @@ export class BotService {
       const nextAvatar = input.avatar !== undefined ? (input.avatar === null ? null : string(input.avatar, 'avatar', 200)) : existing.avatar;
       const nextLeadId = input.lead_agent_id !== undefined ? uuid(input.lead_agent_id, 'lead_agent_id') : existing.lead_agent_id;
 
+      const currentMemberIds = (await db.query<{ agent_id: string }>(
+        'SELECT agent_id FROM thread_members WHERE thread_id=$1 AND agent_id<>$2',
+        [existing.thread_id, existing.lead_agent_id]
+      )).rows.map(r => r.agent_id);
       let nextMemberIds: string[];
       if (input.member_agent_ids !== undefined) {
         if (!Array.isArray(input.member_agent_ids)) throw new AppError(400, 'invalid_arguments', 'member_agent_ids must be an array of agent ids.');
         nextMemberIds = input.member_agent_ids.map(m => uuid(m, 'member_agent_ids'));
       } else {
-        const cur = (await db.query<{ agent_id: string }>(
-          'SELECT agent_id FROM thread_members WHERE thread_id=$1 AND agent_id<>$2',
-          [existing.thread_id, existing.lead_agent_id]
-        )).rows;
-        nextMemberIds = cur.map(r => r.agent_id);
+        nextMemberIds = currentMemberIds;
       }
 
-      const crewChanged = input.lead_agent_id !== undefined || input.member_agent_ids !== undefined;
+      nextMemberIds = [...new Set(nextMemberIds)].filter(id => id !== nextLeadId);
+      const crewChanged = nextLeadId !== existing.lead_agent_id ||
+        nextMemberIds.length !== currentMemberIds.length || nextMemberIds.some(id => !currentMemberIds.includes(id));
       if (crewChanged) {
         const allNewCrew = Array.from(new Set([nextLeadId, ...nextMemberIds]));
         const liveAgents = (await db.query<{ id: string; scope: string; archived: boolean }>(
@@ -922,6 +924,55 @@ export class BotService {
       has_more: hasMore,
       next_cursor: hasMore ? paged.at(-1)?.id ?? null : null
     };
+  }
+
+  async botUnarchive(p: Principal, input: Record<string, unknown>): Promise<unknown> {
+    noExtraKeys(input, ['bot_id']);
+    requirePermission(p, 'agent:manage');
+    const botId = uuid(input.bot_id, 'bot_id');
+
+    return transaction(this.pool, async db => {
+      await teamsLock(db, p.tenantId);
+      const existing = (await db.query<BotRow>('SELECT * FROM bots WHERE id=$1 AND tenant_id=$2 FOR UPDATE', [botId, p.tenantId])).rows[0];
+      requireFound(existing, 'Bot');
+      requireScope(p, existing.scope);
+      await requireFreeBotName(db, p.tenantId, existing.scope, existing.name, botId);
+      const now = (await db.query<{ now: Date }>('SELECT clock_timestamp() AS now')).rows[0]!.now;
+      const nextRun = existing.schedule && !existing.rules.schedule_paused ? nextCronRun(existing.schedule, now) : null;
+      const updated = (await db.query<BotRow>(
+        'UPDATE bots SET archived=false, next_run_at=$2, version=version+1, updated_at=clock_timestamp() WHERE id=$1 RETURNING *',
+        [botId, nextRun]
+      )).rows[0]!;
+      const memberIds = (await db.query<{ agent_id: string }>(
+        'SELECT agent_id FROM thread_members WHERE thread_id=$1 AND agent_id<>$2',
+        [existing.thread_id, existing.lead_agent_id]
+      )).rows.map(r => r.agent_id);
+      if (updated.schedule) await syncScheduleCard(db, p, updated, now);
+      await audit(db, p, updated.scope, 'bot.unarchive', botId);
+      await event(db, p, updated.scope, 'bot.updated', botId, { bot_id: botId, reason: 'unarchived' });
+      return { bot: botView(updated, memberIds) };
+    });
+  }
+
+  async botDelete(p: Principal, input: Record<string, unknown>): Promise<unknown> {
+    noExtraKeys(input, ['bot_id', 'confirm_name']);
+    requirePermission(p, 'agent:manage');
+    const botId = uuid(input.bot_id, 'bot_id');
+
+    return transaction(this.pool, async db => {
+      await teamsLock(db, p.tenantId);
+      const existing = (await db.query<BotRow>('SELECT * FROM bots WHERE id=$1 AND tenant_id=$2 FOR UPDATE', [botId, p.tenantId])).rows[0];
+      requireFound(existing, 'Bot');
+      requireScope(p, existing.scope);
+      requireCondition(existing.archived, 409, 'bot_not_archived', 'Archive the bot before deleting it.');
+      requireCondition(input.confirm_name === existing.name, 400, 'confirm_mismatch', 'confirm_name must exactly match the bot name.');
+      await db.query('UPDATE tasks SET thread_id=NULL WHERE tenant_id=$1 AND thread_id=$2', [p.tenantId, existing.thread_id]);
+      await db.query('DELETE FROM bots WHERE id=$1 AND tenant_id=$2', [botId, p.tenantId]);
+      await db.query('DELETE FROM threads WHERE id=$1 AND tenant_id=$2', [existing.thread_id, p.tenantId]);
+      await audit(db, p, existing.scope, 'bot.delete', botId);
+      await event(db, p, existing.scope, 'bot.updated', botId, { bot_id: botId, reason: 'deleted' });
+      return { deleted: true };
+    });
   }
 
   async botArchive(p: Principal, input: Record<string, unknown>): Promise<unknown> {
