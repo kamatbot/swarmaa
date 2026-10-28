@@ -82,7 +82,7 @@ describe('B2 bot routing', {skip:!connectionString,concurrency:false}, () => {
   it('review_edits false queues none and no different enabled reviewer posts a notice',async () => {
     const f = await fixture({review_edits:false});await finishEdit(f);assert.equal((await pool.query(`SELECT 1 FROM tasks WHERE bot_id=$1 AND kind='review'`,[f.bot])).rowCount,0);
     const g = await fixture();const policy=structuredClone(DEFAULT_POLICY);policy.providers.forEach(p => {if(p.provider!=='claude') p.enabled=false;});await call(g.user,'routing_set',{policy});await finishEdit(g);
-    assert.equal((await pool.query(`SELECT 1 FROM tasks WHERE bot_id=$1 AND kind='review'`,[g.bot])).rowCount,0);assert.match((await pool.query('SELECT body FROM messages WHERE thread_id=$1',[g.thread])).rows[0].body,/no different provider/);
+    assert.equal((await pool.query(`SELECT 1 FROM tasks WHERE bot_id=$1 AND kind='review'`,[g.bot])).rowCount,0);assert.ok((await pool.query(`SELECT body FROM messages WHERE thread_id=$1 AND kind='notice'`,[g.thread])).rows.some(r => /no different provider/.test(r.body)));
   });
   for (const passed of [true,false]) it(`require_tests queues an idempotent pinned tests_pass check; ${passed ? 'pass' : 'failure'} lands on edit result.check`,async () => {
     const f=await fixture({require_tests:true,review_edits:false}),e=await finishEdit(f);await call(f.worker,'task_finish',e.args);

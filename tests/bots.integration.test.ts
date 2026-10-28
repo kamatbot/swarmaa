@@ -558,7 +558,7 @@ describe('bots core service (Brief B1)', { skip: !connectionString, concurrency:
     });
 
     const turn2 = (await pool.query(
-      "SELECT * FROM tasks WHERE tenant_id=$1 AND thread_id=$2 AND status='queued'",
+      "SELECT * FROM tasks WHERE tenant_id=$1 AND thread_id=$2 AND status='queued' AND kind='turn'",
       [tenantId, thread.id]
     )).rows[0];
 
