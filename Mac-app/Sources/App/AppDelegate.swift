@@ -1528,7 +1528,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var teams: TeamsWindowController?
     /// The main window, from the status item or a notch swarm/question item.
     @MainActor func openTeams(threadID: String? = nil) {
-        if teams == nil { teams = TeamsWindowController() }
+        if teams == nil {
+            let window = TeamsWindowController()
+            store?.$notchSnapshots.receive(on: RunLoop.main)
+                .sink { [weak model = window.model] in model?.localUsage = $0 }
+                .store(in: &cancellables)
+            teams = window
+        }
         let cellID = threadID.map { SwarmaCells.threadPrefix + $0 }
         teams?.show(threadID: cellID.flatMap { SwarmaCells.threadID(fromCellID: $0) })
         if let cellID, let swarm = SwarmaCells.swarmID(fromCellID: cellID) { teams?.model.detailSwarmID = swarm }

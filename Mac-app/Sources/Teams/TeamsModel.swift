@@ -66,6 +66,22 @@ final class TeamsModel: ObservableObject {
     @Published private(set) var openSwarms: [TeamsSwarm] = []
     @Published private(set) var openQuestions: [TeamsQuestion] = []
     @Published private(set) var status: SwarmaStatus?
+    /// The app's own account readings (Settings → accounts). Accounts no worker
+    /// reports, such as Grokbot, still belong on the Usage pane.
+    @Published var localUsage: [ProviderSnapshot] = []
+    /// Worker-reported quota first, then local-only accounts.
+    var allUsage: [SwarmaStatus.Usage] {
+        let reported = status?.usage ?? []
+        // The local Antigravity account is "gemini"; workers report it as "antigravity".
+        let seen = Set(reported.map(\.provider))
+        let extra = localUsage.filter { $0.kind == .usage && !seen.contains($0.id == "gemini" ? "antigravity" : $0.id) }.map { s in
+            SwarmaStatus.Usage(provider: s.id, ok: s.headline != nil,
+                headroom: s.headline?.usedFraction.map { max(0, min(100, (1 - $0) * 100)) },
+                windows: s.windows.map { .init(name: $0.label, usedPercent: $0.usedFraction.map { $0 * 100 }, resetsAt: $0.resetsAt) },
+                plan: s.plan, error: nil, fetchedAt: nil)
+        }
+        return reported + extra
+    }
     @Published var detailSwarmID: String?
     @Published var error: String?
     /// The New bot sheet's own error: the window's alert sits behind the sheet.

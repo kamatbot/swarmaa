@@ -129,7 +129,7 @@ struct TeamsRail: View {
             item("checklist", L10n.t("Tasks"), .tasks, badge: 0)
             item("chart.bar.fill", L10n.t("Usage"), .usage, badge: 0)
             Spacer(minLength: 12)
-            if let usage = model.status?.usage, !usage.isEmpty {
+            if case let usage = model.allUsage, !usage.isEmpty {
                 Text(verbatim: L10n.t("USAGE")).font(KS.mono(9)).tracking(1).foregroundStyle(KS.onInkMuted)
                 ForEach(usage, id: \.provider) { UsageRingButton(model: model, usage: $0) }
             }
@@ -312,11 +312,11 @@ struct UsagePane: View {
                         Text(verbatim: L10n.t("What each subscription has left, and where auto routing sends work next."))
                             .font(KS.body(16)).foregroundStyle(KS.textSoft)
                     }
-                    if let usage = model.status?.usage, !usage.isEmpty {
+                    if case let usage = model.allUsage, !usage.isEmpty {
                         LazyVGrid(columns: [GridItem(.adaptive(minimum: 280), spacing: 22, alignment: .top)], alignment: .leading, spacing: 22) {
                             ForEach(usage, id: \.provider) { u in UsageProviderCard(usage: u) }
                         }
-                        RoutingOrderBand(usage: usage)
+                        if let routed = model.status?.usage, !routed.isEmpty { RoutingOrderBand(usage: routed) }
                     } else {
                         TeamsEmptyState(symbol: "chart.bar", title: L10n.t("No usage readings yet"),
                                         detail: L10n.t("Swarmaa shows each provider's quota once a worker reports it."), action: nil)
