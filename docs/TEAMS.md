@@ -175,7 +175,7 @@ All new ids are UUIDs with a readable prefix in the UI only.
 | Tool | Permission | Input | Notes |
 |---|---|---|---|
 | `question_ask` | turn grant only | `prompt ≤ 500, options[] ≤ 8 (each ≤ 80), multi, free_text, expires_in?` | Agents only, from inside a turn. |
-| `question_answer` | `thread:write` (owner) | `question_id, choices[], text?, idempotency_key` | Posts the `answer` message and queues the agent's next turn. |
+| `question_answer` | `thread:write` + `answer_questions` (owner) | `question_id, choices[], text?, idempotency_key` | Posts the `answer` message and queues the agent's next turn. |
 | `question_list` | `thread:read` | `status?=open` | Everything waiting on you; the notch badge counts these. |
 
 ### Live stream for the UI

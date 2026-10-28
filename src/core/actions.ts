@@ -1,4 +1,6 @@
+import { AppError } from '../errors.js';
 import { redactSecrets } from '../safety/redact.js';
+import { validateStepGraph } from './swarms.js';
 import { clipUtf8 } from './teams.js';
 import type { Db } from './shared.js';
 import type { AgentRow, ThreadRow } from './teams.js';
@@ -382,8 +384,8 @@ export async function validateTurnGrant(
             action: act
           };
         }
-        const stepRes = await db.query<{ id: string; assignee_agent_id: string; scope: string; owner_agent_id: string | null }>(
-          `SELECT s.id, s.assignee_agent_id, sw.scope, sw.owner_agent_id
+        const stepRes = await db.query<{ id: string; assignee_agent_id: string; scope: string; owner_agent_id: string | null; status: string; swarm_status: string; closed_at: Date | null }>(
+          `SELECT s.id, s.assignee_agent_id, sw.scope, sw.owner_agent_id, s.status, sw.status AS swarm_status, sw.closed_at
            FROM swarm_steps s
            JOIN swarms sw ON sw.id = s.swarm_id
            WHERE s.id = $1 AND s.tenant_id = $2`,
@@ -404,6 +406,13 @@ export async function validateTurnGrant(
             action: act
           };
         }
+        if (['done', 'cancelled', 'failed'].includes(stepRow.status) || stepRow.closed_at !== null || ['done', 'cancelled'].includes(stepRow.swarm_status)) {
+          return {
+            valid: false,
+            reason: `swarm step '${act.swarm_step_id}' is ${stepRow.status} in a ${stepRow.closed_at !== null ? 'closed' : stepRow.swarm_status} swarm; it cannot be handed off`,
+            action: act
+          };
+        }
       }
     } else if (act.type === 'swarm_start') {
       // Swarms are started in agent's scope, owned by itself
@@ -421,6 +430,12 @@ export async function validateTurnGrant(
           };
         }
         step.assignee_agent_id = res.rows[0].id;
+      }
+      try {
+        validateStepGraph(act.steps.map((st, i) => ({ key: st.key ? String(st.key).trim() : `step_${i + 1}`, needs: st.needs ?? [] })));
+      } catch (err) {
+        if (!(err instanceof AppError)) throw err;
+        return { valid: false, reason: err.message, action: act };
       }
     } else if (act.type === 'swarm_update') {
       if (!isUuid(act.swarm_id)) {
@@ -472,7 +487,13 @@ export async function validateTurnGrant(
         }
       }
 
+      const steps = (await db.query<{ id: string; step_key: string | null }>(
+        'SELECT id, step_key FROM swarm_steps WHERE swarm_id=$1',
+        [act.swarm_id]
+      )).rows;
       for (const op of act.ops) {
+        const opError = await validateOp(db, ctx, op, steps);
+        if (opError) return { valid: false, reason: opError, action: act };
         if (op.step_id !== undefined) {
           if (!isUuid(op.step_id)) {
             return {
@@ -577,4 +598,61 @@ export async function validateTurnGrant(
   }
 
   return { valid: true };
+}
+
+const OP_FIELDS: Record<string, { allowed: string[]; required: string[] }> = {
+  add_step: { allowed: ['op', 'step'], required: ['step'] },
+  reassign: { allowed: ['op', 'step_id', 'assignee_agent_id'], required: ['step_id', 'assignee_agent_id'] },
+  retry: { allowed: ['op', 'step_id'], required: ['step_id'] },
+  cancel_step: { allowed: ['op', 'step_id'], required: ['step_id'] },
+  edit: { allowed: ['op', 'title', 'goal'], required: [] },
+  close: { allowed: ['op'], required: [] }
+};
+const ADD_STEP_FIELDS = new Set(['key', 'title', 'assignee_agent_id', 'needs', 'instructions', 'check']);
+
+/** Checks one swarm_update op's shape, and rewrites an add_step's assignee name and needs keys to ids. Returns the refusal, if any. */
+async function validateOp(
+  db: Db,
+  ctx: TurnGrantContext,
+  op: Record<string, unknown>,
+  steps: Array<{ id: string; step_key: string | null }>
+): Promise<string | null> {
+  if (!op || typeof op !== 'object' || Array.isArray(op)) return 'each op must be an object';
+  const spec = OP_FIELDS[String(op.op)];
+  if (!spec) return `unknown op '${String(op.op)}'`;
+  const extra = Object.keys(op).find(k => !spec.allowed.includes(k));
+  if (extra) return `unknown field '${extra}' in ${String(op.op)} op`;
+  const missing = spec.required.find(k => op[k] === undefined);
+  if (missing) return `${String(op.op)} op requires ${missing}`;
+  for (const k of ['step_id', 'assignee_agent_id', 'title', 'goal']) {
+    if (op[k] !== undefined && (typeof op[k] !== 'string' || !(op[k] as string).trim())) return `${String(op.op)} op ${k} must be a non-empty string`;
+  }
+  if (op.title !== undefined && (op.title as string).length > 200) return 'edit op title exceeds 200 characters';
+  if (op.op !== 'add_step') return null;
+
+  const step = op.step as Record<string, unknown>;
+  if (!step || typeof step !== 'object' || Array.isArray(step)) return 'add_step op step must be an object';
+  const extraStep = Object.keys(step).find(k => !ADD_STEP_FIELDS.has(k));
+  if (extraStep) return `unknown field '${extraStep}' in add_step step`;
+  if (typeof step.title !== 'string' || !step.title.trim() || step.title.length > 200) return 'add_step step requires title (1-200 chars)';
+  for (const k of ['key', 'instructions', 'check']) {
+    if (step[k] !== undefined && typeof step[k] !== 'string') return `add_step step ${k} must be a string`;
+  }
+  if (typeof step.assignee_agent_id !== 'string' || !step.assignee_agent_id.trim()) return 'add_step step requires assignee_agent_id';
+  const assignee = (await db.query<{ id: string }>(
+    'SELECT id FROM agents WHERE tenant_id=$1 AND scope=$2 AND (id::text=$3 OR name=$3) AND NOT archived',
+    [ctx.tenantId, ctx.scope, step.assignee_agent_id.trim()]
+  )).rows[0];
+  if (!assignee) return `add_step assignee '${step.assignee_agent_id}' not found or not active in this scope`;
+  step.assignee_agent_id = assignee.id;
+  const needs = step.needs ?? [];
+  if (!Array.isArray(needs)) return 'add_step step needs must be an array';
+  const ids: string[] = [];
+  for (const ref of needs) {
+    const dep = steps.find(st => st.id === ref || (st.step_key !== null && st.step_key === ref));
+    if (!dep) return `add_step needs '${String(ref)}', which is not a step of this swarm`;
+    ids.push(dep.id);
+  }
+  step.needs = ids;
+  return null;
 }

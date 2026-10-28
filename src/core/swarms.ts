@@ -1,34 +1,35 @@
-import type { Pool } from 'pg';
+import pg, { type Pool } from 'pg';
 import { transaction } from '../db.js';
 import { AppError, requireCondition } from '../errors.js';
-import { canAccessScope, requirePermission, requireScope } from '../policy.js';
+import { canAccessScope, hasPermission, requirePermission, requireScope } from '../policy.js';
 import { redactSecrets } from '../safety/redact.js';
 import type { Principal } from '../types.js';
 import { integer, object, optionalString, scopeName, string, uuid } from '../validation.js';
 import { booleanOption } from './memory.js';
-import { assertKnownScope, audit, canonicalJson, event, newId, noExtraKeys, requireFound, scopeLock, scopeSql, sha256, type Db } from './shared.js';
+import { assertKnownScope, audit, canonicalJson, event, newId, noExtraKeys, requireFound, scopeLock, scopeSql, sha256, teamsLock, type Db } from './shared.js';
 import { assignThreadSeq, clipUtf8, type AgentRow, type ThreadRow, type MessageRow } from './teams.js';
 import { runnerCapability } from '../bridge/adapters.js';
 import { cancelTask, taskView, type TaskRow } from './tasks.js';
 import type { TurnAction, TurnGrantContext, SwarmStartStepInput } from './actions.js';
 
-/**
- * Lock Order Invariant (Service-wide):
- *   task -> thread -> agent -> swarm -> steps (steps in id order)
- *
- * Rules:
- * 1. If acquiring locks across multiple entities, ALWAYS acquire them in this strict hierarchy:
- *      tasks (ORDER BY id ASC FOR UPDATE)
- *      -> threads (ORDER BY id ASC FOR UPDATE)
- *      -> agents (ORDER BY id ASC FOR UPDATE)
- *      -> swarms (ORDER BY id ASC FOR UPDATE)
- *      -> swarm_steps (ORDER BY id ASC FOR UPDATE)
- * 2. Never lock a swarm before a task; never lock an agent before a thread; never lock a step before a swarm.
- * 3. When locking steps of a swarm, ALWAYS lock ALL steps for that swarm with:
- *      SELECT * FROM swarm_steps WHERE swarm_id=$1 ORDER BY id ASC FOR UPDATE
- * 4. This order MUST be strictly followed across:
- *      task_finish, onStepTaskFinished, swarmUpdate, queueStepTurn, handoff, thread_post, agent_update, question_answer.
- */
+// Teams writes take teamsLock first.
+
+export const MAX_TURNS_PER_FINISH = 20;
+export const MAX_HANDOFF_HOPS = 3;
+
+/** Turns one task_finish may still queue, the hop depth they inherit, and where refusals are noticed. */
+export interface TurnBudget {
+  hop: number;
+  queued: number;
+  threadId: string;
+  scope: string;
+}
+
+/** Model output that should become a notice rather than roll back the finish: 4xx, or Postgres data (22) and constraint (23) errors. */
+function isActionError(err: unknown): boolean {
+  if (err instanceof AppError) return err.status >= 400 && err.status < 500;
+  return err instanceof pg.DatabaseError && /^2[23]/.test(err.code ?? '');
+}
 
 export interface SwarmRow {
   id: string;
@@ -37,9 +38,10 @@ export interface SwarmRow {
   title: string;
   goal: string;
   owner_agent_id: string | null;
-  thread_id: string;
+  thread_id: string | null;
   status: 'planning' | 'running' | 'waiting_on_you' | 'blocked' | 'done' | 'cancelled';
   flow_id: string | null;
+  summary_task_id: string | null;
   version: number;
   created_by: string;
   idempotency_key: string | null;
@@ -274,7 +276,8 @@ export class SwarmsService {
       owner_agent_id: string | null;
       flow_id?: string | null;
       idempotency_key?: string | null;
-    }
+    },
+    budget?: TurnBudget
   ): Promise<Record<string, unknown>> {
     const title = input.title;
     const goal = input.goal;
@@ -412,7 +415,7 @@ export class SwarmsService {
 
     for (const step of stepRows) {
       if (!step.needs || step.needs.length === 0) {
-        await this.queueStepTurn(db, p, scope, swarmId, step, ownerName);
+        await this.queueStepTurn(db, p, scope, swarmId, step, ownerName, budget);
       }
     }
 
@@ -440,6 +443,7 @@ export class SwarmsService {
     }
 
     return transaction(this.pool, async db => {
+      await teamsLock(db, p.tenantId);
       return this.internalSwarmStart(db, p, {
         title,
         goal,
@@ -536,12 +540,12 @@ export class SwarmsService {
       swarm_id: string;
       expected_version?: number | null;
       ops: Array<Record<string, unknown>>;
-    }
+    },
+    budget?: TurnBudget
   ): Promise<Record<string, unknown>> {
     const swarmId = input.swarm_id;
     const expected = input.expected_version ?? null;
 
-    // Lock order: tasks -> thread -> agent -> swarm -> steps (in id order)
     await db.query(
       `SELECT id FROM tasks WHERE id IN (SELECT task_id FROM swarm_steps WHERE swarm_id=$1 AND task_id IS NOT NULL) ORDER BY id ASC FOR UPDATE`,
       [swarmId]
@@ -585,12 +589,15 @@ export class SwarmsService {
         )).rows[0];
         requireCondition(Boolean(agent), 400, 'agent_not_found', 'Assignee agent not found or archived.');
 
-        const needs = Array.isArray(stepObj.needs) ? stepObj.needs.map(n => String(n).trim()) : [];
+        // A new step can only need existing steps, by id or key, so it cannot close a cycle.
+        const needs = (Array.isArray(stepObj.needs) ? stepObj.needs : []).map(n => {
+          const ref = String(n).trim();
+          const dep = allSteps.find(s => s.id === ref || s.step_key === ref);
+          requireCondition(dep, 400, 'invalid_steps', `add_step needs '${ref}', which is not a step of this swarm.`);
+          return dep.id;
+        });
         const stepId = newId();
         const nextIndex = allSteps.length;
-
-        // Test cycle with the new step added
-        validateStepGraph([...allSteps.map(s => ({ id: s.id, needs: s.needs })), { id: stepId, needs }]);
 
         const inserted = (await db.query<SwarmStepRow>(
           `INSERT INTO swarm_steps (id, tenant_id, swarm_id, step_key, title, assignee_agent_id, needs, instructions, "check", order_index, status)
@@ -605,7 +612,7 @@ export class SwarmsService {
 
         const ready = needs.length === 0 || needs.every(nid => allSteps.some(s => s.id === nid && s.status === 'done'));
         if (ready) {
-          await this.queueStepTurn(db, p, swarm.scope, swarmId, inserted, ownerName);
+          await this.queueStepTurn(db, p, swarm.scope, swarmId, inserted, ownerName, budget);
         }
       } else if (opName === 'reassign') {
         const stepId = uuid(op.step_id, 'op.step_id');
@@ -645,7 +652,7 @@ export class SwarmsService {
             [newAssigneeId, stepId]
           );
           await this.postNotice(db, p, swarm.scope, swarm.thread_id, `Reassigned step "${step.title}" to ${newAgent.name}`);
-          await this.queueStepTurn(db, p, swarm.scope, swarmId, step, ownerName);
+          await this.queueStepTurn(db, p, swarm.scope, swarmId, step, ownerName, budget);
         } else {
           step.status = 'pending';
           step.task_id = null;
@@ -671,7 +678,7 @@ export class SwarmsService {
             [stepId]
           );
           await this.postNotice(db, p, swarm.scope, swarm.thread_id, `Retrying step "${step.title}"`);
-          await this.queueStepTurn(db, p, swarm.scope, swarmId, step, ownerName);
+          await this.queueStepTurn(db, p, swarm.scope, swarmId, step, ownerName, budget);
         } else {
           step.status = 'pending';
           step.task_id = null;
@@ -697,6 +704,7 @@ export class SwarmsService {
         step.status = 'cancelled';
         await db.query("UPDATE swarm_steps SET status='cancelled', updated_at=clock_timestamp() WHERE id=$1", [stepId]);
         await this.postNotice(db, p, swarm.scope, swarm.thread_id, `Cancelled step "${step.title}"`);
+        await this.expireStepQuestions(db, p, [stepId]);
       } else if (opName === 'edit') {
         const nextTitle = op.title !== undefined ? string(op.title, 'op.title', 200) : swarm.title;
         const nextGoal = op.goal !== undefined ? string(op.goal, 'op.goal', 16384) : swarm.goal;
@@ -721,6 +729,7 @@ export class SwarmsService {
         swarm.closed_at = new Date();
         await db.query("UPDATE swarms SET status='cancelled', closed_at=clock_timestamp() WHERE id=$1", [swarmId]);
         await this.postNotice(db, p, swarm.scope, swarm.thread_id, 'Swarm closed');
+        await this.expireStepQuestions(db, p, allSteps.map(s => s.id));
       } else {
         throw new AppError(400, 'invalid_op', `Unknown swarm_update op: ${opName}`);
       }
@@ -751,6 +760,7 @@ export class SwarmsService {
     }
 
     return transaction(this.pool, async db => {
+      await teamsLock(db, p.tenantId);
       return this.internalSwarmUpdate(db, p, {
         swarm_id: swarmId,
         expected_version: expected,
@@ -766,7 +776,7 @@ export class SwarmsService {
     const expected = input.expected_version !== undefined ? integer(input.expected_version, 'expected_version', 1, 2147483647) : null;
 
     return transaction(this.pool, async db => {
-      // Lock order: tasks -> thread -> agent -> swarm -> steps (in id order)
+      await teamsLock(db, p.tenantId);
       await db.query(
         `SELECT id FROM tasks WHERE id IN (SELECT task_id FROM swarm_steps WHERE swarm_id=$1 AND task_id IS NOT NULL) ORDER BY id ASC FOR UPDATE`,
         [swarmId]
@@ -809,6 +819,7 @@ export class SwarmsService {
       )).rows[0]!;
 
       await this.postNotice(db, p, swarm.scope, swarm.thread_id, 'Swarm cancelled');
+      await this.expireStepQuestions(db, p, allSteps.map(s => s.id));
       await audit(db, p, swarm.scope, 'swarm.cancelled', swarmId);
       await event(db, p, swarm.scope, 'swarm.updated', swarmId, { swarm_id: swarmId, status: 'cancelled' });
       await this.notifyCard(db, p, swarm.scope, swarm.thread_id, swarmId);
@@ -820,8 +831,9 @@ export class SwarmsService {
 
   async questionAnswer(p: Principal, input: Record<string, unknown>): Promise<unknown> {
     noExtraKeys(input, ['question_id', 'choices', 'text', 'idempotency_key']);
-    requireCondition(p.role === 'frontend' || p.role === 'admin', 403, 'owner_required', 'Only owner/frontend principal can answer questions.');
     requirePermission(p, 'thread:write');
+    // The owner answers: admin, or a frontend identity the owner granted answer_questions. Never the Dot or Grok entrypoints.
+    requireCondition(!['grok', 'dot'].includes(p.name.toLowerCase()) && hasPermission(p, 'answer_questions'), 403, 'owner_required', 'Only the owner can answer questions.');
     const questionId = uuid(input.question_id, 'question_id');
     const rawChoices = input.choices !== undefined ? input.choices : [];
     if (!Array.isArray(rawChoices)) throw new AppError(400, 'invalid_arguments', 'choices must be an array of strings.');
@@ -829,50 +841,18 @@ export class SwarmsService {
     const text = input.text !== undefined ? string(input.text, 'text', 16384) : null;
     const idempotency = input.idempotency_key !== undefined ? string(input.idempotency_key, 'idempotency_key', 200) : null;
 
-    // Check expiry in a dedicated transaction so that expiry updates persist even when rejecting
-    const expiredResult = await transaction(this.pool, async db => {
-      const q = (await db.query<QuestionRow>(
-        'SELECT * FROM questions WHERE id=$1 AND tenant_id=$2 FOR UPDATE',
-        [questionId, p.tenantId]
-      )).rows[0];
-      if (!q) return null;
+    // Expire due questions in their own transaction, so the expiry persists when this answer is refused.
+    const expired = await transaction(this.pool, async db => {
+      await teamsLock(db, p.tenantId);
+      const q = (await db.query<QuestionRow>('SELECT * FROM questions WHERE id=$1 AND tenant_id=$2', [questionId, p.tenantId])).rows[0];
+      if (!q) return false;
       requireScope(p, q.scope);
-      if (q.status === 'answered') return false;
-
-      const isExpired = q.status === 'expired' || (q.expires_at !== null && new Date(q.expires_at).getTime() <= Date.now());
-      if (!isExpired) return false;
-
-      if (q.status === 'open') {
-        await db.query("UPDATE questions SET status='expired', updated_at=clock_timestamp() WHERE id=$1", [questionId]);
-        await this.postNotice(db, p, q.scope, q.thread_id, `Question "${q.prompt}" has expired`);
-        if (q.swarm_step_id) {
-          const stepMeta = (await db.query<{ swarm_id: string }>('SELECT swarm_id FROM swarm_steps WHERE id=$1', [q.swarm_step_id])).rows[0];
-          if (stepMeta) {
-            const swarm = (await db.query<SwarmRow>('SELECT * FROM swarms WHERE id=$1 FOR UPDATE', [stepMeta.swarm_id])).rows[0];
-            const swSteps = (await db.query<SwarmStepRow>('SELECT * FROM swarm_steps WHERE swarm_id=$1 ORDER BY id ASC FOR UPDATE', [stepMeta.swarm_id])).rows;
-            await db.query(
-              "UPDATE swarm_steps SET status='blocked', failure_code='question_expired', failure_detail='Question expired without an answer', updated_at=clock_timestamp() WHERE id=$1",
-              [q.swarm_step_id]
-            );
-            const thisStep = swSteps.find(s => s.id === q.swarm_step_id);
-            if (thisStep) thisStep.status = 'blocked';
-            if (swarm) {
-              const derived = deriveSwarmStatus(swSteps, Boolean(swarm.closed_at), false);
-              await db.query('UPDATE swarms SET status=$1, updated_at=clock_timestamp() WHERE id=$2', [derived, stepMeta.swarm_id]);
-              await event(db, p, q.scope, 'swarm.updated', stepMeta.swarm_id, { swarm_id: stepMeta.swarm_id, status: derived });
-              await this.notifyCard(db, p, q.scope, q.thread_id, stepMeta.swarm_id);
-            }
-          }
-        }
-      }
-      return true;
+      return (await this.expireDueQuestions(db, p, q.scope)).includes(questionId);
     });
-
-    if (expiredResult) {
-      throw new AppError(400, 'question_expired', 'Question has expired.');
-    }
+    if (expired) throw new AppError(400, 'question_expired', 'Question has expired.');
 
     return transaction(this.pool, async db => {
+      await teamsLock(db, p.tenantId);
       const q = (await db.query<QuestionRow>(
         'SELECT * FROM questions WHERE id=$1 AND tenant_id=$2 FOR UPDATE',
         [questionId, p.tenantId]
@@ -884,7 +864,11 @@ export class SwarmsService {
         return { question: questionView(q), replayed: true };
       }
 
-      requireCondition(q.status === 'open', 400, 'invalid_state', `Cannot answer question with status '${q.status}'.`);
+      if (q.swarm_step_id) {
+        const step = (await db.query<SwarmStepRow>('SELECT * FROM swarm_steps WHERE id=$1', [q.swarm_step_id])).rows[0];
+        requireCondition(step?.status === 'waiting_on_you', 409, 'step_not_waiting', `This question's step is ${step?.status ?? 'gone'}, not waiting on you.`);
+      }
+      requireCondition(q.status === 'open', 400, q.status === 'expired' ? 'question_expired' : 'invalid_state', `Cannot answer question with status '${q.status}'.`);
 
       // Validate choices against options
       for (const ch of choices) {
@@ -907,29 +891,15 @@ export class SwarmsService {
         [JSON.stringify(choices), text ? clipUtf8(redactSecrets(text), 16384) : null, p.id, questionId]
       )).rows[0]!;
 
-      // Lock order: thread -> agent -> swarm -> steps (in id order)
       const nextSeq = await assignThreadSeq(db, p.tenantId, q.thread_id);
       const agent = (await db.query<AgentRow>('SELECT * FROM agents WHERE id=$1 FOR UPDATE', [q.agent_id])).rows[0]!;
 
       if (q.swarm_step_id) {
-        const stepRow = (await db.query<{ swarm_id: string }>('SELECT swarm_id FROM swarm_steps WHERE id=$1', [q.swarm_step_id])).rows[0];
-        if (stepRow) {
-          const swarm = (await db.query<SwarmRow>('SELECT * FROM swarms WHERE id=$1 FOR UPDATE', [stepRow.swarm_id])).rows[0];
-          requireCondition(swarm && swarm.status !== 'cancelled' && swarm.closed_at === null, 400, 'swarm_closed', 'Cannot answer question for a cancelled or closed swarm.');
-          const swSteps = (await db.query<SwarmStepRow>('SELECT * FROM swarm_steps WHERE swarm_id=$1 ORDER BY id ASC FOR UPDATE', [stepRow.swarm_id])).rows;
-          const targetStep = swSteps.find(s => s.id === q.swarm_step_id);
-          if (targetStep && targetStep.status === 'waiting_on_you') {
-            await db.query(
-              "UPDATE swarm_steps SET status='running', updated_at=clock_timestamp() WHERE id=$1",
-              [q.swarm_step_id]
-            );
-            targetStep.status = 'running';
-            const derived = deriveSwarmStatus(swSteps, Boolean(swarm.closed_at), false);
-            await db.query('UPDATE swarms SET status=$1, updated_at=clock_timestamp() WHERE id=$2', [derived, stepRow.swarm_id]);
-            await event(db, p, q.scope, 'swarm.updated', stepRow.swarm_id, { swarm_id: stepRow.swarm_id, status: derived });
-            await this.notifyCard(db, p, q.scope, q.thread_id, stepRow.swarm_id);
-          }
-        }
+        const step = (await db.query<{ swarm_id: string }>(
+          "UPDATE swarm_steps SET status='running', updated_at=clock_timestamp() WHERE id=$1 RETURNING swarm_id",
+          [q.swarm_step_id]
+        )).rows[0]!;
+        await this.refreshSwarmStatus(db, p, step.swarm_id);
       }
 
       // Post answer message to thread
@@ -993,6 +963,48 @@ export class SwarmsService {
     });
   }
 
+  /** Expires open questions in a scope that are past expires_at by the database clock, blocking their steps. The caller holds teamsLock. */
+  async expireDueQuestions(db: Db, p: Principal, scope: string): Promise<string[]> {
+    const expired = (await db.query<QuestionRow>(
+      `UPDATE questions SET status='expired', updated_at=clock_timestamp()
+       WHERE tenant_id=$1 AND scope=$2 AND status='open' AND expires_at <= clock_timestamp() RETURNING *`,
+      [p.tenantId, scope]
+    )).rows;
+    for (const q of expired) {
+      await this.postNotice(db, p, q.scope, q.thread_id, `Question "${q.prompt}" has expired`);
+      if (!q.swarm_step_id) continue;
+      const step = (await db.query<{ swarm_id: string }>(
+        `UPDATE swarm_steps SET status='blocked', failure_code='question_expired', failure_detail='Question expired without an answer', updated_at=clock_timestamp()
+         WHERE id=$1 AND status IN ('waiting_on_you','running') RETURNING swarm_id`,
+        [q.swarm_step_id]
+      )).rows[0];
+      if (step) await this.refreshSwarmStatus(db, p, step.swarm_id);
+    }
+    return expired.map(q => q.id);
+  }
+
+  /** Cancelled steps cannot be answered: expire their open questions. */
+  private async expireStepQuestions(db: Db, p: Principal, stepIds: string[]): Promise<void> {
+    const expired = (await db.query<QuestionRow>(
+      `UPDATE questions SET status='expired', updated_at=clock_timestamp()
+       WHERE swarm_step_id = ANY($1::uuid[]) AND status='open' RETURNING *`,
+      [stepIds]
+    )).rows;
+    for (const q of expired) {
+      await this.postNotice(db, p, q.scope, q.thread_id, `Question "${q.prompt}" has expired: its step was cancelled`);
+    }
+  }
+
+  private async refreshSwarmStatus(db: Db, p: Principal, swarmId: string): Promise<void> {
+    const swarm = (await db.query<SwarmRow>('SELECT * FROM swarms WHERE id=$1 FOR UPDATE', [swarmId])).rows[0];
+    if (!swarm) return;
+    const steps = (await db.query<SwarmStepRow>('SELECT * FROM swarm_steps WHERE swarm_id=$1', [swarmId])).rows;
+    const derived = deriveSwarmStatus(steps, Boolean(swarm.closed_at), swarm.status === 'cancelled');
+    await db.query('UPDATE swarms SET status=$1, version=version+1, updated_at=clock_timestamp() WHERE id=$2', [derived, swarmId]);
+    await event(db, p, swarm.scope, 'swarm.updated', swarmId, { swarm_id: swarmId, status: derived });
+    await this.notifyCard(db, p, swarm.scope, swarm.thread_id, swarmId);
+  }
+
   async questionList(p: Principal, input: Record<string, unknown>): Promise<unknown> {
     noExtraKeys(input, ['status', 'after', 'limit']);
     requirePermission(p, 'thread:read');
@@ -1000,35 +1012,6 @@ export class SwarmsService {
     const statusParam = input.status !== undefined ? string(input.status, 'status', 32) : 'open';
     const after = input.after !== undefined ? uuid(input.after, 'after') : null;
     const limit = input.limit !== undefined ? integer(input.limit, 'limit', 1, 100) : 50;
-
-    // Check expiry: update and handle affected swarm steps
-    const newlyExpired = (await this.pool.query<{ id: string; prompt: string; scope: string; thread_id: string; swarm_step_id: string | null }>(
-      `UPDATE questions SET status='expired', updated_at=clock_timestamp()
-       WHERE tenant_id=$1 AND status='open' AND expires_at < clock_timestamp()
-       RETURNING id, prompt, scope, thread_id, swarm_step_id`,
-      [p.tenantId]
-    )).rows;
-
-    for (const exp of newlyExpired) {
-      await this.postNotice(this.pool as any, p, exp.scope, exp.thread_id, `Question "${exp.prompt}" has expired`);
-      if (exp.swarm_step_id) {
-        await this.pool.query(
-          "UPDATE swarm_steps SET status='blocked', failure_code='question_expired', failure_detail='Question expired without an answer', updated_at=clock_timestamp() WHERE id=$1",
-          [exp.swarm_step_id]
-        );
-        const stepRow = (await this.pool.query<{ swarm_id: string }>('SELECT swarm_id FROM swarm_steps WHERE id=$1', [exp.swarm_step_id])).rows[0];
-        if (stepRow) {
-          const swSteps = (await this.pool.query<SwarmStepRow>('SELECT * FROM swarm_steps WHERE swarm_id=$1 ORDER BY id ASC', [stepRow.swarm_id])).rows;
-          const swRow = (await this.pool.query<SwarmRow>('SELECT * FROM swarms WHERE id=$1', [stepRow.swarm_id])).rows[0];
-          if (swRow) {
-            const derived = deriveSwarmStatus(swSteps, Boolean(swRow.closed_at), swRow.status === 'cancelled');
-            await this.pool.query('UPDATE swarms SET status=$1, updated_at=clock_timestamp() WHERE id=$2', [derived, stepRow.swarm_id]);
-            await event(this.pool as any, p, exp.scope, 'swarm.updated', stepRow.swarm_id, { swarm_id: stepRow.swarm_id, status: derived });
-            await this.notifyCard(this.pool as any, p, exp.scope, exp.thread_id, stepRow.swarm_id);
-          }
-        }
-      }
-    }
 
     let statusCondition = '';
     const params: unknown[] = [p.tenantId, all, grantedScopes, after, limit + 1];
@@ -1184,7 +1167,7 @@ export class SwarmsService {
         state: sw.status,
         next_step: sw.status === 'waiting_on_you' ? 'Needs input · answer the question' : 'Blocked · inspect step failures',
         at: sw.updated_at.toISOString(),
-        thread_id: sw.thread_id
+        ...(sw.thread_id ? { thread_id: sw.thread_id } : {})
       });
     }
 
@@ -1218,6 +1201,7 @@ export class SwarmsService {
     const expected = integer(input.expected_version, 'expected_version', 1, 2147483647);
 
     return transaction(this.pool, async db => {
+      await teamsLock(db, p.tenantId);
       const task = (await db.query<TaskRow>(
         'SELECT * FROM tasks WHERE id=$1 AND tenant_id=$2 FOR UPDATE',
         [taskId, p.tenantId]
@@ -1254,33 +1238,30 @@ export class SwarmsService {
     taskScope: string,
     outcome: string,
     resultMsgId?: string,
-    failure?: { code?: string; detail?: string }
+    failure?: { code?: string; detail?: string },
+    budget?: TurnBudget
   ): Promise<void> {
-    // 1. Read step without FOR UPDATE to locate swarm
     const stepLookup = (await db.query<{ id: string; swarm_id: string; task_id: string | null; status: string }>(
       'SELECT id, swarm_id, task_id, status FROM swarm_steps WHERE id=$1',
       [stepId]
     )).rows[0];
     if (!stepLookup) return;
 
-    // Verify task identity (Finding 2)
+    // Only the step's current task may move it.
     if (stepLookup.task_id !== taskId) {
       return;
     }
 
-    // 2. Lock swarm first (obeying lock order: swarm -> steps)
     const swarm = (await db.query<SwarmRow>(
       'SELECT * FROM swarms WHERE id=$1 AND tenant_id=$2 FOR UPDATE',
       [stepLookup.swarm_id, p.tenantId]
     )).rows[0];
     if (!swarm) return;
 
-    // Verify scope (Finding 2)
     if (swarm.scope !== taskScope) {
       return;
     }
 
-    // 3. Lock all steps of the swarm in ascending ID order (Finding 4a)
     const allSteps = (await db.query<SwarmStepRow>(
       'SELECT * FROM swarm_steps WHERE swarm_id=$1 ORDER BY id ASC FOR UPDATE',
       [swarm.id]
@@ -1289,8 +1270,8 @@ export class SwarmsService {
     const step = allSteps.find(s => s.id === stepId);
     if (!step) return;
 
-    // If step is waiting on question, do not transition on task finish
-    if (step.status === 'waiting_on_you') {
+    // A step waiting on a question, or already cancelled, does not move on its task's finish.
+    if (step.status === 'waiting_on_you' || step.status === 'cancelled') {
       return;
     }
 
@@ -1316,12 +1297,12 @@ export class SwarmsService {
       );
     }
 
-    // Finding 3: Flow swarms are driven by flows.ts advanceFlow, never queue agent turns or summary turns!
+    // Flow swarms are driven by flows.ts advanceFlow: no agent or summary turns. They close when every step is done.
     if (swarm.flow_id !== null) {
       const derived = deriveSwarmStatus(allSteps, Boolean(swarm.closed_at), swarm.status === 'cancelled');
       if (swarm.status !== derived && swarm.status !== 'cancelled' && swarm.closed_at === null) {
         await db.query(
-          `UPDATE swarms SET status=$1, version=version+1, updated_at=clock_timestamp() WHERE id=$2`,
+          `UPDATE swarms SET status=$1, closed_at=CASE WHEN $1='done' THEN clock_timestamp() END, version=version+1, updated_at=clock_timestamp() WHERE id=$2`,
           [derived, swarm.id]
         );
         await event(db, p, swarm.scope, 'swarm.updated', swarm.id, { swarm_id: swarm.id, status: derived });
@@ -1330,7 +1311,6 @@ export class SwarmsService {
       return;
     }
 
-    // For non-flow swarms:
     const ownerName = swarm.owner_agent_id
       ? ((await db.query<{ name: string }>('SELECT name FROM agents WHERE id=$1', [swarm.owner_agent_id])).rows[0]?.name ?? 'Lead')
       : 'Team lead';
@@ -1340,7 +1320,7 @@ export class SwarmsService {
       if (s.status === 'pending') {
         const needsDone = s.needs.length === 0 || s.needs.every(depId => allSteps.some(other => other.id === depId && other.status === 'done'));
         if (needsDone) {
-          await this.queueStepTurn(db, p, swarm.scope, swarm.id, s, ownerName);
+          await this.queueStepTurn(db, p, swarm.scope, swarm.id, s, ownerName, budget);
         }
       }
     }
@@ -1358,19 +1338,22 @@ export class SwarmsService {
         );
       }
 
-      // Final summarising turn for owner agent (Finding 8: deduplicated with deterministic idempotency_key)
-      if (swarm.owner_agent_id) {
-        const summaryKey = `swarm:summary:${swarm.id}`;
-        const existingSummary = (await db.query(
-          'SELECT id FROM tasks WHERE tenant_id=$1 AND created_by=$2 AND idempotency_key=$3',
-          [p.tenantId, p.id, summaryKey]
-        )).rows[0];
-
-        if (!existingSummary) {
-          const ownerAgent = (await db.query<AgentRow>('SELECT * FROM agents WHERE id=$1', [swarm.owner_agent_id])).rows[0];
-          if (ownerAgent) {
+      // One summarising turn per swarm, however often its last step finishes.
+      const ownerAgent = swarm.owner_agent_id
+        ? (await db.query<AgentRow>('SELECT * FROM agents WHERE id=$1', [swarm.owner_agent_id])).rows[0]
+        : undefined;
+      if (ownerAgent && swarm.summary_task_id === null) {
+        if (budget && budget.queued >= MAX_TURNS_PER_FINISH) {
+          await this.refuseTurn(db, p, budget, `the summary of "${swarm.title}"`, `one finish may queue at most the cap of ${MAX_TURNS_PER_FINISH} turns`);
+        } else {
+          const followUpId = newId();
+          const claimed = await db.query(
+            'UPDATE swarms SET summary_task_id=$1 WHERE id=$2 AND summary_task_id IS NULL RETURNING id',
+            [followUpId, swarm.id]
+          );
+          if (claimed.rowCount) {
+            if (budget) budget.queued++;
             const requiredCap = runnerCapability(ownerAgent.runner, ownerAgent.edits);
-            const followUpId = newId();
             const envelope = {
               deploy: false, publish: false, purchase: false, local_patch: ownerAgent.edits,
               read_project: true, send_messages: false, permission_changes: false, external_side_effects: false
@@ -1384,10 +1367,11 @@ export class SwarmsService {
                  (id, tenant_id, scope, kind, agent_id, thread_id, objective, constraints, acceptance_criteria,
                   permission_envelope, required_capability, resource_key, context_versions, status, created_by,
                   idempotency_key, request_hash, max_attempts, initiator_kind, initiator_id)
-               VALUES ($1, $2, $3, 'turn', $4, $5, $6, '[]'::jsonb, '[]'::jsonb, $7::jsonb, $8, $9, '{}'::jsonb, 'queued', $10, $11, $12, 3, 'swarm', $13)`,
+               VALUES ($1, $2, $3, 'turn', $4, $5, $6, '[]'::jsonb, '[]'::jsonb, $7::jsonb, $8, $9, $10::jsonb, 'queued', $11, $12, $13, 3, 'swarm', $14)`,
               [followUpId, p.tenantId, ownerAgent.scope, ownerAgent.id, swarm.thread_id,
                `Summarise swarm results: ${swarm.title}`, JSON.stringify(envelope),
-               requiredCap, `agent:${ownerAgent.id}`, p.id, summaryKey, reqHash, swarm.id]
+               requiredCap, `agent:${ownerAgent.id}`, JSON.stringify({ hop_depth: budget ? budget.hop + 1 : 0 }),
+               p.id, `swarm:summary:${swarm.id}`, reqHash, swarm.id]
             );
 
             await audit(db, p, ownerAgent.scope, 'task.submitted', followUpId, { kind: 'turn', agent_id: ownerAgent.id, initiator_kind: 'swarm' });
@@ -1408,188 +1392,181 @@ export class SwarmsService {
     await this.notifyCard(db, p, swarm.scope, swarm.thread_id, swarm.id);
   }
 
+  /** Runs each action in its own savepoint: bad model output becomes a notice, the reply and the other actions stand. */
   async applyTurnActions(
     db: Db,
     p: Principal,
     ctx: TurnGrantContext,
     actions: TurnAction[],
-    cleanReplyMsgId: string
+    budget: TurnBudget
   ): Promise<void> {
-    let queuedTurnCount = 0;
-
-    for (const act of actions) {
-      if (act.type === 'handoff') {
-        const targetAgent = (await db.query<AgentRow>('SELECT * FROM agents WHERE id=$1', [act.to_agent])).rows[0]!;
-
-        // 1. Post handoff line into sending agent's thread (Low 4: author is sending agent)
-        const senderSeq = await assignThreadSeq(db, ctx.tenantId, ctx.thread.id);
-        const senderHandoffMsgId = newId();
-        const handoffText = `${ctx.agent.name} handed off to ${targetAgent.name}: ${act.body}`;
-        await db.query(
-          `INSERT INTO messages (id, tenant_id, scope, thread_id, seq, author, kind, body, ref)
-           VALUES ($1, $2, $3, $4, $5, $6::jsonb, 'handoff', $7, $8::jsonb)`,
-          [senderHandoffMsgId, ctx.tenantId, ctx.scope, ctx.thread.id, senderSeq,
-           JSON.stringify({ kind: 'agent', id: ctx.agent.id }), handoffText,
-           JSON.stringify({ from_agent_id: ctx.agent.id, to_agent_id: targetAgent.id, ...(act.swarm_step_id ? { swarm_step_id: act.swarm_step_id } : {}) })]
-        );
-        await event(db, p, ctx.scope, 'message.created', senderHandoffMsgId, {
-          thread_id: ctx.thread.id,
-          message_id: senderHandoffMsgId,
-          seq: Number(senderSeq),
-          kind: 'handoff',
-          author: { kind: 'agent', id: ctx.agent.id }
-        });
-
-        // 2. Post handoff line into target agent's main thread (Low 4: author is sending agent)
-        const targetThreadId = targetAgent.main_thread_id!;
-        const targetSeq = await assignThreadSeq(db, ctx.tenantId, targetThreadId);
-        const targetHandoffMsgId = newId();
-        const targetHandoffText = `${ctx.agent.name} gave you: ${act.body}`;
-        await db.query(
-          `INSERT INTO messages (id, tenant_id, scope, thread_id, seq, author, kind, body, ref)
-           VALUES ($1, $2, $3, $4, $5, $6::jsonb, 'handoff', $7, $8::jsonb)`,
-          [targetHandoffMsgId, ctx.tenantId, ctx.scope, targetThreadId, targetSeq,
-           JSON.stringify({ kind: 'agent', id: ctx.agent.id }), targetHandoffText,
-           JSON.stringify({ from_agent_id: ctx.agent.id, to_agent_id: targetAgent.id, ...(act.swarm_step_id ? { swarm_step_id: act.swarm_step_id } : {}) })]
-        );
-        await event(db, p, ctx.scope, 'message.created', targetHandoffMsgId, {
-          thread_id: targetThreadId,
-          message_id: targetHandoffMsgId,
-          seq: Number(targetSeq),
-          kind: 'handoff',
-          author: { kind: 'agent', id: ctx.agent.id }
-        });
-
-        // 3. Queue turn task for target agent with initiator handoff (Finding 13: hop limit & fan-out cap)
-        if (queuedTurnCount < 20 && (ctx.hopDepth ?? 0) < 3) {
-          queuedTurnCount++;
-          const requiredCap = runnerCapability(targetAgent.runner, targetAgent.edits);
-          const taskId = newId();
-          const envelope = {
-            deploy: false, publish: false, purchase: false, local_patch: targetAgent.edits,
-            read_project: true, send_messages: false, permission_changes: false, external_side_effects: false
-          };
-          const ctxVersions = { message_seq: Number(targetSeq), hop_depth: (ctx.hopDepth ?? 0) + 1 };
-          const reqHash = sha256(canonicalJson({
-            kind: 'turn', scope: targetAgent.scope, agent_id: targetAgent.id, thread_id: targetThreadId, seq: Number(targetSeq)
-          }));
-
-          await db.query(
-            `INSERT INTO tasks
-               (id, tenant_id, scope, kind, agent_id, thread_id, swarm_step_id, objective, constraints, acceptance_criteria,
-                permission_envelope, required_capability, resource_key, context_versions, status, created_by,
-                idempotency_key, request_hash, max_attempts, initiator_kind, initiator_id)
-             VALUES ($1, $2, $3, 'turn', $4, $5, $6, $7, '[]'::jsonb, '[]'::jsonb, $8::jsonb, $9, $10, $11::jsonb, 'queued', $12, $13, $14, 3, 'handoff', $15)`,
-            [taskId, ctx.tenantId, targetAgent.scope, targetAgent.id, targetThreadId, act.swarm_step_id ?? null,
-             `Handoff from ${ctx.agent.name}: ${act.body}`, JSON.stringify(envelope),
-             requiredCap, `agent:${targetAgent.id}`, JSON.stringify(ctxVersions), p.id, newId(), reqHash, ctx.agent.id]
-          );
-
-          // Update swarm step task_id and assignee if step is provided (Finding 2)
-          if (act.swarm_step_id) {
-            await db.query(
-              'UPDATE swarm_steps SET task_id=$1, assignee_agent_id=$2, updated_at=clock_timestamp() WHERE id=$3',
-              [taskId, targetAgent.id, act.swarm_step_id]
-            );
-          }
-
-          await audit(db, p, targetAgent.scope, 'task.submitted', taskId, { kind: 'turn', agent_id: targetAgent.id, initiator_kind: 'handoff' });
-          await event(db, p, targetAgent.scope, 'task.updated', taskId, { task_id: taskId, status: 'queued', action: 'submitted' });
-        }
-      } else if (act.type === 'swarm_start') {
-        // Finding 1: run inside task_finish transaction via internalSwarmStart under turn grant
-        await this.internalSwarmStart(db, p, {
-          title: act.title,
-          goal: act.goal,
-          scope: ctx.scope,
-          thread_id: ctx.thread.id,
-          steps: act.steps,
-          owner_agent_id: ctx.agent.id
-        });
-      } else if (act.type === 'swarm_update') {
-        // Finding 1: run inside task_finish transaction via internalSwarmUpdate under turn grant
-        await this.internalSwarmUpdate(db, p, {
-          swarm_id: act.swarm_id,
-          ops: act.ops
-        });
-      } else if (act.type === 'question_ask') {
-        const questionId = newId();
-        const expiresAt = act.expires_in ? new Date(Date.now() + act.expires_in * 1000) : null;
-
-        await db.query(
-          `INSERT INTO questions
-             (id, tenant_id, scope, thread_id, agent_id, swarm_step_id, prompt, options, multi, free_text, status, expires_at)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, 'open', $11)`,
-          [questionId, ctx.tenantId, ctx.scope, ctx.thread.id, ctx.agent.id, act.swarm_step_id ?? null,
-           act.prompt, JSON.stringify(act.options), act.multi ?? false, act.free_text ?? false, expiresAt]
-        );
-
-        const cardSeq = await assignThreadSeq(db, ctx.tenantId, ctx.thread.id);
-        const cardMsgId = newId();
-        await db.query(
-          `INSERT INTO messages (id, tenant_id, scope, thread_id, seq, author, kind, body, ref)
-           VALUES ($1, $2, $3, $4, $5, $6::jsonb, 'question', $7, $8::jsonb)`,
-          [cardMsgId, ctx.tenantId, ctx.scope, ctx.thread.id, cardSeq,
-           JSON.stringify({ kind: 'agent', id: ctx.agent.id }), act.prompt,
-           JSON.stringify({ question_id: questionId })]
-        );
-
-        await event(db, p, ctx.scope, 'question.created', questionId, {
-          question_id: questionId,
-          thread_id: ctx.thread.id,
-          agent_id: ctx.agent.id,
-          prompt: act.prompt
-        });
-        await event(db, p, ctx.scope, 'message.created', cardMsgId, {
-          thread_id: ctx.thread.id,
-          message_id: cardMsgId,
-          seq: Number(cardSeq),
-          kind: 'question',
-          author: { kind: 'agent', id: ctx.agent.id }
-        });
-
-        if (act.swarm_step_id) {
-          await db.query(
-            "UPDATE swarm_steps SET status='waiting_on_you', updated_at=clock_timestamp() WHERE id=$1",
-            [act.swarm_step_id]
-          );
-          const stepRow = (await db.query<{ swarm_id: string }>('SELECT swarm_id FROM swarm_steps WHERE id=$1', [act.swarm_step_id])).rows[0];
-          if (stepRow) {
-            const swarm = (await db.query<SwarmRow>('SELECT * FROM swarms WHERE id=$1 FOR UPDATE', [stepRow.swarm_id])).rows[0];
-            const swSteps = (await db.query<SwarmStepRow>('SELECT * FROM swarm_steps WHERE swarm_id=$1 ORDER BY id ASC FOR UPDATE', [stepRow.swarm_id])).rows;
-            if (swarm) {
-              const derived = deriveSwarmStatus(swSteps, Boolean(swarm.closed_at), false);
-              await db.query('UPDATE swarms SET status=$1, updated_at=clock_timestamp() WHERE id=$2', [derived, stepRow.swarm_id]);
-              await event(db, p, ctx.scope, 'swarm.updated', stepRow.swarm_id, { swarm_id: stepRow.swarm_id, status: derived });
-              await this.notifyCard(db, p, ctx.scope, ctx.thread.id, stepRow.swarm_id);
-            }
-          }
-        }
-      } else if (act.type === 'channel_post') {
-        const chanSeq = await assignThreadSeq(db, ctx.tenantId, act.channel_id);
-        const chanMsgId = newId();
-        await db.query(
-          `INSERT INTO messages (id, tenant_id, scope, thread_id, seq, author, kind, body)
-           VALUES ($1, $2, $3, $4, $5, $6::jsonb, 'text', $7)`,
-          [chanMsgId, ctx.tenantId, ctx.scope, act.channel_id, chanSeq,
-           JSON.stringify({ kind: 'agent', id: ctx.agent.id }), act.body]
-        );
-
-        await event(db, p, ctx.scope, 'message.created', chanMsgId, {
-          thread_id: act.channel_id,
-          message_id: chanMsgId,
-          seq: Number(chanSeq),
-          kind: 'text',
-          author: { kind: 'agent', id: ctx.agent.id }
-        });
-
-        // Mentions or lead routing in channel (Finding 13: dedupe by joining existing turn, hop limit, fan-out cap)
-        await this.routeChannelPost(db, p, ctx, act.channel_id, act.body, Number(chanSeq), () => {
-          if (queuedTurnCount >= 20) return false;
-          queuedTurnCount++;
-          return true;
-        });
+    for (const [i, act] of actions.entries()) {
+      const queued = budget.queued;
+      await db.query(`SAVEPOINT act_${i}`);
+      try {
+        await this.applyTurnAction(db, p, ctx, act, budget);
+        await db.query(`RELEASE SAVEPOINT act_${i}`);
+      } catch (err) {
+        if (!isActionError(err)) throw err;
+        await db.query(`ROLLBACK TO SAVEPOINT act_${i}`);
+        budget.queued = queued;
+        await this.postNotice(db, p, ctx.scope, ctx.thread.id, `Action ${i + 1} (${act.type}) failed: ${(err as Error).message}`);
       }
+    }
+  }
+
+  private async applyTurnAction(db: Db, p: Principal, ctx: TurnGrantContext, act: TurnAction, budget: TurnBudget): Promise<void> {
+    if (act.type === 'handoff') {
+      const targetAgent = (await db.query<AgentRow>('SELECT * FROM agents WHERE id=$1', [act.to_agent])).rows[0]!;
+
+      // 1. Post handoff line into sending agent's thread (Low 4: author is sending agent)
+      const senderSeq = await assignThreadSeq(db, ctx.tenantId, ctx.thread.id);
+      const senderHandoffMsgId = newId();
+      const handoffText = `${ctx.agent.name} handed off to ${targetAgent.name}: ${act.body}`;
+      await db.query(
+        `INSERT INTO messages (id, tenant_id, scope, thread_id, seq, author, kind, body, ref)
+         VALUES ($1, $2, $3, $4, $5, $6::jsonb, 'handoff', $7, $8::jsonb)`,
+        [senderHandoffMsgId, ctx.tenantId, ctx.scope, ctx.thread.id, senderSeq,
+         JSON.stringify({ kind: 'agent', id: ctx.agent.id }), handoffText,
+         JSON.stringify({ from_agent_id: ctx.agent.id, to_agent_id: targetAgent.id, ...(act.swarm_step_id ? { swarm_step_id: act.swarm_step_id } : {}) })]
+      );
+      await event(db, p, ctx.scope, 'message.created', senderHandoffMsgId, {
+        thread_id: ctx.thread.id,
+        message_id: senderHandoffMsgId,
+        seq: Number(senderSeq),
+        kind: 'handoff',
+        author: { kind: 'agent', id: ctx.agent.id }
+      });
+
+      // 2. Post handoff line into target agent's main thread (Low 4: author is sending agent)
+      const targetThreadId = targetAgent.main_thread_id!;
+      const targetSeq = await assignThreadSeq(db, ctx.tenantId, targetThreadId);
+      const targetHandoffMsgId = newId();
+      const targetHandoffText = `${ctx.agent.name} gave you: ${act.body}`;
+      await db.query(
+        `INSERT INTO messages (id, tenant_id, scope, thread_id, seq, author, kind, body, ref)
+         VALUES ($1, $2, $3, $4, $5, $6::jsonb, 'handoff', $7, $8::jsonb)`,
+        [targetHandoffMsgId, ctx.tenantId, ctx.scope, targetThreadId, targetSeq,
+         JSON.stringify({ kind: 'agent', id: ctx.agent.id }), targetHandoffText,
+         JSON.stringify({ from_agent_id: ctx.agent.id, to_agent_id: targetAgent.id, ...(act.swarm_step_id ? { swarm_step_id: act.swarm_step_id } : {}) })]
+      );
+      await event(db, p, ctx.scope, 'message.created', targetHandoffMsgId, {
+        thread_id: targetThreadId,
+        message_id: targetHandoffMsgId,
+        seq: Number(targetSeq),
+        kind: 'handoff',
+        author: { kind: 'agent', id: ctx.agent.id }
+      });
+
+      // 3. Queue turn task for target agent with initiator handoff, within the hop limit and fan-out cap
+      if (!(await this.takeTurn(db, p, budget, targetAgent.name))) return;
+      const requiredCap = runnerCapability(targetAgent.runner, targetAgent.edits);
+      const taskId = newId();
+      const envelope = {
+        deploy: false, publish: false, purchase: false, local_patch: targetAgent.edits,
+        read_project: true, send_messages: false, permission_changes: false, external_side_effects: false
+      };
+      const ctxVersions = { message_seq: Number(targetSeq), hop_depth: budget.hop + 1 };
+      const reqHash = sha256(canonicalJson({
+        kind: 'turn', scope: targetAgent.scope, agent_id: targetAgent.id, thread_id: targetThreadId, seq: Number(targetSeq)
+      }));
+
+      await db.query(
+        `INSERT INTO tasks
+           (id, tenant_id, scope, kind, agent_id, thread_id, swarm_step_id, objective, constraints, acceptance_criteria,
+            permission_envelope, required_capability, resource_key, context_versions, status, created_by,
+            idempotency_key, request_hash, max_attempts, initiator_kind, initiator_id)
+         VALUES ($1, $2, $3, 'turn', $4, $5, $6, $7, '[]'::jsonb, '[]'::jsonb, $8::jsonb, $9, $10, $11::jsonb, 'queued', $12, $13, $14, 3, 'handoff', $15)`,
+        [taskId, ctx.tenantId, targetAgent.scope, targetAgent.id, targetThreadId, act.swarm_step_id ?? null,
+         `Handoff from ${ctx.agent.name}: ${act.body}`, JSON.stringify(envelope),
+         requiredCap, `agent:${targetAgent.id}`, JSON.stringify(ctxVersions), p.id, newId(), reqHash, ctx.agent.id]
+      );
+
+      if (act.swarm_step_id) {
+        await db.query(
+          'UPDATE swarm_steps SET task_id=$1, assignee_agent_id=$2, updated_at=clock_timestamp() WHERE id=$3',
+          [taskId, targetAgent.id, act.swarm_step_id]
+        );
+      }
+
+      await audit(db, p, targetAgent.scope, 'task.submitted', taskId, { kind: 'turn', agent_id: targetAgent.id, initiator_kind: 'handoff' });
+      await event(db, p, targetAgent.scope, 'task.updated', taskId, { task_id: taskId, status: 'queued', action: 'submitted' });
+    } else if (act.type === 'swarm_start') {
+      await this.internalSwarmStart(db, p, {
+        title: act.title,
+        goal: act.goal,
+        scope: ctx.scope,
+        thread_id: ctx.thread.id,
+        steps: act.steps,
+        owner_agent_id: ctx.agent.id
+      }, budget);
+    } else if (act.type === 'swarm_update') {
+      await this.internalSwarmUpdate(db, p, {
+        swarm_id: act.swarm_id,
+        ops: act.ops
+      }, budget);
+    } else if (act.type === 'question_ask') {
+      const questionId = newId();
+
+      await db.query(
+        `INSERT INTO questions
+           (id, tenant_id, scope, thread_id, agent_id, swarm_step_id, prompt, options, multi, free_text, status, expires_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, 'open',
+           CASE WHEN $11::integer IS NULL THEN NULL ELSE clock_timestamp() + $11::integer * interval '1 second' END)`,
+        [questionId, ctx.tenantId, ctx.scope, ctx.thread.id, ctx.agent.id, act.swarm_step_id ?? null,
+         act.prompt, JSON.stringify(act.options), act.multi ?? false, act.free_text ?? false, act.expires_in ?? null]
+      );
+
+      const cardSeq = await assignThreadSeq(db, ctx.tenantId, ctx.thread.id);
+      const cardMsgId = newId();
+      await db.query(
+        `INSERT INTO messages (id, tenant_id, scope, thread_id, seq, author, kind, body, ref)
+         VALUES ($1, $2, $3, $4, $5, $6::jsonb, 'question', $7, $8::jsonb)`,
+        [cardMsgId, ctx.tenantId, ctx.scope, ctx.thread.id, cardSeq,
+         JSON.stringify({ kind: 'agent', id: ctx.agent.id }), act.prompt,
+         JSON.stringify({ question_id: questionId })]
+      );
+
+      await event(db, p, ctx.scope, 'question.created', questionId, {
+        question_id: questionId,
+        thread_id: ctx.thread.id,
+        agent_id: ctx.agent.id,
+        prompt: act.prompt
+      });
+      await event(db, p, ctx.scope, 'message.created', cardMsgId, {
+        thread_id: ctx.thread.id,
+        message_id: cardMsgId,
+        seq: Number(cardSeq),
+        kind: 'question',
+        author: { kind: 'agent', id: ctx.agent.id }
+      });
+
+      if (act.swarm_step_id) {
+        const step = (await db.query<{ swarm_id: string }>(
+          "UPDATE swarm_steps SET status='waiting_on_you', updated_at=clock_timestamp() WHERE id=$1 RETURNING swarm_id",
+          [act.swarm_step_id]
+        )).rows[0];
+        if (step) await this.refreshSwarmStatus(db, p, step.swarm_id);
+      }
+    } else if (act.type === 'channel_post') {
+      const chanSeq = await assignThreadSeq(db, ctx.tenantId, act.channel_id);
+      const chanMsgId = newId();
+      await db.query(
+        `INSERT INTO messages (id, tenant_id, scope, thread_id, seq, author, kind, body)
+         VALUES ($1, $2, $3, $4, $5, $6::jsonb, 'text', $7)`,
+        [chanMsgId, ctx.tenantId, ctx.scope, act.channel_id, chanSeq,
+         JSON.stringify({ kind: 'agent', id: ctx.agent.id }), act.body]
+      );
+
+      await event(db, p, ctx.scope, 'message.created', chanMsgId, {
+        thread_id: act.channel_id,
+        message_id: chanMsgId,
+        seq: Number(chanSeq),
+        kind: 'text',
+        author: { kind: 'agent', id: ctx.agent.id }
+      });
+
+      await this.routeChannelPost(db, p, ctx, act.channel_id, act.body, Number(chanSeq), budget);
     }
   }
 
@@ -1600,7 +1577,7 @@ export class SwarmsService {
     channelId: string,
     body: string,
     msgSeq: number,
-    canQueueTurn: () => boolean
+    budget: TurnBudget
   ): Promise<void> {
     const channel = (await db.query<ThreadRow & { lead_agent_id: string | null }>(
       'SELECT * FROM threads WHERE id=$1 FOR UPDATE',
@@ -1635,7 +1612,7 @@ export class SwarmsService {
     }
 
     for (const agentId of targetAgents) {
-      // Finding 13: dedupe by joining agent's existing queued turn in this channel
+      // Join the agent's existing queued turn in this channel instead of queueing another.
       const queuedTurn = (await db.query<{ id: string; context_versions: Record<string, unknown> }>(
         "SELECT id, context_versions FROM tasks WHERE tenant_id=$1 AND agent_id=$2 AND thread_id=$3 AND kind='turn' AND status='queued' ORDER BY id ASC LIMIT 1 FOR UPDATE",
         [p.tenantId, agentId, channelId]
@@ -1648,12 +1625,9 @@ export class SwarmsService {
           [JSON.stringify(updatedVersions), queuedTurn.id]
         );
       } else {
-        if ((ctx.hopDepth ?? 0) >= 3 || !canQueueTurn()) {
-          continue;
-        }
-
         const agent = (await db.query<AgentRow>('SELECT * FROM agents WHERE id=$1', [agentId])).rows[0];
         if (!agent) continue;
+        if (!(await this.takeTurn(db, p, budget, agent.name))) continue;
 
         const requiredCap = runnerCapability(agent.runner, agent.edits);
         const taskId = newId();
@@ -1661,7 +1635,7 @@ export class SwarmsService {
           deploy: false, publish: false, purchase: false, local_patch: agent.edits,
           read_project: true, send_messages: false, permission_changes: false, external_side_effects: false
         };
-        const ctxVersions = { message_seq: msgSeq, hop_depth: (ctx.hopDepth ?? 0) + 1 };
+        const ctxVersions = { message_seq: msgSeq, hop_depth: budget.hop + 1 };
         const reqHash = sha256(canonicalJson({
           kind: 'turn', scope: ctx.scope, agent_id: agent.id, thread_id: channelId, seq: msgSeq
         }));
@@ -1682,20 +1656,51 @@ export class SwarmsService {
     }
   }
 
+  /** Handoff and channel turns: refused past the hop limit or the per-finish cap, with a notice. */
+  private async takeTurn(db: Db, p: Principal, budget: TurnBudget, agentName: string): Promise<boolean> {
+    if (budget.hop >= MAX_HANDOFF_HOPS) {
+      await this.refuseTurn(db, p, budget, agentName, `the hop depth limit of ${MAX_HANDOFF_HOPS} is reached`);
+      return false;
+    }
+    if (budget.queued >= MAX_TURNS_PER_FINISH) {
+      await this.refuseTurn(db, p, budget, agentName, `one finish may queue at most the cap of ${MAX_TURNS_PER_FINISH} turns`);
+      return false;
+    }
+    budget.queued++;
+    return true;
+  }
+
+  private async refuseTurn(db: Db, p: Principal, budget: TurnBudget, what: string, why: string): Promise<void> {
+    await this.postNotice(db, p, budget.scope, budget.threadId, `Turn for ${what} refused: ${why}.`);
+  }
+
   private async queueStepTurn(
     db: Db,
     p: Principal,
     scope: string,
     swarmId: string,
     step: SwarmStepRow,
-    ownerName: string
+    ownerName: string,
+    budget?: TurnBudget
   ): Promise<void> {
     const agent = (await db.query<AgentRow>('SELECT * FROM agents WHERE id=$1', [step.assignee_agent_id])).rows[0];
     if (!agent) return;
 
+    if (budget && budget.queued >= MAX_TURNS_PER_FINISH) {
+      const why = `one finish may queue at most the cap of ${MAX_TURNS_PER_FINISH} turns`;
+      step.status = 'failed';
+      await db.query(
+        "UPDATE swarm_steps SET status='failed', failure_code='turn_cap', failure_detail=$2, updated_at=clock_timestamp() WHERE id=$1",
+        [step.id, `Not started: ${why}. Retry the step.`]
+      );
+      await this.refuseTurn(db, p, budget, `step "${step.title}"`, why);
+      return;
+    }
+    if (budget) budget.queued++;
+
     const targetThreadId = agent.main_thread_id!;
 
-    // Post handoff message into assignee's main thread (locks thread in assignThreadSeq)
+    // Post handoff message into assignee's main thread
     const seq = await assignThreadSeq(db, p.tenantId, targetThreadId);
     const handoffMsgId = newId();
     const handoffBody = `${ownerName} gave you: ${step.title}`;
@@ -1722,7 +1727,7 @@ export class SwarmsService {
       deploy: false, publish: false, purchase: false, local_patch: agent.edits,
       read_project: true, send_messages: false, permission_changes: false, external_side_effects: false
     };
-    const ctxVersions = { message_seq: Number(seq) };
+    const ctxVersions = { message_seq: Number(seq), hop_depth: budget ? budget.hop + 1 : 0 };
     const reqHash = sha256(canonicalJson({
       kind: 'turn', scope, agent_id: agent.id, thread_id: targetThreadId, seq: Number(seq)
     }));
@@ -1749,7 +1754,8 @@ export class SwarmsService {
     await event(db, p, scope, 'task.updated', taskId, { task_id: taskId, status: 'queued', action: 'submitted' });
   }
 
-  private async postNotice(db: Db, p: Principal, scope: string, threadId: string, body: string): Promise<void> {
+  private async postNotice(db: Db, p: Principal, scope: string, threadId: string | null, body: string): Promise<void> {
+    if (!threadId) return;
     const seq = await assignThreadSeq(db, p.tenantId, threadId);
     const msgId = newId();
     await db.query(
@@ -1766,7 +1772,8 @@ export class SwarmsService {
     });
   }
 
-  private async notifyCard(db: Db, p: Principal, scope: string, threadId: string, swarmId: string): Promise<void> {
+  private async notifyCard(db: Db, p: Principal, scope: string, threadId: string | null, swarmId: string): Promise<void> {
+    if (!threadId) return;
     const cardMsg = (await db.query<{ id: string; seq: string }>(
       "SELECT id, seq FROM messages WHERE thread_id=$1 AND kind='swarm' AND (ref->>'swarm_id')=$2 ORDER BY seq DESC LIMIT 1",
       [threadId, swarmId]

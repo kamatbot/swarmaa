@@ -6,7 +6,8 @@ import type { Principal } from '../types.js';
 import { object, scopeName, string, uuid } from '../validation.js';
 import { BUILTIN_FLOWS, COMMIT, flowObjective, validateFlow, type FlowDefinition, type FlowTask } from './flow-definition.js';
 import { flowApprovalNotice } from './inbox.js';
-import { assertKnownScope, audit, canonicalJson, jsonObject, newId, noExtraKeys, requireFound, scopeLock, scopeSql, sha256, type Db } from './shared.js';
+import { SwarmsService } from './swarms.js';
+import { assertKnownScope, audit, canonicalJson, jsonObject, newId, noExtraKeys, requireFound, scopeLock, scopeSql, sha256, teamsLock, type Db } from './shared.js';
 import { cancelTask, taskChanged, taskView, type TaskRow } from './tasks.js';
 
 interface FlowRun {
@@ -134,6 +135,7 @@ export class FlowService {
         requireCondition(ownerId,409,'flow_owner_required','Approval flows need an unambiguous scoped owner identity (name owner, or the sole admin).');
       }
       await scopeLock(db,'tasks',p,scope);
+      await teamsLock(db,p.tenantId);
       const count = (await db.query(`SELECT count(*)::int AS n FROM tasks WHERE tenant_id=$1 AND scope=$2 AND status IN ('queued','running','blocked')`,[p.tenantId,scope])).rows[0].n;
       requireCondition(count+definition.steps.length<=1000,429,'queue_full','Flow would exceed 1000 open tasks in this scope.');
       await db.query(`INSERT INTO flow_definitions(tenant_id,id,definition,created_by) VALUES($1,$2,$3::jsonb,$4) ON CONFLICT DO NOTHING`,[p.tenantId,id,JSON.stringify(definition),p.id]);
@@ -143,18 +145,12 @@ export class FlowService {
       const run = (await db.query<FlowRun>(`INSERT INTO flow_runs(id,tenant_id,scope,definition,inputs,created_by,owner_id,idempotency_key,request_hash)
         VALUES($1,$2,$3,$4::jsonb,$5::jsonb,$6,$7,$8,$9) RETURNING *`,[newId(),p.tenantId,scope,JSON.stringify(definition),JSON.stringify(inputs),p.id,ownerId,key,hash])).rows[0]!;
 
-      const flowThreadId = newId();
-      await db.query(
-        `INSERT INTO threads (id, tenant_id, scope, kind, title)
-         VALUES ($1, $2, $3, 'channel', $4)`,
-        [flowThreadId, p.tenantId, scope, `Flow: ${definition.title}`]
-      );
-
+      // A flow's swarm tracks its steps; it has no channel thread.
       const swarmId = newId();
       await db.query(
         `INSERT INTO swarms (id, tenant_id, scope, title, goal, thread_id, status, flow_id, created_by, idempotency_key)
-         VALUES ($1, $2, $3, $4, $5, $6, 'running', $7, $8, NULL)`,
-        [swarmId, p.tenantId, scope, definition.title, definition.title, flowThreadId, run.id, p.id]
+         VALUES ($1, $2, $3, $4, $5, NULL, 'running', $6, $7, NULL)`,
+        [swarmId, p.tenantId, scope, definition.title, definition.title, run.id, p.id]
       );
 
       const stepKeyToId = new Map<string, string>();
@@ -209,6 +205,7 @@ export class FlowService {
     return transaction(this.pool,async db => {
       const run = await findFlow(db,p,uuid(input.flow_id,'flow_id'));
       await scopeLock(db,'tasks',p,run.scope);
+      await teamsLock(db,p.tenantId);
       await db.query('UPDATE flow_runs SET cancelled_at=coalesce(cancelled_at,clock_timestamp()) WHERE id=$1',[run.id]);
       for (const task of await tasksFor(db,run.id)) if (!['completed','cancelled'].includes(task.status)) await cancelTask(db,p,task,false);
       await db.query(`UPDATE inbox SET read_at=coalesce(read_at,clock_timestamp()) WHERE kind='flow_approval' AND task_id IN (SELECT id FROM tasks WHERE flow_id=$1)`,[run.id]);
@@ -226,6 +223,7 @@ export class FlowService {
       const run = await findFlow(db,p,uuid(input.flow_id,'flow_id'));
       requireCondition(run.owner_id===p.id,403,'owner_required','Only this flow’s owner identity can approve it.');
       await scopeLock(db,'tasks',p,run.scope);
+      await teamsLock(db,p.tenantId);
       const current = await findFlow(db,p,run.id), tasks = await tasksFor(db,run.id);
       const task = requireFound(tasks.find(t => t.flow!.step_id===step && t.kind==='approve'),'Approval step');
       if (task.result?.approved===input.approve && task.result?.approved_by===p.id) return {flow:view(current,tasks),replayed:true};
@@ -235,6 +233,9 @@ export class FlowService {
       [task.id,input.approve ? 'completed' : 'blocked',JSON.stringify({approved:input.approve,approved_by:p.id,reason:input.approve ? 'Owner approved.' : 'Owner rejected.'})])).rows[0]!;
       await db.query("UPDATE inbox SET read_at=coalesce(read_at,clock_timestamp()) WHERE kind='flow_approval' AND task_id=$1",[task.id]);
       await taskChanged(db,p,next,input.approve ? 'approved' : 'rejected');
+      // The approval step resolves with its decision, so an approved flow's swarm can close.
+      if (next.swarm_step_id) await new SwarmsService(this.pool).onStepTaskFinished(db,p,next.swarm_step_id,next.id,next.scope,next.status,
+        undefined,input.approve ? undefined : {code:'rejected',detail:'Owner rejected.'});
       return {flow:view(current,await tasksFor(db,run.id)),replayed:false};
     });
   }

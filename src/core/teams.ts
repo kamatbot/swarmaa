@@ -6,7 +6,7 @@ import { redactSecrets } from '../safety/redact.js';
 import type { Principal } from '../types.js';
 import { integer, object, optionalString, scopeName, string, uuid } from '../validation.js';
 import { booleanOption } from './memory.js';
-import { assertKnownScope, audit, canonicalJson, event, newId, noExtraKeys, requireFound, scopeLock, scopeSql, sha256, type Db } from './shared.js';
+import { assertKnownScope, audit, canonicalJson, event, newId, noExtraKeys, requireFound, scopeLock, scopeSql, sha256, teamsLock, type Db } from './shared.js';
 import { runnerCapability, type RunnerConfig } from '../bridge/adapters.js';
 import { sectionView, type SectionRow } from './swarms.js';
 
@@ -206,6 +206,7 @@ export class TeamService {
     const idempotency = input.idempotency_key !== undefined ? string(input.idempotency_key, 'idempotency_key', 200) : null;
 
     return transaction(this.pool, async db => {
+      await teamsLock(db, p.tenantId);
       if (idempotency) {
         const existing = await db.query<AgentRow>(
           'SELECT * FROM agents WHERE tenant_id=$1 AND created_by=$2 AND idempotency_key=$3',
@@ -254,7 +255,7 @@ export class TeamService {
     const expected = integer(input.expected_version, 'expected_version', 1, 2147483647);
 
     return transaction(this.pool, async db => {
-      // Lock order is thread, then agent, as in thread_post and task_finish, so a runner notice cannot deadlock a post.
+      await teamsLock(db, p.tenantId);
       await db.query(`SELECT 1 FROM threads WHERE id=(SELECT main_thread_id FROM agents WHERE id=$1 AND tenant_id=$2) FOR UPDATE`, [agentId, p.tenantId]);
       const existing = (await db.query<AgentRow>('SELECT * FROM agents WHERE id=$1 AND tenant_id=$2 FOR UPDATE', [agentId, p.tenantId])).rows[0];
       requireFound(existing, 'Agent');
@@ -388,6 +389,7 @@ export class TeamService {
     const agentId = uuid(input.agent_id, 'agent_id');
 
     return transaction(this.pool, async db => {
+      await teamsLock(db, p.tenantId);
       const existing = (await db.query<AgentRow>('SELECT * FROM agents WHERE id=$1 AND tenant_id=$2 FOR UPDATE', [agentId, p.tenantId])).rows[0];
       requireFound(existing, 'Agent');
       requireScope(p, existing.scope);
@@ -415,6 +417,7 @@ export class TeamService {
     const replyTo = input.reply_to !== undefined ? uuid(input.reply_to, 'reply_to') : null;
 
     return transaction(this.pool, async db => {
+      await teamsLock(db, p.tenantId);
       const thread = (await db.query<ThreadRow>('SELECT * FROM threads WHERE id=$1 AND tenant_id=$2 FOR UPDATE', [threadId, p.tenantId])).rows[0];
       requireFound(thread, 'Thread');
       requireScope(p, thread.scope);
@@ -617,6 +620,7 @@ export class TeamService {
     const seq = integer(input.seq, 'seq', 0, 9223372036854775807);
 
     return transaction(this.pool, async db => {
+      await teamsLock(db, p.tenantId);
       const thread = (await db.query<ThreadRow>('SELECT * FROM threads WHERE id=$1 AND tenant_id=$2', [threadId, p.tenantId])).rows[0];
       requireFound(thread, 'Thread');
       requireScope(p, thread.scope);
@@ -694,6 +698,7 @@ export class TeamService {
     const leadAgentId = input.lead_agent_id !== undefined && input.lead_agent_id !== null ? uuid(input.lead_agent_id, 'lead_agent_id') : null;
 
     return transaction(this.pool, async db => {
+      await teamsLock(db, p.tenantId);
       for (const mId of memberIds) {
         const a = (await db.query('SELECT id FROM agents WHERE id=$1 AND tenant_id=$2 AND scope=$3 AND NOT archived', [mId, p.tenantId, scope])).rows[0];
         requireCondition(Boolean(a), 400, 'agent_not_found', `Member agent ${mId} not found or archived in scope ${scope}`);
@@ -731,6 +736,7 @@ export class TeamService {
     const expected = integer(input.expected_version, 'expected_version', 1, 2147483647);
 
     return transaction(this.pool, async db => {
+      await teamsLock(db, p.tenantId);
       const thread = (await db.query<ThreadRow>('SELECT * FROM threads WHERE id=$1 AND tenant_id=$2 FOR UPDATE', [channelId, p.tenantId])).rows[0];
       requireFound(thread, 'Channel');
       requireCondition(thread.kind === 'channel', 400, 'invalid_arguments', 'Target thread is not a channel.');
@@ -781,6 +787,7 @@ export class TeamService {
     if (!Array.isArray(input.sections)) throw new AppError(400, 'invalid_arguments', 'sections must be an array.');
     const rawSections = input.sections as Array<Record<string, unknown>>;
     return transaction(this.pool, async db => {
+      await teamsLock(db, p.tenantId);
       await db.query('DELETE FROM sections WHERE tenant_id=$1 AND principal_id=$2', [p.tenantId, p.id]);
       const inserted: SectionRow[] = [];
       for (let i = 0; i < rawSections.length; i++) {

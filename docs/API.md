@@ -565,13 +565,13 @@ Persistent agents, conversation threads, turn execution, read cursors and real-t
 ### Questions
 
 #### `question_answer`
-- **Permissions:** `thread:write` (owner only)
+- **Permissions:** `thread:write` and `answer_questions` (owner only). Admin identities have it; grant it to the owner's own frontend with `npm run admin -- grant --name <identity> --permission answer_questions`. Identities named `grok` or `dot` are always refused (`403 owner_required`).
 - **Input:**
   - `question_id` (UUID)
   - `choices`? (array of strings matching question options)
   - `text`? (string, up to 16,384 characters)
   - `idempotency_key`? (string)
-- **Output:** `{ question: QuestionView, replayed: boolean }`. Closes open question, resumes waiting swarm step if linked, posts `answer` message, and queues agent's follow-up turn.
+- **Output:** `{ question: QuestionView, replayed: boolean }`. Closes open question, resumes waiting swarm step if linked, posts `answer` message, and queues agent's follow-up turn. A question whose step is not `waiting_on_you` (for example a cancelled step) returns `409 step_not_waiting`; a question past `expires_at` (database clock) returns `400 question_expired`.
 
 #### `question_list`
 - **Permissions:** `thread:read`
@@ -579,7 +579,7 @@ Persistent agents, conversation threads, turn execution, read cursors and real-t
   - `status`? (`open` [default], `answered`, `expired`, or `all`)
   - `after`? (UUID)
   - `limit`? (integer 1-100, default 50)
-- **Output:** `{ questions: QuestionView[], has_more: boolean, next_cursor: string | null }`.
+- **Output:** `{ questions: QuestionView[], has_more: boolean, next_cursor: string | null }`. A read: due questions are expired by the lease sweep and by `question_answer`.
 
 ### Attention and Resolution
 

@@ -1151,4 +1151,452 @@ describe('teams phase 2 swarms and coordination', { skip: !connectionString, con
     const u1Sections = (await call(user1, 'section_list', {})).sections;
     assert.equal(u1Sections.length, 1);
   });
+  // ---- Second fix round (docs/briefs/teams-phase2-fixes-2.md) ----
+
+  async function team(scope: string, names: string[]) {
+    const tenantId = randomUUID();
+    const user = await createPrincipal(tenantId, 'owner', 'admin', [scope]);
+    const worker = await createPrincipal(tenantId, 'worker-1', 'worker', [scope]);
+    const worker2 = await createPrincipal(tenantId, 'worker-2', 'worker', [scope]);
+    const agents: Record<string, any> = {};
+    for (const name of names) {
+      agents[name] = (await call(user, 'agent_create', { name, role: 'R', instructions: 'I', scope, runner: { provider: 'codex' } })).agent;
+    }
+    const claim = async (w: Principal = worker) => {
+      const c = await call(w, 'task_claim', { scope, capabilities: ['codex.read'] });
+      assert.ok(c.task, 'expected a queued task to claim');
+      return c;
+    };
+    return { tenantId, user, worker, worker2, agents, claim, scope };
+  }
+  const withActions = (text: string, actions: unknown[]) => `${text}\n\n\`\`\`swarmaa-actions\n${JSON.stringify(actions)}\n\`\`\``;
+  const finishTurn = (w: Principal, c: any, answer: string) => call(w, 'task_finish', {
+    task_id: c.task.id, lease_token: c.lease_token, lease_generation: c.lease_generation,
+    outcome: 'completed', result: { answer }
+  });
+  const stepOf = (sw: any, key: string) => sw.steps.find((s: any) => s.step_key === key);
+  const threadMessages = async (p: Principal, threadId: string) => (await call(p, 'thread_read', { thread_id: threadId, limit: 100 })).messages as any[];
+
+  // Each loop races the brief's scenario against an owner answer on a waiting step. Same-scope finishes and
+  // cancels already serialise on the task scope lock, so the answer (thread, then swarm) is what closes the cycle.
+  const jitter = (i: number) => new Promise(r => setTimeout(r, i % 10));
+  async function waitingStep(t: Awaited<ReturnType<typeof team>>, swarm: any, key: string) {
+    const c = await t.claim();
+    assert.equal(c.task.swarm_step_id, stepOf(swarm, key).id);
+    await finishTurn(t.worker, c, withActions('Need input', [{ type: 'question_ask', prompt: 'Which?', options: ['a', 'b'], swarm_step_id: stepOf(swarm, key).id }]));
+    return (await pool.query('SELECT id FROM questions WHERE swarm_step_id=$1', [stepOf(swarm, key).id])).rows[0].id as string;
+  }
+
+  it('fixes-2 parallel deadlock: X (A) and Y (B) finish concurrently, Z needs X and is assigned to B, 20 iterations', async () => {
+    for (let i = 0; i < 20; i++) {
+      const t = await team('project:par', ['A', 'B']);
+      const { A, B } = t.agents;
+      const { swarm } = await call(t.user, 'swarm_start', {
+        title: 'Parallel', goal: 'g', scope: t.scope, thread_id: A.main_thread_id,
+        steps: [
+          { key: 'W', title: 'W', assignee_agent_id: B.id, needs: [] },
+          { key: 'X', title: 'X', assignee_agent_id: A.id, needs: [] },
+          { key: 'Y', title: 'Y', assignee_agent_id: B.id, needs: [] },
+          { key: 'Z', title: 'Z', assignee_agent_id: B.id, needs: ['X'] }
+        ]
+      });
+      const question = await waitingStep(t, swarm, 'W');
+      const cx = await t.claim(t.worker);
+      const cy = await t.claim(t.worker2);
+      assert.equal(cx.task.swarm_step_id, stepOf(swarm, 'X').id);
+      assert.equal(cy.task.swarm_step_id, stepOf(swarm, 'Y').id);
+      await Promise.all([
+        finishTurn(t.worker, cx, 'X done'),
+        finishTurn(t.worker2, cy, 'Y done'),
+        jitter(i).then(() => call(t.user, 'question_answer', { question_id: question, choices: ['a'] }))
+      ]);
+      const sw = (await call(t.user, 'swarm_get', { swarm_id: swarm.id })).swarm;
+      assert.equal(stepOf(sw, 'X').status, 'done', `iteration ${i}`);
+      assert.equal(stepOf(sw, 'Y').status, 'done', `iteration ${i}`);
+      assert.equal(stepOf(sw, 'W').status, 'running', `iteration ${i}`);
+      const z = stepOf(sw, 'Z');
+      assert.equal(z.status, 'running', `iteration ${i}`);
+      const zTask = (await pool.query('SELECT agent_id, status, swarm_step_id FROM tasks WHERE id=$1', [z.task_id])).rows[0];
+      assert.deepEqual(zTask, { agent_id: B.id, status: 'queued', swarm_step_id: z.id });
+      assert.equal(sw.status, 'running');
+    }
+  });
+
+  it('fixes-2 a question during a sibling finish, and its answer during another sibling finish, concurrently, 20 iterations', async () => {
+    for (let i = 0; i < 20; i++) {
+      const t = await team('project:qsib', ['A', 'B', 'C']);
+      const { A, B, C } = t.agents;
+      const { swarm } = await call(t.user, 'swarm_start', {
+        title: 'Q sibling', goal: 'g', scope: t.scope, thread_id: A.main_thread_id,
+        steps: [
+          { key: 'X', title: 'X', assignee_agent_id: A.id, needs: [] },
+          { key: 'Y', title: 'Y', assignee_agent_id: B.id, needs: [] },
+          { key: 'V', title: 'V', assignee_agent_id: C.id, needs: [] },
+          { key: 'Z', title: 'Z', assignee_agent_id: A.id, needs: ['Y'] }
+        ]
+      });
+      const claims = [await t.claim(), await t.claim(), await t.claim()];
+      const by = (key: string) => claims.find(c => c.task.swarm_step_id === stepOf(swarm, key).id);
+      await Promise.all([
+        finishTurn(t.worker, by('X'), withActions('Need input', [{ type: 'question_ask', prompt: 'Which?', options: ['a', 'b'], swarm_step_id: stepOf(swarm, 'X').id }])),
+        finishTurn(t.worker, by('V'), 'V done')
+      ]);
+      const q = (await pool.query("SELECT id FROM questions WHERE tenant_id=$1 AND status='open'", [t.tenantId])).rows[0];
+      assert.ok(q, `iteration ${i}: question created`);
+      await Promise.all([
+        jitter(i).then(() => call(t.user, 'question_answer', { question_id: q.id, choices: ['a'] })),
+        finishTurn(t.worker, by('Y'), 'Y done')
+      ]);
+      const sw = (await call(t.user, 'swarm_get', { swarm_id: swarm.id })).swarm;
+      assert.equal(stepOf(sw, 'X').status, 'running', `iteration ${i}`);
+      assert.equal(stepOf(sw, 'Y').status, 'done');
+      assert.equal(stepOf(sw, 'V').status, 'done');
+      assert.equal(stepOf(sw, 'Z').status, 'running');
+      const aQueued = (await pool.query("SELECT initiator_kind FROM tasks WHERE agent_id=$1 AND status='queued' ORDER BY initiator_kind", [A.id])).rows.map(r => r.initiator_kind);
+      assert.deepEqual(aQueued, ['answer', 'swarm']);
+    }
+  });
+
+  it('fixes-2 task_cancel of a step task during a sibling finish, 20 iterations', async () => {
+    for (let i = 0; i < 20; i++) {
+      const t = await team('project:csib', ['A', 'B']);
+      const { A, B } = t.agents;
+      const { swarm } = await call(t.user, 'swarm_start', {
+        title: 'Cancel sibling', goal: 'g', scope: t.scope, thread_id: A.main_thread_id,
+        steps: [
+          { key: 'W', title: 'W', assignee_agent_id: A.id, needs: [] },
+          { key: 'X', title: 'X', assignee_agent_id: A.id, needs: [] },
+          { key: 'Y', title: 'Y', assignee_agent_id: B.id, needs: [] },
+          { key: 'Z', title: 'Z', assignee_agent_id: A.id, needs: ['Y'] }
+        ]
+      });
+      const question = await waitingStep(t, swarm, 'W');
+      const claims = [await t.claim(), await t.claim()];
+      const by = (key: string) => claims.find(c => c.task.swarm_step_id === stepOf(swarm, key).id)!;
+      await Promise.all([
+        call(t.user, 'task_cancel', { task_id: by('X').task.id, expected_version: by('X').task.version }),
+        finishTurn(t.worker, by('Y'), 'Y done'),
+        jitter(i).then(() => call(t.user, 'question_answer', { question_id: question, choices: ['a'] }))
+      ]);
+      const sw = (await call(t.user, 'swarm_get', { swarm_id: swarm.id })).swarm;
+      assert.equal(stepOf(sw, 'X').status, 'cancelled', `iteration ${i}`);
+      assert.equal(stepOf(sw, 'Y').status, 'done');
+      assert.equal(stepOf(sw, 'W').status, 'running');
+      assert.equal(stepOf(sw, 'Z').status, 'running');
+      assert.equal((await pool.query('SELECT status FROM tasks WHERE id=$1', [stepOf(sw, 'Z').task_id])).rows[0].status, 'queued');
+    }
+  });
+
+  it('fixes-2 teamsLock: every Teams write, the step finish and cancel, and the lease sweep wait for the tenant lock', async () => {
+    const t = await team('project:lock', ['A', 'B', 'C', 'D', 'E']);
+    const { A, B, C, D, E } = t.agents;
+    const { swarm } = await call(t.user, 'swarm_start', {
+      title: 'Locked', goal: 'g', scope: t.scope, thread_id: A.main_thread_id,
+      steps: [
+        { key: 'W', title: 'W', assignee_agent_id: A.id, needs: [] },
+        { key: 'Y', title: 'Y', assignee_agent_id: B.id, needs: [] },
+        { key: 'V', title: 'V', assignee_agent_id: C.id, needs: [] },
+        { key: 'X', title: 'X', assignee_agent_id: A.id, needs: ['W'] }
+      ]
+    });
+    const { swarm: other } = await call(t.user, 'swarm_start', {
+      title: 'To cancel', goal: 'g', scope: t.scope, thread_id: D.main_thread_id,
+      steps: [{ key: 'S', title: 'S', assignee_agent_id: D.id, needs: [] }]
+    });
+    const question = await waitingStep(t, swarm, 'W');
+    const cy = await t.claim(t.worker);
+    const cv = await t.claim(t.worker2);
+    assert.equal(cy.task.swarm_step_id, stepOf(swarm, 'Y').id);
+    assert.equal(cv.task.swarm_step_id, stepOf(swarm, 'V').id);
+    await pool.query("UPDATE tasks SET lease_expires_at=clock_timestamp() - interval '1 second' WHERE id=$1", [cv.task.id]);
+    const { swarm: third } = await call(t.user, 'swarm_start', {
+      title: 'Task to cancel', goal: 'g', scope: t.scope, thread_id: E.main_thread_id,
+      steps: [{ key: 'S', title: 'S', assignee_agent_id: E.id, needs: [] }]
+    });
+    const otherTask = (await pool.query('SELECT id, version FROM tasks WHERE swarm_step_id=$1', [stepOf(third, 'S').id])).rows[0];
+    const { channel } = await call(t.user, 'channel_create', { name: 'locked', scope: t.scope, members: [A.id] });
+
+    const writes: Record<string, () => Promise<unknown>> = {
+      thread_post: () => call(t.user, 'thread_post', { thread_id: C.main_thread_id, body: 'hi', idempotency_key: 'lock-post' }),
+      thread_mark_read: () => call(t.user, 'thread_mark_read', { thread_id: A.main_thread_id, seq: 1 }),
+      agent_create: () => call(t.user, 'agent_create', { name: 'F', role: 'R', instructions: 'I', scope: t.scope, runner: { provider: 'codex' } }),
+      agent_update: () => call(t.user, 'agent_update', { agent_id: D.id, expected_version: 1, role: 'Renamed' }),
+      agent_archive: () => call(t.user, 'agent_archive', { agent_id: C.id }),
+      channel_create: () => call(t.user, 'channel_create', { name: 'new', scope: t.scope, members: [] }),
+      channel_update: () => call(t.user, 'channel_update', { channel_id: channel.id, expected_version: 1, name: 'renamed' }),
+      section_set: () => call(t.user, 'section_set', { sections: [{ name: 'S', items: [] }] }),
+      swarm_start: () => call(t.user, 'swarm_start', { title: 'New', goal: 'g', scope: t.scope, thread_id: D.main_thread_id, steps: [{ title: 'n', assignee_agent_id: D.id }] }),
+      swarm_update: () => call(t.user, 'swarm_update', { swarm_id: swarm.id, ops: [{ op: 'edit', title: 'Edited' }] }),
+      swarm_cancel: () => call(t.user, 'swarm_cancel', { swarm_id: other.id }),
+      question_answer: () => call(t.user, 'question_answer', { question_id: question, choices: ['a'] }),
+      task_cancel: () => call(t.user, 'task_cancel', { task_id: otherTask.id, expected_version: otherTask.version }),
+      task_finish: () => finishTurn(t.worker, cy, 'Y done'),
+      lease_sweep: () => call(t.worker2, 'task_claim', { scope: t.scope, capabilities: ['codex.read'] }),
+      flow_start: () => call(t.user, 'flow_start', { flow: 'independent-review', scope: t.scope, inputs: { objective: 'o', commit: '0123456789abcdef0123456789abcdef01234567' }, idempotency_key: 'lock-flow' })
+    };
+
+    const holder = await pool.connect();
+    const settled: string[] = [];
+    let pending: Array<Promise<unknown>> = [];
+    try {
+      await holder.query('BEGIN');
+      await holder.query("SELECT pg_advisory_xact_lock(hashtextextended('teams:' || $1, 0))", [t.tenantId]);
+      pending = Object.entries(writes).map(([name, run]) => run().then(() => { settled.push(name); }, (err: unknown) => { settled.push(name); return err; }));
+      await new Promise(r => setTimeout(r, 400));
+      assert.deepEqual(settled, [], 'writes must wait for teamsLock');
+    } finally {
+      await holder.query('COMMIT');
+      holder.release();
+    }
+    const outcomes = await Promise.all(pending);
+    assert.deepEqual(outcomes.filter(o => o instanceof Error), []);
+    assert.equal((await pool.query('SELECT status FROM task_runs WHERE task_id=$1 AND generation=$2', [cv.task.id, cv.lease_generation])).rows[0].status, 'abandoned');
+  });
+
+  it('fixes-2 mutual handoffs A to B and B to A finishing concurrently, 20 iterations', async () => {
+    for (let i = 0; i < 20; i++) {
+      const t = await team('project:mutual', ['A', 'B']);
+      const { A, B } = t.agents;
+      await call(t.user, 'thread_post', { thread_id: A.main_thread_id, body: 'go A', idempotency_key: 'a' });
+      await call(t.user, 'thread_post', { thread_id: B.main_thread_id, body: 'go B', idempotency_key: 'b' });
+      const claims = [await t.claim(), await t.claim()];
+      const by = (agent: any) => claims.find(c => c.task.agent_id === agent.id);
+      const results = await Promise.all([
+        finishTurn(t.worker, by(A), withActions('to B', [{ type: 'handoff', to_agent: B.id, body: 'yours B' }])),
+        finishTurn(t.worker, by(B), withActions('to A', [{ type: 'handoff', to_agent: 'A', body: 'yours A' }]))
+      ]);
+      assert.ok(results.every(r => r.task.status === 'completed'), `iteration ${i}`);
+      for (const agent of [A, B]) {
+        const queued = (await pool.query("SELECT initiator_kind FROM tasks WHERE agent_id=$1 AND status='queued'", [agent.id])).rows;
+        assert.deepEqual(queued.map(r => r.initiator_kind), ['handoff'], `iteration ${i}`);
+        const kinds = (await threadMessages(t.user, agent.main_thread_id)).map(m => m.kind);
+        assert.equal(kinds.filter(k => k === 'handoff').length, 2, `iteration ${i}: sent and received handoff lines`);
+      }
+    }
+  });
+
+  it('fixes-2 bad actions keep the reply: cycle, non-uuid needs, unknown op, runtime error; assignee by name resolves', async () => {
+    const t = await team('project:bad', ['A', 'B']);
+    const { A, B } = t.agents;
+    const { swarm } = await call(t.user, 'swarm_start', {
+      title: 'Owned by A', goal: 'g', scope: t.scope, thread_id: A.main_thread_id, owner_agent_id: A.id,
+      steps: [{ key: 's1', title: 'S1', assignee_agent_id: B.id, needs: [] }]
+    });
+    await t.claim(); // B's step turn, left running
+    const s1 = stepOf(swarm, 's1');
+
+    const cases: Array<{ label: string; actions: unknown[]; notice: RegExp }> = [
+      { label: 'cycle', notice: /swarm_start.*cycle/i, actions: [{ type: 'swarm_start', title: 'Cyc', goal: 'g', steps: [
+        { key: 'a', title: 'a', assignee_agent_id: 'B', needs: ['b'] }, { key: 'b', title: 'b', assignee_agent_id: 'B', needs: ['a'] }] }] },
+      { label: 'non-uuid needs', notice: /swarm_update.*needs/i, actions: [{ type: 'swarm_update', swarm_id: swarm.id, ops: [
+        { op: 'add_step', step: { title: 'N', assignee_agent_id: B.id, needs: ['not-a-uuid'] } }] }] },
+      { label: 'unknown op', notice: /swarm_update.*unknown op/i, actions: [{ type: 'swarm_update', swarm_id: swarm.id, ops: [{ op: 'explode' }] }] },
+      { label: 'bad op field', notice: /swarm_update.*unknown field 'force'/i, actions: [{ type: 'swarm_update', swarm_id: swarm.id, ops: [{ op: 'retry', step_id: s1.id, force: true }] }] },
+      { label: 'runtime error', notice: /action 2 \(swarm_update\).*retried/i, actions: [
+        { type: 'swarm_update', swarm_id: swarm.id, ops: [{ op: 'edit', title: 'Edited by A' }] },
+        { type: 'swarm_update', swarm_id: swarm.id, ops: [{ op: 'retry', step_id: s1.id }] }] }
+    ];
+    for (const [n, c] of cases.entries()) {
+      await call(t.user, 'thread_post', { thread_id: A.main_thread_id, body: `turn ${n}`, idempotency_key: `bad-${n}` });
+      const claim = await t.claim();
+      assert.equal(claim.task.agent_id, A.id);
+      const res = await finishTurn(t.worker, claim, withActions(`Reply ${c.label}`, c.actions));
+      assert.equal(res.task.status, 'completed', c.label);
+      const msgs = await threadMessages(t.user, A.main_thread_id);
+      assert.ok(msgs.some(m => m.kind === 'text' && m.body === `Reply ${c.label}`), `${c.label}: reply posted`);
+      assert.ok(msgs.some(m => m.kind === 'notice' && c.notice.test(m.body)), `${c.label}: notice posted`);
+    }
+    const after = (await call(t.user, 'swarm_get', { swarm_id: swarm.id })).swarm;
+    assert.equal(after.title, 'Edited by A', 'the action before the failing one is kept');
+    assert.equal(after.steps.length, 1);
+    assert.equal((await pool.query("SELECT count(*)::int AS n FROM swarms WHERE tenant_id=$1", [t.tenantId])).rows[0].n, 1);
+
+    // Assignee given by name resolves like assignee_agent_id.
+    await call(t.user, 'thread_post', { thread_id: A.main_thread_id, body: 'turn name', idempotency_key: 'bad-name' });
+    const claim = await t.claim();
+    const res = await finishTurn(t.worker, claim, withActions('Reply name', [{ type: 'swarm_update', swarm_id: swarm.id, ops: [
+      { op: 'add_step', step: { title: 'Named', assignee_agent_id: 'B', needs: [s1.id] } }] }]));
+    assert.equal(res.task.status, 'completed');
+    const named = (await call(t.user, 'swarm_get', { swarm_id: swarm.id })).swarm.steps.find((s: any) => s.title === 'Named');
+    assert.equal(named.assignee_agent_id, B.id);
+    const msgs = await threadMessages(t.user, A.main_thread_id);
+    assert.ok(msgs.some(m => m.kind === 'text' && m.body === 'Reply name'));
+    assert.ok(msgs.some(m => m.kind === 'notice' && m.body === 'Added step: Named'));
+  });
+
+  it('fixes-2 cancelled steps stay cancelled: cancel a waiting_on_you step, then answering its question is 409', async () => {
+    const t = await team('project:cxl', ['A']);
+    const { A } = t.agents;
+    const { swarm } = await call(t.user, 'swarm_start', {
+      title: 'Cancel waiting', goal: 'g', scope: t.scope, thread_id: A.main_thread_id,
+      steps: [{ key: 'X', title: 'X', assignee_agent_id: A.id, needs: [] }]
+    });
+    const x = stepOf(swarm, 'X');
+    const c = await t.claim();
+    await finishTurn(t.worker, c, withActions('Asking', [{ type: 'question_ask', prompt: 'Ok?', options: ['yes'], swarm_step_id: x.id }]));
+    assert.equal((await call(t.user, 'swarm_get', { swarm_id: swarm.id })).swarm.steps[0].status, 'waiting_on_you');
+    const q = (await pool.query('SELECT id FROM questions WHERE swarm_step_id=$1', [x.id])).rows[0];
+
+    await call(t.user, 'swarm_update', { swarm_id: swarm.id, ops: [{ op: 'cancel_step', step_id: x.id }] });
+    assert.equal((await pool.query('SELECT status FROM questions WHERE id=$1', [q.id])).rows[0].status, 'expired');
+    assert.ok((await threadMessages(t.user, A.main_thread_id)).some(m => m.kind === 'notice' && /expired/i.test(m.body)));
+
+    await assert.rejects(() => call(t.user, 'question_answer', { question_id: q.id, choices: ['yes'] }),
+      (err: any) => err.status === 409 && err.code === 'step_not_waiting');
+    assert.equal((await pool.query('SELECT status FROM swarm_steps WHERE id=$1', [x.id])).rows[0].status, 'cancelled');
+    assert.equal((await pool.query("SELECT count(*)::int AS n FROM tasks WHERE agent_id=$1 AND status='queued'", [A.id])).rows[0].n, 0);
+
+    // Cancelling a whole swarm expires its steps' open questions too.
+    const { swarm: second } = await call(t.user, 'swarm_start', {
+      title: 'Cancel swarm', goal: 'g', scope: t.scope, thread_id: A.main_thread_id,
+      steps: [{ key: 'X', title: 'X2', assignee_agent_id: A.id, needs: [] }]
+    });
+    const q2 = await waitingStep(t, second, 'X');
+    await call(t.user, 'swarm_cancel', { swarm_id: second.id });
+    assert.equal((await pool.query('SELECT status FROM questions WHERE id=$1', [q2])).rows[0].status, 'expired');
+    await assert.rejects(() => call(t.user, 'question_answer', { question_id: q2, choices: ['a'] }),
+      (err: any) => err.status === 409 && err.code === 'step_not_waiting');
+  });
+
+  it('fixes-2 question_list does not write; the lease sweep expires due questions by the database clock', async () => {
+    const t = await team('project:qexp', ['A']);
+    const { A } = t.agents;
+    const { swarm } = await call(t.user, 'swarm_start', {
+      title: 'Expiry', goal: 'g', scope: t.scope, thread_id: A.main_thread_id,
+      steps: [{ key: 'X', title: 'X', assignee_agent_id: A.id, needs: [] }]
+    });
+    const c = await t.claim();
+    await finishTurn(t.worker, c, withActions('Asking', [{ type: 'question_ask', prompt: 'Soon?', options: ['y'], swarm_step_id: stepOf(swarm, 'X').id, expires_in: 60 }]));
+    const q = (await pool.query("SELECT id, extract(epoch FROM expires_at - created_at) AS ttl FROM questions WHERE tenant_id=$1", [t.tenantId])).rows[0];
+    assert.ok(Math.abs(Number(q.ttl) - 60) < 1, 'expires_at comes from the database clock');
+    await pool.query("UPDATE questions SET expires_at = clock_timestamp() - interval '1 second' WHERE id=$1", [q.id]);
+
+    const listed = await call(t.user, 'question_list', { status: 'all' });
+    assert.equal(listed.questions[0].status, 'open');
+    assert.equal((await pool.query('SELECT status FROM questions WHERE id=$1', [q.id])).rows[0].status, 'open', 'a read never expires');
+
+    await call(t.worker, 'task_claim', { scope: t.scope, capabilities: ['codex.read'] });
+    assert.equal((await pool.query('SELECT status FROM questions WHERE id=$1', [q.id])).rows[0].status, 'expired');
+    assert.equal((await pool.query('SELECT status FROM swarm_steps WHERE id=$1', [stepOf(swarm, 'X').id])).rows[0].status, 'blocked');
+    assert.ok((await threadMessages(t.user, A.main_thread_id)).some(m => m.kind === 'notice' && /"Soon\?" has expired/.test(m.body)));
+  });
+
+  it('fixes-2 one summary: a step rerun by a different worker queues no second summary', async () => {
+    const t = await team('project:sum', ['A', 'B']);
+    const { A, B } = t.agents;
+    const { swarm } = await call(t.user, 'swarm_start', {
+      title: 'One summary', goal: 'g', scope: t.scope, thread_id: A.main_thread_id, owner_agent_id: A.id,
+      steps: [{ key: 'S', title: 'S', assignee_agent_id: B.id, needs: [] }]
+    });
+    const s = stepOf(swarm, 'S');
+    await finishTurn(t.worker, await t.claim(t.worker), 'S done');
+    const summaries = async () => (await pool.query("SELECT id FROM tasks WHERE agent_id=$1 AND initiator_kind='swarm' AND initiator_id=$2", [A.id, swarm.id])).rows;
+    assert.equal((await summaries()).length, 1);
+
+    // Simulate a rerun of the step on a fresh turn, finished by a different worker.
+    await call(t.user, 'thread_post', { thread_id: B.main_thread_id, body: 'again', idempotency_key: 'again' });
+    const rerun = (await pool.query("SELECT id FROM tasks WHERE agent_id=$1 AND status='queued'", [B.id])).rows[0];
+    await pool.query('UPDATE tasks SET swarm_step_id=$1 WHERE id=$2', [s.id, rerun.id]);
+    await pool.query("UPDATE swarm_steps SET status='running', task_id=$1 WHERE id=$2", [rerun.id, s.id]);
+    await pool.query("UPDATE swarms SET status='running', closed_at=NULL WHERE id=$1", [swarm.id]);
+    await t.claim(t.worker); // the summary turn
+    const c2 = await t.claim(t.worker2);
+    assert.equal(c2.task.id, rerun.id);
+    await finishTurn(t.worker2, c2, 'S done again');
+    assert.equal((await pool.query('SELECT status FROM swarm_steps WHERE id=$1', [s.id])).rows[0].status, 'done');
+    assert.equal((await summaries()).length, 1);
+    assert.ok((await pool.query('SELECT summary_task_id FROM swarms WHERE id=$1', [swarm.id])).rows[0].summary_task_id);
+  });
+
+  it('fixes-2 handoff grant refuses a done step and a closed swarm', async () => {
+    const t = await team('project:hdone', ['A', 'B']);
+    const { A, B } = t.agents;
+    const { swarm } = await call(t.user, 'swarm_start', {
+      title: 'Done', goal: 'g', scope: t.scope, thread_id: A.main_thread_id,
+      steps: [{ key: 'S', title: 'S', assignee_agent_id: B.id, needs: [] }]
+    });
+    const s = stepOf(swarm, 'S');
+    await finishTurn(t.worker, await t.claim(), 'S done');
+    await call(t.user, 'thread_post', { thread_id: B.main_thread_id, body: 'more', idempotency_key: 'more' });
+    assert.equal((await t.claim()).task.agent_id, A.id, 'the summary turn comes first');
+    const c = await t.claim();
+    assert.equal(c.task.agent_id, B.id);
+    const res = await finishTurn(t.worker, c, withActions('handing', [{ type: 'handoff', to_agent: A.id, body: 'redo', swarm_step_id: s.id }]));
+    assert.equal(res.task.status, 'completed');
+    assert.ok((await threadMessages(t.user, B.main_thread_id)).some(m => m.kind === 'notice' && /handoff/.test(m.body) && /done/.test(m.body)));
+    assert.equal((await pool.query("SELECT count(*)::int AS n FROM tasks WHERE agent_id=$1 AND initiator_kind='handoff'", [A.id])).rows[0].n, 0);
+    assert.equal((await pool.query('SELECT status FROM swarm_steps WHERE id=$1', [s.id])).rows[0].status, 'done');
+  });
+
+  it('fixes-2 no unbounded chains: hop depth carries through step and summary turns, and the cap of 20 counts swarm_start turns', async () => {
+    const t = await team('project:hop', ['A', 'B']);
+    const { A, B } = t.agents;
+    await call(t.user, 'thread_post', { thread_id: A.main_thread_id, body: 'plan', idempotency_key: 'plan' });
+    const turn = (await pool.query("SELECT id FROM tasks WHERE agent_id=$1 AND status='queued'", [A.id])).rows[0];
+    await pool.query("UPDATE tasks SET context_versions = context_versions || '{\"hop_depth\":2}'::jsonb WHERE id=$1", [turn.id]);
+    await finishTurn(t.worker, await t.claim(), withActions('starting', [{ type: 'swarm_start', title: 'Hop', goal: 'g', steps: [{ key: 's', title: 's', assignee_agent_id: 'B' }] }]));
+    const stepTurn = (await pool.query("SELECT id, context_versions FROM tasks WHERE agent_id=$1 AND initiator_kind='swarm' AND status='queued'", [B.id])).rows[0];
+    assert.equal(stepTurn.context_versions.hop_depth, 3);
+    const c = await t.claim();
+    assert.equal(c.task.id, stepTurn.id);
+    await finishTurn(t.worker, c, 's done');
+    const summary = (await pool.query("SELECT context_versions FROM tasks WHERE agent_id=$1 AND initiator_kind='swarm' AND status='queued'", [A.id])).rows[0];
+    assert.equal(summary.context_versions.hop_depth, 4);
+
+    // Fan-out cap: 20 ready swarm steps plus one handoff in one finish queue 20 turns and refuse the handoff.
+    const t2 = await team('project:cap', ['A', 'B']);
+    await call(t2.user, 'thread_post', { thread_id: t2.agents.A.main_thread_id, body: 'fan out', idempotency_key: 'fan' });
+    const steps = Array.from({ length: 20 }, (_, i) => ({ key: `k${i}`, title: `k${i}`, assignee_agent_id: t2.agents.B.id }));
+    const res = await finishTurn(t2.worker, await t2.claim(), withActions('fan', [
+      { type: 'swarm_start', title: 'Fan', goal: 'g', steps },
+      { type: 'handoff', to_agent: t2.agents.B.id, body: 'one more' }
+    ]));
+    assert.equal(res.task.status, 'completed');
+    const queued = (await pool.query("SELECT initiator_kind, count(*)::int AS n FROM tasks WHERE tenant_id=$1 AND status='queued' GROUP BY 1 ORDER BY 1", [t2.tenantId])).rows;
+    assert.deepEqual(queued, [{ initiator_kind: 'swarm', n: 20 }]);
+    assert.ok((await threadMessages(t2.user, t2.agents.A.main_thread_id)).some(m => m.kind === 'notice' && /cap of 20/.test(m.body)));
+  });
+
+  it('fixes-2 flows: a flow with an approve step ends with its swarm done and creates no channel thread', async () => {
+    const tenantId = randomUUID();
+    const owner = await createPrincipal(tenantId, 'owner', 'admin', ['project:flowsw']);
+    const worker = await createPrincipal(tenantId, 'worker-fl', 'worker', ['project:flowsw']);
+    const commit = '0123456789abcdef0123456789abcdef01234567';
+    const definition = { id: 'review-approval', title: 'Reviewed candidate', steps: [
+      { id: 'review', kind: 'review', capability: 'auto.read', objective: 'Review it', needs: [] },
+      { id: 'approve', kind: 'approve', objective: 'Accept the review.', needs: ['review'] }
+    ] };
+    const started = await call(owner, 'flow_start', { flow: definition, scope: 'project:flowsw', inputs: { commit }, idempotency_key: 'fl' });
+    const review = await call(worker, 'task_claim', { scope: 'project:flowsw', capabilities: ['codex.read', 'auto.read'] });
+    await call(worker, 'task_finish', { task_id: review.task.id, lease_token: review.lease_token, lease_generation: review.lease_generation,
+      outcome: 'completed', result: { answer: 'ok', observed_commit: commit } });
+    await call(owner, 'flow_approve', { flow_id: started.flow.id, step_id: 'approve', approve: true });
+    const sw = (await call(owner, 'swarm_get', { swarm_id: started.swarm_id })).swarm;
+    assert.equal(sw.thread_id, null);
+    assert.ok(sw.steps.every((s: any) => s.status === 'done'));
+    assert.equal(sw.status, 'done');
+    assert.ok(sw.closed_at);
+    assert.equal((await pool.query('SELECT count(*)::int AS n FROM threads WHERE tenant_id=$1', [tenantId])).rows[0].n, 0);
+  });
+
+  it('fixes-2 owner-only answers: a frontend that is not the owner, or a grok/dot identity, cannot answer', async () => {
+    const t = await team('project:own', ['A']);
+    const { A } = t.agents;
+    const front = await createPrincipal(t.tenantId, 'web-frontend', 'frontend', [t.scope]);
+    const grok = await createPrincipal(t.tenantId, 'grok', 'admin', [t.scope]);
+    const { swarm } = await call(t.user, 'swarm_start', {
+      title: 'Owner answers', goal: 'g', scope: t.scope, thread_id: A.main_thread_id,
+      steps: [{ key: 'X', title: 'X', assignee_agent_id: A.id, needs: [] }]
+    });
+    const x = stepOf(swarm, 'X');
+    await finishTurn(t.worker, await t.claim(), withActions('Asking', [{ type: 'question_ask', prompt: 'Ok?', options: ['yes'], swarm_step_id: x.id }]));
+    const q = (await pool.query('SELECT id FROM questions WHERE swarm_step_id=$1', [x.id])).rows[0];
+    for (const p of [front, grok]) {
+      await assert.rejects(() => call(p, 'question_answer', { question_id: q.id, choices: ['yes'] }),
+        (err: any) => err.status === 403 && err.code === 'owner_required', p.name);
+    }
+    assert.equal((await pool.query('SELECT status FROM questions WHERE id=$1', [q.id])).rows[0].status, 'open');
+    await call(t.user, 'question_answer', { question_id: q.id, choices: ['yes'] });
+    assert.equal((await pool.query('SELECT status FROM questions WHERE id=$1', [q.id])).rows[0].status, 'answered');
+  });
 });
