@@ -16,7 +16,6 @@ struct BotsHome: View {
                                     detail: L10n.t("A bot is a persistent swarm with one job. It keeps one thread where everything it does, and everything it needs from you, shows up."),
                                     action: nil)
                     KSBottomBar {
-                        Toggle(L10n.t("Show hidden"), isOn: $model.showHiddenBots).controlSize(.small)
                         Spacer()
                         Button(L10n.t("New bot")) { model.creatingBot = true }.buttonStyle(.ks(.primary))
                     }
@@ -38,7 +37,6 @@ struct BotsHome: View {
                 }
             }
         }
-        .task(id: model.showHiddenBots) { await model.loadBots() }
     }
 }
 
@@ -63,14 +61,28 @@ struct BotsSidebar: View {
                             .padding(.horizontal, 8).padding(.top, updates.isEmpty ? 2 : 14)
                         ForEach(rest) { BotRow(model: model, bot: $0) }
                     }
-                    if bots.isEmpty {
+                    let hidden = model.hiddenBots
+                    if !hidden.isEmpty {
+                        Button { model.showHiddenBots.toggle() } label: {
+                            HStack(spacing: 6) {
+                                Image(systemName: model.showHiddenBots ? "chevron.down" : "chevron.right").font(.system(size: 10, weight: .bold))
+                                KSLabel(L10n.t("Hidden · \(hidden.count)"))
+                                Spacer()
+                            }
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain).foregroundStyle(KS.textMuted)
+                        .padding(.horizontal, 8).padding(.top, 14)
+                        .accessibilityLabel(L10n.t("Hidden bots, \(hidden.count)"))
+                        if model.showHiddenBots { ForEach(hidden) { BotRow(model: model, bot: $0) } }
+                    }
+                    if bots.isEmpty && hidden.isEmpty {
                         Text(verbatim: L10n.t("No bots match")).font(KS.body(14)).foregroundStyle(KS.textMuted).padding(10)
                     }
                 }
                 .padding(.horizontal, 12).padding(.bottom, 12)
             }
             KSBottomBar {
-                Toggle(L10n.t("Show hidden"), isOn: $model.showHiddenBots).controlSize(.small).fixedSize()
                 Button { model.creatingBot = true } label: { Label(L10n.t("New bot"), systemImage: "plus").frame(maxWidth: .infinity) }
                     .buttonStyle(.ks(.white))
             }
@@ -302,6 +314,16 @@ struct BotSettingsPane: View {
             }
 
             KSBottomBar {
+                if !bot.isLegacyAgent {
+                    if bot.archived {
+                        Button(L10n.t("Unhide")) { Task { await model.setBotHidden(bot, hidden: false) } }
+                            .buttonStyle(.ks(.paper))
+                    } else {
+                        Button(L10n.t("Hide bot")) { Task { await model.setBotHidden(bot, hidden: true) } }
+                            .buttonStyle(.ks(.danger)).disabled(model.savingBot)
+                    }
+                    Button(L10n.t("Delete bot…")) { deleting = true }.buttonStyle(.ks(.danger)).disabled(model.savingBot)
+                }
                 Text(verbatim: L10n.t("Changes apply from the next turn. Running work keeps its settings."))
                     .font(KS.body(14)).foregroundStyle(KS.textMuted).lineLimit(1)
                 Spacer()
@@ -317,21 +339,6 @@ struct BotSettingsPane: View {
                 }
                 .buttonStyle(.ks(.primary)).keyboardShortcut(.defaultAction)
                 .disabled(bot.isLegacyAgent || model.savingBot || name.trimmingCharacters(in: .whitespaces).isEmpty || leadID.isEmpty)
-            }
-            if !bot.isLegacyAgent {
-                KSBottomBar {
-                    Spacer()
-                    if bot.archived {
-                        Button(L10n.t("Unhide")) { Task { await model.setBotHidden(bot, hidden: false) } }
-                            .buttonStyle(.ks(.paper))
-                        Button(L10n.t("Delete bot…"), role: .destructive) { deleting = true }
-                            .buttonStyle(.plain).foregroundStyle(.red)
-                    } else {
-                        Button(L10n.t("Hide bot"), role: .destructive) { Task { await model.setBotHidden(bot, hidden: true) } }
-                            .buttonStyle(.plain).foregroundStyle(.red)
-                    }
-                }
-                .disabled(model.savingBot)
             }
         }
         .background(KS.paper)
@@ -524,7 +531,7 @@ struct BotSettingsPane: View {
     }
 }
 
-/// Deletion is only available for an already hidden bot; the server checks again.
+/// Deleting a visible bot hides it first: the service deletes only hidden bots.
 private struct DeleteBotSheet: View {
     @ObservedObject var model: TeamsModel
     let bot: TeamsBot
@@ -552,7 +559,7 @@ private struct DeleteBotSheet: View {
                     Task { if await model.deleteBot(bot, confirmName: confirmName) { dismiss() } }
                 }
                 .buttonStyle(.plain).foregroundStyle(.red)
-                .disabled(!bot.archived || confirmName != bot.name || model.savingBot)
+                .disabled(confirmName != bot.name || model.savingBot)
             }
         }
         .padding(24).frame(width: 460).background(KS.paper)

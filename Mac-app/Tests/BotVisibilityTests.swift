@@ -28,9 +28,10 @@ final class BotVisibilityTests: XCTestCase {
     @MainActor func testSidebarUsesHiddenFilter() throws {
         let model = TeamsModel()
         model.setBotsForTesting([try bot("Hidden", archived: true)])
-        XCTAssertTrue(model.sortedBots.isEmpty)
+        XCTAssertTrue(model.sortedBots.isEmpty, "hidden bots never mix into the main list")
+        XCTAssertEqual(model.hiddenBots.map(\.id), ["Hidden"], "they sit in the Hidden section")
         model.showHiddenBots = true
-        XCTAssertEqual(model.sortedBots.map(\.id), ["Hidden"])
+        XCTAssertTrue(model.sortedBots.isEmpty)
         model.select(threadID: "t-Hidden", refreshHistory: false)
         model.editingBotID = "Hidden"
         model.showHiddenBots = false
@@ -44,6 +45,11 @@ private final class BotVisibilityStub: @unchecked Sendable {
     private let lock = NSLock()
     private var requests: [URLRequest] = []
     var rejectDelete = false
+
+    func tools() -> [String] {
+        lock.lock(); defer { lock.unlock() }
+        return requests.compactMap { $0.url?.lastPathComponent }
+    }
 
     func body(_ tool: String) -> [String: Any]? {
         lock.lock(); defer { lock.unlock() }
@@ -91,8 +97,6 @@ final class BotVisibilityCallsTests: XCTestCase {
         XCTAssertEqual(stub.body("bot_unarchive")?["bot_id"] as? String, "b")
         XCTAssertEqual(model.sortedBots.map(\.id), ["b"])
 
-        let activeDelete = await model.deleteBot(bot, confirmName: "Launch")
-        XCTAssertFalse(activeDelete)
         let wrongName = await model.deleteBot(archived, confirmName: " Launch ")
         XCTAssertFalse(wrongName)
         XCTAssertNil(stub.body("bot_delete"))
@@ -116,6 +120,14 @@ final class BotVisibilityCallsTests: XCTestCase {
         XCTAssertNil(model.selectedThreadID)
         XCTAssertNil(model.editingBotID)
         XCTAssertNil(model.drafts["t"])
+
+        // Delete straight from settings on a visible bot: hide, then delete.
+        model.setBotsForTesting([bot])
+        let before = stub.tools().count
+        let direct = await model.deleteBot(bot, confirmName: "Launch")
+        XCTAssertTrue(direct)
+        XCTAssertEqual(Array(stub.tools().dropFirst(before)), ["bot_archive", "bot_delete"])
+        XCTAssertTrue(model.bots.isEmpty)
     }
 
     func testListSendsIncludeArchivedAndDeleteRequiresAcknowledgement() async throws {

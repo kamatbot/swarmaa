@@ -165,6 +165,7 @@ final class TeamsModel: ObservableObject {
     /// Bot settings open over the thread pane.
     @Published var editingBotID: String?
     @Published private(set) var bots: [TeamsBot] = []
+    /// Whether the bot list's collapsed "Hidden" section is open. Hidden bots are always loaded.
     @Published var showHiddenBots = false {
         didSet {
             if !showHiddenBots, selectedBot?.archived == true || bot(id: editingBotID)?.archived == true {
@@ -303,7 +304,7 @@ final class TeamsModel: ObservableObject {
 
     /// Bots with something new first (needs you, then unread), then the rest by last activity.
     var sortedBots: [TeamsBot] {
-        return TeamsBotList.filter(bots, showHidden: showHiddenBots, search: search)
+        return TeamsBotList.filter(bots, showHidden: false, search: search)
             .sorted {
                 let a = botNeedsYou($0), b = botNeedsYou($1)
                 if a != b { return a > b }
@@ -311,6 +312,12 @@ final class TeamsModel: ObservableObject {
                 if (ua > 0) != (ub > 0) { return ua > 0 }
                 return (botLatest($0)?.at ?? .distantPast) > (botLatest($1)?.at ?? .distantPast)
             }
+    }
+
+    /// Hidden bots for the list's "Hidden" section, by name.
+    var hiddenBots: [TeamsBot] {
+        TeamsBotList.filter(bots, showHidden: true, search: search).filter(\.archived)
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
     func botUnread(_ bot: TeamsBot) -> Int { max(badges.count(bot.threadID), bot.badges.unread) }
@@ -333,7 +340,7 @@ final class TeamsModel: ObservableObject {
         botListGeneration += 1
         let generation = botListGeneration
         do {
-            let loaded = try await client.botList(includeArchived: showHiddenBots)
+            let loaded = try await client.botList(includeArchived: true)
             guard generation == botListGeneration else { return }
             bots = loaded
             botsSupported = true
@@ -410,11 +417,13 @@ final class TeamsModel: ObservableObject {
     }
 
     func deleteBot(_ bot: TeamsBot, confirmName: String) async -> Bool {
-        guard !bot.isLegacyAgent, bot.archived, confirmName == bot.name, !savingBot else { return false }
+        guard !bot.isLegacyAgent, confirmName == bot.name, !savingBot else { return false }
         savingBot = true
         botError = nil
         defer { savingBot = false }
         do {
+            // The service deletes only hidden bots; hide it first when deleting straight from settings.
+            if !bot.archived { replaceBot(try await client.botArchive(id: bot.id)) }
             try await client.botDelete(id: bot.id, confirmName: confirmName)
             botListGeneration += 1
             bots.removeAll { $0.id == bot.id }
