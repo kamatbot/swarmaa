@@ -46,6 +46,7 @@ struct Bot: Identifiable, Equatable, Sendable {
     var job: String { raw["job"].string }
     var scope: String { raw["scope"].string }
     var threadID: String { raw["thread_id"].string }
+    var archived: Bool { raw["archived"].bool }
     var starred: Bool { raw["starred"].bool } // Absent before I1: false.
     var needsYou: Int { raw["badges"]["needs_you"].int }
     var unread: Int { raw["badges"]["unread"].int }
@@ -56,8 +57,8 @@ struct Bot: Identifiable, Equatable, Sendable {
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return formatter.date(from: activity) ?? ISO8601DateFormatter().date(from: activity) ?? .distantPast
     }
-    static func sorted(_ bots: [Bot]) -> [Bot] {
-        bots.filter { !$0.raw["archived"].bool }.sorted {
+    static func sorted(_ bots: [Bot], includeArchived: Bool = false) -> [Bot] {
+        bots.filter { includeArchived || !$0.archived }.sorted {
             if ($0.needsYou > 0) != ($1.needsYou > 0) { return $0.needsYou > 0 }
             if ($0.unread > 0) != ($1.unread > 0) { return $0.unread > 0 }
             if $0.activityDate != $1.activityDate { return $0.activityDate > $1.activityDate }
@@ -415,7 +416,8 @@ enum PushNotification {
     private var pendingPost: (thread: String, text: String, key: String)?
     let keychain: ConnectionKeychain
     init(keychain: ConnectionKeychain = ConnectionKeychain()) { self.keychain = keychain }
-    var sortedBots: [Bot] { Bot.sorted(bots) }
+    var showHidden = false
+    var sortedBots: [Bot] { Bot.sorted(bots, includeArchived: showHidden) }
     var starred: Bot? { Bot.shortcut(bots) }
     var scopes: [String] {
         Array(Set(status["scopes"].array.map { $0["scope"].string } + bots.map(\.scope))).filter { !$0.isEmpty }.sorted()
@@ -487,10 +489,11 @@ enum PushNotification {
         loading = true
         defer { loading = false }
         do {
-            async let botRows = allPages(service, "bot_list", ["limit": .number(100)], key: "bots")
+            async let botRows = allPages(service, "bot_list", ["limit": .number(100), "include_archived": .bool(true)], key: "bots")
             async let swarm = service.call("swarm_status", [:])
             async let agentRows = allPages(service, "agent_list", ["limit": .number(100)], key: "agents")
             (bots, status, agents) = try await (botRows.map { Bot(raw: $0) }, swarm, agentRows)
+            if let bot = openBot, !bots.contains(where: { $0.id == bot.id }) { removeBot(bot.id) }
             error = nil
             if !didLoadBots, connected, !signingOut {
                 didLoadBots = true
@@ -500,31 +503,42 @@ enum PushNotification {
     }
     func readThread(_ bot: Bot, incremental: Bool = false) async throws {
         guard let service else { return }
-        let previous = incremental ? (messages.map(\.seq).max() ?? 0) : 0
-        var input: [String: JSON] = ["thread_id": .string(bot.threadID), "limit": .number(100)]
-        if incremental { input["after_seq"] = .number(Double(previous)) }
-        var page = try await service.call("thread_read", input)
-        var incoming = page["messages"].array.map { Message(raw: $0) }
-        var pages = 1
-        // Read every forward page on stream catch-up, not only the first 100 messages.
-        while incremental && page["has_more"].bool {
-            guard pages < 100, let last = incoming.map(\.seq).max(), last > (input["after_seq"]?.int ?? 0) else { throw AppFailure.invalidResponse }
-            input["after_seq"] = .number(Double(last))
-            page = try await service.call("thread_read", input)
-            incoming += page["messages"].array.map { Message(raw: $0) }; pages += 1
-        }
-        guard openBot?.id == bot.id else { return }
-        var merged = incremental ? messages : []
-        for message in incoming {
-            if let i = merged.firstIndex(where: { $0.id == message.id }) { merged[i] = message }
-            else { merged.append(message) }
-        }
-        messages = merged.sorted { $0.seq < $1.seq }; typing = page["typing"].array
-        threadCache[bot.id] = messages
-        if let seq = messages.last?.seq {
-            _ = try await service.call("thread_mark_read", ["thread_id": .string(bot.threadID), "seq": .number(Double(seq))])
+        do {
+            let previous = incremental ? (messages.map(\.seq).max() ?? 0) : 0
+            var input: [String: JSON] = ["thread_id": .string(bot.threadID), "limit": .number(100)]
+            if incremental { input["after_seq"] = .number(Double(previous)) }
+            var page = try await service.call("thread_read", input)
+            var incoming = page["messages"].array.map { Message(raw: $0) }
+            var pages = 1
+            // Read every forward page on stream catch-up, not only the first 100 messages.
+            while incremental && page["has_more"].bool {
+                guard pages < 100, let last = incoming.map(\.seq).max(), last > (input["after_seq"]?.int ?? 0) else { throw AppFailure.invalidResponse }
+                input["after_seq"] = .number(Double(last))
+                page = try await service.call("thread_read", input)
+                incoming += page["messages"].array.map { Message(raw: $0) }; pages += 1
+            }
+            guard openBot?.id == bot.id else { return }
+            var merged = incremental ? messages : []
+            for message in incoming {
+                if let i = merged.firstIndex(where: { $0.id == message.id }) { merged[i] = message }
+                else { merged.append(message) }
+            }
+            messages = merged.sorted { $0.seq < $1.seq }; typing = page["typing"].array
+            threadCache[bot.id] = messages
+            if let seq = messages.last?.seq {
+                _ = try await service.call("thread_mark_read", ["thread_id": .string(bot.threadID), "seq": .number(Double(seq))])
+            }
+        } catch {
+            // A deletion can race an in-flight thread read or arrive while the app is offline.
+            guard openBot?.id == bot.id else { return }
+            if case AppFailure.service(404) = error {
+                let rows = try await allPages(service, "bot_list", ["include_archived": .bool(true)], key: "bots")
+                if !rows.contains(where: { $0["id"].string == bot.id }) { removeBot(bot.id); return }
+            }
+            if openBot?.id == bot.id { throw error }
         }
     }
+
     func open(_ bot: Bot) async {
         openBot = bot
         if isDemo { return }
@@ -549,6 +563,11 @@ enum PushNotification {
         let payload = event["payload"]
         func value(_ key: String) -> JSON { event[key] == .null ? payload[key] : event[key] }
         let name = value("name").string
+        if name == "bot.updated", value("reason").string == "deleted" {
+            let id = value("bot_id").string.isEmpty ? value("subject_id").string : value("bot_id").string
+            removeBot(id)
+            return
+        }
         if let bot = openBot,
            (name.hasPrefix("message.") && value("thread_id").string == bot.threadID)
             || (name == "task.updated" && value("kind").string == "turn")
@@ -564,7 +583,7 @@ enum PushNotification {
             }
         }
         if name.hasPrefix("bot.") || name == "message.created" || name.hasPrefix("question.") {
-            bots = try await allPages(service, "bot_list", ["limit": .number(100)], key: "bots").map { Bot(raw: $0) }
+            bots = try await allPages(service, "bot_list", ["limit": .number(100), "include_archived": .bool(true)], key: "bots").map { Bot(raw: $0) }
         }
     }
     func startStream() {
@@ -650,8 +669,39 @@ enum PushNotification {
         input["bot_id"] = .string(bot.id); input["expected_version"] = bot.raw["version"]
         let updated = Bot(raw: try await service.call("bot_update", input)["bot"])
         // Server enforces uniqueness; refresh both the newly and previously starred rows.
-        bots = try await allPages(service, "bot_list", key: "bots").map { Bot(raw: $0) }
+        bots = try await allPages(service, "bot_list", ["include_archived": .bool(true)], key: "bots").map { Bot(raw: $0) }
         if openBot?.id == updated.id { openBot = updated }
+    }
+    func archive(_ bot: Bot) async throws {
+        guard let service else { throw AppFailure.invalidResponse }
+        let result = try await service.call("bot_archive", ["bot_id": .string(bot.id)])
+        let updated = Bot(raw: result["bot"])
+        guard updated.id == bot.id else { throw AppFailure.invalidResponse }
+        if let i = bots.firstIndex(where: { $0.id == bot.id }) { bots[i] = updated }
+        if openBot?.id == bot.id { openBot = nil; messages = []; typing = [] }
+    }
+    func unarchive(_ bot: Bot) async throws {
+        guard let service else { throw AppFailure.invalidResponse }
+        let result = try await service.call("bot_unarchive", ["bot_id": .string(bot.id)])
+        let updated = Bot(raw: result["bot"])
+        guard updated.id == bot.id else { throw AppFailure.invalidResponse }
+        if let i = bots.firstIndex(where: { $0.id == bot.id }) { bots[i] = updated }
+        if openBot?.id == bot.id { openBot = updated }
+    }
+    func delete(_ bot: Bot, confirmName: String) async throws {
+        guard let service, bot.archived, confirmName == bot.name else { throw AppFailure.invalidResponse }
+        let result = try await service.call("bot_delete", ["bot_id": .string(bot.id), "confirm_name": .string(confirmName)])
+        guard result["deleted"].bool else { throw AppFailure.invalidResponse }
+        removeBot(bot.id)
+    }
+    private func removeBot(_ id: String) {
+        bots.removeAll { $0.id == id }
+        threadCache.removeValue(forKey: id)
+        if pendingPushBotID == id { pendingPushBotID = nil }
+        if let bot = openBot, bot.id == id {
+            expandedWorkingNotes.removeValue(forKey: bot.threadID)
+            openBot = nil; messages = []; typing = []; error = nil
+        }
     }
     func resolve(_ id: String) async throws {
         guard let service else { return }

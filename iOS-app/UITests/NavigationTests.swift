@@ -1,6 +1,35 @@
 import XCTest
 
 @MainActor final class NavigationTests: XCTestCase {
+    func testHiddenOptionAndSettingsActionsAtBottom() {
+        let app = XCUIApplication()
+        app.launchArguments = ["-demo", "-hidden-bot-demo"]
+        app.launch()
+        let toggle = app.switches["Show hidden"]
+        XCTAssertTrue(toggle.waitForExistence(timeout: 10))
+        XCTAssertTrue(toggle.isHittable)
+        XCTAssertGreaterThan(toggle.frame.midY, app.frame.midY)
+        XCTAssertFalse(app.buttons["bot-notes"].exists)
+        toggle.coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.5)).tap()
+        XCTAssertEqual(toggle.value as? String, "1")
+        app.scrollViews.firstMatch.swipeUp()
+        let hidden = app.buttons["bot-notes"]
+        XCTAssertTrue(hidden.waitForExistence(timeout: 3))
+        hidden.tap()
+        app.buttons["Bot settings"].tap()
+        XCTAssertTrue(app.buttons["Delete bot…"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.buttons["Unhide"].exists)
+        XCTAssertFalse(app.buttons["Hide bot"].exists)
+        XCTAssertGreaterThan(app.buttons["Delete bot…"].frame.midY, app.frame.midY)
+        app.buttons["Close"].tap()
+        app.buttons["Close"].tap()
+        app.buttons["starred-shortcut"].tap()
+        app.buttons["Bot settings"].tap()
+        XCTAssertTrue(app.buttons["Hide bot"].waitForExistence(timeout: 3))
+        XCTAssertGreaterThan(app.buttons["Hide bot"].frame.midY, app.frame.midY)
+        XCTAssertFalse(app.buttons["Delete bot…"].exists)
+    }
+
     func testDemoNavigationAndSingleStarredShortcut() {
         let app = XCUIApplication()
         app.launchArguments = ["-demo"]
