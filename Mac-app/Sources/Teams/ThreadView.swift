@@ -33,6 +33,7 @@ struct ThreadView: View {
                                 .foregroundStyle(Palette.textSecondary).frame(maxWidth: .infinity).padding(.top, 40)
                         }
                         ForEach(messages) { MessageRow(model: model, message: $0).id($0.id) }
+                        ForEach(model.liveTyping(threadID)) { TypingBubble(model: model, typing: $0).id("typing:" + $0.id) }
                     }
                     .padding(.horizontal, 24).padding(.vertical, 18)
                 }
@@ -44,6 +45,10 @@ struct ThreadView: View {
                     if let target, let message = messages.first(where: { $0.question?.id == target || $0.ref?.questionID == target }) {
                         proxy.scrollTo(message.id, anchor: .center)
                     }
+                }
+                .onChange(of: model.liveTyping(threadID).last?.text) { _, text in
+                    guard text != nil, nearBottom, let last = model.liveTyping(threadID).last else { return }
+                    proxy.scrollTo("typing:" + last.id, anchor: .bottom)
                 }
                 .onChange(of: messages.last?.id) { _, last in
                     guard let last, nearBottom else { return }
@@ -211,6 +216,43 @@ struct MessageRow: View {
         case .task: TaskCardView(model: model, message: message)
         case .unknown: EmptyView()
         }
+    }
+}
+
+/// A running turn's reply so far: an agent bubble with a quiet "typing" mark.
+/// Plain text (it is partial and untrusted), replaced by the real message when it lands.
+struct TypingBubble: View {
+    @ObservedObject var model: TeamsModel
+    let typing: TeamsTyping
+
+    private var agent: TeamsAgent? { model.agent(id: typing.agentID) }
+    private var name: String { agent?.name ?? L10n.t("Agent") }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            TeamsAvatar(seed: agent?.avatar ?? typing.agentID, name: name, size: 30)
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    Text(verbatim: name).font(KS.body(14, .bold))
+                    Image(systemName: "ellipsis").font(.system(size: 11, weight: .bold)).foregroundStyle(KS.textMuted)
+                        .symbolEffect(.variableColor.iterative, options: .repeating)
+                    Text(verbatim: L10n.t("typing")).font(KS.mono(10)).foregroundStyle(KS.textMuted)
+                }
+                Text(verbatim: typing.text).textSelection(.enabled)
+                    .font(KS.body(16)).lineSpacing(2)
+                    .padding(.horizontal, 15).padding(.vertical, 10)
+                    .background(UnevenRoundedRectangle(topLeadingRadius: 20, bottomLeadingRadius: 6,
+                                                       bottomTrailingRadius: 20, topTrailingRadius: 20).fill(KS.white))
+                    .overlay(UnevenRoundedRectangle(topLeadingRadius: 20, bottomLeadingRadius: 6,
+                                                    bottomTrailingRadius: 20, topTrailingRadius: 20)
+                        .stroke(KS.ink, style: StrokeStyle(lineWidth: 2, dash: [5, 4])))
+                    .foregroundStyle(KS.ink)
+            }
+            Spacer(minLength: 60)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(name + " " + L10n.t("is typing") + ": " + typing.text)
     }
 }
 

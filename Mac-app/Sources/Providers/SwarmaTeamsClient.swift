@@ -443,6 +443,16 @@ enum TeamsAnswerValidation: Error, Equatable {
     }
 }
 
+/// One `thread_read` `typing` entry: a running turn's reply so far, redacted by the service.
+struct TeamsTyping: Decodable, Equatable, Identifiable {
+    var taskID: String
+    var agentID: String
+    var text: String
+    var updatedAt: Date?
+    var id: String { taskID }
+    private enum CodingKeys: String, CodingKey { case text, taskID = "task_id", agentID = "agent_id", updatedAt = "updated_at" }
+}
+
 // MARK: - Live stream
 
 /// One `GET /api/stream` event: ids and metadata, never bodies (TEAMS.md §4).
@@ -664,8 +674,17 @@ actor SwarmaTeamsClient {
 
     // MARK: Threads
 
-    struct MessagePage: Decodable { var messages: [TeamsMessage]; var hasMore: Bool?
-        private enum CodingKeys: String, CodingKey { case messages, hasMore = "has_more" } }
+    struct MessagePage: Decodable {
+        var messages: [TeamsMessage]; var hasMore: Bool?
+        /// Running turns' reply so far; nil from a service that predates it.
+        var typing: [TeamsTyping]?
+        private enum CodingKeys: String, CodingKey { case messages, typing, hasMore = "has_more" }
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            messages = try c.decode([TeamsMessage].self, forKey: .messages)
+            hasMore = c.opt(Bool.self, .hasMore); typing = c.opt([TeamsTyping].self, .typing)
+        }
+    }
 
     func threadRead(id: String, afterSeq: Int? = nil, beforeSeq: Int? = nil, limit: Int = 50) async throws -> MessagePage {
         var input: [String: Any] = ["thread_id": id, "limit": min(limit, 100)]

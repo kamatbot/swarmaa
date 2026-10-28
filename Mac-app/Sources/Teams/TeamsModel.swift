@@ -58,6 +58,8 @@ final class TeamsModel: ObservableObject {
     @Published private(set) var selectedThreadID: String?
     @Published private(set) var messages: [String: [TeamsMessage]] = [:]
     @Published private(set) var hasOlder: [String: Bool] = [:]
+    /// `thread_read`'s `typing` per thread: running turns' replies so far.
+    @Published private(set) var typing: [String: [TeamsTyping]] = [:]
     @Published private(set) var badges = TeamsBadges()
     @Published private(set) var previews: [String: TeamsPreview] = [:]
     @Published private(set) var swarms: [String: TeamsSwarm] = [:]
@@ -118,6 +120,7 @@ final class TeamsModel: ObservableObject {
     private var taskRefreshScopes: Set<String>? = []
     private var loadingTasks = false
     private var pendingReads: Set<String> = []
+    private var typingFetches: Set<String> = []
 
     /// Set by the window: marking read only counts while it is on screen.
     var isVisible = false { didSet { if isVisible { markSelectedRead() } } }
@@ -442,6 +445,11 @@ final class TeamsModel: ObservableObject {
     /// lack a status), and re-list its scope, with the bot badges, only when the task enters or
     /// leaves a list: submitted, resolved, finished, or not one we hold.
     private func taskUpdated(_ event: TeamsEvent) async {
+        if let id = event.subjectID, let status = event.status, !["running", "queued"].contains(status) {
+            for t in typing.keys { typing[t]?.removeAll { $0.taskID == id } }
+        } else if event.kind == "turn", let t = event.threadID, t == selectedThreadID, threadIsVisible {
+            scheduleTypingFetch(t)
+        }
         guard let id = event.subjectID, event.action != "submitted", event.resolved == nil,
               workingTasks.contains(where: { $0.id == id }) else { return scheduleTaskRefresh(scope: event.scope) }
         var fresh: TeamsTask?
@@ -455,6 +463,36 @@ final class TeamsModel: ObservableObject {
         workingTasks[i].status = status
         if let version = event.version { workingTasks[i].version = version }
         workingTasks[i].updatedAt = Date()
+    }
+
+    // MARK: Typing
+
+    /// What shows as live reply bubbles: each running turn's text, until a message
+    /// from that agent lands after it.
+    func liveTyping(_ threadID: String) -> [TeamsTyping] {
+        let list = messages[threadID] ?? []
+        return (typing[threadID] ?? []).filter { entry in
+            !list.contains { $0.author.kind == "agent" && $0.author.id == entry.agentID
+                && ($0.createdAt ?? .distantPast) >= (entry.updatedAt ?? .distantFuture) }
+        }
+    }
+
+    /// Newer services send `typing` with the tail; an older one sends nothing and keeps none.
+    private func takeTyping(_ page: SwarmaTeamsClient.MessagePage, _ threadID: String) {
+        if let list = page.typing { typing[threadID] = list }
+    }
+
+    /// A turn in the open thread moved: read the tail and its typing, at most every 300 ms.
+    private func scheduleTypingFetch(_ t: String) {
+        guard typingFetches.insert(t).inserted else { return }
+        Task {
+            try? await Task.sleep(for: .milliseconds(300))
+            typingFetches.remove(t)
+            guard let page = try? await client.threadRead(id: t, afterSeq: messages[t]?.last?.seq, limit: 50) else { return }
+            if messages[t] != nil { merge(page.messages, into: t) }
+            takeTyping(page, t)
+            markSelectedRead()
+        }
     }
 
     /// The thread an attention item opens: its own, else the question's or swarm's.
@@ -562,6 +600,7 @@ final class TeamsModel: ObservableObject {
                     try Task.checkCancellation()
                     let page = try await client.threadRead(id: threadID, afterSeq: after, limit: 50)
                     merge(page.messages, into: threadID)
+                    takeTyping(page, threadID)
                     guard page.hasMore == true else { break }
                     guard let next = page.messages.last?.seq, next > after else { throw SwarmaClient.Failure.badResponse }
                     after = next
@@ -570,6 +609,7 @@ final class TeamsModel: ObservableObject {
             } else {
                 let page = try await client.threadRead(id: threadID, limit: 50)
                 merge(page.messages, into: threadID)
+                takeTyping(page, threadID)
                 hasOlder[threadID] = page.hasMore ?? (page.messages.count == 50)
             }
             staleThreads.remove(threadID)
@@ -774,7 +814,7 @@ final class TeamsModel: ObservableObject {
                 var after = event.name == "message.updated" ? event.seq.map { $0 - 1 } : messages[t]?.last?.seq
                 for pageIndex in 0..<100 {
                     let page = try await client.threadRead(id: t, afterSeq: after, limit: 50)
-                    if messages[t] != nil { merge(page.messages, into: t) }
+                    if messages[t] != nil { merge(page.messages, into: t); takeTyping(page, t) }
                     else if let m = page.messages.last { previews[t] = TeamsPreview(body: m.preview, createdAt: m.createdAt) }
                     for m in page.messages where m.kind == .swarm && m.swarm == nil {
                         if let id = m.ref?.swarmID { await loadSwarm(id) }

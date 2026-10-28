@@ -608,3 +608,54 @@ extension TeamsUXRegressionTests {
         XCTAssertEqual(after.filter { $0.0 == "bot_list" }.count, 1)
     }
 }
+
+extension TeamsUXRegressionTests {
+    @MainActor func testTurnEventInOpenThreadReadsTypingAndTheReplyReplacesIt() async throws {
+        let stub = UXTransport()
+        var reply = false
+        let model = try await taskModel(stub) { tool, body in
+            guard tool == "thread_read" else { return tool == "thread_mark_read" ? (200, #"{"result":{}}"#) : nil }
+            let hello = #"{"id":"m1","seq":1,"kind":"text","body":"hi","author":{"kind":"human"},"created_at":"2026-10-28T10:00:00Z"}"#
+            let answer = #"{"id":"m2","seq":2,"kind":"text","body":"Done.","author":{"kind":"agent","id":"ag1"},"created_at":"2026-10-28T10:00:09Z"}"#
+            let typing = #"[{"task_id":"project:a-running","agent_id":"ag1","text":"Looking at it","updated_at":"2026-10-28T10:00:05Z"}]"#
+            if body["after_seq"] == nil { return (200, "{\"result\":{\"messages\":[\(hello)],\"has_more\":false}}") }
+            // The task is still running for a moment after its reply posts: typing is still listed.
+            return (200, "{\"result\":{\"messages\":[\(reply ? answer : "")],\"typing\":\(typing),\"has_more\":false}}")
+        }
+        await model.loadLatest("t1")
+        XCTAssertEqual(model.liveTyping("t1"), [], "an older-style page without typing keeps none")
+        model.select(threadID: "t1", refreshHistory: false)
+        model.isVisible = true
+        try await Task.sleep(for: .milliseconds(100))
+        let before = stub.requests.filter { $0.0 != "thread_mark_read" }.count
+        let turn = #"{"task_id":"project:a-running","status":"running","action":"checkpointed","kind":"turn","thread_id":"t1"}"#
+        for _ in 0..<3 { await model.apply(try taskEvent(turn)) }
+        XCTAssertEqual(model.liveTyping("t1"), [], "debounced")
+        try await Task.sleep(for: .milliseconds(500))
+        let calls = stub.requests.filter { $0.0 != "thread_mark_read" }.dropFirst(before)
+        XCTAssertEqual(calls.map(\.0), ["thread_read"], "three turn events cost one small read, no lists")
+        XCTAssertEqual(calls.first?.1["after_seq"] as? Int, 1)
+        XCTAssertEqual(model.liveTyping("t1").map(\.text), ["Looking at it"])
+        // The agent's message lands: the bubble goes, even though typing is still listed.
+        reply = true
+        await model.apply(TeamsEvent(cursor: nil, name: "message.created", threadID: "t1", seq: 2, authorKind: "agent"))
+        XCTAssertEqual(model.messages["t1"]?.map(\.seq), [1, 2])
+        XCTAssertEqual(model.liveTyping("t1"), [])
+        XCTAssertEqual(model.typing["t1"]?.count, 1)
+        // The task ends: the entry itself goes.
+        await model.apply(try taskEvent(#"{"task_id":"project:a-running","status":"completed","action":"finished","kind":"turn","thread_id":"t1"}"#))
+        XCTAssertEqual(model.typing["t1"], [])
+    }
+
+    func testTypingDecodesAndIsOptional() throws {
+        let with = Data(#"{"messages":[],"typing":[{"task_id":"k","agent_id":"a","text":"so far","updated_at":"2026-10-28T10:00:05Z"}]}"#.utf8)
+        let page = try SwarmaClient.decoder.decode(SwarmaTeamsClient.MessagePage.self, from: with)
+        XCTAssertEqual(page.typing?.first?.agentID, "a")
+        XCTAssertNotNil(page.typing?.first?.updatedAt)
+        XCTAssertNil(try SwarmaClient.decoder.decode(SwarmaTeamsClient.MessagePage.self, from: Data(#"{"messages":[]}"#.utf8)).typing)
+        let event = try XCTUnwrap(TeamsEvent(SSEParser.Frame(id: nil, event: "task.updated",
+            data: #"{"scope":"s","payload":{"task_id":"k","status":"running","kind":"turn","thread_id":"t","version":4}}"#)))
+        XCTAssertEqual([event.subjectID, event.kind, event.threadID, event.status], ["k", "turn", "t", "running"])
+        XCTAssertEqual(event.version, 4)
+    }
+}
