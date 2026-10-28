@@ -75,3 +75,50 @@ R1, R2 and R3 touch different files and share only this document's frame table, 
 
 - `wrangler login` (or a Workers-scoped API token in `.env` as `CLOUDFLARE_API_TOKEN`) for the account that owns `swarmaa.com`.
 - Confirm `relay.swarmaa.com` as the hostname.
+
+## Wire protocol (v1, binding for R1–R3)
+
+All frames are JSON text WebSocket messages with a `t` field. Unknown fields are ignored; unknown `t` values are dropped. Frames are at most 1 MiB.
+
+**Endpoints (Worker):**
+- `GET /host/<host_id>`: WebSocket for the host agent.
+- `GET /h/<host_id>`: WebSocket for clients.
+- `GET /h/<host_id>/presence`: JSON `{online, last_seen, version}`.
+- `GET /healthz`: `ok`.
+
+`host_id` matches `^[a-z2-7]{26}$`.
+
+**Host handshake:**
+1. On connect the DO sends `{t:"challenge", nonce}`, where `nonce` is 32 random bytes in base64url.
+2. The host replies `{t:"hello", role:"host", host_id, pubkey, sig, version}`:
+   - `pubkey` is the raw 32-byte Ed25519 key in base64url;
+   - `sig` is the Ed25519 signature over the UTF-8 bytes of `nonce`;
+   - `host_id` must equal base32-lowercase(SHA-256(pubkey)) without padding, first 26 characters.
+3. The DO pins `pubkey` on first hello. If it differs later, it closes with 4003.
+4. A second host socket replaces the first, which is closed with 4009.
+5. With no valid hello within 10 s, the DO closes with 4001.
+
+**Client handshake:**
+1. The client sends `{t:"hello", role:"client", version}`.
+2. The DO replies `{t:"presence", online, last_seen, version}`, and sends it again whenever the host connects or disconnects.
+
+**Requests:** the client picks `sid`, a string of up to 32 characters, unique per socket. The DO rewrites it to `"<conn>:<sid>"` toward the host, where `<conn>` is the DO's id for that client socket, and strips the prefix on the way back.
+- `{t:"req", sid, method, path, headers, body}`: `body` is a UTF-8 string or null. `headers` are lower-case names, from the allowlist `authorization`, `accept`, `content-type`, `last-event-id`.
+- `{t:"res", sid, status, headers}`, then zero or more `{t:"chunk", sid, data}`, then `{t:"end", sid}`. `data` is a UTF-8 string of at most 64 KiB.
+- `{t:"end", sid, error}` from either side aborts a stream. If the host is offline, the DO answers a `req` at once with `{t:"end", sid, error:"host_offline"}`.
+- A client closing its socket makes the DO send `{t:"end", sid:"<conn>:*", error:"client_gone"}` to the host, which aborts all of that client's streams.
+
+**Pairing:**
+1. Host → DO: `{t:"pair_open", code_hash, expires_at}`, where `code_hash` is the hex SHA-256 of the normalized code (lower case, single spaces) and `expires_at` is epoch ms. The DO stores it.
+2. Client → DO: `{t:"pair_redeem", rid, code, device_name}`. The DO checks the hash and the expiry. A match is consumed (one use) and forwarded to the host as `{t:"pair_redeem", rid:"<conn>:<rid>", device_name}`. A miss gets `{t:"pair_result", rid, error:"bad_code"}`.
+3. Host → DO → client: `{t:"pair_result", rid, token}` or `{t:"pair_result", rid, error}`.
+
+**Keepalive:** either side may send `{t:"ping"}` and gets `{t:"pong"}`. The host agent pings every 25 s.
+
+**Limits (DO):**
+- 32 client sockets per room;
+- 64 open streams per client;
+- 5 `pair_redeem` per room per 10 minutes;
+- 120 `req` per client per minute.
+
+Over a limit, the DO answers `{t:"end", sid, error:"rate_limited"}` or closes with 4029.
