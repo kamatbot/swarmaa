@@ -1,0 +1,42 @@
+import XCTest
+
+@MainActor final class NavigationTests: XCTestCase {
+    func testDemoNavigationAndSingleStarredShortcut() {
+        let app = XCUIApplication()
+        app.launchArguments = ["-demo"]
+        app.launch()
+        XCTAssertTrue(app.staticTexts["BOTS."].waitForExistence(timeout: 10))
+        XCTAssertEqual(app.buttons.matching(identifier: "starred-shortcut").count, 1)
+        app.buttons["Tasks"].tap()
+        XCTAssertTrue(app.staticTexts["TASKS."].waitForExistence(timeout: 3))
+        app.buttons["Working"].tap()
+        XCTAssertTrue(app.staticTexts["Check the launch calendar"].exists)
+        app.buttons["Close"].tap()
+        app.buttons["Usage"].tap()
+        XCTAssertTrue(app.staticTexts["USAGE."].waitForExistence(timeout: 3))
+        app.buttons["Close"].tap()
+        app.buttons["starred-shortcut"].tap()
+        XCTAssertTrue(app.textFields["composer"].waitForExistence(timeout: 3))
+        app.buttons["Bot settings"].tap()
+        XCTAssertTrue(app.buttons["Save changes"].waitForExistence(timeout: 3))
+        app.buttons["Close"].tap()
+        app.buttons["Close"].tap()
+        app.buttons["You"].tap()
+        XCTAssertTrue(app.buttons.containing(.staticText, identifier: "New bot").firstMatch.waitForExistence(timeout: 3))
+        app.buttons.containing(.staticText, identifier: "New bot").firstMatch.tap()
+        XCTAssertTrue(app.staticTexts["NEW BOT."].waitForExistence(timeout: 3))
+        XCTAssertFalse(app.buttons["Make bot"].isEnabled)
+        app.buttons["close-sheet"].tap()
+        app.buttons["You"].tap()
+        app.buttons.containing(.staticText, identifier: "Hosts and devices").firstMatch.tap()
+        XCTAssertTrue(app.buttons["Connect"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.buttons["Connect"].isHittable)
+        app.buttons["Connect"].tap()
+        app.buttons["starred-shortcut"].tap()
+        app.buttons["Answer question"].tap()
+        XCTAssertTrue(app.buttons["Blog and changelog"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.buttons["Blog and changelog"].isHittable)
+        XCTAssertTrue(app.staticTexts["WHICH CHANNELS SHOULD THE LAUNCH USE?"].exists)
+        app.buttons["close-sheet"].tap()
+    }
+}
