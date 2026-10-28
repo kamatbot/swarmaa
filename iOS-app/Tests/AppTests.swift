@@ -74,6 +74,56 @@ actor IOSRelaySocket: SwarmaRelayTransport.SwarmaWebSocket {
         let service = RelayService(connection: HostConnection(hostID: String(repeating: "a", count: 26), relay: "relay.swarmaa.com", token: UUID().uuidString), transport: transport)
         return (service, socket)
     }
+    func testDeviceTokenHexPreservesLeadingZerosAndAllBytes() {
+        XCTAssertEqual(PushNotification.tokenHex(Data([0, 1, 15, 16, 127, 128, 255])), "00010f107f80ff")
+        XCTAssertEqual(PushNotification.tokenHex(Data(0...255)).count, 512)
+    }
+    func testNotificationTapWaitsForBotListAndRoutesThroughOpen() async throws {
+        let (service, socket) = service()
+        let model = AppModel()
+        model.service = service
+        model.receivePushTap(["bot_id": "b", "aps": ["thread-id": "wrong"]])
+        XCTAssertNil(model.takePushBot())
+        model.connected = true
+        await model.refresh()
+        let bot = try XCTUnwrap(model.takePushBot())
+        XCTAssertEqual(bot.id, "b")
+        await model.open(bot)
+        XCTAssertEqual(model.openBot?.threadID, "thread")
+        let reads = await socket.calls("thread_read")
+        XCTAssertEqual(reads.first?["thread_id"].string, "thread")
+        XCTAssertNil(model.takePushBot())
+        model.receivePushTap(["bot_id": "unknown"])
+        XCTAssertNil(model.takePushBot())
+        XCTAssertNil(PushNotification.botID(["bot_id": 42]))
+        XCTAssertNil(PushNotification.botID(["bot_id": " "]))
+        XCTAssertNil(PushNotification.botID(["aps": ["thread-id": "b"]]))
+        await service.transport.disconnect()
+    }
+    func testPushRegistrationAndSignOutUnregisterBeforeClearingConnection() async throws {
+        let (service, socket) = service()
+        let keychain = ConnectionKeychain(service: "app.swarmaa.ios.tests." + UUID().uuidString)
+        defer { try? keychain.delete() }
+        try keychain.save(service.connection)
+        let model = AppModel(keychain: keychain)
+        model.service = service; model.connected = true
+        var firstLoads = 0
+        model.onFirstBotList = { firstLoads += 1 }
+        XCTAssertEqual(firstLoads, 0)
+        await model.refresh()
+        await model.refresh()
+        XCTAssertEqual(firstLoads, 1)
+        let token = Data(repeating: 15, count: 32)
+        await model.registerPushToken(token)
+        let registrations = await socket.calls("push_register")
+        XCTAssertEqual(registrations.first?["token"].string, String(repeating: "0f", count: 32))
+        XCTAssertEqual(registrations.first?["environment"].string, "sandbox")
+        try await model.signOut()
+        let removals = await socket.calls("push_unregister")
+        XCTAssertEqual(removals.first?["token"], registrations.first?["token"])
+        XCTAssertNil(try keychain.load())
+        XCTAssertFalse(model.connected)
+    }
     func testPairingPersistsTokenAndHostOnlyInTestKeychain() async throws {
         let keychain = ConnectionKeychain(service: "app.swarmaa.ios.tests." + UUID().uuidString)
         defer { try? keychain.delete() }

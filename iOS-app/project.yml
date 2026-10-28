@@ -20,6 +20,10 @@ targets:
       - Sources
       - Resources
       - path: ../Mac-app/Sources/Providers/SwarmaRelayTransport.swift
+    entitlements:
+      path: Swarmaa.entitlements
+      properties:
+        aps-environment: development
     info:
       path: Info.plist
       properties:

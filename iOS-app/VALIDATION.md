@@ -63,3 +63,26 @@ Focused source checks: `git diff --check` and `git diff --cached --check` passed
 ## Remaining validation / handoff
 
 Review the pending merge and app diff, then let the bridge commit. Next, use an explicitly authorized test host and physical iPhone to validate real relay pairing/presence/reconnect, bot creation/update and I1 star uniqueness, task approval/artifact access, and Shortcuts/Action Button execution including device lock/background behavior. The implementation supports iOS 18, but the only available iPhone runtime tested here was iOS 27.0. Larger accessibility text, another phone size, and real-device signing/distribution remain unverified; no simulator was created to obtain them.
+
+## Push notification patch — fe776e7e
+
+Objective: implement only the Contract/iOS sections of `docs/briefs/push.md`. Baseline `e4bb9820a67b202cd7e39456e130e0446aca8ce7`, clean and writable at start. Owned files: `Sources/AppCore.swift`, `Sources/SwarmaaApp.swift`, `Tests/AppTests.swift`, `project.yml`, generated `Swarmaa.entitlements`, and this record. Risk: device registration lifecycle and notification navigation. No server, layout, dependency, or account changes. No commit/push/deployment/service writes authorized; the worker-level prohibition overrides the JSON's requested commit. The bridge owns committing.
+
+Implemented: alert/sound/badge permission after the first successful paired bot-list refresh, OS remote notification registration each paired launch/pairing, lowercase zero-padded device token registration with DEBUG sandbox / release production environment, best-effort unregister before Keychain deletion, queued content-free `bot_id` tap routing through RootView's existing `open(bot)`, and foreground banners except when that thread is visible (including sheet/screen changes). No background mode added. XcodeGen runs only in this worktree; generated entitlement is `aps-environment = development` and both generated app configurations reference it. Production signing/provisioning must supply the distribution entitlement.
+
+New tests cover encoding (including leading zero/high bytes), tap before bot loading, malformed/unknown bot IDs, opening the routed thread, one first-list callback per session, register contract, and sign-out unregister/Keychain cleanup. Tests use only the existing fake relay and random test-only Keychain service. An initial compile failed Swift 6 notification-delegate actor checking; fixed by extracting Sendable bot IDs in nonisolated delegate methods before entering MainActor.
+
+Validation command (Xcode 27.1, no Node commands required):
+
+```sh
+cd iOS-app
+xcodegen
+xcodebuild -project Swarmaa.xcodeproj -scheme Swarmaa \
+  -destination 'id=B2EE62FA-1CD0-4F71-8FCD-9FE73EA59B56' \
+  -derivedDataPath DerivedData -parallel-testing-enabled NO \
+  -test-timeouts-enabled YES -maximum-test-execution-time-allowance 60 test
+```
+
+No simulator created, no branch changes, no commits, no push. Remaining: physical-device APNs permission/registration/delivery, cold-launch notification tap and foreground suppression using real notifications, and production distribution entitlement/signing. No real connection, notification delivery or deployment is claimed. Source can be rolled back by reverting only this task's diff. Small-code review: Lean already. Ship.
+
+Final result: **exit 0 / TEST SUCCEEDED**, 30 tests with zero failures (17 app, 12 relay compatibility, 1 UI navigation). Result bundle: `DerivedData/Logs/Test/Test-Swarmaa-2026.10.28_22-20-34-+0700.xcresult`; local ignored log: `push-test.log`. `plutil -lint Swarmaa.entitlements` and `git diff --check` passed. The generated app project references `Swarmaa.entitlements` for Debug and Release; the committed XcodeGen source and generated entitlement are included in this patch. No full repository/server CI run was needed for this iOS-only task.
