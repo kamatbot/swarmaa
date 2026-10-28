@@ -87,6 +87,12 @@ struct BotRow: View {
 
     private var tag: String { TeamsBotList.label(bot) }
 
+    private func accessibilityName(needs: Int, unread: Int) -> String {
+        let hidden: String = bot.archived ? L10n.t("Hidden") + ", " : ""
+        let state: String = needs > 0 ? ", " + L10n.t("needs you") : unread > 0 ? ", " + L10n.t("\(unread) new") : ""
+        return hidden + bot.name + state
+    }
+
     var body: some View {
         let needs = model.botNeedsYou(bot), unread = model.botUnread(bot)
         let latest = model.botLatest(bot)
@@ -127,7 +133,7 @@ struct BotRow: View {
                     .disabled(model.savingBot)
             }
         }
-        .accessibilityLabel((bot.archived ? L10n.t("Hidden") + ", " : "") + bot.name + (needs > 0 ? ", " + L10n.t("needs you") : unread > 0 ? ", " + L10n.t("\(unread) new") : ""))
+        .accessibilityLabel(accessibilityName(needs: needs, unread: unread))
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
 }
