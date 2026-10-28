@@ -37,7 +37,9 @@
     "test:integration": "node --import tsx --test tests/*.integration.test.ts",
     "tunnel": "node --import tsx scripts/tunnel.ts",
     "smoke": "node --env-file=.env --import tsx scripts/smoke.ts",
-    "smoke:providers": "node --env-file-if-exists=.env --import tsx scripts/smoke-providers.ts"
+    "smoke:providers": "node --env-file-if-exists=.env --import tsx scripts/smoke-providers.ts",
+    "relay:agent": "node --env-file=.env --import tsx src/relay-agent.ts",
+    "relay:pair": "node --import tsx scripts/relay-pair.ts"
   },
   "dependencies": {
     "@simplewebauthn/server": "14.0.3",
