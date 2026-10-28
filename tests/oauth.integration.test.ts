@@ -29,7 +29,7 @@ test('OAuth authorization, PKCE, code single-use, refresh replay and revocation'
     await admin.query(`DROP SCHEMA ${schema} CASCADE`);
     await admin.end();
   });
-  for (const migration of ['001_identity.sql', '003_oauth.sql', '007_passkeys.sql', '009_oauth_client_cleanup.sql', '015_gateway_tenants.sql','018_events_xid.sql']) {
+  for (const migration of ['001_identity.sql','002_core.sql','003_oauth.sql','004_events.sql','005_swarm.sql','006_sessions.sql','007_passkeys.sql','008_lessons.sql','009_oauth_client_cleanup.sql','010_routing_policy.sql','011_patch_routing.sql','012_session_task.sql','013_worker_slots.sql','015_gateway_tenants.sql','016_worker_slots_drain.sql','017_event_subscription_cursor.sql','018_events_xid.sql','019_inbox.sql','020_inbox_receipts.sql','021_flows.sql','023_failure_routing.sql','024_teams.sql','025_teams_swarms.sql','026_agent_names.sql','027_bots.sql']) {
     await pool.query(await readFile(new URL(`../db/migrations/${migration}`, import.meta.url), 'utf8'));
   }
   await pool.query(

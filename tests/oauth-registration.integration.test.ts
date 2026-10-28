@@ -20,7 +20,7 @@ test('client registration: expiry, per-IP limit, global cap', { skip: !process.e
   await admin.query(`CREATE SCHEMA ${schema}`);
   const pool = new pg.Pool({ connectionString, options: `-c search_path=${schema},public`, max: 4 });
   t.after(async () => { await pool.end(); await admin.query(`DROP SCHEMA ${schema} CASCADE`); await admin.end(); });
-  for (const m of ['001_identity.sql', '003_oauth.sql', '007_passkeys.sql', '009_oauth_client_cleanup.sql', '015_gateway_tenants.sql','018_events_xid.sql']) await pool.query(await readFile(new URL(`../db/migrations/${m}`, import.meta.url), 'utf8'));
+  for (const m of ['001_identity.sql','002_core.sql','003_oauth.sql','004_events.sql','005_swarm.sql','006_sessions.sql','007_passkeys.sql','008_lessons.sql','009_oauth_client_cleanup.sql','010_routing_policy.sql','011_patch_routing.sql','012_session_task.sql','013_worker_slots.sql','015_gateway_tenants.sql','016_worker_slots_drain.sql','017_event_subscription_cursor.sql','018_events_xid.sql','019_inbox.sql','020_inbox_receipts.sql','021_flows.sql','023_failure_routing.sql','024_teams.sql','025_teams_swarms.sql','026_agent_names.sql','027_bots.sql']) await pool.query(await readFile(new URL(`../db/migrations/${m}`, import.meta.url), 'utf8'));
   await pool.query("INSERT INTO principals(id,tenant_id,name,role,scopes,permissions,token_hash) VALUES($1,'t','p','frontend','{project:alpha}','{memory:read}','h')", [PRINCIPAL]);
   const service = new OAuthService(pool, { authenticate: async () => null, getPrincipal: async () => null } as AuthBackend, config);
   const register = (ip?: string) => service.registerClient({ client_name: 'c', redirect_uris: ['https://claude.ai/cb'] }, ip);
