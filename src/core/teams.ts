@@ -502,8 +502,8 @@ export class TeamService {
              requiredCap, `agent:${agent.id}`, JSON.stringify(contextVersions), p.id, newId(), reqHash]
           );
 
-          await audit(db, p, agent.scope, 'task.submitted', taskId, { kind: 'turn', agent_id: agent.id });
-          await event(db, p, agent.scope, 'task.updated', taskId, { task_id: taskId, status: 'queued', action: 'submitted' });
+          await audit(db, p, agent.scope, 'task.submitted', taskId, { kind: 'turn', agent_id: agent.id, thread_id: threadId });
+          await event(db, p, agent.scope, 'task.updated', taskId, { task_id: taskId, kind: 'turn', thread_id: threadId, status: 'queued', action: 'submitted' });
         }
       }
 
@@ -585,8 +585,8 @@ export class TeamService {
                requiredCap, `agent:${agent.id}`, JSON.stringify(contextVersions), p.id, newId(), reqHash]
             );
 
-            await audit(db, p, agent.scope, 'task.submitted', taskId, { kind: 'turn', agent_id: agent.id });
-            await event(db, p, agent.scope, 'task.updated', taskId, { task_id: taskId, status: 'queued', action: 'submitted' });
+            await audit(db, p, agent.scope, 'task.submitted', taskId, { kind: 'turn', agent_id: agent.id, thread_id: threadId });
+            await event(db, p, agent.scope, 'task.updated', taskId, { task_id: taskId, kind: 'turn', thread_id: threadId, status: 'queued', action: 'submitted' });
           }
         }
       }
@@ -700,8 +700,19 @@ export class TeamService {
       }
       return view;
     });
+    const typingRows = await this.pool.query<{ task_id: string; agent_id: string; text: unknown; updated_at: Date }>(
+      `SELECT id AS task_id, agent_id, checkpoint->>'partial_text' AS text, updated_at
+       FROM tasks WHERE tenant_id=$1 AND scope=$2 AND thread_id=$3 AND kind='turn' AND status='running'
+       AND jsonb_typeof(checkpoint->'partial_text')='string' AND checkpoint->>'partial_text' <> ''
+       ORDER BY updated_at, id`, [p.tenantId, thread.scope, threadId]
+    );
+    const typing = typingRows.rows.filter(r => typeof r.text === 'string' && r.text.length > 0).map(r => ({
+      task_id: r.task_id, agent_id: r.agent_id, text: redactSecrets(r.text as string).slice(-4000),
+      updated_at: r.updated_at.toISOString()
+    }));
     return {
       thread_id: threadId,
+      typing,
       messages,
       has_more: hasMore
     };

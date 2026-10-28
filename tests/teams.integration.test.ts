@@ -7,6 +7,7 @@ import { after, before, describe, it } from 'node:test';
 import pg, { type Pool } from 'pg';
 import { AuthService, hashToken, newToken } from '../src/auth.js';
 import { CoreService } from '../src/core/index.js';
+import { event } from '../src/core/shared.js';
 import { AppError } from '../src/errors.js';
 import { createHttpHandler } from '../src/http.js';
 import { ROLE_PERMISSIONS } from '../src/policy.js';
@@ -71,6 +72,97 @@ describe('teams phase 1 service foundation', { skip: !connectionString, concurre
       [p.id, p.tenantId, name, role, scopes, p.permissions, hashToken(token)]
     );
     return { ...p, token };
+  }
+
+  it('slims task_list while thread typing is running-only, redacted and bounded', async () => {
+    const user = await createPrincipal(randomUUID(), 'perf-reader');
+    const worker = await createPrincipal(user.tenantId, 'perf-worker', 'worker');
+    const { thread } = await call(user, 'agent_create', {
+      name: 'Stream', role: 'Helper', instructions: 'Help', scope: 'project:a', runner: { provider: 'claude' }
+    });
+    await call(user, 'thread_post', { thread_id: thread.id, body: 'Help', idempotency_key: 'perf' });
+    await pool.query("UPDATE tasks SET checkpoint='{\"partial_text\":\"queued text\"}'::jsonb WHERE thread_id=$1", [thread.id]);
+    assert.deepEqual((await call(user, 'thread_read', { thread_id: thread.id })).typing, []);
+    const claim = await call(worker, 'task_claim', { scope: 'project:a', capabilities: ['claude.read'], kinds: ['turn'] });
+    const checkpoint = { partial_output: 'x'.repeat(20480), partial_text: 'y'.repeat(5000) + ' token=supersecret12345', phase: 'running' };
+    const result = { answer: 'a'.repeat(2000), summary: 'Brief', branch: 'test', review_required: true, transcript: 'z'.repeat(20000) };
+    await pool.query('UPDATE tasks SET checkpoint=$2::jsonb, objective=$3, result=$4::jsonb WHERE id=$1',
+      [claim.task.id, JSON.stringify(checkpoint), 'o'.repeat(1000), JSON.stringify(result)]);
+    const listed = (await call(user, 'task_list', { scope: 'project:a' })).tasks[0];
+    assert.ok(Buffer.byteLength(JSON.stringify(listed)) < 2048);
+    assert.equal(listed.objective.length, 300);
+    assert.deepEqual(listed.checkpoint, { phase: 'running' });
+    assert.deepEqual(listed.result, { answer: 'a'.repeat(500), summary: 'Brief', branch: 'test', review_required: true });
+    const full = (await call(user, 'task_get', { task_id: claim.task.id })).task;
+    assert.deepEqual(full.checkpoint, checkpoint);
+    assert.deepEqual(full.result, result);
+    assert.equal(full.objective.length, 1000);
+    const read = () => call(user, 'thread_read', { thread_id: thread.id, after_seq: 1 });
+    const { typing } = await read();
+    assert.equal(typing.length, 1);
+    assert.equal(typing[0].task_id, claim.task.id);
+    assert.equal(typing[0].agent_id, claim.task.agent_id);
+    assert.equal(typing[0].text.length, 4000);
+    assert.ok(typing[0].text.endsWith('token=[REDACTED]'));
+    assert.ok(!JSON.stringify(typing).includes('supersecret12345'));
+    assert.ok(!JSON.stringify(typing).includes('partial_output'));
+    assert.ok(!Number.isNaN(Date.parse(typing[0].updated_at)));
+    await pool.query("UPDATE tasks SET status='running',kind='review' WHERE id=$1", [claim.task.id]);
+    assert.deepEqual((await read()).typing, []);
+    await pool.query("UPDATE tasks SET kind='turn',checkpoint='{}'::jsonb WHERE id=$1", [claim.task.id]);
+    assert.deepEqual((await read()).typing, []);
+    await pool.query('UPDATE tasks SET checkpoint=$2::jsonb WHERE id=$1', [claim.task.id, JSON.stringify(checkpoint)]);
+    await call(worker, 'task_finish', { task_id: claim.task.id, lease_token: claim.lease_token,
+      lease_generation: claim.lease_generation, outcome: 'completed', result: { answer: 'Done' } });
+    assert.deepEqual((await read()).typing, []);
+    await event(pool, user, 'project:a', 'task.updated', claim.task.id, { task_id: claim.task.id, action: 'resolved' });
+    const events = (await pool.query("SELECT payload FROM events WHERE subject_id=$1 AND name='task.updated'", [claim.task.id])).rows;
+    assert.ok(events.some(e => e.payload.action === 'submitted'));
+    assert.ok(events.some(e => e.payload.action === 'finished'));
+    for (const { payload } of events) {
+      assert.equal(payload.kind, 'turn');
+      assert.equal(payload.thread_id, thread.id);
+    }
+    const submitted = (await pool.query("SELECT details FROM audit_log WHERE subject_id=$1 AND operation='task.submitted'", [claim.task.id])).rows[0];
+    assert.equal(submitted.details.kind, 'turn');
+    assert.equal(submitted.details.thread_id, thread.id);
+  });
+
+  for (const model of [undefined, 'configured-full-model']) {
+    it(`delegates once with ${model ?? 'default model'}, batches pending messages and posts a notice`, async () => {
+      const user = await createPrincipal(randomUUID(), 'delegate-reader');
+      const worker = await createPrincipal(user.tenantId, 'delegate-worker', 'worker');
+      const { agent, thread } = await call(user, 'agent_create', {
+        name: 'Swift', role: 'Helper', instructions: 'Help', scope: 'project:a', runner: { provider: 'claude', ...(model ? { model } : {}) }
+      });
+      await call(user, 'thread_post', { thread_id: thread.id, body: 'Research this', idempotency_key: 'delegate' });
+      const claim = await call(worker, 'task_claim', { scope: 'project:a', capabilities: ['claude.read'], kinds: ['turn'] });
+      if (model) await call(user, 'thread_post', { thread_id: thread.id, body: 'Also this', idempotency_key: 'pending' });
+      const finish = { task_id: claim.task.id, lease_token: claim.lease_token, lease_generation: claim.lease_generation,
+        outcome: 'completed', result: { answer: 'I will research this.', delegate: { objective: 'Research in depth' } } };
+      await call(worker, 'task_finish', finish);
+      assert.equal((await call(worker, 'task_finish', finish)).replayed, true);
+      const tasks = (await pool.query('SELECT * FROM tasks WHERE agent_id=$1 ORDER BY created_at', [agent.id])).rows;
+      assert.equal(tasks.length, 2);
+      assert.equal(tasks[1].objective, 'Research in depth');
+      assert.equal(tasks[1].thread_id, thread.id);
+      assert.equal(tasks[1].agent_id, agent.id);
+      assert.equal(tasks[1].permission_envelope.runner.model, model ?? 'claude-opus-5-5');
+      assert.equal(tasks[1].permission_envelope.runner.delegated, true);
+      assert.equal(tasks[1].permission_envelope.local_patch, false);
+      const messages = (await call(user, 'thread_read', { thread_id: thread.id })).messages;
+      assert.equal(messages.filter((m: any) => m.body === 'I will research this.').length, 1);
+      const notices = messages.filter((m: any) => m.kind === 'notice');
+      assert.equal(notices.length, 1);
+      assert.equal(notices[0].author.kind, 'system');
+      assert.equal(notices[0].body, `Swift handed this to ${model ?? 'claude-opus-5-5'} for a fuller answer`);
+      const next = await call(worker, 'task_claim', { scope: 'project:a', capabilities: ['claude.read'], kinds: ['turn'] });
+      assert.equal(next.task.id, tasks[1].id);
+      await call(worker, 'task_finish', { task_id: next.task.id, lease_token: next.lease_token,
+        lease_generation: next.lease_generation, outcome: 'completed', result: { answer: 'Full answer', delegate: { objective: 'Again' } } });
+      assert.equal((await pool.query('SELECT id FROM tasks WHERE agent_id=$1', [agent.id])).rows.length, 2);
+      assert.equal((await call(user, 'thread_read', { thread_id: thread.id })).messages.filter((m: any) => m.kind === 'notice').length, 1);
+    });
   }
 
   it('post queues one turn and finish posts the reply with the next seq', async () => {

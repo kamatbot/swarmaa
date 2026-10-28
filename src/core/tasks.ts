@@ -26,6 +26,8 @@ function effectiveRoutingKind(row: { kind: string; required_capability: string }
     : (row.kind as RoutingKind);
 }
 
+export const DELEGATE_MODEL = 'claude-opus-5-5';
+
 export const TASK_KINDS = ['research','review','patch'] as const;
 export const TASK_STATUSES = ['queued','running','blocked','completed','failed','cancelled'] as const;
 type TaskKind = typeof TASK_KINDS[number] | 'check' | 'approve' | 'turn';
@@ -102,6 +104,19 @@ export function taskView(row:TaskRow):Record<string,unknown> {
     ...(row.resolved_at ? {resolved_at:date(row.resolved_at)} : {}) };
 }
 
+/** List summaries deliberately exclude streamed output; detail/claim views stay full. */
+function taskListView(row:TaskRow):Record<string,unknown> {
+  const view = taskView(row);
+  const { partial_output, partial_text, ...checkpoint } = row.checkpoint ?? {};
+  const result = row.result === null ? null : Object.fromEntries(
+    ['answer', 'branch', 'changed_files', 'served', 'failure', 'check', 'summary', 'review_required']
+      .filter(key => row.result![key] !== undefined)
+      .map(key => [key, key === 'answer' && typeof row.result![key] === 'string'
+        ? (row.result![key] as string).slice(0, 500) : row.result![key]])
+  );
+  return { ...view, objective: row.objective.slice(0, 300), checkpoint: row.checkpoint === null ? null : checkpoint, result };
+}
+
 export async function taskWithInstructions(db:Db, row:TaskRow):Promise<Record<string,unknown>> {
   const instructions = await db.query(`SELECT id,instruction,actor_id,created_at FROM task_instructions
     WHERE task_id=$1 ORDER BY created_at,id`, [row.id]);
@@ -128,10 +143,11 @@ async function lockedTask(db:PoolClient,p:Principal,id:string,teams=false):Promi
 
 export async function taskChanged(db:PoolClient,p:Principal,row:TaskRow,action:string,advance=true):Promise<void> {
   const failureCode = (row.result as any)?.failure?.code;
-  const details = { task_id:row.id,version:row.version,status:row.status,action,
+  const details = { task_id:row.id,kind:row.kind,
+    ...(row.thread_id ? {thread_id:row.thread_id} : {}),version:row.version,status:row.status,action,
     attempt_count:row.attempt_count,lease_generation:row.lease_generation,
     ...(failureCode ? { failure_code: failureCode } : {}),
-    ...(row.flow_id ? {flow_id:row.flow_id,step_id:row.flow!.step_id,kind:row.kind,
+    ...(row.flow_id ? {flow_id:row.flow_id,step_id:row.flow!.step_id,
       ...(row.kind==='approve' && action==='flow_ready' ? {approval_required:true} : {})} : {}) };
   await audit(db,p,row.scope,`task.${action}`,row.id,details);
   await event(db,p,row.scope,'task.updated',row.id,details);
@@ -341,7 +357,7 @@ export class TaskService {
       AND ($6::timestamptz IS NULL OR (created_at,id)<($6::timestamptz,$7::uuid))
       ORDER BY created_at DESC,id DESC LIMIT $8`,[p.tenantId,scope,status,resolved,initiatorKind,beforeDate,before,limit+1]);
     const rows = result.rows.slice(0,limit);
-    return {tasks:rows.map(taskView),next_before_id:result.rows.length>limit ? rows.at(-1)!.id : null};
+    return {tasks:rows.map(taskListView),next_before_id:result.rows.length>limit ? rows.at(-1)!.id : null};
   }
 
   async continue(p:Principal,input:Record<string,unknown>):Promise<unknown> {
@@ -954,7 +970,11 @@ export class TaskService {
           [row.thread_id, processedSeq]
         )).rows[0];
 
-        if (pendingHuman && agentRow) {
+        const runner = row.permission_envelope.runner as { delegated?: unknown } | undefined;
+        const delegate = result.delegate as { objective?: unknown } | undefined;
+        const delegateObjective = outcome === 'completed' && runner?.delegated !== true && typeof delegate?.objective === 'string'
+          ? redactSecrets(delegate.objective).trim().slice(0, 500) : '';
+        if ((pendingHuman || delegateObjective) && agentRow) {
           const active = (await db.query(
             `SELECT id FROM tasks
              WHERE tenant_id=$1 AND agent_id=$2 AND status IN ('queued', 'running') AND id <> $3
@@ -970,13 +990,15 @@ export class TaskService {
               if (bot) nextCap = botCapability(bot, agentRow.edits ? 'patch' : 'summary', agentRow.edits);
             }
             const followUpId = newId();
+            const delegateModel = agentRow.runner.model ?? DELEGATE_MODEL;
             const envelope = {
               deploy: false, publish: false, purchase: false, local_patch: agentRow.edits,
-              read_project: true, send_messages: false, permission_changes: false, external_side_effects: false
+              read_project: true, send_messages: false, permission_changes: false, external_side_effects: false,
+              ...(delegateObjective ? { runner: { ...agentRow.runner, model: delegateModel, delegated: true } } : {})
             };
-            const ctxVersions = { message_seq: Number(pendingHuman.seq) };
+            const ctxVersions = { message_seq: Number(pendingHuman?.seq ?? processedSeq) };
             const reqHash = sha256(canonicalJson({
-              kind: 'turn', scope: agentRow.scope, agent_id: agentRow.id, thread_id: row.thread_id, seq: Number(pendingHuman.seq)
+              kind: 'turn', scope: agentRow.scope, agent_id: agentRow.id, thread_id: row.thread_id, seq: Number(pendingHuman?.seq ?? processedSeq)
             }));
             await db.query(
               `INSERT INTO tasks
@@ -984,11 +1006,25 @@ export class TaskService {
                   permission_envelope, required_capability, resource_key, context_versions, status, created_by,
                   idempotency_key, request_hash, max_attempts)
                VALUES ($1, $2, $3, 'turn', $4, $5, $6, $7, '[]'::jsonb, '[]'::jsonb, $8::jsonb, $9, $10, $11::jsonb, 'queued', $12, $13, $14, 3)`,
-              [followUpId, p.tenantId, agentRow.scope, agentRow.id, row.thread_id, botId, `Turn for agent ${agentRow.name}`,
+              [followUpId, p.tenantId, agentRow.scope, agentRow.id, row.thread_id, botId, delegateObjective || `Turn for agent ${agentRow.name}`,
                JSON.stringify(envelope), nextCap, `agent:${agentRow.id}`, JSON.stringify(ctxVersions), row.created_by, newId(), reqHash]
             );
-            await audit(db, p, agentRow.scope, 'task.submitted', followUpId, { kind: 'turn', agent_id: agentRow.id });
-            await event(db, p, agentRow.scope, 'task.updated', followUpId, { task_id: followUpId, status: 'queued', action: 'submitted' });
+            await audit(db, p, agentRow.scope, 'task.submitted', followUpId, { kind: 'turn', agent_id: agentRow.id, thread_id: row.thread_id });
+            await event(db, p, agentRow.scope, 'task.updated', followUpId, { task_id: followUpId, kind: 'turn', thread_id: row.thread_id, status: 'queued', action: 'submitted' });
+            if (delegateObjective) {
+              const seq = await assignThreadSeq(db, p.tenantId, row.thread_id);
+              const noticeId = newId();
+              const author = { kind: 'system', id: 'service' };
+              await db.query(
+                `INSERT INTO messages (id, tenant_id, scope, thread_id, seq, author, kind, body)
+                 VALUES ($1, $2, $3, $4, $5, $6::jsonb, 'notice', $7)`,
+                [noticeId, p.tenantId, row.scope, row.thread_id, seq, JSON.stringify(author),
+                 redactSecrets(`${agentRow.name} handed this to ${delegateModel} for a fuller answer`)]
+              );
+              await event(db, p, row.scope, 'message.created', noticeId, {
+                thread_id: row.thread_id, message_id: noticeId, seq: Number(seq), kind: 'notice', author
+              });
+            }
           }
         }
       }

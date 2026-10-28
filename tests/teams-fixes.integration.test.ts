@@ -132,7 +132,7 @@ describe('teams service performance fixes', { skip: !connectionString, concurren
     assert.deepEqual(questions[0].ref, { question_id: q1 });
     assert.equal(sql.filter(s => /FROM questions/.test(s)).length, 1);
     assert.equal(sql.filter(s => /FROM swarms/.test(s)).length, 1);
-    assert.equal(sql.length, 4);
+    assert.equal(sql.length, 5); // K2 adds one bounded typing query.
     const limited = { ...user, permissions: user.permissions.filter(p => p !== 'task:read') };
     assert.equal((await call(limited, 'thread_read', { thread_id: thread.id })).messages.find((m: any) => m.kind === 'swarm').swarm, undefined);
   });

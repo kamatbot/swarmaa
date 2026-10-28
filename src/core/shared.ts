@@ -86,6 +86,14 @@ export async function audit(db: Db, p: Principal, scope: string, operation: stri
 export type EventType = 'task.updated' | 'memory.changed' | 'message.created' | 'message.updated' | 'swarm.updated' | 'agent.updated' | 'question.created' | 'question.answered' | 'thread.read' | 'bot.updated';
 
 export async function event(db: Db, p: Principal, scope: string, name: EventType, subjectId: string, metadata: Record<string, unknown>): Promise<void> {
+  // Other subsystems also emit task updates; fill their identifiers without a round trip on the hot checkpoint path.
+  if (name === 'task.updated' && metadata.kind === undefined) {
+    const task = (await db.query<{ kind: string; thread_id: string | null }>(
+      'SELECT kind,thread_id FROM tasks WHERE id=$1 AND tenant_id=$2 AND scope=$3',
+      [subjectId, p.tenantId, scope]
+    )).rows[0];
+    if (task) metadata = { ...metadata, kind: task.kind, ...(task.thread_id ? { thread_id: task.thread_id } : {}) };
+  }
   await db.query('INSERT INTO events (id,tenant_id,scope,name,subject_id,payload) VALUES ($1,$2,$3,$4,$5,$6::jsonb)', [newId(), p.tenantId, scope, name, subjectId, JSON.stringify(metadata)]);
   await db.query("SELECT pg_notify('swarmaa_events', $1)", [p.tenantId]);
 }
