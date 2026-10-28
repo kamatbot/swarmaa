@@ -2,55 +2,6 @@ import SwiftUI
 
 // MARK: - Needs you
 
-/// The default pane: what needs the owner, then what is running.
-struct NeedsYouPane: View {
-    @ObservedObject var model: TeamsModel
-    @State private var selectedID: String?
-
-    var body: some View {
-        VStack(spacing: 0) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(Date(), format: .dateTime.weekday(.wide).month().day()).font(.caption).foregroundStyle(Palette.textSecondary)
-                Text(verbatim: model.attention.count == 1 ? L10n.t("1 thing needs you")
-                                                           : L10n.t("\(model.attention.count) things need you"))
-                    .font(.title2.weight(.semibold))
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 20).padding(.vertical, 14)
-            Divider()
-            if model.attention.isEmpty && model.openSwarms.isEmpty {
-                TeamsEmptyState(symbol: "checkmark.circle", title: L10n.t("Nothing needs you"),
-                                detail: L10n.t("Questions, reviews and failures from your agents show up here."), action: nil)
-            } else {
-                List(selection: $selectedID) {
-                    if !model.attention.isEmpty {
-                        Section(L10n.t("Needs you")) {
-                            ForEach(model.attention) { NeedsYouRow(model: model, item: $0).tag($0.id) }
-                        }
-                    }
-                    if !model.openSwarms.isEmpty {
-                        Section(L10n.t("Running")) {
-                            ForEach(model.openSwarms) { RunningSwarmRow(model: model, swarm: $0, interactive: false).tag($0.id) }
-                        }
-                    }
-                }
-            }
-            Divider()
-            HStack {
-                if let item = model.attention.first(where: { $0.id == selectedID }) {
-                    AttentionActions(model: model, item: item)
-                } else if let swarm = model.openSwarms.first(where: { $0.id == selectedID }) {
-                    Button("Open swarm") { model.detailSwarmID = swarm.id }
-                } else if !model.isEmpty { Text("Select an item to act on it").font(.caption) }
-                Spacer()
-                if model.isEmpty { Button("Create agent…") { model.creatingAgent = true }.buttonStyle(.borderedProminent) }
-                Button(L10n.t("Refresh")) { Task { await model.refresh() } }
-            }
-            .padding(12)
-        }
-    }
-}
-
 struct NeedsYouRow: View {
     @ObservedObject var model: TeamsModel
     let item: TeamsAttentionItem
@@ -131,9 +82,9 @@ struct RunningSwarmRow: View {
 struct TaskStateLine: View {
     let row: TeamsTaskRow
     var body: some View {
-        (Text(verbatim: row.word).foregroundColor(row.section.color).fontWeight(.semibold)
-            + Text(verbatim: row.detail.isEmpty ? "" : " · " + row.detail).foregroundColor(Palette.textSecondary))
-            .font(.callout).lineLimit(2)
+        (Text(verbatim: row.word).foregroundColor(KS.ink).fontWeight(.bold)
+            + Text(verbatim: row.detail.isEmpty ? "" : " · " + row.detail).foregroundColor(KS.textSoft))
+            .font(KS.body(14)).lineLimit(1)
     }
 }
 
@@ -147,75 +98,110 @@ struct TasksPane: View {
     var body: some View {
         let sections = TeamsTaskGrouping.sections(model.taskRows, search: model.taskSearch, sort: model.taskSort)
         VStack(spacing: 0) {
-            Text(verbatim: L10n.t("Tasks")).font(.title2.weight(.semibold))
-                .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 20).padding(.vertical, 14)
-            Divider()
-            if sections.isEmpty {
-                TeamsEmptyState(symbol: "checklist", title: model.taskSearch.isEmpty ? L10n.t("No tasks") : L10n.t("No matches"),
-                                detail: model.taskSearch.isEmpty ? L10n.t("Tasks your agents run show up here.") : nil, action: nil)
-            } else {
-                List(selection: $selectedID) {
-                    if model.taskSort == .newest {
-                        rows(sections.flatMap(\.rows).sorted { ($0.at ?? .distantPast) > ($1.at ?? .distantPast) })
+            ScrollView {
+                VStack(alignment: .leading, spacing: 22) {
+                    HStack(alignment: .lastTextBaseline, spacing: 14) {
+                        Text(verbatim: L10n.t("TASKS.")).font(KS.display(52))
+                        Text(verbatim: L10n.t("Everything your bots are doing, done or stuck on.")).font(KS.body(16)).foregroundStyle(KS.textSoft)
+                    }
+                    if sections.isEmpty {
+                        TeamsEmptyState(symbol: "checklist", title: model.taskSearch.isEmpty ? L10n.t("No tasks") : L10n.t("No matches"),
+                                        detail: model.taskSearch.isEmpty ? L10n.t("Tasks your bots run show up here.") : nil, action: nil)
+                    } else if model.taskSort == .newest {
+                        panel(sections.flatMap(\.rows).sorted { ($0.at ?? .distantPast) > ($1.at ?? .distantPast) }, shadow: false)
                     } else {
-                    ForEach(sections, id: \.section) { entry in
-                        if entry.section == .resolved {
-                            Section(isExpanded: $showResolved) { rows(entry.rows) } header: {
-                                Text(verbatim: "\(entry.section.title) (\(entry.rows.count))")
+                        ForEach(Array(sections.enumerated()), id: \.element.section) { i, entry in
+                            let number = String(format: "%02d", i + 1)
+                            if entry.section == .resolved {
+                                Button { showResolved.toggle() } label: {
+                                    Label(number + " — " + entry.section.title + " · \(entry.rows.count)", systemImage: showResolved ? "chevron.down" : "chevron.right")
+                                }
+                                .buttonStyle(.ks(.paper)).accessibilityAddTraits(showResolved ? .isSelected : [])
+                                if showResolved { panel(entry.rows, shadow: false) }
+                            } else {
+                                VStack(alignment: .leading, spacing: 10) {
+                                    HStack(spacing: 8) {
+                                        KSLabel(number + " — " + entry.section.title)
+                                        KSChip("\(entry.rows.count)", fill: Self.tint(entry.section), ink: entry.section == .failed ? KS.paper : KS.ink)
+                                    }
+                                    panel(entry.rows, shadow: i == 0)
+                                }
                             }
-                        } else {
-                            Section(entry.section.title) { rows(entry.rows) }
                         }
                     }
+                    if !model.resolvedCursors.isEmpty, showResolved || model.taskSort == .newest {
+                        Button(L10n.t("Load more resolved tasks")) { Task { await model.loadMoreResolved() } }
+                            .buttonStyle(.ks(.white)).disabled(model.loadingResolved)
                     }
                 }
-                .listStyle(.sidebar)
+                .padding(28)
             }
-            Divider()
-            if !model.resolvedCursors.isEmpty {
-                Button("Load more resolved tasks") { Task { await model.loadMoreResolved() } }
-                    .disabled(model.loadingResolved).padding(8)
-            }
-            if let row = model.taskRows.first(where: { $0.id == selectedID }) {
-                TaskActions(model: model, row: row).padding(.horizontal, 12).padding(.top, 8)
-            }
-            HStack(spacing: 10) {
-                TextField(L10n.t("Search tasks"), text: $model.taskSearch).textFieldStyle(.roundedBorder)
+            KSBottomBar {
+                KSSearchField(prompt: L10n.t("Search tasks"), text: $model.taskSearch).frame(maxWidth: 320)
                 Picker(L10n.t("Sort"), selection: $model.taskSort) {
-                    Text(verbatim: L10n.t("Newest")).tag(TeamsTaskSort.newest)
                     Text(verbatim: L10n.t("By state")).tag(TeamsTaskSort.state)
+                    Text(verbatim: L10n.t("Newest")).tag(TeamsTaskSort.newest)
                 }
-                .pickerStyle(.segmented).fixedSize()
+                .pickerStyle(.segmented).fixedSize().labelsHidden()
+                Spacer()
+                if let row = model.taskRows.first(where: { $0.id == selectedID }) { TaskActions(model: model, row: row) }
             }
-            .padding(12)
+        }
+        .background(KS.paper)
+    }
+
+    static func tint(_ section: TeamsTaskSection) -> Color {
+        switch section {
+        case .needsInput: return KS.coral
+        case .review: return KS.sage
+        case .working: return KS.sky
+        case .failed: return KS.ink
+        case .resolved: return KS.white
         }
     }
 
-    private func rows(_ rows: [TeamsTaskRow]) -> some View {
-        ForEach(rows) { TaskRowView(model: model, row: $0).tag($0.id) }
+    private func panel(_ rows: [TeamsTaskRow], shadow: Bool) -> some View {
+        VStack(spacing: 0) {
+            ForEach(Array(rows.enumerated()), id: \.element.id) { i, row in
+                Button { selectedID = selectedID == row.id ? nil : row.id } label: {
+                    TaskRowView(model: model, row: row, selected: selectedID == row.id)
+                }
+                .buttonStyle(.plain)
+                .overlay(alignment: .bottom) { if i < rows.count - 1 { Rectangle().fill(KS.ink).frame(height: 2) } }
+                .accessibilityAddTraits(selectedID == row.id ? .isSelected : [])
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 20))
+        .ksCard(fill: .clear, radius: 20, shadow: shadow)
     }
 }
 
 struct TaskRowView: View {
     @ObservedObject var model: TeamsModel
     let row: TeamsTaskRow
+    var selected = false
 
     var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: row.section == .resolved ? "checkmark.circle" : "circle")
-                .accessibilityLabel(row.section.title)
+        HStack(spacing: 14) {
+            ZStack {
+                Circle().fill(row.section == .resolved ? KS.lime : row.section == .working ? KS.sky : KS.white)
+                Circle().stroke(KS.ink, lineWidth: 2.5)
+                if row.section == .resolved { Image(systemName: "checkmark").font(.system(size: 12, weight: .heavy)) }
+            }
+            .frame(width: 26, height: 26).accessibilityLabel(row.section.title)
             VStack(alignment: .leading, spacing: 3) {
-                Text(verbatim: row.title).font(.body).lineLimit(2)
-                    .strikethrough(row.section == .resolved).foregroundStyle(row.section == .resolved ? Palette.textSecondary : Palette.textPrimary)
+                Text(verbatim: row.title).font(KS.body(16, .bold)).lineLimit(1)
+                    .strikethrough(row.section == .resolved)
+                    .foregroundStyle(row.section == .resolved ? KS.textMuted : KS.ink)
                 TaskStateLine(row: row)
             }
             Spacer()
             if let at = row.at {
-                Text(at, format: .relative(presentation: .numeric, unitsStyle: .narrow))
-                    .font(.caption).foregroundStyle(Palette.textSecondary)
+                Text(at, format: .relative(presentation: .numeric, unitsStyle: .narrow)).font(KS.mono(10)).foregroundStyle(KS.textMuted)
             }
         }
-        .padding(.vertical, 2)
+        .padding(.horizontal, 16).padding(.vertical, 12)
+        .background(selected ? KS.sageTint : row.section == .needsInput ? KS.coralTint : KS.white)
         .contentShape(Rectangle())
     }
 }
@@ -224,29 +210,29 @@ struct TaskActions: View {
     @ObservedObject var model: TeamsModel
     let row: TeamsTaskRow
     var body: some View {
-        HStack {
-            Text(row.title).lineLimit(2)
-            Spacer()
+        HStack(spacing: 8) {
             if row.kind != "task", let item = model.attention.first(where: { $0.id == row.id }) {
-                Button("Open") { Task { await model.open(item) } }
+                Button(L10n.t("Open")) { Task { await model.open(item) } }.buttonStyle(.ks(.paper))
                     .accessibilityLabel("Open: " + row.title)
             }
             if row.branch != nil {
-                Button(model.reviewed.contains(row.id) ? "Copied" : "Copy review command") { model.review(row) }
+                Button(model.reviewed.contains(row.id) ? L10n.t("Copied") : L10n.t("Copy review command")) { model.review(row) }
+                    .buttonStyle(.ks(.paper))
             }
             if row.kind == "task", row.section == .failed {
-                Button("Retry") { Task { await model.retry(row.id) } }.disabled(model.busyTasks.contains(row.id))
+                Button(L10n.t("Retry")) { Task { await model.retry(row.id) } }.buttonStyle(.ks(.white))
+                    .disabled(model.busyTasks.contains(row.id))
             }
             if row.resolvable, !model.answeringBlocked {
-                Button(row.section == .resolved ? "Unresolve" : "Resolve") {
+                Button(row.section == .resolved ? L10n.t("Unresolve") : L10n.t("Mark resolved")) {
                     Task { await model.resolve(row.id, row.section != .resolved) }
                 }
+                .buttonStyle(.ks(.primary))
                 .accessibilityLabel((row.section == .resolved ? "Unresolve: " : "Resolve: ") + row.title)
                 .disabled(model.busyTasks.contains(row.id))
             }
         }
     }
-
 }
 
 // MARK: - Setup checklist

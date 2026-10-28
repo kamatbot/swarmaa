@@ -1,8 +1,8 @@
 import AppKit
 import SwiftUI
 
-/// The Swarmaa main window: agents, channels and their threads (TEAMS.md §1).
-/// One at a time; reopening brings it forward and refreshes.
+/// The Swarmaa main window: bots and their threads (docs/BOTS.md), tasks and
+/// usage. One at a time; reopening brings it forward and refreshes.
 @MainActor
 final class TeamsWindowController: NSObject, NSWindowDelegate {
     private(set) var window: NSWindow?
@@ -12,14 +12,16 @@ final class TeamsWindowController: NSObject, NSWindowDelegate {
     /// `threadID` opens straight onto that thread (a notch swarm or question).
     func show(threadID: String? = nil, connect: Bool = true) {
         if window == nil {
-            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1100, height: 720),
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1280, height: 820),
                                   styleMask: [.titled, .closable, .miniaturizable, .resizable],
                                   backing: .buffered, defer: false)
             window.title = "Swarmaa"
             window.setAccessibilityElement(true)
             window.setAccessibilityRole(.window)
             window.setAccessibilityLabel("Swarmaa")
-            window.minSize = NSSize(width: 820, height: 520)
+            window.minSize = NSSize(width: 900, height: 560)
+            // Kind Swarm has one theme, paper; keep the window in it whatever the Mac's appearance.
+            window.appearance = NSAppearance(named: .aqua)
             window.contentView = NSHostingView(rootView: TeamsRootView(model: model))
             window.isReleasedWhenClosed = false
             window.delegate = self
@@ -53,32 +55,39 @@ struct TeamsRootView: View {
     @ObservedObject var model: TeamsModel
 
     var body: some View {
-        VStack(spacing: 0) {
+        HStack(spacing: 0) {
+            TeamsRail(model: model)
             VStack(spacing: 0) {
                 content
                 if model.staleError != nil || model.streamState != "Live" {
-                    HStack {
-                        VStack(alignment: .leading) {
-                            Text(model.staleError == nil ? model.streamState : "Offline · " + (model.staleError ?? ""))
-                            if let date = model.lastUpdated { Text("Last updated \(date, style: .relative) ago").font(.caption) }
+                    HStack(spacing: 10) {
+                        KSChip(model.staleError == nil ? L10n.t("Reconnecting") : L10n.t("Offline"),
+                               fill: model.staleError == nil ? KS.butter : KS.coral)
+                        Text(verbatim: model.staleError ?? model.streamState).font(KS.body(14)).foregroundStyle(KS.textSoft).lineLimit(1)
+                        if let date = model.lastUpdated {
+                            Text("· updated \(date, style: .relative) ago").font(KS.body(13)).foregroundStyle(KS.textMuted)
                         }
                         Spacer()
-                        Button("Retry") { Task { await model.refresh() } }
-                    }.padding(12)
+                        Button(L10n.t("Retry")) { Task { await model.refresh() } }.buttonStyle(.ks(.white, compact: true))
+                    }
+                    .padding(.horizontal, 16).padding(.vertical, 8)
+                    .background(KS.white)
+                    .overlay(alignment: .top) { Rectangle().fill(KS.ink).frame(height: 2) }
                 }
             }
-            Divider()
-            TeamsRail(model: model)
         }
-        .frame(minWidth: 820, minHeight: 520)
-        .foregroundStyle(Palette.textPrimary)
+        .frame(minWidth: 900, minHeight: 560)
+        .background(KS.paper)
+        .foregroundStyle(KS.ink)
+        .tint(KS.ink)
+        .environment(\.colorScheme, .light)
         .alert(L10n.t("Swarmaa"), isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) {
             Button(L10n.t("OK")) { model.error = nil }
         } message: { Text(verbatim: model.error ?? "") }
         .sheet(item: Binding(get: { model.detailSwarmID.map(SwarmID.init) }, set: { model.detailSwarmID = $0?.id })) {
             SwarmDetailView(model: model, swarmID: $0.id)
         }
-        .sheet(isPresented: $model.creatingAgent) { CreateAgentSheet(model: model) }
+        .sheet(isPresented: $model.creatingBot) { NewBotSheet(model: model) }
         .sheet(isPresented: $model.showSetup) { SetupChecklistView(model: model) { model.showSetup = false } }
     }
 
@@ -90,34 +99,17 @@ struct TeamsRootView: View {
             ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
         case .serviceTooOld:
             TeamsEmptyState(symbol: "arrow.triangle.2.circlepath",
-                            title: L10n.t("Update the Swarmaa service to use teams"),
-                            detail: L10n.t("This service has no agents or threads yet. Update it, then reopen this window."),
+                            title: L10n.t("Update the Swarmaa service"),
+                            detail: L10n.t("This service has no bots or threads yet. Update it, then reopen this window."),
                             action: (L10n.t("Try again"), { Task { await model.refresh() } }))
         case .failed(let message):
             TeamsEmptyState(symbol: "exclamationmark.triangle", title: message, detail: nil,
                             action: (L10n.t("Try again"), { Task { await model.refresh() } }))
         case .ready:
             switch model.pane {
-            case .home: NeedsYouPane(model: model)
+            case .bots: BotsHome(model: model)
             case .tasks: TasksPane(model: model)
-            case .agents:
-                if model.isEmpty {
-                    CreateFirstAgentView(model: model)
-                } else {
-                    HSplitView {
-                        TeamsSidebar(model: model).frame(minWidth: 240, idealWidth: 280, maxWidth: 360)
-                        Group {
-                            if let t = model.selectedThreadID { ThreadView(model: model, threadID: t).id(t) }
-                            else {
-                                TeamsEmptyState(symbol: "bubble.left.and.bubble.right", title: L10n.t("Choose an agent or channel"),
-                                                detail: nil, action: nil)
-                            }
-                        }
-                        .frame(minWidth: 420, maxWidth: .infinity)
-                    }
-                }
-            case .flows: FlowsPane(model: model)
-            case .usage: UsagePane(status: model.status)
+            case .usage: UsagePane(model: model)
             }
         }
     }
@@ -125,172 +117,157 @@ struct TeamsRootView: View {
 
 // MARK: - Rail
 
+/// The ink rail: Bots, Tasks, Usage, then one usage ring per provider (hover
+/// for the windows, like the notch), then Settings.
 struct TeamsRail: View {
     @ObservedObject var model: TeamsModel
 
     var body: some View {
-        HStack(spacing: 14) {
-            item("tray.full.fill", L10n.t("Needs you"), .home)
-                .overlay(alignment: .topTrailing) {
-                    if !model.attention.isEmpty {
-                        Text(verbatim: model.attention.count > 99 ? "99+" : "\(model.attention.count)")
-                            .font(.system(size: 9, weight: .bold)).foregroundStyle(.white)
-                            .padding(.horizontal, 4).background(Capsule().fill(Color.accentColor))
-                            .accessibilityLabel(L10n.t("\(model.attention.count) need you"))
-                    }
-                }
-            item("checklist", L10n.t("Tasks"), .tasks)
-            item("person.2.fill", L10n.t("Agents"), .agents)
-            item("point.3.connected.trianglepath.dotted", L10n.t("Swarms"), .flows)
-            item("chart.pie.fill", L10n.t("Usage"), .usage)
-            Divider().frame(height: 28)
-            ForEach(model.status?.usage ?? [], id: \.provider) { usage in
-                Button { model.pane = .usage } label: { QuotaRing(usage: usage) }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(SwarmaCells.vendorName(usage.provider) + " quota")
-                    .accessibilityValue(usage.headroom.map { "\(Int($0)) percent left" } ?? "Unknown")
-                    .help("\(SwarmaCells.vendorName(usage.provider)): \(usage.headroom.map { "\(Int($0))% " + L10n.t("left") } ?? L10n.t("unknown"))")
+        VStack(spacing: 8) {
+            KSMoji(seed: "swarmaa", size: 36).padding(.top, 14).padding(.bottom, 8)
+            item("person.2.fill", L10n.t("Bots"), .bots, badge: model.botsWithUpdates)
+            item("checklist", L10n.t("Tasks"), .tasks, badge: 0)
+            item("chart.bar.fill", L10n.t("Usage"), .usage, badge: 0)
+            Spacer(minLength: 12)
+            if let usage = model.status?.usage, !usage.isEmpty {
+                Text(verbatim: L10n.t("USAGE")).font(KS.mono(9)).tracking(1).foregroundStyle(KS.onInkMuted)
+                ForEach(usage, id: \.provider) { UsageRingButton(model: model, usage: $0) }
             }
             Button { AppDelegate.shared?.openSettings() } label: {
-                Image(systemName: "gearshape").font(.system(size: 17)).frame(width: 36, height: 36)
+                Image(systemName: "gearshape").font(.system(size: 18)).frame(width: 46, height: 46)
             }
-            .buttonStyle(.plain).foregroundStyle(Palette.textSecondary).help(L10n.t("Settings")).accessibilityLabel("Settings")
+            .buttonStyle(.plain).foregroundStyle(KS.onInkSoft)
+            .help(L10n.t("Settings")).accessibilityLabel(L10n.t("Settings"))
+            .padding(.bottom, 12)
         }
-        .padding(.horizontal, 14).padding(.vertical, 8)
-        .frame(maxWidth: .infinity)
+        .frame(width: 72)
+        .frame(maxHeight: .infinity)
+        .background(KS.ink)
     }
 
-    private func item(_ symbol: String, _ title: String, _ pane: TeamsModel.Pane) -> some View {
-        Button { model.pane = pane } label: {
-            Image(systemName: symbol).font(.system(size: 16, weight: .medium))
-                .frame(width: 36, height: 36)
-                .background(RoundedRectangle(cornerRadius: 9).fill(model.pane == pane ? Palette.barTrack : .clear))
+    private func item(_ symbol: String, _ title: String, _ pane: TeamsModel.Pane, badge: Int) -> some View {
+        let on = model.pane == pane
+        return Button { model.pane = pane } label: {
+            Image(systemName: symbol).font(.system(size: 17, weight: .semibold))
+                .frame(width: 46, height: 46)
+                .background(Circle().fill(on ? KS.lime : .clear))
+                .foregroundStyle(on ? KS.ink : KS.onInkSoft)
+                .overlay(alignment: .topTrailing) { if badge > 0 { KSBadge(count: badge).offset(x: 6, y: -4) } }
+                .contentShape(Circle())
         }
         .buttonStyle(.plain)
-        .foregroundStyle(model.pane == pane ? Palette.textPrimary : Palette.textSecondary)
         .help(title)
-        .accessibilityLabel(title)
-        .accessibilityAddTraits(model.pane == pane ? .isSelected : [])
+        .accessibilityLabel(badge > 0 ? title + ", " + L10n.t("\(badge) with updates") : title)
+        .accessibilityAddTraits(on ? .isSelected : [])
     }
 }
 
-/// A provider's remaining quota as a ring, coloured by the app's usage bands.
-struct QuotaRing: View {
-    let usage: SwarmaStatus.Usage
-    var size: CGFloat = 30
-
-    private var used: Double? { usage.headroom.map { 1 - min(max($0, 0), 100) / 100 } }
-
-    var body: some View {
-        ZStack {
-            Circle().stroke(Palette.ringTrack, lineWidth: 3)
-            if let used {
-                Circle().trim(from: 0, to: 1 - used)
-                    .stroke(UsageBand.band(for: used).color(), style: StrokeStyle(lineWidth: 3, lineCap: .round))
-                    .rotationEffect(.degrees(-90))
-            }
-            Text(verbatim: String(SwarmaCells.vendorName(usage.provider).prefix(1)))
-                .font(.system(size: size * 0.36, weight: .semibold))
-                .foregroundStyle(usage.ok ? Palette.textPrimary : Palette.textSecondary)
-        }
-        .frame(width: size, height: size)
-    }
-}
-
-// MARK: - Sidebar
-
-struct TeamsSidebar: View {
+/// A provider's ring; hovering shows its windows, resets and where routing sends work.
+struct UsageRingButton: View {
     @ObservedObject var model: TeamsModel
+    let usage: SwarmaStatus.Usage
+    @State private var hovering = false
+    @State private var pinned = false
+
+    private var name: String { SwarmaCells.vendorName(usage.provider) }
+    private var left: Double? { usage.headroom.map { min(max($0, 0), 100) } }
 
     var body: some View {
-        VStack(spacing: 0) {
-            List(selection: Binding(get: { model.selectedThreadID }, set: { model.select(threadID: $0) })) {
-                ForEach(model.visibleSections, id: \.section.id) { entry in
-                    Section(entry.section.name) {
-                        ForEach(entry.rows) { row in
-                            TeamsRowView(row: row).tag(row.threadID)
+        Button { pinned.toggle() } label: {
+            ZStack {
+                Circle().stroke(KS.inkLine, lineWidth: 4.5)
+                if let left {
+                    Circle().trim(from: 0, to: left / 100)
+                        .stroke(KS.providerTint(usage.provider), style: StrokeStyle(lineWidth: 4.5, lineCap: .butt))
+                        .rotationEffect(.degrees(-90))
+                }
+                Text(verbatim: String(name.prefix(1))).font(KS.mono(11, .bold)).foregroundStyle(KS.paper)
+            }
+            .frame(width: 34, height: 34).frame(width: 46, height: 42).contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .popover(isPresented: Binding(get: { hovering || pinned }, set: { if !$0 { hovering = false; pinned = false } }),
+                 arrowEdge: .trailing) {
+            UsageCard(model: model, usage: usage).environment(\.colorScheme, .light)
+        }
+        .accessibilityLabel(name + ", " + (left.map { L10n.t("\(Int($0)) percent left") } ?? L10n.t("no reading")))
+        .accessibilityHint(L10n.t("Shows usage"))
+    }
+}
+
+/// The hover card: one bar per window with its reset, then the routing line.
+struct UsageCard: View {
+    @ObservedObject var model: TeamsModel
+    let usage: SwarmaStatus.Usage
+
+    private var routing: SwarmaStatus.Routing.Provider? {
+        model.status?.routing?.providers.first { $0.provider == usage.provider }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text(verbatim: SwarmaCells.vendorName(usage.provider)).font(KS.body(18, .bold)).foregroundStyle(KS.paper)
+                Spacer()
+                if let h = usage.headroom { KSChip("\(Int(h))% " + L10n.t("left"), fill: KS.providerTint(usage.provider)) }
+            }
+            if let error = usage.error { Text(verbatim: error).font(KS.body(13)).foregroundStyle(KS.coral) }
+            ForEach(Array(usage.windows.enumerated()), id: \.offset) { _, w in
+                VStack(alignment: .leading, spacing: 5) {
+                    HStack {
+                        Text(verbatim: TeamsCopy.windowName(w.name)).font(KS.body(14)).foregroundStyle(KS.paper)
+                        Spacer()
+                        Text(verbatim: w.usedPercent.map { "\(Int($0))% " + L10n.t("used") } ?? "—")
+                            .font(KS.mono(12, .semibold)).foregroundStyle(KS.paper)
+                    }
+                    GeometryReader { g in
+                        ZStack(alignment: .leading) {
+                            Capsule().fill(KS.inkLine)
+                            Capsule().fill(KS.providerTint(usage.provider))
+                                .frame(width: g.size.width * min(max((w.usedPercent ?? 0) / 100, 0), 1))
                         }
+                    }.frame(height: 8)
+                    if let reset = w.resetsAt {
+                        Text("Resets \(reset, format: .relative(presentation: .named))").font(KS.body(12)).foregroundStyle(KS.onInkSoft)
                     }
                 }
             }
-            .listStyle(.sidebar)
-            if model.visibleSections.isEmpty { Text("No matching agents or channels").padding() }
-            TextField(L10n.t("Search"), text: $model.search).textFieldStyle(.roundedBorder).padding(10)
-            Button("Create agent…") { model.creatingAgent = true }.padding(12)
-        }
-    }
-}
-
-struct TeamsRowView: View {
-    let row: TeamsRow
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            TeamsAvatar(seed: row.avatarSeed, name: row.name, isChannel: row.isChannel)
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 6) {
-                    Text(verbatim: row.isChannel ? "# " + row.name : row.name).font(.system(size: 13, weight: .semibold)).lineLimit(2)
-                    if let role = row.role, !role.isEmpty { RoleBadge(role: role) }
-                    Spacer(minLength: 4)
-                    if let time = row.time {
-                        Text(time, format: .relative(presentation: .numeric, unitsStyle: .narrow))
-                            .font(.caption).foregroundStyle(Palette.textSecondary).lineLimit(2)
-                    }
-                }
-                HStack(spacing: 6) {
-                    Text(verbatim: row.status == "waiting_on_you" ? L10n.t("Waiting on you") : row.preview)
-                        .font(.callout)
-                        .foregroundStyle(row.status == "waiting_on_you" ? Palette.watch : Palette.textSecondary)
-                        .lineLimit(2)
-                    Spacer(minLength: 4)
-                    if row.unread > 0 {
-                        Text(verbatim: row.unread > 99 ? "99+" : "\(row.unread)")
-                            .font(.system(size: 11, weight: .bold)).foregroundStyle(.white)
-                            .padding(.horizontal, 6).padding(.vertical, 1)
-                            .background(Capsule().fill(Color.accentColor))
-                            .accessibilityLabel(L10n.t("\(row.unread) unread"))
-                    }
-                }
+            Rectangle().fill(KS.inkLine).frame(height: 2)
+            HStack {
+                Text(verbatim: routing.map { $0.liveWorker ? L10n.t("Live worker ready") : L10n.t("No live worker") } ?? L10n.t("Not routed"))
+                    .font(KS.body(12)).foregroundStyle(KS.onInkSoft)
+                Spacer()
+                Button(L10n.t("Usage")) { model.pane = .usage }.buttonStyle(.ks(.primary, compact: true))
             }
         }
-        .padding(.vertical, 3)
+        .padding(16).frame(width: 290)
+        .background(KS.ink)
     }
 }
 
-struct RoleBadge: View {
-    let role: String
-    var body: some View {
-        Text(verbatim: role).font(.system(size: 10, weight: .medium)).lineLimit(2)
-            .foregroundStyle(Palette.textSecondary)
-            .padding(.horizontal, 5).padding(.vertical, 1)
-            .background(Capsule().fill(Palette.barTrack))
-    }
-}
+// MARK: - Shared
 
-/// Initials on a colour picked from the avatar seed, so the same agent is the
-/// same colour on every Mac.
+/// Kept for the cards and lists that predate the Kind Swarm restyle.
 struct TeamsAvatar: View {
     let seed: String
     let name: String
     var isChannel = false
     var size: CGFloat = 32
-
-    private var hue: Double {
-        Double(seed.unicodeScalars.reduce(UInt32(5381)) { ($0 &* 33) &+ $1.value } % 360) / 360
-    }
-
     var body: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: isChannel ? 8 : size / 2).fill(Color(hue: hue, saturation: 0.45, brightness: 0.7))
-            Text(verbatim: isChannel ? "#" : String(name.prefix(1)).uppercased())
-                .font(.system(size: size * 0.45, weight: .semibold)).foregroundStyle(.white)
+        if isChannel {
+            Text(verbatim: "#").font(KS.display(size * 0.55)).frame(width: size, height: size)
+                .ksCard(fill: KS.lime, radius: size * 0.3, line: 2).accessibilityHidden(true)
+        } else {
+            KSMoji(seed: seed, size: size)
         }
-        .frame(width: size, height: size)
-        .accessibilityHidden(true)
     }
 }
 
-// MARK: - Empty states and panes
+struct RoleBadge: View {
+    let role: String
+    var body: some View { KSChip(role) }
+}
 
 struct TeamsEmptyState: View {
     let symbol: String
@@ -299,141 +276,121 @@ struct TeamsEmptyState: View {
     let action: (String, () -> Void)?
 
     var body: some View {
-        VStack(spacing: 12) {
-            Image(systemName: symbol).font(.system(size: 34)).foregroundStyle(Palette.textSecondary)
-            Text(verbatim: title).font(.title3.weight(.semibold)).multilineTextAlignment(.center)
-            if let detail { Text(verbatim: detail).foregroundStyle(Palette.textSecondary).multilineTextAlignment(.center) }
-            if let action { Button(action.0, action: action.1).controlSize(.large) }
+        VStack(spacing: 14) {
+            Image(systemName: symbol).font(.system(size: 30, weight: .semibold)).foregroundStyle(KS.ink)
+                .frame(width: 72, height: 72).ksCard(fill: KS.lime, radius: 24, shadow: true)
+            Text(verbatim: title).font(KS.body(20, .bold)).multilineTextAlignment(.center)
+            if let detail { Text(verbatim: detail).font(KS.body(15)).foregroundStyle(KS.textSoft).multilineTextAlignment(.center).frame(maxWidth: 420) }
+            if let action { Button(action.0, action: action.1).buttonStyle(.ks(.primary)) }
         }
         .padding(40).frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
-struct CreateFirstAgentView: View {
-    @ObservedObject var model: TeamsModel
-
+/// Bottom action bar used by every pane: actions sit at the bottom, pinned.
+struct KSBottomBar<Content: View>: View {
+    @ViewBuilder let content: Content
     var body: some View {
-        VStack {
-            TeamsEmptyState(symbol: "person.crop.circle.badge.plus", title: L10n.t("Create your first agent"),
-                            detail: L10n.t("An agent is a teammate with a name, a role and a thread you come back to."), action: nil)
-            Button("Create agent…") { model.creatingAgent = true }.buttonStyle(.borderedProminent).padding(12)
-        }
+        HStack(spacing: 10) { content }
+            .padding(.horizontal, 20).padding(.vertical, 12)
+            .background(KS.white)
+            .overlay(alignment: .top) { Rectangle().fill(KS.ink).frame(height: 2.5) }
     }
 }
 
-struct CreateAgentSheet: View {
-    @ObservedObject var model: TeamsModel
-    @Environment(\.dismiss) private var dismiss
-    @State private var name = ""
-    @State private var role = ""
-    @State private var instructions = ""
-    @State private var scope = ""
-    @State private var edits = false
-    @State private var busy = false
-
-    private var scopes: [String] { (model.status?.scopes ?? []).map(\.scope) }
-    private var ready: Bool {
-        !name.trimmingCharacters(in: .whitespaces).isEmpty && !scope.trimmingCharacters(in: .whitespaces).isEmpty && !busy
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text(verbatim: L10n.t("New agent")).font(.title2.weight(.semibold))
-            Form {
-                TextField(L10n.t("Name"), text: $name)
-                TextField(L10n.t("Role"), text: $role, prompt: Text(verbatim: L10n.t("e.g. Team lead")))
-                if scopes.isEmpty {
-                    TextField(L10n.t("Project"), text: $scope, prompt: Text(verbatim: "project:…"))
-                } else {
-                    Picker(L10n.t("Project"), selection: $scope) {
-                        ForEach(scopes, id: \.self) { Text(verbatim: SwarmaCells.scopeLabel($0)).tag($0) }
-                    }
-                }
-                Toggle(L10n.t("May edit files"), isOn: $edits)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(verbatim: L10n.t("Instructions"))
-                    TextEditor(text: $instructions).accessibilityLabel("Instructions").font(.body).frame(height: 110)
-                        .overlay(RoundedRectangle(cornerRadius: 5).stroke(Palette.barTrack))
-                }
-            }
-            HStack {
-                Spacer()
-                Button(L10n.t("Cancel")) { dismiss() }.keyboardShortcut(.cancelAction)
-                Button(L10n.t("Create")) {
-                    busy = true
-                    Task {
-                        let ok = await model.createAgent(name: name.trimmingCharacters(in: .whitespaces),
-                                                         role: role.trimmingCharacters(in: .whitespaces),
-                                                         instructions: String(instructions.prefix(8192)),
-                                                         scope: scope.trimmingCharacters(in: .whitespaces),
-                                                         runner: .auto, edits: edits)
-                        busy = false
-                        if ok { dismiss() }
-                    }
-                }
-                .keyboardShortcut(.defaultAction).disabled(!ready)
-            }
-        }
-        .padding(20).frame(width: 460).fixedSize(horizontal: false, vertical: true)
-        .onAppear { if scope.isEmpty, let first = scopes.first { scope = first } }
-    }
-}
-
-struct FlowsPane: View {
-    @ObservedObject var model: TeamsModel
-
-    var body: some View {
-        if model.openSwarms.isEmpty {
-            TeamsEmptyState(symbol: "point.3.connected.trianglepath.dotted", title: L10n.t("No open swarms"),
-                            detail: L10n.t("Swarms your agents start show up here while they run."), action: nil)
-        } else {
-            List(model.openSwarms) { swarm in
-                Button {
-                    if let t = swarm.threadID { model.select(threadID: t) }
-                    model.detailSwarmID = swarm.id
-                } label: {
-                    HStack {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(verbatim: swarm.title).font(.headline)
-                            Text(verbatim: TeamsCopy.swarmStatus(swarm.status)).font(.caption).foregroundStyle(Palette.textSecondary)
-                        }
-                        Spacer()
-                        Text(verbatim: "\(swarm.progress.done)/\(swarm.progress.total)").font(.headline.monospacedDigit())
-                        Image(systemName: "chevron.right").foregroundStyle(Palette.textSecondary)
-                    }
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-            }
-        }
-    }
-}
+// MARK: - Usage
 
 struct UsagePane: View {
-    let status: SwarmaStatus?
+    @ObservedObject var model: TeamsModel
 
     var body: some View {
-        if let usage = status?.usage, !usage.isEmpty {
-            List(usage, id: \.provider) { u in
-                HStack(spacing: 14) {
-                    QuotaRing(usage: u, size: 40)
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(verbatim: SwarmaCells.vendorName(u.provider)).font(.headline)
-                        if let error = u.error { Text(verbatim: error).font(.caption).foregroundStyle(Palette.critical) }
-                        ForEach(Array(u.windows.enumerated()), id: \.offset) { _, w in
-                            Text(verbatim: "\(w.name ?? "") \(w.usedPercent.map { "\(Int($0))% " + L10n.t("used") } ?? "")")
-                                .font(.caption).foregroundStyle(Palette.textSecondary)
-                        }
+        VStack(spacing: 0) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 22) {
+                    HStack(alignment: .lastTextBaseline, spacing: 14) {
+                        Text(verbatim: L10n.t("USAGE.")).font(KS.display(52))
+                        Text(verbatim: L10n.t("What each subscription has left, and where auto routing sends work next."))
+                            .font(KS.body(16)).foregroundStyle(KS.textSoft)
                     }
-                    Spacer()
-                    if let h = u.headroom { Text(verbatim: "\(Int(h))% " + L10n.t("left")).font(.headline.monospacedDigit()) }
+                    if let usage = model.status?.usage, !usage.isEmpty {
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 280), spacing: 22)], alignment: .leading, spacing: 22) {
+                            ForEach(usage, id: \.provider) { u in UsageProviderCard(usage: u) }
+                        }
+                        RoutingOrderBand(usage: usage)
+                    } else {
+                        TeamsEmptyState(symbol: "chart.bar", title: L10n.t("No usage readings yet"),
+                                        detail: L10n.t("Swarmaa shows each provider's quota once a worker reports it."), action: nil)
+                    }
                 }
-                .padding(.vertical, 4)
+                .padding(28)
             }
-        } else {
-            TeamsEmptyState(symbol: "chart.pie", title: L10n.t("No usage readings yet"),
-                            detail: L10n.t("Swarmaa shows each provider's quota once a worker reports it."), action: nil)
+            KSBottomBar {
+                Text(verbatim: model.lastUpdated.map { L10n.t("Updated ") + $0.formatted(.relative(presentation: .named)) } ?? "")
+                    .font(KS.body(14)).foregroundStyle(KS.textMuted)
+                Spacer()
+                Button(L10n.t("Routing rules")) { AppDelegate.shared?.openSettings() }.buttonStyle(.ks(.paper))
+                Button(L10n.t("Refresh all")) { Task { await model.refresh() } }.buttonStyle(.ks(.primary))
+            }
         }
+    }
+}
+
+struct UsageProviderCard: View {
+    let usage: SwarmaStatus.Usage
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text(verbatim: SwarmaCells.vendorName(usage.provider)).font(KS.body(19, .bold))
+                Spacer()
+                if let plan = usage.plan, !plan.isEmpty { KSChip(plan) }
+            }
+            HStack(alignment: .lastTextBaseline, spacing: 6) {
+                Text(verbatim: usage.headroom.map { "\(Int($0))%" } ?? "—").font(KS.display(46))
+                KSLabel(L10n.t("left"))
+            }
+            if let error = usage.error { Text(verbatim: error).font(KS.body(13)).foregroundStyle(KS.textSoft) }
+            ForEach(Array(usage.windows.enumerated()), id: \.offset) { _, w in
+                VStack(alignment: .leading, spacing: 5) {
+                    HStack {
+                        Text(verbatim: TeamsCopy.windowName(w.name)).font(KS.body(14))
+                        Spacer()
+                        Text(verbatim: w.usedPercent.map { "\(Int($0))% " + L10n.t("used") } ?? "—").font(KS.mono(12, .semibold))
+                    }
+                    GeometryReader { g in
+                        ZStack(alignment: .leading) {
+                            Capsule().fill(KS.paper)
+                            Capsule().fill(KS.providerTint(usage.provider))
+                                .frame(width: g.size.width * min(max((w.usedPercent ?? 0) / 100, 0), 1))
+                        }
+                        .overlay(Capsule().stroke(KS.ink, lineWidth: 2))
+                    }.frame(height: 10)
+                    if let reset = w.resetsAt {
+                        Text("Resets \(reset, format: .relative(presentation: .named))").font(KS.body(12)).foregroundStyle(KS.textMuted)
+                    }
+                }
+            }
+        }
+        .padding(18).ksCard(radius: 22)
+    }
+}
+
+/// Providers in the order auto routing would try them now: most quota left first.
+struct RoutingOrderBand: View {
+    let usage: [SwarmaStatus.Usage]
+    var body: some View {
+        let order = usage.filter { $0.headroom != nil }.sorted { ($0.headroom ?? 0) > ($1.headroom ?? 0) }
+        VStack(alignment: .leading, spacing: 12) {
+            KSLabel(L10n.t("01 — Auto routing order, right now"), color: KS.onInkSoft)
+            HStack(spacing: 10) {
+                ForEach(Array(order.enumerated()), id: \.element.provider) { i, u in
+                    if i > 0 { Text(verbatim: "→").foregroundStyle(KS.onInkMuted) }
+                    KSChip("\(i + 1)", fill: i == 0 ? KS.lime : KS.white)
+                    Text(verbatim: SwarmaCells.vendorName(u.provider)).font(KS.body(15, .semibold)).foregroundStyle(KS.paper)
+                }
+            }
+        }
+        .padding(20).frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 22).fill(KS.ink))
     }
 }
 
@@ -449,6 +406,15 @@ enum TeamsCopy {
         case "failed": return L10n.t("Failed")
         case "pending": return L10n.t("Pending")
         default: return status
+        }
+    }
+
+    static func windowName(_ name: String?) -> String {
+        switch name {
+        case "5h": return L10n.t("Session · 5 h")
+        case "weekly": return L10n.t("Week")
+        case nil: return L10n.t("Window")
+        default: return name!.prefix(1).uppercased() + name!.dropFirst()
         }
     }
 }

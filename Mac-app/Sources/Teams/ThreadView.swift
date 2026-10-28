@@ -14,6 +14,8 @@ struct ThreadView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            if let bot = model.bot(threadID: threadID) { BotThreadHeader(model: model, bot: bot) }
+            else { ThreadHeader(model: model, threadID: threadID) }
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 10) {
@@ -32,7 +34,7 @@ struct ThreadView: View {
                         }
                         ForEach(messages) { MessageRow(model: model, message: $0).id($0.id) }
                     }
-                    .padding(16)
+                    .padding(.horizontal, 24).padding(.vertical, 18)
                 }
                 .defaultScrollAnchor(.bottom)
                 .onScrollGeometryChange(for: Bool.self) { geometry in
@@ -55,16 +57,15 @@ struct ThreadView: View {
                     }
                 }
             }
-            Divider()
-            HStack {
+            HStack(spacing: 8) {
                 if model.threadErrors[threadID] != nil {
-                    Button("Retry history") { Task { await model.loadLatest(threadID) } }
+                    Button("Retry history") { Task { await model.loadLatest(threadID) } }.buttonStyle(.ks(.white, compact: true))
                 }
                 let questions = messages.compactMap(\.question).filter { $0.status == "open" }
                 if !questions.isEmpty {
                     Menu("Answer question (\(questions.count))") {
                         ForEach(questions) { q in Button(q.prompt) { answeringQuestion = q } }
-                    }
+                    }.menuStyle(.button).buttonStyle(.ks(.primary, compact: true)).fixedSize()
                 }
                 let swarmMessages = messages.filter { $0.kind == .swarm }
                 if !swarmMessages.isEmpty {
@@ -77,10 +78,10 @@ struct ThreadView: View {
                     }
                 }
                 Spacer()
-            }.padding(.horizontal, 16)
-            ThreadHeader(model: model, threadID: threadID)
+            }.padding(.horizontal, 20).padding(.top, 6)
             Composer(model: model, threadID: threadID).id(threadID)
         }
+        .background(KS.paper)
         .sheet(item: $answeringQuestion) { question in
             VStack {
                 QuestionCard(model: model, question: currentQuestion(question)).padding()
@@ -104,7 +105,7 @@ struct ThreadHeader: View {
                 TeamsAvatar(seed: agent.avatar ?? agent.id, name: agent.name, size: 28)
                 VStack(alignment: .leading, spacing: 1) {
                     HStack(spacing: 6) {
-                        Text(verbatim: agent.name).font(.headline)
+                        Text(verbatim: agent.name).font(KS.body(21, .bold))
                         if let role = agent.role, !role.isEmpty { RoleBadge(role: role) }
                     }
                     Text(verbatim: Self.status(agent.status)).font(.caption)
@@ -125,7 +126,9 @@ struct ThreadHeader: View {
                 Spacer()
             }
         }
-        .padding(.horizontal, 16).padding(.vertical, 10)
+        .padding(.horizontal, 20).padding(.vertical, 12)
+        .background(KS.paper)
+        .overlay(alignment: .bottom) { Rectangle().fill(KS.ink).frame(height: 2.5) }
     }
 
     static func status(_ status: String?) -> String {
@@ -205,6 +208,7 @@ struct MessageRow: View {
             if let q = message.question { QuestionCard(model: model, question: q, interactive: false) }
             else { TextBubble(model: model, message: message) }
         case .answer: AnswerBubble(answer: message.answer)
+        case .task: TaskCardView(model: model, message: message)
         case .unknown: EmptyView()
         }
     }
@@ -225,20 +229,25 @@ struct TextBubble: View {
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
             if message.isHuman { Spacer(minLength: 60) } else if let id = message.author.id {
-                TeamsAvatar(seed: model.agent(id: id)?.avatar ?? id, name: author, size: 26)
+                TeamsAvatar(seed: model.agent(id: id)?.avatar ?? id, name: author, size: 30)
             }
             VStack(alignment: message.isHuman ? .trailing : .leading, spacing: 3) {
                 if !message.isHuman {
                     HStack(spacing: 6) {
-                        Text(verbatim: author).font(.callout.weight(.semibold))
-                        if let date = message.createdAt { Text(date, style: .time).font(.caption).foregroundStyle(Palette.textSecondary) }
+                        Text(verbatim: author).font(KS.body(14, .bold))
+                        if let date = message.createdAt { Text(date, style: .time).font(KS.mono(10)).foregroundStyle(KS.textMuted) }
                     }
                 }
                 Text(rendered?.body == (message.body ?? "") ? rendered!.text : AttributedString(message.body ?? "")).textSelection(.enabled)
-                    .padding(.horizontal, 12).padding(.vertical, 8)
-                    .background(RoundedRectangle(cornerRadius: 12)
-                        .fill(message.isHuman ? Color.accentColor.opacity(0.85) : Palette.barTrack))
-                    .foregroundStyle(message.isHuman ? Color.white : Palette.textPrimary)
+                    .font(KS.body(16)).lineSpacing(2)
+                    .padding(.horizontal, 15).padding(.vertical, 10)
+                    .background(UnevenRoundedRectangle(topLeadingRadius: 20, bottomLeadingRadius: message.isHuman ? 20 : 6,
+                                                       bottomTrailingRadius: message.isHuman ? 6 : 20, topTrailingRadius: 20)
+                        .fill(message.isHuman ? KS.ink : KS.white))
+                    .overlay(UnevenRoundedRectangle(topLeadingRadius: 20, bottomLeadingRadius: message.isHuman ? 20 : 6,
+                                                    bottomTrailingRadius: message.isHuman ? 6 : 20, topTrailingRadius: 20)
+                        .stroke(KS.ink, lineWidth: message.isHuman ? 0 : 2))
+                    .foregroundStyle(message.isHuman ? KS.paper : KS.ink)
             }
             if !message.isHuman { Spacer(minLength: 60) }
         }
@@ -259,9 +268,10 @@ struct AnswerBubble: View {
     var body: some View {
         let parts = (answer?.choices ?? []) + [answer?.text].compactMap { $0 }
         Text(verbatim: parts.joined(separator: " · "))
-            .padding(.horizontal, 12).padding(.vertical, 8)
-            .background(RoundedRectangle(cornerRadius: 12).fill(Color.accentColor.opacity(0.85)))
-            .foregroundStyle(.white)
+            .font(KS.body(16))
+            .padding(.horizontal, 15).padding(.vertical, 10)
+            .background(RoundedRectangle(cornerRadius: 20).fill(KS.ink))
+            .foregroundStyle(KS.paper)
             .frame(maxWidth: .infinity, alignment: .trailing)
     }
 }
@@ -272,8 +282,9 @@ struct ServiceLine: View {
     let text: String
     var body: some View {
         Label { Text(verbatim: text) } icon: { Image(systemName: symbol) }
-            .font(.callout).foregroundStyle(Palette.textSecondary)
-            .frame(maxWidth: .infinity)
+            .font(KS.mono(11)).foregroundStyle(KS.textMuted)
+            .padding(.vertical, 2)
+            .frame(maxWidth: 640, alignment: .leading)
     }
 }
 
@@ -284,11 +295,10 @@ typealias NoticeLine = ServiceLine
 private struct CardBox<Content: View>: View {
     @ViewBuilder let content: Content
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) { content }
-            .padding(12)
-            .frame(maxWidth: 520, alignment: .leading)
-            .background(RoundedRectangle(cornerRadius: 12).fill(Palette.barTrack.opacity(0.6)))
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(Palette.barTrack))
+        VStack(alignment: .leading, spacing: 10) { content }
+            .padding(16)
+            .frame(maxWidth: 640, alignment: .leading)
+            .ksCard(radius: 22, shadow: true)
     }
 }
 
@@ -305,16 +315,16 @@ struct SwarmCard: View {
             if let swarm {
                 HStack(spacing: 8) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(verbatim: swarm.title).font(.body.weight(.semibold))
+                        KSLabel(L10n.t("Swarm"))
+                        Text(verbatim: swarm.title).font(KS.body(17, .bold))
                         Text(verbatim: TeamsCopy.swarmStatus(swarm.status)).font(.caption)
                             .foregroundStyle(swarm.status == "waiting_on_you" ? Palette.watch : Palette.textSecondary)
                     }
                     Spacer()
-                    Text(verbatim: "\(swarm.progress.done)/\(swarm.progress.total)").font(.system(size: 13, weight: .bold).monospacedDigit())
+                    Text(verbatim: "\(swarm.progress.done)/\(swarm.progress.total)").font(KS.display(30))
                 }
-                ProgressView(value: Double(swarm.progress.done), total: Double(max(swarm.progress.total, 1)))
-                    .tint(Palette.ample)
-                Text("Open this swarm using the menu below").font(.caption)
+                ForEach(swarm.steps) { SwarmStepRow(model: model, step: $0) }
+                Button(L10n.t("Open swarm")) { model.detailSwarmID = swarm.id }.buttonStyle(.ks(.paper, compact: true))
             } else {
                 Text(verbatim: L10n.t("Swarm")).foregroundStyle(Palette.textSecondary)
             }
@@ -341,10 +351,10 @@ struct SwarmStepRow: View {
         let (icon, color) = Self.symbol(step.status)
         HStack(spacing: 8) {
             Image(systemName: icon).foregroundStyle(color)
-            Text(verbatim: step.title).font(.callout).lineLimit(2)
+            Text(verbatim: step.title).font(KS.body(15)).lineLimit(2)
             Spacer()
             if let a = model.agent(id: step.assigneeAgentID) {
-                Text(verbatim: a.name).font(.caption).foregroundStyle(Palette.textSecondary)
+                Text(verbatim: a.name.uppercased()).font(KS.mono(10)).foregroundStyle(KS.textMuted)
             }
         }
     }
@@ -405,7 +415,7 @@ struct QuestionCard: View {
                         sending = true
                         Task { _ = await model.answer(question, choices: choices, text: text); sending = false }
                     }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(.ks(.primary))
                     .disabled(sending || TeamsAnswerValidation.validate(question, choices: choices, text: text) != nil)
                 }
             }
@@ -426,12 +436,18 @@ struct QuestionCard: View {
                 Text(verbatim: question.prompt).font(.body)
                 Text(verbatim: L10n.t("This question expired")).font(.callout).foregroundStyle(Palette.textSecondary)
             } else if !interactive {
-                Label("Question · answer using the menu below", systemImage: "questionmark.bubble")
-                Text(question.prompt).textSelection(.enabled)
+                HStack { KSLabel(L10n.t("Question")); Spacer(); KSChip(L10n.t("Needs you"), fill: KS.coral) }
+                Text(question.prompt).font(KS.body(18, .bold)).textSelection(.enabled)
+                if !question.options.isEmpty {
+                    ChipFlow(options: question.options, selected: []) { _ in model.targetQuestionID = question.id }
+                }
             } else {
-                Label(question.multi ? L10n.t("Choose any") : L10n.t("Choose one"), systemImage: "questionmark.bubble")
-                    .font(.caption).foregroundStyle(Palette.watch)
-                Text(verbatim: question.prompt).font(.body.weight(.semibold))
+                HStack {
+                    KSLabel(question.multi ? L10n.t("Pick any") : L10n.t("Pick one"))
+                    Spacer()
+                    KSChip(L10n.t("Needs you"), fill: KS.coral)
+                }
+                Text(verbatim: question.prompt).font(KS.body(18, .bold))
                 ChipFlow(options: question.options, selected: choices) { toggle($0) }
                 if question.freeText {
                     TextField(L10n.t("Add a note"), text: $text, axis: .vertical).textFieldStyle(.roundedBorder).lineLimit(1...4)
@@ -468,10 +484,11 @@ struct ChipFlow: View {
             ForEach(options, id: \.self) { option in
                 let on = selected.contains(option)
                 Button { tap(option) } label: {
-                    Text(verbatim: option).font(.callout)
-                        .padding(.horizontal, 10).padding(.vertical, 5)
-                        .background(Capsule().fill(on ? Color.accentColor : Palette.barTrack))
-                        .foregroundStyle(on ? Color.white : Palette.textPrimary)
+                    Text(verbatim: option).font(KS.body(15, .semibold))
+                        .padding(.horizontal, 13).padding(.vertical, 7)
+                        .background(Capsule().fill(on ? KS.lime : KS.white))
+                        .overlay(Capsule().stroke(KS.ink, lineWidth: 2))
+                        .foregroundStyle(KS.ink)
                 }
                 .buttonStyle(.plain)
                 .accessibilityAddTraits(on ? .isSelected : [])
@@ -542,13 +559,13 @@ struct Composer: View {
             HStack(alignment: .bottom, spacing: 8) {
             ZStack(alignment: .topLeading) {
                 if text.wrappedValue.isEmpty {
-                    Text(verbatim: L10n.t("Message"))
+                    Text(verbatim: L10n.t("Message · Return to send, Shift-Return for a new line"))
                         .foregroundStyle(Palette.textSecondary).padding(.horizontal, 5).padding(.vertical, 8)
                         .allowsHitTesting(false)
                 }
                 TextEditor(text: text)
                     .focused($editorFocused).accessibilityLabel("Message in this thread")
-                    .font(.body).scrollContentBackground(.hidden)
+                    .font(KS.body(16)).scrollContentBackground(.hidden)
                     .frame(minHeight: 36, maxHeight: 140).fixedSize(horizontal: false, vertical: true)
                     .padding(.vertical, 8)
                     // Return sends; Shift-Return is a new line.
@@ -558,15 +575,17 @@ struct Composer: View {
                         return .handled
                     }
             }
-            Button(action: send) { Image(systemName: "arrow.up.circle.fill").font(.system(size: 24)) }
-                .buttonStyle(.plain).foregroundStyle(Color.accentColor)
+            Button(action: send) { Label(L10n.t("Send"), systemImage: "arrow.right") }
+                .buttonStyle(.ks(.ink))
                 .disabled(sending || (model.pendingSends[threadID] == nil && text.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))
                 .padding(.bottom, 8).help(L10n.t("Send")).accessibilityLabel(model.pendingSends[threadID] == nil ? "Send message" : "Retry previous message")
         }
             }
-        .padding(.horizontal, 14).padding(.vertical, 4)
-        .background(RoundedRectangle(cornerRadius: 12).fill(Palette.barTrack.opacity(0.5)))
-        .padding(12)
+        .padding(.horizontal, 14).padding(.vertical, 6)
+        .ksCard(radius: 22, shadow: true)
+        .padding(.horizontal, 20).padding(.top, 10).padding(.bottom, 16)
+        .background(KS.paper)
+        .overlay(alignment: .top) { Rectangle().fill(KS.ink).frame(height: 2.5) }
 
     }
 

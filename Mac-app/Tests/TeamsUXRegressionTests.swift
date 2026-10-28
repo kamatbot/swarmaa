@@ -99,7 +99,7 @@ final class TeamsUXRegressionTests: XCTestCase {
         let model = TeamsModel(client: try stub.client(self))
         await model.loadLatest("t")
         model.select(threadID: "t")
-        model.pane = .home
+        model.pane = .tasks
         model.isVisible = true
         model.markSelectedRead()
         await model.apply(TeamsEvent(cursor: nil, name: "message.created", threadID: "other", seq: 5))
@@ -107,7 +107,7 @@ final class TeamsUXRegressionTests: XCTestCase {
         XCTAssertEqual(model.badges.count("other"), 1)
         XCTAssertFalse(model.threadIsVisible)
         XCTAssertEqual(marks, 0)
-        model.pane = .agents
+        model.pane = .bots
         model.markSelectedRead()
         for _ in 0..<30 { await Task.yield() }
         XCTAssertNotNil(model.staleError)
@@ -232,7 +232,7 @@ extension TeamsUXRegressionTests {
         await model.loadLatest("old")
         await model.loadLatest("new")
         model.select(threadID: "old")
-        model.pane = .home
+        model.pane = .tasks
         model.isVisible = true
         model.select(threadID: "new")
         for _ in 0..<30 { await Task.yield() }
