@@ -74,6 +74,7 @@ describe('bots unit tests', () => {
         approve_public: false,
         review_edits: false,
         require_tests: true,
+        quiet_schedule: true,
         first_reply: 'claude-opus-5-5' as const
       };
       assert.deepEqual(validateRules(custom), custom);
@@ -92,8 +93,16 @@ describe('bots unit tests', () => {
         approve_public: false,
         review_edits: true,
         require_tests: true,
+        quiet_schedule: true,
         first_reply: 'claude-haiku-5-5'
       });
+    });
+
+    it('quiet schedules default on, accept only booleans and survive partial updates', () => {
+      assert.equal(validateRules({}).quiet_schedule, true);
+      assert.equal(validateRules({ quiet_schedule: false }).quiet_schedule, false);
+      assert.equal(validateRules({ require_tests: true }, { quiet_schedule: false }).quiet_schedule, false);
+      for (const value of ['false', 0, null, {}]) assert.throws(() => validateRules({ quiet_schedule: value }));
     });
 
     it('rejects quota_floor_pct outside 0..50', () => {

@@ -13,8 +13,8 @@ import { taskChanged, type TaskRow } from './tasks.js';
 export interface BotRoutingRow {
   id:string; tenant_id:string; scope:string; thread_id:string; lead_agent_id:string; created_by:string;
   job:string; routing:Partial<Record<BotKind, RunnerConfig | {mode:'different_from_author'}>>;
-  rules:{quota_floor_pct?:number; review_edits?:boolean; require_tests?:boolean};
-  schedule:string|null; next_run_at:Date|null; archived:boolean;
+  rules:{quota_floor_pct?:number; review_edits?:boolean; require_tests?:boolean; quiet_schedule?:boolean};
+  schedule:string|null; next_run_at:Date|null; last_scheduled_run_at:Date|null; created_at:Date; archived:boolean;
 }
 export const BOT_KINDS = ['research','patch','review','summary'] as const;
 type BotKind = typeof BOT_KINDS[number];
@@ -184,16 +184,42 @@ async function fireSchedule(pool:Pool,candidate:BotRoutingRow):Promise<void> {
     await teamsLock(db,p.tenantId);
     const bot = (await db.query<BotRoutingRow>(`SELECT * FROM bots WHERE id=$1 AND NOT archived AND schedule IS NOT NULL AND (next_run_at IS NULL OR next_run_at<=clock_timestamp()) FOR UPDATE`,[candidate.id])).rows[0];
     if (!bot) return;
-    const now = (await db.query<{now:Date}>('SELECT clock_timestamp() AS now')).rows[0]!.now;
+    const {now,watermark} = (await db.query<{now:Date;watermark:string}>('SELECT clock_timestamp() AS now,clock_timestamp()::text AS watermark')).rows[0]!;
     const next = nextCronRun(bot.schedule!,now);
     await db.query('UPDATE bots SET next_run_at=$2,updated_at=clock_timestamp() WHERE id=$1',[bot.id,next]);
     if (!bot.next_run_at) return;
     const agent = (await db.query<{id:string;edits:boolean;archived:boolean}>('SELECT id,edits,archived FROM agents WHERE id=$1 AND tenant_id=$2 AND scope=$3',[bot.lead_agent_id,p.tenantId,bot.scope])).rows[0];
     if (!agent || agent.archived || (await db.query(`SELECT 1 FROM tasks WHERE tenant_id=$1 AND agent_id=$2 AND kind='turn' AND status IN ('queued','running')`,[p.tenantId,agent.id])).rowCount) return;
-    await notice(db,p,bot,'Scheduled run');
+    if (bot.rules.quiet_schedule!==false) {
+      // A failed SELECT aborts a PostgreSQL transaction until rolled back to its savepoint.
+      // Fail open: uncertainty must never be interpreted as an idle scope.
+      let changed = true;
+      await db.query('SAVEPOINT bot_schedule_activity');
+      try {
+        const activity = await db.query<{changed:boolean}>(`SELECT EXISTS (
+          SELECT 1 FROM events e WHERE e.tenant_id=$1 AND e.scope=$2 AND e.created_at>(SELECT coalesce(last_scheduled_run_at,created_at) FROM bots WHERE id=$3)
+            AND (e.name IN ('message.created','memory.changed','question.created')
+              OR (e.name='task.updated' AND e.payload->>'action'='finished'))
+            AND NOT EXISTS (
+              SELECT 1 FROM events own JOIN tasks t ON t.id::text=own.subject_id
+              WHERE own.tenant_id=e.tenant_id AND own.scope=e.scope AND own.xid=e.xid
+                AND own.name='task.updated' AND t.tenant_id=$1 AND t.scope=$2
+                AND t.bot_id=$3 AND t.initiator_kind='schedule'
+            )
+        ) AS changed`,[p.tenantId,bot.scope,bot.id]);
+        // Completion actions and the old scheduler notice share their task event's durable xid.
+        // Do not filter by agent/worker identity: it also handles unrelated human-triggered work.
+        changed = activity.rows[0]?.changed !== false;
+      } catch {
+        await db.query('ROLLBACK TO SAVEPOINT bot_schedule_activity');
+      }
+      await db.query('RELEASE SAVEPOINT bot_schedule_activity');
+      if (!changed) return;
+    }
+    await db.query('UPDATE bots SET last_scheduled_run_at=$2 WHERE id=$1',[bot.id,watermark]);
     const key = `bot-schedule:${bot.id}:${bot.next_run_at.toISOString()}`;
     const task = (await db.query<TaskRow>(`INSERT INTO tasks(id,tenant_id,scope,kind,objective,agent_id,thread_id,bot_id,initiator_kind,required_capability,resource_key,permission_envelope,created_by,idempotency_key,request_hash,status)
-      VALUES($1,$2,$3,'turn',$4,$5,$6,$7,'schedule',$8,$9,$10,$11,$12,$13,'queued') RETURNING *`,[newId(),p.tenantId,bot.scope,clipUtf8(`Scheduled run: ${bot.job}`,16000),agent.id,bot.thread_id,bot.id,runnerCapability((bot.routing[agent.edits ? 'patch' : 'summary'] ?? {mode:'auto'}) as RunnerConfig,agent.edits),`agent:${agent.id}`,JSON.stringify({read_project:true,local_patch:agent.edits,deploy:false,publish:false,purchase:false,send_messages:false,permission_changes:false,external_side_effects:false}),bot.created_by,key,sha256(key)])).rows[0]!;
+      VALUES($1,$2,$3,'turn',$4,$5,$6,$7,'schedule',$8,$9,$10,$11,$12,$13,'queued') RETURNING *`,[newId(),p.tenantId,bot.scope,clipUtf8(`Scheduled run: ${bot.job}\nIf you have nothing worth reporting, reply with exactly {"quiet":true} as your whole answer.`,16000),agent.id,bot.thread_id,bot.id,runnerCapability((bot.routing[agent.edits ? 'patch' : 'summary'] ?? {mode:'auto'}) as RunnerConfig,agent.edits),`agent:${agent.id}`,JSON.stringify({read_project:true,local_patch:agent.edits,deploy:false,publish:false,purchase:false,send_messages:false,permission_changes:false,external_side_effects:false}),bot.created_by,key,sha256(key)])).rows[0]!;
     await taskChanged(db,p,task,'submitted',false);
   });
 }

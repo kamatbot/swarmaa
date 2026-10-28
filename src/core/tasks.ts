@@ -867,20 +867,34 @@ export class TaskService {
           const rawAnswer = [result.answer, result.summary, result.reason].find(v => typeof v === 'string') ?? '';
           const extracted = extractActionsBlock(String(rawAnswer));
           const answer = clipUtf8(redactSecrets(extracted.cleanText), 16384);
-          const nextSeq = await assignThreadSeq(db, p.tenantId, targetThreadId);
-          replyMsgId = newId();
-          await db.query(
-            `INSERT INTO messages (id, tenant_id, scope, thread_id, seq, author, kind, body)
-             VALUES ($1, $2, $3, $4, $5, $6::jsonb, 'text', $7)`,
-            [replyMsgId, p.tenantId, row.scope, targetThreadId, nextSeq, JSON.stringify({ kind: 'agent', id: row.agent_id }), answer]
-          );
-          await event(db, p, row.scope, 'message.created', replyMsgId, {
-            thread_id: targetThreadId,
-            message_id: replyMsgId,
-            seq: Number(nextSeq),
-            kind: 'text',
-            author: { kind: 'agent', id: row.agent_id }
-          });
+          const scheduled = row.bot_id && row.initiator_kind === 'schedule';
+          const quiet = scheduled && String(rawAnswer).trim() === '{"quiet":true}';
+          if (!quiet) {
+            // Defer the schedule notice until there is a reply; quiet runs never touch the thread.
+            if (scheduled) {
+              const seq = await assignThreadSeq(db, p.tenantId, targetThreadId), id = newId();
+              await db.query(
+                `INSERT INTO messages(id,tenant_id,scope,thread_id,seq,author,kind,body)
+                 VALUES($1,$2,$3,$4,$5,'{"kind":"system","id":"service"}','notice','Scheduled run')`,
+                [id,p.tenantId,row.scope,targetThreadId,seq]
+              );
+              await event(db,p,row.scope,'message.created',id,{thread_id:targetThreadId,message_id:id,seq:Number(seq),kind:'notice'});
+            }
+            const nextSeq = await assignThreadSeq(db, p.tenantId, targetThreadId);
+            replyMsgId = newId();
+            await db.query(
+              `INSERT INTO messages (id, tenant_id, scope, thread_id, seq, author, kind, body)
+               VALUES ($1, $2, $3, $4, $5, $6::jsonb, 'text', $7)`,
+              [replyMsgId, p.tenantId, row.scope, targetThreadId, nextSeq, JSON.stringify({ kind: 'agent', id: row.agent_id }), answer]
+            );
+            await event(db, p, row.scope, 'message.created', replyMsgId, {
+              thread_id: targetThreadId,
+              message_id: replyMsgId,
+              seq: Number(nextSeq),
+              kind: 'text',
+              author: { kind: 'agent', id: row.agent_id }
+            });
+          }
           if (result.native_session) {
             await db.query(
               `INSERT INTO agent_provider_sessions (tenant_id, agent_id, provider, session_data, updated_at)

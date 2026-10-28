@@ -46,6 +46,7 @@ export interface BotRules {
   approve_public: boolean;
   review_edits: boolean;
   require_tests: boolean;
+  quiet_schedule: boolean;
   /**
    * Model for a bot's chat replies. Haiku or Sonnet answer fast and may hand off to the full model;
    * Opus thinks hard on every reply; 'off' uses the agent's own model with no quick reply.
@@ -85,6 +86,7 @@ export const DEFAULT_BOT_RULES: BotRules = {
   approve_public: true,
   review_edits: true,
   require_tests: false,
+  quiet_schedule: true,
   first_reply: DEFAULT_FIRST_REPLY
 };
 
@@ -145,13 +147,14 @@ export function validateRules(raw: unknown, existing?: Record<string, unknown>):
     approve_public: typeof existing.approve_public === 'boolean' ? existing.approve_public : DEFAULT_BOT_RULES.approve_public,
     review_edits: typeof existing.review_edits === 'boolean' ? existing.review_edits : DEFAULT_BOT_RULES.review_edits,
     require_tests: typeof existing.require_tests === 'boolean' ? existing.require_tests : DEFAULT_BOT_RULES.require_tests,
+    quiet_schedule: typeof existing.quiet_schedule === 'boolean' ? existing.quiet_schedule : DEFAULT_BOT_RULES.quiet_schedule,
     first_reply: typeof existing.first_reply === 'string' && (existing.first_reply === 'off' || existing.first_reply in FIRST_REPLY_MODELS)
       ? existing.first_reply as FirstReply : DEFAULT_FIRST_REPLY
   } : { ...DEFAULT_BOT_RULES };
 
   if (raw === undefined || raw === null) return base;
   const obj = object(raw);
-  noExtraKeys(obj, ['quota_floor_pct', 'approve_public', 'review_edits', 'require_tests', 'first_reply']);
+  noExtraKeys(obj, ['quota_floor_pct', 'approve_public', 'review_edits', 'require_tests', 'quiet_schedule', 'first_reply']);
 
   if (obj.quota_floor_pct !== undefined) {
     base.quota_floor_pct = integer(obj.quota_floor_pct, 'quota_floor_pct', 0, 50);
@@ -164,6 +167,9 @@ export function validateRules(raw: unknown, existing?: Record<string, unknown>):
   }
   if (obj.require_tests !== undefined) {
     base.require_tests = booleanOption(obj.require_tests, 'require_tests');
+  }
+  if (obj.quiet_schedule !== undefined) {
+    base.quiet_schedule = booleanOption(obj.quiet_schedule, 'quiet_schedule');
   }
   if (obj.first_reply !== undefined) {
     const v = string(obj.first_reply, 'first_reply', 60);

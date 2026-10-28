@@ -102,7 +102,7 @@ describe('B2 bot routing', {skip:!connectionString,concurrency:false}, () => {
     await assert.rejects(call(f.user,'bot_routing_preview',{bot_id:f.bot,extra:true}),/Unknown argument/);
   });
   it('a schedule that never fires is paused with a notice and does not stop other bots',async () => {
-    const bad=await fixture(),good=await fixture();
+    const bad=await fixture(),good=await fixture({quiet_schedule:false});
     await pool.query(`UPDATE bots SET schedule='0 0 30 2 *',next_run_at=NULL WHERE id=$1`,[bad.bot]);
     await pool.query(`UPDATE bots SET schedule='* * * * *',next_run_at=clock_timestamp()-interval '1 minute' WHERE id=$1`,[good.bot]);
     await tickBotSchedules(pool);
@@ -113,14 +113,98 @@ describe('B2 bot routing', {skip:!connectionString,concurrency:false}, () => {
     assert.equal((await pool.query(`SELECT count(*)::int AS n FROM messages m JOIN bots b ON b.thread_id=m.thread_id WHERE b.id=$1 AND m.kind='notice'`,[bad.bot])).rows[0].n,1,'parked, so no repeat notice');
   });
   it('schedule tick initializes, posts and queues once under concurrent ticks, skips busy lead and advances',async () => {
-    const f=await fixture();await pool.query(`UPDATE bots SET schedule='* * * * *' WHERE id=$1`,[f.bot]);await tickBotSchedules(pool);let b=(await pool.query('SELECT next_run_at FROM bots WHERE id=$1',[f.bot])).rows[0];assert.ok(b.next_run_at>new Date());assert.equal((await pool.query('SELECT 1 FROM tasks WHERE bot_id=$1',[f.bot])).rowCount,0);
+    const f=await fixture({quiet_schedule:false});await pool.query(`UPDATE bots SET schedule='* * * * *' WHERE id=$1`,[f.bot]);await tickBotSchedules(pool);let b=(await pool.query('SELECT next_run_at FROM bots WHERE id=$1',[f.bot])).rows[0];assert.ok(b.next_run_at>new Date());assert.equal((await pool.query('SELECT 1 FROM tasks WHERE bot_id=$1',[f.bot])).rowCount,0);
     await pool.query(`UPDATE bots SET next_run_at=clock_timestamp()-interval '1 minute' WHERE id=$1`,[f.bot]);await Promise.all([tickBotSchedules(pool),tickBotSchedules(pool)]);
     await pool.query(`UPDATE bots SET next_run_at=clock_timestamp()-interval '1 minute' WHERE id=$1`,[f.bot]);
     await tickBotSchedules(pool);assert.equal((await pool.query('SELECT 1 FROM tasks WHERE bot_id=$1',[f.bot])).rowCount,1);
     const scheduled = await claim(f.worker,['auto.read','codex.read'],['turn']);assert.ok(scheduled.task);
-    let tasks=(await pool.query('SELECT * FROM tasks WHERE bot_id=$1',[f.bot])).rows;assert.equal(tasks.length,1);assert.equal(tasks[0].initiator_kind,'schedule');assert.equal(tasks[0].required_capability,'auto.read');assert.equal((await pool.query(`SELECT 1 FROM messages WHERE thread_id=$1 AND body='Scheduled run'`,[f.thread])).rowCount,1);
+    let tasks=(await pool.query('SELECT * FROM tasks WHERE bot_id=$1',[f.bot])).rows;assert.equal(tasks.length,1);assert.equal(tasks[0].initiator_kind,'schedule');assert.equal(tasks[0].required_capability,'auto.read');assert.equal((await pool.query(`SELECT 1 FROM messages WHERE thread_id=$1 AND body='Scheduled run'`,[f.thread])).rowCount,0);
     await pool.query(`UPDATE bots SET next_run_at=clock_timestamp()-interval '1 minute' WHERE id=$1`,[f.bot]);await tickBotSchedules(pool);b=(await pool.query('SELECT next_run_at FROM bots WHERE id=$1',[f.bot])).rows[0];assert.ok(b.next_run_at>new Date());assert.equal((await pool.query('SELECT 1 FROM tasks WHERE bot_id=$1',[f.bot])).rowCount,1);
     await call(f.worker,'task_finish',{task_id:scheduled.task.id,lease_token:scheduled.lease_token,lease_generation:scheduled.lease_generation,outcome:'completed',result:{answer:'Scheduled job done'}});
     assert.equal((await pool.query("SELECT 1 FROM messages WHERE thread_id=$1 AND body='Scheduled job done'",[f.thread])).rowCount,1);
   });
+  async function due(f:Awaited<ReturnType<typeof fixture>>) {
+    await pool.query(`UPDATE bots SET schedule='* * * * *',next_run_at=clock_timestamp()-interval '1 minute' WHERE id=$1`,[f.bot]);
+  }
+  async function activity(f:Awaited<ReturnType<typeof fixture>>,name='memory.changed',payload:Record<string,unknown>={},scope='project:a',tenant=f.user.tenantId) {
+    await pool.query('INSERT INTO events(id,tenant_id,scope,name,subject_id,payload) VALUES($1,$2,$3,$4,$5,$6)',[randomUUID(),tenant,scope,name,randomUUID(),JSON.stringify(payload)]);
+  }
+  it('quiet schedule skips an idle scope without a task or notice, but advances next_run_at',async () => {
+    const f=await fixture();await due(f);await tickBotSchedules(pool);
+    assert.equal((await pool.query('SELECT 1 FROM tasks WHERE bot_id=$1',[f.bot])).rowCount,0);
+    assert.equal((await pool.query('SELECT 1 FROM messages WHERE thread_id=$1',[f.thread])).rowCount,0);
+    const b=(await pool.query('SELECT * FROM bots WHERE id=$1',[f.bot])).rows[0];
+    assert.ok(b.next_run_at>new Date());assert.equal(b.last_scheduled_run_at,null);
+  });
+  for (const [name,payload] of [['message.created',{}],['memory.changed',{}],['question.created',{}],['task.updated',{action:'finished'}]] as const) {
+    it(`quiet schedule queues once for ${name} activity`,async () => {
+      const f=await fixture();await due(f);await activity(f,name,payload);
+      await Promise.all([tickBotSchedules(pool),tickBotSchedules(pool)]);
+      const tasks=(await pool.query('SELECT * FROM tasks WHERE bot_id=$1',[f.bot])).rows;
+      assert.equal(tasks.length,1);assert.match(tasks[0].objective,/exactly \{"quiet":true\}/);
+      assert.ok((await pool.query('SELECT last_scheduled_run_at FROM bots WHERE id=$1',[f.bot])).rows[0].last_scheduled_run_at);
+      assert.equal((await pool.query('SELECT 1 FROM messages WHERE thread_id=$1',[f.thread])).rowCount,0);
+    });
+  }
+  it('quiet schedule ignores old, other-tenant, other-scope and unfinished task events',async () => {
+    const f=await fixture();await activity(f);
+    await pool.query('UPDATE bots SET last_scheduled_run_at=clock_timestamp() WHERE id=$1',[f.bot]);
+    await activity(f,'memory.changed',{},'project:other');
+    await activity(f,'memory.changed',{},'project:a',randomUUID());
+    await activity(f,'task.updated',{action:'claimed'});
+    await due(f);await tickBotSchedules(pool);
+    assert.equal((await pool.query('SELECT 1 FROM tasks WHERE bot_id=$1',[f.bot])).rowCount,0);
+  });
+  it('bot_update accepts quiet_schedule:false and an idle scope always runs',async () => {
+    const f=await fixture();
+    const updated=await call(f.user,'bot_update',{bot_id:f.bot,expected_version:1,rules:{quiet_schedule:false}});
+    assert.equal(updated.bot.rules.quiet_schedule,false);
+    await due(f);await tickBotSchedules(pool);
+    assert.equal((await pool.query('SELECT 1 FROM tasks WHERE bot_id=$1',[f.bot])).rowCount,1);
+  });
+  for (const answer of ['{"quiet":true}','Something changed','{"quiet":true} plus a report']) {
+    it(`scheduled completion handles whole answer ${answer} and excludes its own events`,async () => {
+      const f=await fixture();await activity(f);await due(f);await tickBotSchedules(pool);
+      const c=await claim(f.worker,['auto.read','codex.read'],['turn']);assert.ok(c.task);
+      const args={task_id:c.task.id,lease_token:c.lease_token,lease_generation:c.lease_generation,outcome:'completed',result:{answer}};
+      await call(f.worker,'task_finish',args);await call(f.worker,'task_finish',args);
+      const messages=(await pool.query('SELECT kind,body FROM messages WHERE thread_id=$1 ORDER BY seq',[f.thread])).rows;
+      assert.deepEqual(messages,answer==='{"quiet":true}' ? [] : [{kind:'notice',body:'Scheduled run'},{kind:'text',body:answer}]);
+      await due(f);await tickBotSchedules(pool);
+      assert.equal((await pool.query('SELECT 1 FROM tasks WHERE bot_id=$1',[f.bot])).rowCount,1,'own completion and reply cannot trigger the next run');
+      await activity(f);await due(f);await tickBotSchedules(pool);
+      assert.equal((await pool.query('SELECT 1 FROM tasks WHERE bot_id=$1',[f.bot])).rowCount,2,'new unrelated activity triggers another run');
+    });
+  }
+  it('a human-triggered turn keeps the literal quiet JSON and wakes the schedule',async () => {
+    const f=await fixture({quiet_schedule:false});await due(f);await tickBotSchedules(pool);
+    await pool.query("UPDATE tasks SET initiator_kind='person' WHERE bot_id=$1",[f.bot]);
+    await pool.query("UPDATE bots SET rules='{}' WHERE id=$1",[f.bot]);
+    const c=await claim(f.worker,['auto.read','codex.read'],['turn']);
+    await call(f.worker,'task_finish',{task_id:c.task.id,lease_token:c.lease_token,lease_generation:c.lease_generation,outcome:'completed',result:{answer:'{"quiet":true}'}});
+    assert.deepEqual((await pool.query('SELECT kind,body FROM messages WHERE thread_id=$1',[f.thread])).rows,[{kind:'text',body:'{"quiet":true}'}]);
+    await due(f);await tickBotSchedules(pool);
+    assert.equal((await pool.query('SELECT 1 FROM tasks WHERE bot_id=$1',[f.bot])).rowCount,2);
+  });
+  it('a scheduled question and its card do not wake the bot again',async () => {
+    const f=await fixture();await activity(f);await due(f);await tickBotSchedules(pool);
+    const c=await claim(f.worker,['auto.read','codex.read'],['turn']);
+    const answer='Need your input\n```swarmaa-actions\n'+JSON.stringify([{type:'question_ask',prompt:'Proceed?',options:['Yes','No']}])+'\n```';
+    await call(f.worker,'task_finish',{task_id:c.task.id,lease_token:c.lease_token,lease_generation:c.lease_generation,outcome:'completed',result:{answer}});
+    assert.equal((await pool.query("SELECT 1 FROM events WHERE tenant_id=$1 AND name='question.created'",[f.user.tenantId])).rowCount,1);
+    await due(f);await tickBotSchedules(pool);
+    assert.equal((await pool.query('SELECT 1 FROM tasks WHERE bot_id=$1',[f.bot])).rowCount,1);
+  });
+  it('activity query errors roll back to a savepoint and still queue a turn',async () => {
+    const f=await fixture();await due(f);
+    // Real PostgreSQL error leaves the transaction aborted; the scheduler must recover it.
+    const failingPool={query:pool.query.bind(pool),connect:async () => {
+      const client=await pool.connect();
+      return {release:() => client.release(),query:(sql:string,args?:unknown[]) =>
+        client.query(sql.includes('SELECT 1 FROM events e') ? 'SELECT 1/0' : sql,args)};
+    }} as unknown as Pool;
+    await tickBotSchedules(failingPool);
+    assert.equal((await pool.query('SELECT 1 FROM tasks WHERE bot_id=$1',[f.bot])).rowCount,1);
+  });
+
 });
