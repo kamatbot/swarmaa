@@ -518,3 +518,144 @@ extension TeamsUXRegressionTests {
         XCTAssertEqual(transport.requests.filter { $0.0 == "agent_create" }.count, 1)
     }
 }
+
+/// Peak in-flight requests, for the concurrency checks.
+private final class InFlight: @unchecked Sendable {
+    private let lock = NSLock()
+    private var now = 0, top = 0
+    var peak: Int { lock.lock(); defer { lock.unlock() }; return top }
+    func around<T>(_ work: () async throws -> T) async rethrows -> T {
+        lock.lock(); now += 1; top = max(top, now); lock.unlock()
+        defer { lock.lock(); now -= 1; lock.unlock() }
+        return try await work()
+    }
+}
+
+extension TeamsUXRegressionTests {
+    @MainActor func testRefreshRunsIndependentCallsConcurrentlyBoundedForTasks() async throws {
+        let stub = UXTransport()
+        let all = InFlight(), lists = InFlight()
+        let scopes = (1...6).map { "{\"scope\":\"project:\($0)\"}" }.joined(separator: ",")
+        stub.respond = { tool, _ in
+            try await all.around {
+                let reply = { try await Task.sleep(for: .milliseconds(40)) }
+                switch tool {
+                case "agent_list": return (200, #"{"result":{"agents":[]}}"#)
+                case "swarm_status": try await reply(); return (200, "{\"result\":{\"scopes\":[\(scopes)]}}")
+                case "task_list": return try await lists.around { try await reply(); return (200, #"{"result":{"tasks":[]}}"#) }
+                default: try await reply(); return (200, #"{"result":{"items":[]}}"#)
+                }
+            }
+        }
+        let model = TeamsModel(client: try stub.client(self))
+        await model.refresh()
+        model.stopStream()
+        XCTAssertEqual(stub.requests.filter { $0.0 == "task_list" }.count, 18)
+        XCTAssertGreaterThanOrEqual(all.peak, 5, "channels, swarms, questions, status and bots overlap")
+        XCTAssertEqual(lists.peak, 8, "task_list runs 8 at once, no more")
+    }
+}
+
+extension TeamsUXRegressionTests {
+    /// Two scopes, one running task each ("project:a-running"), nothing queued or resolved.
+    @MainActor fileprivate func taskModel(_ stub: UXTransport, extra: @escaping (String, [String: Any]) -> (Int, String)? = { _, _ in nil }) async throws -> TeamsModel {
+        stub.respond = { tool, body in
+            if let reply = extra(tool, body) { return reply }
+            switch tool {
+            case "agent_list": return (200, #"{"result":{"agents":[]}}"#)
+            case "swarm_status": return (200, #"{"result":{"scopes":[{"scope":"project:a"},{"scope":"project:b"}]}}"#)
+            case "task_get": return (200, #"{"result":{"task":{"id":"project:a-running","scope":"project:a","status":"running","version":7}}}"#)
+            case "task_list":
+                guard body["status"] as? String == "running", let scope = body["scope"] as? String else { return (200, #"{"result":{"tasks":[]}}"#) }
+                return (200, "{\"result\":{\"tasks\":[{\"id\":\"\(scope)-running\",\"scope\":\"\(scope)\",\"status\":\"running\",\"version\":1}]}}")
+            default: return (200, #"{"result":{"items":[]}}"#)
+            }
+        }
+        let model = TeamsModel(client: try stub.client(self))
+        await model.refresh()
+        model.stopStream()
+        try await Task.sleep(for: .milliseconds(50))
+        return model
+    }
+
+    private func taskEvent(_ payload: String) throws -> TeamsEvent {
+        try XCTUnwrap(TeamsEvent(SSEParser.Frame(id: "1.1", event: "task.updated", data: "{\"scope\":\"project:a\",\"payload\":\(payload)}")))
+    }
+
+    @MainActor func testRunningTaskEventPatchesOneRowWithAtMostOneRequest() async throws {
+        let stub = UXTransport()
+        let model = try await taskModel(stub)
+        var before = stub.requests.count
+        // The service's own fields: no request at all.
+        await model.apply(try taskEvent(#"{"task_id":"project:a-running","status":"running","version":3,"action":"checkpointed"}"#))
+        try await Task.sleep(for: .milliseconds(400))
+        XCTAssertEqual(stub.requests.count - before, 0)
+        XCTAssertEqual(model.workingTasks.first { $0.id == "project:a-running" }?.version, 3)
+        // No status in the payload: one task_get, merged in, no lists and no bot_list.
+        before = stub.requests.count
+        await model.apply(try taskEvent(#"{"task_id":"project:a-running"}"#))
+        try await Task.sleep(for: .milliseconds(400))
+        XCTAssertEqual(stub.requests.dropFirst(before).map(\.0), ["task_get"])
+        XCTAssertEqual(model.workingTasks.first { $0.id == "project:a-running" }?.version, 7)
+        XCTAssertEqual(model.workingTasks.count, 2)
+        // It finished: it leaves the list, so that scope (and only it) is listed again, with the badges.
+        before = stub.requests.count
+        await model.apply(try taskEvent(#"{"task_id":"project:a-running","status":"completed","action":"finished"}"#))
+        try await Task.sleep(for: .milliseconds(400))
+        let after = stub.requests.dropFirst(before)
+        XCTAssertEqual(after.filter { $0.0 == "task_list" }.count, 3)
+        XCTAssertTrue(after.filter { $0.0 == "task_list" }.allSatisfy { $0.1["scope"] as? String == "project:a" })
+        XCTAssertEqual(after.filter { $0.0 == "bot_list" }.count, 1)
+    }
+}
+
+extension TeamsUXRegressionTests {
+    @MainActor func testTurnEventInOpenThreadReadsTypingAndTheReplyReplacesIt() async throws {
+        let stub = UXTransport()
+        var reply = false
+        let model = try await taskModel(stub) { tool, body in
+            guard tool == "thread_read" else { return tool == "thread_mark_read" ? (200, #"{"result":{}}"#) : nil }
+            let hello = #"{"id":"m1","seq":1,"kind":"text","body":"hi","author":{"kind":"human"},"created_at":"2026-10-28T10:00:00Z"}"#
+            let answer = #"{"id":"m2","seq":2,"kind":"text","body":"Done.","author":{"kind":"agent","id":"ag1"},"created_at":"2026-10-28T10:00:09Z"}"#
+            let typing = #"[{"task_id":"project:a-running","agent_id":"ag1","text":"Looking at it","updated_at":"2026-10-28T10:00:05Z"}]"#
+            if body["after_seq"] == nil { return (200, "{\"result\":{\"messages\":[\(hello)],\"has_more\":false}}") }
+            // The task is still running for a moment after its reply posts: typing is still listed.
+            return (200, "{\"result\":{\"messages\":[\(reply ? answer : "")],\"typing\":\(typing),\"has_more\":false}}")
+        }
+        await model.loadLatest("t1")
+        XCTAssertEqual(model.liveTyping("t1"), [], "an older-style page without typing keeps none")
+        model.select(threadID: "t1", refreshHistory: false)
+        model.isVisible = true
+        try await Task.sleep(for: .milliseconds(100))
+        let before = stub.requests.filter { $0.0 != "thread_mark_read" }.count
+        let turn = #"{"task_id":"project:a-running","status":"running","action":"checkpointed","kind":"turn","thread_id":"t1"}"#
+        for _ in 0..<3 { await model.apply(try taskEvent(turn)) }
+        XCTAssertEqual(model.liveTyping("t1"), [], "debounced")
+        try await Task.sleep(for: .milliseconds(500))
+        let calls = stub.requests.filter { $0.0 != "thread_mark_read" }.dropFirst(before)
+        XCTAssertEqual(calls.map(\.0), ["thread_read"], "three turn events cost one small read, no lists")
+        XCTAssertEqual(calls.first?.1["after_seq"] as? Int, 1)
+        XCTAssertEqual(model.liveTyping("t1").map(\.text), ["Looking at it"])
+        // The agent's message lands: the bubble goes, even though typing is still listed.
+        reply = true
+        await model.apply(TeamsEvent(cursor: nil, name: "message.created", threadID: "t1", seq: 2, authorKind: "agent"))
+        XCTAssertEqual(model.messages["t1"]?.map(\.seq), [1, 2])
+        XCTAssertEqual(model.liveTyping("t1"), [])
+        XCTAssertEqual(model.typing["t1"]?.count, 1)
+        // The task ends: the entry itself goes.
+        await model.apply(try taskEvent(#"{"task_id":"project:a-running","status":"completed","action":"finished","kind":"turn","thread_id":"t1"}"#))
+        XCTAssertEqual(model.typing["t1"], [])
+    }
+
+    func testTypingDecodesAndIsOptional() throws {
+        let with = Data(#"{"messages":[],"typing":[{"task_id":"k","agent_id":"a","text":"so far","updated_at":"2026-10-28T10:00:05Z"}]}"#.utf8)
+        let page = try SwarmaClient.decoder.decode(SwarmaTeamsClient.MessagePage.self, from: with)
+        XCTAssertEqual(page.typing?.first?.agentID, "a")
+        XCTAssertNotNil(page.typing?.first?.updatedAt)
+        XCTAssertNil(try SwarmaClient.decoder.decode(SwarmaTeamsClient.MessagePage.self, from: Data(#"{"messages":[]}"#.utf8)).typing)
+        let event = try XCTUnwrap(TeamsEvent(SSEParser.Frame(id: nil, event: "task.updated",
+            data: #"{"scope":"s","payload":{"task_id":"k","status":"running","kind":"turn","thread_id":"t","version":4}}"#)))
+        XCTAssertEqual([event.subjectID, event.kind, event.threadID, event.status], ["k", "turn", "t", "running"])
+        XCTAssertEqual(event.version, 4)
+    }
+}
