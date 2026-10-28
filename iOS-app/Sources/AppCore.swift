@@ -282,7 +282,9 @@ struct EventParser {
     }
 }
 
-@MainActor func allPages(_ service: any HostService, _ tool: String, _ input: [String: JSON] = [:], key: String = "items") async throws -> [JSON] {
+/// `key` is the list field of that tool's result: bots, agents, tasks, items (attention_list). No default:
+/// a wrong one silently reads nothing, which hid every bot.
+@MainActor func allPages(_ service: any HostService, _ tool: String, _ input: [String: JSON] = [:], key: String) async throws -> [JSON] {
     var input = input, values: [JSON] = [], seen = Set<String>()
     // ponytail: 100 pages per refresh. A larger account must use a paged UI; never silently truncate.
     for _ in 0..<100 {
@@ -394,7 +396,7 @@ struct EventParser {
         loading = true
         defer { loading = false }
         do {
-            async let botRows = allPages(service, "bot_list", ["limit": .number(100)])
+            async let botRows = allPages(service, "bot_list", ["limit": .number(100)], key: "bots")
             async let swarm = service.call("swarm_status", [:])
             async let agentRows = allPages(service, "agent_list", ["limit": .number(100)], key: "agents")
             (bots, status, agents) = try await (botRows.map { Bot(raw: $0) }, swarm, agentRows)
@@ -460,7 +462,7 @@ struct EventParser {
             }
         }
         if name.hasPrefix("bot.") || name == "message.created" || name.hasPrefix("question.") {
-            bots = try await allPages(service, "bot_list", ["limit": .number(100)]).map { Bot(raw: $0) }
+            bots = try await allPages(service, "bot_list", ["limit": .number(100)], key: "bots").map { Bot(raw: $0) }
         }
     }
     func startStream() {
@@ -494,12 +496,12 @@ struct EventParser {
         // Seven task reads + attention = at most eight concurrent calls, including pagination.
         let scopes = scopes
         var rows: [JSON] = []
-        async let needs = allPages(service, "attention_list", ["limit": .number(100)])
+        async let needs = allPages(service, "attention_list", ["limit": .number(100)], key: "items")
         for offset in stride(from: 0, to: scopes.count, by: 7) {
             let batch = Array(scopes[offset..<min(offset + 7, scopes.count)])
             let result = try await withThrowingTaskGroup(of: [JSON].self) { group in
                 for scope in batch {
-                    group.addTask { try await allPages(service, "task_list", ["scope": .string(scope), "limit": .number(100)]) }
+                    group.addTask { try await allPages(service, "task_list", ["scope": .string(scope), "limit": .number(100)], key: "tasks") }
                 }
                 var results: [JSON] = []
                 for try await r in group { results += r }
@@ -540,7 +542,7 @@ struct EventParser {
         input["bot_id"] = .string(bot.id); input["expected_version"] = bot.raw["version"]
         let updated = Bot(raw: try await service.call("bot_update", input)["bot"])
         // Server enforces uniqueness; refresh both the newly and previously starred rows.
-        bots = try await allPages(service, "bot_list").map { Bot(raw: $0) }
+        bots = try await allPages(service, "bot_list", key: "bots").map { Bot(raw: $0) }
         if openBot?.id == updated.id { openBot = updated }
     }
     func resolve(_ id: String) async throws {
@@ -569,7 +571,7 @@ struct EventParser {
         // One deadline includes discovery, post and reply; no automatic mutation retries.
         return try await withThrowingTaskGroup(of: String.self) { group in
             group.addTask {
-                let bots = try await allPages(service, "bot_list").map { Bot(raw: $0) }
+                let bots = try await allPages(service, "bot_list", key: "bots").map { Bot(raw: $0) }
                 guard let bot = Bot.shortcut(bots) else { throw AppFailure.noStar }
                 let initial = try await service.call("thread_read", ["thread_id": .string(bot.threadID), "limit": .number(100)])
                 let baseline = initial["messages"].array.map { $0["seq"].int }.max() ?? 0

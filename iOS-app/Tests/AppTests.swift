@@ -31,7 +31,7 @@ actor IOSRelaySocket: SwarmaRelayTransport.SwarmaWebSocket {
             if tool == hangingTool { return }
             let result: JSON
             switch tool {
-            case "bot_list": result = .object(["items": .array([bot])])
+            case "bot_list": result = .object(["bots": .array([bot]), "has_more": .bool(false)]) // the service's real shape
             case "swarm_status": result = .object(["usage": .array([])])
             case "agent_list": result = .object(["agents": .array([])])
             case "thread_post":
