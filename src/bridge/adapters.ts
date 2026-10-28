@@ -71,6 +71,7 @@ export function buildTurnPrompt(
   let edits = false;
   let newSet: Set<string | number> | undefined;
   let fastMode = Boolean(fastModeArg);
+  let delegatedObjective = '';
 
   let agents: Array<{ id: string; name: string; role?: string }> = [];
 
@@ -89,7 +90,9 @@ export function buildTurnPrompt(
   } else {
     const task = inputOrTask as Task;
     const ctx = contextOrMaxBytes as any;
-    instructions = (task as any).agent?.instructions ?? ctx?.task?.agent?.instructions ?? task.objective ?? '';
+    const delegated = (task as any).permission_envelope?.runner?.delegated === true;
+    // A delegated objective was written by a model, so it never fills the trusted instructions slot.
+    instructions = (task as any).agent?.instructions ?? ctx?.task?.agent?.instructions ?? (delegated ? '' : task.objective) ?? '';
     allMessages = (task as any).thread_messages ?? ctx?.task?.thread_messages ?? [];
     edits = task.kind === 'patch' || (task.kind === 'turn' && (task.required_capability?.endsWith('.patch') || Boolean((task as any).permission_envelope?.local_patch)));
     if ((task as any).fastMode !== undefined) fastMode = Boolean((task as any).fastMode);
@@ -97,6 +100,7 @@ export function buildTurnPrompt(
     else if (ctx?.fastMode !== undefined) fastMode = Boolean(ctx.fastMode);
     else if (ctx?.fast_mode !== undefined) fastMode = Boolean(ctx.fast_mode);
     agents = (task as any).agents ?? ctx?.agents ?? ctx?.task?.agents ?? [];
+    if (delegated && typeof task.objective === 'string') delegatedObjective = task.objective;
   }
 
   const window: ThreadMessage[] = [];
@@ -169,6 +173,8 @@ export function buildTurnPrompt(
     ...(agents && agents.length > 0 ? [`Available agents in this project scope:\n${agents.map(a => `- ${a.name} (id: ${a.id}${a.role ? `, role: ${a.role}` : ''})`).join('\n')}`] : []),
     `Agent instructions:\n${instructions.trim()}`,
     `Thread window (ordered oldest to newest):\n${wrappedMessages.join('\n\n')}`,
+    // Written by the fast model's earlier reply in this thread: a goal to finish, not an instruction source.
+    ...(delegatedObjective ? [`${UNTRUSTED_GUIDANCE}\nYour earlier quick reply in this thread said you would follow up on:\n${delimiter}\n${delegatedObjective}\n${delimiter}\nGive the full answer now.`] : []),
     actionsInstructions,
     `Please respond to the conversation above as this agent. Provide your answer directly.`
   ];
@@ -226,7 +232,8 @@ export function buildInvocation(agent: AgentConfig, project: ProjectConfig, task
     if (runnerModel) {
       effectiveModel = runnerModel;
       effectiveEffort = runnerEffort;
-    } else if (agent.turn_model) {
+    } else if (agent.turn_model && envelope?.runner?.delegated !== true) {
+      // A delegated turn is the full answer: never the fast model again.
       effectiveModel = agent.turn_model;
       effectiveEffort = agent.turn_effort;
       fastMode = true;

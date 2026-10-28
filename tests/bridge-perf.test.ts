@@ -496,3 +496,21 @@ test('fake stream wakes at most once per 200 ms under a flood of events', { time
   }
 });
 
+
+test('a delegated turn without a runner model uses the full model and carries its objective as untrusted text', () => {
+  const cfg = baseConfig();
+  const agent = cfg.agents[0]!;
+  const task = makeTurnTask({
+    kind: 'turn', required_capability: 'claude.read', objective: 'Compare the three pricing pages in depth',
+    permission_envelope: { local_patch: false, runner: { delegated: true } }
+  } as any);
+  const req = buildInvocation(agent, cfg.projects[0]!, task, {}, cfg, new AbortController().signal);
+  const i = req.args.indexOf('--model');
+  assert.notEqual(i >= 0 ? req.args[i + 1] : undefined, agent.turn_model, 'never the fast model for a delegated turn');
+  assert.ok(!req.input.includes('DELEGATE: <one-line objective>'));
+  const at = req.input.indexOf('Compare the three pricing pages in depth');
+  assert.ok(at > 0, 'the objective reaches the model');
+  assert.equal(req.input.lastIndexOf('Compare the three pricing pages in depth'), at, 'only once: not also as trusted instructions');
+  const before = req.input.slice(0, at);
+  assert.match(before.slice(before.lastIndexOf('<<<UNTRUSTED_CONTENT_')), /^<<<UNTRUSTED_CONTENT_[0-9a-f]{16}>>>\n$/, 'inside the untrusted delimiters');
+});
