@@ -1538,6 +1538,17 @@ describe('teams phase 2 swarms and coordination', { skip: !connectionString, con
     assert.equal(items.filter(i => i.id === c.task.id).length, 0);
   });
 
+  it('attention_list rows are one line: a short title and a file count, not the diffstat', async () => {
+    const t = await team('project:att2', ['A']);
+    const c = await call(t.user, 'task_submit', { scope: t.scope, kind: 'patch', objective: `Line one ${'x'.repeat(200)}\nline two`,
+      idempotency_key: 'p1', required_capability: 'codex.patch' });
+    await pool.query(`UPDATE tasks SET status='completed', result=$2::jsonb WHERE id=$1`, [c.task.id,
+      JSON.stringify({ review_required: true, head_commit: 'abc', branch: 'swarmaa/codex/1', changed_files: 9, diffstat: ' a.ts | 3 +\n b.ts | 1 -\n' })]);
+    const item = ((await call(t.user, 'attention_list', {})).items as any[]).find(i => i.id === c.task.id);
+    assert.equal(item.next_step, 'Ready for review · branch swarmaa/codex/1 · 9 files');
+    assert.ok(item.title.length <= 120 && !item.title.includes('\n'));
+  });
+
   it('fixes-2 handoff grant refuses a done step and a closed swarm', async () => {
     const t = await team('project:hdone', ['A', 'B']);
     const { A, B } = t.agents;

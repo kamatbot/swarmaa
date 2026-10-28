@@ -27,6 +27,9 @@ export interface TurnBudget {
   summary?: boolean;
 }
 
+/** A list row's title: the first line of an objective, at most 120 characters. */
+const oneLine = (text: string): string => { const line = text.split('\n')[0]!.trim(); return line.length > 120 ? `${line.slice(0, 119)}…` : line; };
+
 /** Model output that should become a notice rather than roll back the finish: 4xx, or Postgres data (22) and constraint (23) errors. */
 function isActionError(err: unknown): boolean {
   if (err instanceof AppError) return err.status >= 400 && err.status < 500;
@@ -1134,7 +1137,8 @@ export class SwarmsService {
     for (const t of reviewTasks) {
       const res = t.result ?? {};
       const branch = (res as any).branch ?? '';
-      const diffstat = (res as any).diffstat ?? ((res as any).changed_files ? `${(res as any).changed_files} files` : '');
+      const files = Number((res as any).changed_files) || 0;
+      const diffstat = files ? `${files} file${files === 1 ? '' : 's'}` : '';
       const parts = ['Ready for review'];
       if (branch) parts.push(`branch ${branch}`);
       if (diffstat) parts.push(diffstat);
@@ -1142,7 +1146,7 @@ export class SwarmsService {
       items.push({
         kind: 'task',
         id: t.id,
-        title: t.objective,
+        title: oneLine(t.objective),
         state: 'completed',
         next_step: parts.join(' · '),
         at: t.updated_at.toISOString()
@@ -1155,7 +1159,7 @@ export class SwarmsService {
       items.push({
         kind: 'task',
         id: f.id,
-        title: f.objective,
+        title: oneLine(f.objective),
         state: 'failed',
         next_step: `Failed · ${code} · retry`,
         at: f.updated_at.toISOString()
