@@ -34,7 +34,7 @@
     "deploy:local": "node --import tsx scripts/deploy-local.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "node --import tsx --test tests/*.test.ts",
-    "test:integration": "node --import tsx --test tests/*.integration.test.ts",
+    "test:integration": "node --import tsx --test --test-concurrency=1 tests/*.integration.test.ts",
     "tunnel": "node --import tsx scripts/tunnel.ts",
     "smoke": "node --env-file=.env --import tsx scripts/smoke.ts",
     "smoke:providers": "node --env-file-if-exists=.env --import tsx scripts/smoke-providers.ts",

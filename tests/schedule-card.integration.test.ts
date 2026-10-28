@@ -41,7 +41,7 @@ describe('schedule cards', {skip:!connectionString}, () => {
     await pool.query("UPDATE bots SET next_run_at=clock_timestamp()-interval '1 minute' WHERE id=$1",[bot.id]);
     await tickBotSchedules(pool);
     assert.equal((await pool.query('SELECT 1 FROM tasks WHERE bot_id=$1',[bot.id])).rowCount,0);
-    await update({rules:{schedule_paused:false}});
+    await update({rules:{schedule_paused:false,quiet_schedule:false}});
     assert.ok(new Date(bot.next_run_at)>new Date()); assert.equal((await card())[0].ref.next_runs.length,3);
     await pool.query("UPDATE bots SET next_run_at=clock_timestamp()-interval '1 minute' WHERE id=$1",[bot.id]);
     await Promise.all([tickBotSchedules(pool),tickBotSchedules(pool)]);

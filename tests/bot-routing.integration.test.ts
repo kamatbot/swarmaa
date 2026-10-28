@@ -132,7 +132,7 @@ describe('B2 bot routing', {skip:!connectionString,concurrency:false}, () => {
   it('quiet schedule skips an idle scope without a task or notice, but advances next_run_at',async () => {
     const f=await fixture();await due(f);await tickBotSchedules(pool);
     assert.equal((await pool.query('SELECT 1 FROM tasks WHERE bot_id=$1',[f.bot])).rowCount,0);
-    assert.equal((await pool.query('SELECT 1 FROM messages WHERE thread_id=$1',[f.thread])).rowCount,0);
+    assert.equal((await pool.query('SELECT 1 FROM messages WHERE thread_id=$1 AND kind<>\'schedule\'',[f.thread])).rowCount,0);
     const b=(await pool.query('SELECT * FROM bots WHERE id=$1',[f.bot])).rows[0];
     assert.ok(b.next_run_at>new Date());assert.equal(b.last_scheduled_run_at,null);
   });
@@ -143,7 +143,7 @@ describe('B2 bot routing', {skip:!connectionString,concurrency:false}, () => {
       const tasks=(await pool.query('SELECT * FROM tasks WHERE bot_id=$1',[f.bot])).rows;
       assert.equal(tasks.length,1);assert.match(tasks[0].objective,/exactly \{"quiet":true\}/);
       assert.ok((await pool.query('SELECT last_scheduled_run_at FROM bots WHERE id=$1',[f.bot])).rows[0].last_scheduled_run_at);
-      assert.equal((await pool.query('SELECT 1 FROM messages WHERE thread_id=$1',[f.thread])).rowCount,0);
+      assert.equal((await pool.query('SELECT 1 FROM messages WHERE thread_id=$1 AND kind<>\'schedule\'',[f.thread])).rowCount,0);
     });
   }
   it('quiet schedule ignores old, other-tenant, other-scope and unfinished task events',async () => {
@@ -168,7 +168,7 @@ describe('B2 bot routing', {skip:!connectionString,concurrency:false}, () => {
       const c=await claim(f.worker,['auto.read','codex.read'],['turn']);assert.ok(c.task);
       const args={task_id:c.task.id,lease_token:c.lease_token,lease_generation:c.lease_generation,outcome:'completed',result:{answer}};
       await call(f.worker,'task_finish',args);await call(f.worker,'task_finish',args);
-      const messages=(await pool.query('SELECT kind,body FROM messages WHERE thread_id=$1 ORDER BY seq',[f.thread])).rows;
+      const messages=(await pool.query('SELECT kind,body FROM messages WHERE thread_id=$1 AND kind<>\'schedule\' ORDER BY seq',[f.thread])).rows;
       assert.deepEqual(messages,answer==='{"quiet":true}' ? [] : [{kind:'notice',body:'Scheduled run'},{kind:'text',body:answer}]);
       await due(f);await tickBotSchedules(pool);
       assert.equal((await pool.query('SELECT 1 FROM tasks WHERE bot_id=$1',[f.bot])).rowCount,1,'own completion and reply cannot trigger the next run');
@@ -182,7 +182,7 @@ describe('B2 bot routing', {skip:!connectionString,concurrency:false}, () => {
     await pool.query("UPDATE bots SET rules='{}' WHERE id=$1",[f.bot]);
     const c=await claim(f.worker,['auto.read','codex.read'],['turn']);
     await call(f.worker,'task_finish',{task_id:c.task.id,lease_token:c.lease_token,lease_generation:c.lease_generation,outcome:'completed',result:{answer:'{"quiet":true}'}});
-    assert.deepEqual((await pool.query('SELECT kind,body FROM messages WHERE thread_id=$1',[f.thread])).rows,[{kind:'text',body:'{"quiet":true}'}]);
+    assert.deepEqual((await pool.query('SELECT kind,body FROM messages WHERE thread_id=$1 AND kind<>\'schedule\'',[f.thread])).rows,[{kind:'text',body:'{"quiet":true}'}]);
     await due(f);await tickBotSchedules(pool);
     assert.equal((await pool.query('SELECT 1 FROM tasks WHERE bot_id=$1',[f.bot])).rowCount,2);
   });

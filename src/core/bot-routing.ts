@@ -247,6 +247,7 @@ async function fireSchedule(pool:Pool,candidate:BotRoutingRow):Promise<void> {
       try {
         const activity = await db.query<{changed:boolean}>(`SELECT EXISTS (
           SELECT 1 FROM events e WHERE e.tenant_id=$1 AND e.scope=$2 AND e.created_at>(SELECT coalesce(last_scheduled_run_at,created_at) FROM bots WHERE id=$3)
+            AND (e.name<>'message.created' OR e.payload->>'kind' IS DISTINCT FROM 'schedule')
             AND (e.name IN ('message.created','memory.changed','question.created')
               OR (e.name='task.updated' AND e.payload->>'action'='finished'))
             AND NOT EXISTS (
