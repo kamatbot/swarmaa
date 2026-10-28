@@ -24,4 +24,4 @@ export const ROLE_PERMISSIONS: Record<Principal['role'], Permission[]> = {
 };
 
 /** Permissions the owner can add to or remove from an existing frontend identity (`npm run admin -- grant`). Nobody has them by default. */
-export const GRANTABLE_PERMISSIONS = ['lesson:review', 'routing:manage', 'answer_questions'] as const satisfies readonly Permission[];
+export const GRANTABLE_PERMISSIONS = ['lesson:review', 'routing:manage', 'answer_questions', 'agent:read', 'agent:manage', 'thread:read', 'thread:write'] as const satisfies readonly Permission[];
