@@ -37,6 +37,7 @@ CREATE TABLE swarms (
   version integer NOT NULL DEFAULT 1 CHECK (version > 0),
   created_by uuid NOT NULL REFERENCES principals(id),
   idempotency_key text,
+  request_hash text,
   created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
   updated_at timestamptz NOT NULL DEFAULT clock_timestamp(),
   closed_at timestamptz,
@@ -91,6 +92,10 @@ CREATE TABLE questions (
 CREATE INDEX questions_tenant_status_idx ON questions (tenant_id, status, created_at DESC);
 CREATE INDEX questions_thread_idx ON questions (thread_id, status);
 CREATE INDEX questions_step_idx ON questions (swarm_step_id);
+
+ALTER TABLE tasks ALTER COLUMN swarm_step_id TYPE uuid USING (CASE WHEN swarm_step_id ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' THEN swarm_step_id::uuid ELSE NULL END);
+ALTER TABLE tasks ADD CONSTRAINT tasks_swarm_step_id_fkey FOREIGN KEY (swarm_step_id) REFERENCES swarm_steps(id) ON DELETE SET NULL;
+CREATE INDEX tasks_swarm_step_idx ON tasks (swarm_step_id);
 
 ALTER TABLE tasks ADD COLUMN initiator_kind text NOT NULL DEFAULT 'person' CHECK (initiator_kind IN ('person','handoff','swarm','answer','flow'));
 ALTER TABLE tasks ADD COLUMN initiator_id text;

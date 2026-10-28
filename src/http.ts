@@ -492,21 +492,11 @@ export function createHttpHandler(dependencies: HttpDependencies): (request: Inc
       response.flushHeaders?.();
 
       if (isNow) {
-        const latest = await dependencies.pool.query<{ cursor: string; xid_str: string; seq: string }>(
-          `SELECT xid::text || '.' || seq::text AS cursor, xid::text AS xid_str, seq FROM events ORDER BY xid DESC, seq DESC LIMIT 1`
-        );
-        let cursorStr = '0.0';
-        if (latest.rows[0]) {
-          curXid = latest.rows[0].xid_str;
-          curSeq = latest.rows[0].seq;
-          cursorStr = latest.rows[0].cursor;
-        } else {
-          const xminRes = await dependencies.pool.query<{ xmin: string }>('SELECT pg_snapshot_xmin(pg_current_snapshot())::text AS xmin');
-          const xmin = xminRes.rows[0]?.xmin ?? '0';
-          curXid = xmin;
-          curSeq = '0';
-          cursorStr = `${xmin}.0`;
-        }
+        const xminRes = await dependencies.pool.query<{ xmin: string }>('SELECT pg_snapshot_xmin(pg_current_snapshot())::text AS xmin');
+        const xmin = xminRes.rows[0]?.xmin ?? '0';
+        curXid = xmin;
+        curSeq = '0';
+        const cursorStr = `${xmin}.0`;
         response.write(`id: ${cursorStr}\nevent: cursor\ndata: ${JSON.stringify({ cursor: cursorStr })}\n\n`);
       }
 

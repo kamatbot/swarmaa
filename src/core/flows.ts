@@ -153,14 +153,9 @@ export class FlowService {
       const swarmId = newId();
       await db.query(
         `INSERT INTO swarms (id, tenant_id, scope, title, goal, thread_id, status, flow_id, created_by, idempotency_key)
-         VALUES ($1, $2, $3, $4, $5, $6, 'running', $7, $8, $9)`,
-        [swarmId, p.tenantId, scope, definition.title, definition.title, flowThreadId, run.id, p.id, key]
+         VALUES ($1, $2, $3, $4, $5, $6, 'running', $7, $8, NULL)`,
+        [swarmId, p.tenantId, scope, definition.title, definition.title, flowThreadId, run.id, p.id]
       );
-
-      const defaultAgent = (await db.query<{ id: string }>(
-        'SELECT id FROM agents WHERE tenant_id=$1 AND scope=$2 AND NOT archived LIMIT 1',
-        [p.tenantId, scope]
-      )).rows[0];
 
       const stepKeyToId = new Map<string, string>();
       for (const step of definition.steps) {
@@ -180,16 +175,19 @@ export class FlowService {
           deploy:false,publish:false,send_messages:false,purchase:false,permission_changes:false};
         const taskId = newId();
 
+        await db.query(
+          `INSERT INTO swarm_steps (id, tenant_id, swarm_id, step_key, title, assignee_agent_id, needs, order_index, status, task_id)
+           VALUES ($1, $2, $3, $4, $5, NULL, $6::uuid[], $7, 'pending', NULL)`,
+          [stepId, p.tenantId, swarmId, step.id, step.id, depIds, i]
+        );
+
         const task = (await db.query<TaskRow>(`INSERT INTO tasks(id,tenant_id,scope,kind,objective,permission_envelope,required_capability,status,
           created_by,idempotency_key,request_hash,flow_id,flow,max_attempts,initiator_kind,initiator_id,swarm_step_id)
           VALUES($1,$2,$3,$4,$5,$6::jsonb,$7,'queued',$8,$9,$10,$11,$12::jsonb,3,'flow',$13,$14) RETURNING *`,
         [taskId,p.tenantId,scope,step.kind,flowObjective(step,inputs,new Map(),step.kind==='approve' ? `Flow ${definition.title} needs your approval: ` : ''),JSON.stringify(envelope),capability,p.id,`flow:${run.id}:${step.id}`,hash,run.id,JSON.stringify(flow),run.id,stepId])).rows[0]!;
 
-        await db.query(
-          `INSERT INTO swarm_steps (id, tenant_id, swarm_id, step_key, title, assignee_agent_id, needs, order_index, status, task_id)
-           VALUES ($1, $2, $3, $4, $5, $6, $7::uuid[], $8, 'pending', $9)`,
-          [stepId, p.tenantId, swarmId, step.id, step.id, defaultAgent?.id ?? null, depIds, i, taskId]
-        );
+        await db.query('UPDATE swarm_steps SET task_id=$1 WHERE id=$2', [taskId, stepId]);
+
         first ??= task;
         await taskChanged(db,p,task,'submitted',false);
       }

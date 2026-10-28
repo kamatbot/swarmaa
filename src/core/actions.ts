@@ -329,11 +329,17 @@ export function extractActionsBlock(text: string): ExtractedActions {
   return { cleanText, rawBlock, actions };
 }
 
+export const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+export function isUuid(val: unknown): val is string {
+  return typeof val === 'string' && UUID_REGEX.test(val);
+}
+
 export interface TurnGrantContext {
   agent: AgentRow;
   thread: ThreadRow;
   tenantId: string;
   scope: string;
+  hopDepth?: number;
 }
 
 /**
@@ -343,7 +349,8 @@ export interface TurnGrantContext {
  * - hand off only to agents in the same tenant and scope;
  * - start swarms only in its own scope, owned by itself;
  * - update only swarms it owns or holds a step in;
- * - ask questions only as itself.
+ * - ask questions only as itself on running steps.
+ * All model-supplied IDs are validated as UUIDs and scope-checked.
  */
 export async function validateTurnGrant(
   db: Db,
@@ -366,6 +373,38 @@ export async function validateTurnGrant(
       }
       // Re-map to exact UUID if name was provided
       act.to_agent = res.rows[0].id;
+
+      if (act.swarm_step_id) {
+        if (!isUuid(act.swarm_step_id)) {
+          return {
+            valid: false,
+            reason: `swarm_step_id '${act.swarm_step_id}' is not a valid uuid`,
+            action: act
+          };
+        }
+        const stepRes = await db.query<{ id: string; assignee_agent_id: string; scope: string; owner_agent_id: string | null }>(
+          `SELECT s.id, s.assignee_agent_id, sw.scope, sw.owner_agent_id
+           FROM swarm_steps s
+           JOIN swarms sw ON sw.id = s.swarm_id
+           WHERE s.id = $1 AND s.tenant_id = $2`,
+          [act.swarm_step_id, ctx.tenantId]
+        );
+        if (!stepRes.rows[0] || stepRes.rows[0].scope !== ctx.scope) {
+          return {
+            valid: false,
+            reason: `swarm_step_id '${act.swarm_step_id}' not found in this scope`,
+            action: act
+          };
+        }
+        const stepRow = stepRes.rows[0];
+        if (stepRow.assignee_agent_id !== ctx.agent.id && stepRow.owner_agent_id !== ctx.agent.id) {
+          return {
+            valid: false,
+            reason: `agent does not hold or own swarm step '${act.swarm_step_id}'`,
+            action: act
+          };
+        }
+      }
     } else if (act.type === 'swarm_start') {
       // Swarms are started in agent's scope, owned by itself
       // All assignees must be in same tenant and scope and active
@@ -384,9 +423,15 @@ export async function validateTurnGrant(
         step.assignee_agent_id = res.rows[0].id;
       }
     } else if (act.type === 'swarm_update') {
-      // Update only swarms it owns or holds a step in
-      const swarmRes = await db.query<{ id: string; owner_agent_id: string | null; scope: string }>(
-        'SELECT id, owner_agent_id, scope FROM swarms WHERE tenant_id=$1 AND id=$2',
+      if (!isUuid(act.swarm_id)) {
+        return {
+          valid: false,
+          reason: `swarm_id '${act.swarm_id}' is not a valid uuid`,
+          action: act
+        };
+      }
+      const swarmRes = await db.query<{ id: string; owner_agent_id: string | null; scope: string; status: string; closed_at: Date | null }>(
+        'SELECT id, owner_agent_id, scope, status, closed_at FROM swarms WHERE tenant_id=$1 AND id=$2',
         [ctx.tenantId, act.swarm_id]
       );
       if (!swarmRes.rows[0]) {
@@ -401,6 +446,13 @@ export async function validateTurnGrant(
         return {
           valid: false,
           reason: `cannot update swarm in different scope '${swarm.scope}'`,
+          action: act
+        };
+      }
+      if (swarm.status === 'cancelled' || swarm.closed_at !== null) {
+        return {
+          valid: false,
+          reason: 'cannot update a closed or cancelled swarm',
           action: act
         };
       }
@@ -419,11 +471,61 @@ export async function validateTurnGrant(
           };
         }
       }
+
+      for (const op of act.ops) {
+        if (op.step_id !== undefined) {
+          if (!isUuid(op.step_id)) {
+            return {
+              valid: false,
+              reason: `step_id '${op.step_id}' is not a valid uuid`,
+              action: act
+            };
+          }
+          const st = (await db.query<{ id: string; status: string }>(
+            'SELECT id, status FROM swarm_steps WHERE id=$1 AND swarm_id=$2',
+            [op.step_id, act.swarm_id]
+          )).rows[0];
+          if (!st) {
+            return {
+              valid: false,
+              reason: `step '${op.step_id}' not found in swarm`,
+              action: act
+            };
+          }
+          if (op.op === 'reassign' && st.status === 'done') {
+            return {
+              valid: false,
+              reason: 'cannot reassign a completed step',
+              action: act
+            };
+          }
+        }
+        if (op.assignee_agent_id !== undefined) {
+          const ag = (await db.query<{ id: string }>(
+            'SELECT id FROM agents WHERE tenant_id=$1 AND scope=$2 AND (id::text=$3 OR name=$3) AND NOT archived',
+            [ctx.tenantId, ctx.scope, op.assignee_agent_id]
+          )).rows[0];
+          if (!ag) {
+            return {
+              valid: false,
+              reason: `assignee agent '${op.assignee_agent_id}' not found or not active in this scope`,
+              action: act
+            };
+          }
+          op.assignee_agent_id = ag.id;
+        }
+      }
     } else if (act.type === 'question_ask') {
-      // Ask question only as itself (enforced automatically since question author is ctx.agent.id)
       if (act.swarm_step_id) {
-        const stepRes = await db.query<{ id: string; assignee_agent_id: string }>(
-          'SELECT id, assignee_agent_id FROM swarm_steps WHERE id=$1 AND tenant_id=$2',
+        if (!isUuid(act.swarm_step_id)) {
+          return {
+            valid: false,
+            reason: `swarm_step_id '${act.swarm_step_id}' is not a valid uuid`,
+            action: act
+          };
+        }
+        const stepRes = await db.query<{ id: string; assignee_agent_id: string; status: string }>(
+          'SELECT id, assignee_agent_id, status FROM swarm_steps WHERE id=$1 AND tenant_id=$2',
           [act.swarm_step_id, ctx.tenantId]
         );
         if (!stepRes.rows[0] || stepRes.rows[0].assignee_agent_id !== ctx.agent.id) {
@@ -433,9 +535,22 @@ export async function validateTurnGrant(
             action: act
           };
         }
+        if (stepRes.rows[0].status !== 'running') {
+          return {
+            valid: false,
+            reason: `cannot ask question on swarm step with status '${stepRes.rows[0].status}'`,
+            action: act
+          };
+        }
       }
     } else if (act.type === 'channel_post') {
-      // Post only to channels that agent is a member of
+      if (!isUuid(act.channel_id)) {
+        return {
+          valid: false,
+          reason: `channel_id '${act.channel_id}' is not a valid uuid`,
+          action: act
+        };
+      }
       const channelRes = await db.query<ThreadRow>(
         "SELECT * FROM threads WHERE id=$1 AND tenant_id=$2 AND scope=$3 AND kind='channel'",
         [act.channel_id, ctx.tenantId, ctx.scope]

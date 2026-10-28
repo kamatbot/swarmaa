@@ -515,12 +515,18 @@ export class TeamService {
         }
 
         for (const agentId of targetAgents) {
-          const activeTurn = (await db.query(
-            "SELECT id FROM tasks WHERE tenant_id=$1 AND agent_id=$2 AND status IN ('queued', 'running') LIMIT 1",
-            [p.tenantId, agentId]
+          const queuedTurn = (await db.query<{ id: string; context_versions: Record<string, unknown> }>(
+            "SELECT id, context_versions FROM tasks WHERE tenant_id=$1 AND agent_id=$2 AND thread_id=$3 AND kind='turn' AND status='queued' ORDER BY id ASC LIMIT 1 FOR UPDATE",
+            [p.tenantId, agentId, threadId]
           )).rows[0];
 
-          if (!activeTurn) {
+          if (queuedTurn) {
+            const updatedVersions = { ...(queuedTurn.context_versions ?? {}), message_seq: Number(nextSeq) };
+            await db.query(
+              'UPDATE tasks SET context_versions=$1::jsonb, updated_at=clock_timestamp() WHERE id=$2',
+              [JSON.stringify(updatedVersions), queuedTurn.id]
+            );
+          } else {
             const agent = (await db.query<AgentRow>('SELECT * FROM agents WHERE id=$1 FOR UPDATE', [agentId])).rows[0];
             if (!agent) continue;
 
@@ -531,7 +537,7 @@ export class TeamService {
               deploy: false, publish: false, purchase: false, local_patch: agent.edits,
               read_project: true, send_messages: false, permission_changes: false, external_side_effects: false
             };
-            const contextVersions = { message_seq: Number(nextSeq) };
+            const contextVersions = { message_seq: Number(nextSeq), hop_depth: 0 };
             const reqHash = sha256(canonicalJson({
               kind: 'turn', scope: agent.scope, agent_id: agent.id, thread_id: threadId, seq: Number(nextSeq)
             }));
