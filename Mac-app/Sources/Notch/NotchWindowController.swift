@@ -434,7 +434,8 @@ final class NotchWindowController {
             container.addSubview(hosting)
             panel.contentView = container
             panel.ignoresMouseEvents = true
-            if !Runtime.isUnderTest { panel.orderFrontRegardless() }
+            // A new panel obeys Hidden too: a panel made after `apply(.hidden)` stays out.
+            if !Runtime.isUnderTest, visibility != .hidden { panel.orderFrontRegardless() }
             self.hostingView = hosting
         }
         // Use the actual panel origin: near a corner its transparent padding
