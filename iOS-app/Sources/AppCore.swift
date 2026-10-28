@@ -300,6 +300,24 @@ struct EventParser {
     throw AppFailure.invalidResponse
 }
 
+enum PushNotification {
+    static func tokenHex(_ data: Data) -> String {
+        data.map { String(format: "%02x", $0) }.joined()
+    }
+    static func botID(_ payload: [AnyHashable: Any]) -> String? {
+        guard let id = payload["bot_id"] as? String,
+              !id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        return id
+    }
+    static var environment: String {
+        #if DEBUG
+        "sandbox"
+        #else
+        "production"
+        #endif
+    }
+}
+
 @MainActor @Observable final class AppModel {
     var service: (any HostService)?
     var bots: [Bot] = []
@@ -319,6 +337,28 @@ struct EventParser {
     var loading = false
     var connected = false
     var isDemo = false
+    var didLoadBots = false
+    var pendingPushBotID: String?
+    var visibleThreadBotID: String?
+    var onFirstBotList: (@MainActor () async -> Void)?
+    private var pushToken: String?
+    private var signingOut = false
+
+    func receivePushTap(_ payload: [AnyHashable: Any]) {
+        if let id = PushNotification.botID(payload) { pendingPushBotID = id }
+    }
+    func takePushBot() -> Bot? {
+        guard connected, didLoadBots, let id = pendingPushBotID,
+              let bot = bots.first(where: { $0.id == id }) else { return nil }
+        pendingPushBotID = nil
+        return bot
+    }
+    func registerPushToken(_ data: Data) async {
+        guard connected, !isDemo, !signingOut, let service else { return }
+        let token = PushNotification.tokenHex(data)
+        pushToken = token
+        _ = try? await service.call("push_register", ["token": .string(token), "environment": .string(PushNotification.environment)])
+    }
     private var streamTask: Task<Void, Never>?
     private var presenceTask: Task<Void, Never>?
     private var cursor = "now"
@@ -340,7 +380,7 @@ struct EventParser {
     }
     func attach(_ service: RelayService) {
         streamTask?.cancel(); presenceTask?.cancel()
-        self.service = service; connected = true
+        self.service = service; connected = true; didLoadBots = false
         presenceTask = Task { [weak self, transport = service.transport] in
             for await p in transport.presenceStream {
                 guard !Task.isCancelled else { break }
@@ -403,6 +443,10 @@ struct EventParser {
             async let agentRows = allPages(service, "agent_list", ["limit": .number(100)], key: "agents")
             (bots, status, agents) = try await (botRows.map { Bot(raw: $0) }, swarm, agentRows)
             error = nil
+            if !didLoadBots, connected, !signingOut {
+                didLoadBots = true
+                await onFirstBotList?()
+            }
         } catch { self.error = safeError(error) }
     }
     func readThread(_ bot: Bot, incremental: Bool = false) async throws {
@@ -562,7 +606,14 @@ struct EventParser {
         try await loadTasks()
     }
     func signOut() async throws {
+        guard !signingOut else { return }
+        signingOut = true
+        defer { signingOut = false }
+        if let pushToken, let service {
+            _ = try? await service.call("push_unregister", ["token": .string(pushToken)])
+        }
         try keychain.delete()
+        pushToken = nil; didLoadBots = false; pendingPushBotID = nil; visibleThreadBotID = nil
         streamTask?.cancel(); presenceTask?.cancel()
         if let service = service as? RelayService { await service.transport.disconnect() }
         service = nil; connected = false; online = false; openBot = nil

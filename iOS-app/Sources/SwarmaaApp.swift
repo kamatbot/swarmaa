@@ -1,6 +1,7 @@
 import SwiftUI
 import UIKit
 import AppIntents
+import UserNotifications
 
 @MainActor enum Runtime {
     static let model = AppModel()
@@ -46,7 +47,38 @@ struct SwarmaaShortcuts: AppShortcutsProvider {
     }
 }
 
+@MainActor final class PushDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
+    func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
+        UNUserNotificationCenter.current().delegate = self
+        Runtime.model.onFirstBotList = {
+            let center = UNUserNotificationCenter.current()
+            let settings = await center.notificationSettings()
+            if settings.authorizationStatus == .notDetermined {
+                _ = try? await center.requestAuthorization(options: [.alert, .sound, .badge])
+            }
+            guard Runtime.model.connected else { return }
+            UIApplication.shared.registerForRemoteNotifications()
+        }
+        return true
+    }
+    func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
+        Task { await Runtime.model.registerPushToken(deviceToken) }
+    }
+    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
+        let id = PushNotification.botID(notification.request.content.userInfo)
+        return await MainActor.run {
+            id != nil && id == Runtime.model.visibleThreadBotID ? [] : [.banner, .sound, .badge]
+        }
+    }
+    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
+        guard response.actionIdentifier == UNNotificationDefaultActionIdentifier else { return }
+        guard let id = PushNotification.botID(response.notification.request.content.userInfo) else { return }
+        await MainActor.run { Runtime.model.receivePushTap(["bot_id": id]) }
+    }
+}
+
 @main struct SwarmaaApp: App {
+    @UIApplicationDelegateAdaptor(PushDelegate.self) private var pushDelegate
     var body: some Scene {
         WindowGroup { RootView(model: Runtime.model).preferredColorScheme(.light) }
     }
@@ -203,11 +235,26 @@ struct RootView: View {
             } else { await model.restore() }
             if Runtime.openStarRequested, model.openBot != nil { screen = .thread; Runtime.openStarRequested = false }
         }
+        .onChange(of: model.pendingPushBotID) { _, _ in openPushBot() }
+        .onChange(of: model.didLoadBots) { _, _ in openPushBot() }
+        .onChange(of: model.bots) { _, _ in openPushBot() }
+        .onChange(of: screen) { _, _ in updateVisibleThread() }
+        .onChange(of: sheet?.id) { _, _ in updateVisibleThread() }
+        .onChange(of: model.openBot?.id) { _, _ in updateVisibleThread() }
         .onChange(of: model.openBot?.id) { _, value in if value != nil, Runtime.openStarRequested { screen = .thread; Runtime.openStarRequested = false } }
         .onChange(of: phase) { _, phase in
             guard phase == .active else { return }
             if Runtime.openStarRequested, model.openBot != nil { screen = .thread; Runtime.openStarRequested = false }
+            openPushBot()
         }
+    }
+    private func updateVisibleThread() {
+        model.visibleThreadBotID = screen == .thread && sheet == nil ? model.openBot?.id : nil
+    }
+    private func openPushBot() {
+        guard let bot = model.takePushBot() else { return }
+        sheet = nil
+        open(bot)
     }
     private func perform(_ action: @escaping @MainActor () async throws -> Void) {
         guard !model.busy else { return }
