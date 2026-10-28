@@ -586,7 +586,10 @@ struct ConnectView: View {
                         guard let url = URL(string: text) else { scanning = false; error = safeError(AppFailure.invalidPairing); return }
                         connect(url)
                     } failed: { scanning = false; error = "Camera scanning is unavailable. Paste the link instead." }
+                    // A UIViewController in a stack has no height of its own: without this it drew nothing.
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }.background(KS.paper)
+                .presentationDetents([.large])
             }
     }
 }
