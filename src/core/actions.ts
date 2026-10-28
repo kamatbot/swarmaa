@@ -342,6 +342,7 @@ export interface TurnGrantContext {
   tenantId: string;
   scope: string;
   hopDepth?: number;
+  botId?: string | null;
 }
 
 /**

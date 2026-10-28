@@ -1,3 +1,4 @@
+import { botCapability, postBotTaskCard } from './bots.js';
 import { advanceFlow, validateFlowCompletion } from './flows.js';
 import type { FlowTask } from './flow-definition.js';
 import { inboxSession, readTaskInbox, taskFinished, taskReroutedNotice } from './inbox.js';
@@ -31,7 +32,8 @@ export interface TaskRow {
   id:string; tenant_id:string; scope:string; kind:TaskKind; objective:string;
   flow_id:string|null; flow:FlowTask|null;
   agent_id?:string|null; thread_id?:string|null; swarm_step_id?:string|null;
-  initiator_kind?: 'person' | 'handoff' | 'swarm' | 'answer' | 'flow';
+  bot_id?:string|null;
+  initiator_kind?: 'person' | 'handoff' | 'swarm' | 'answer' | 'flow' | 'schedule' | 'bot_check';
   initiator_id?: string | null;
   resolved_at?: Date | null;
   constraints:string[]; acceptance_criteria:string[]; permission_envelope:Record<string,unknown>;
@@ -91,6 +93,7 @@ export function taskView(row:TaskRow):Record<string,unknown> {
     created_at:date(row.created_at),
     updated_at:date(row.updated_at), completed_at:date(row.completed_at),
     ...(row.flow_id ? {flow_id:row.flow_id,flow:row.flow} : {}),
+    ...(row.bot_id ? {bot_id:row.bot_id} : {}),
     ...(row.agent_id ? {agent_id:row.agent_id} : {}),
     ...(row.thread_id ? {thread_id:row.thread_id} : {}),
     ...(row.swarm_step_id ? {swarm_step_id:row.swarm_step_id} : {}),
@@ -823,13 +826,13 @@ export class TaskService {
         budget = { hop: typeof hop === 'number' ? hop : 0, queued: 0, threadId: targetThreadId, scope: row.scope,
           summary: (row.context_versions as any)?.summary === true };
         const threadRow = (await db.query('SELECT * FROM threads WHERE id=$1 AND tenant_id=$2', [targetThreadId, p.tenantId])).rows[0];
-        requireCondition(threadRow && (threadRow.agent_id === row.agent_id || threadRow.kind === 'channel') && threadRow.scope === row.scope, 403, 'turn_grant_forbidden', 'Turn grant refuses posting to another agent\'s thread.');
-        if (threadRow.kind === 'channel') {
+        requireCondition(threadRow && (threadRow.agent_id === row.agent_id || threadRow.kind === 'channel' || threadRow.kind === 'bot') && threadRow.scope === row.scope, 403, 'turn_grant_forbidden', 'Turn grant refuses posting to another agent\'s thread.');
+        if (threadRow.kind === 'channel' || threadRow.kind === 'bot') {
           const isMember = (await db.query<{ count: string }>(
             'SELECT count(*)::int AS count FROM thread_members WHERE thread_id=$1 AND agent_id=$2',
             [targetThreadId, row.agent_id]
           )).rows[0]?.count ?? 0;
-          requireCondition(Number(isMember) > 0, 403, 'turn_grant_forbidden', 'Turn grant refuses posting to a channel the agent is not a member of.');
+          requireCondition(Number(isMember) > 0, 403, 'turn_grant_forbidden', 'Turn grant refuses posting to a channel or bot thread the agent is not a member of.');
         }
 
         if (outcome === 'completed') {
@@ -869,7 +872,8 @@ export class TaskService {
               thread: threadRow as any,
               tenantId: p.tenantId,
               scope: row.scope,
-              hopDepth: typeof currentHop === 'number' ? currentHop : 0
+              hopDepth: typeof currentHop === 'number' ? currentHop : 0,
+              botId: row.bot_id ?? null
             };
 
             if (extracted.error) {
@@ -951,7 +955,12 @@ export class TaskService {
           )).rows[0];
 
           if (!active) {
-            const nextCap = runnerCapability(agentRow.runner, agentRow.edits);
+            const botId = row.bot_id ?? null;
+            let nextCap = runnerCapability(agentRow.runner, agentRow.edits);
+            if (botId) {
+              const bot = (await db.query<{ id: string; routing: Record<string, unknown> }>('SELECT id, routing FROM bots WHERE id=$1', [botId])).rows[0];
+              if (bot) nextCap = botCapability(bot, agentRow.edits ? 'patch' : 'summary', agentRow.edits);
+            }
             const followUpId = newId();
             const envelope = {
               deploy: false, publish: false, purchase: false, local_patch: agentRow.edits,
@@ -963,11 +972,11 @@ export class TaskService {
             }));
             await db.query(
               `INSERT INTO tasks
-                 (id, tenant_id, scope, kind, agent_id, thread_id, objective, constraints, acceptance_criteria,
+                 (id, tenant_id, scope, kind, agent_id, thread_id, bot_id, objective, constraints, acceptance_criteria,
                   permission_envelope, required_capability, resource_key, context_versions, status, created_by,
                   idempotency_key, request_hash, max_attempts)
-               VALUES ($1, $2, $3, 'turn', $4, $5, $6, '[]'::jsonb, '[]'::jsonb, $7::jsonb, $8, $9, $10::jsonb, 'queued', $11, $12, $13, 3)`,
-              [followUpId, p.tenantId, agentRow.scope, agentRow.id, row.thread_id, `Turn for agent ${agentRow.name}`,
+               VALUES ($1, $2, $3, 'turn', $4, $5, $6, $7, '[]'::jsonb, '[]'::jsonb, $8::jsonb, $9, $10, $11::jsonb, 'queued', $12, $13, $14, 3)`,
+              [followUpId, p.tenantId, agentRow.scope, agentRow.id, row.thread_id, botId, `Turn for agent ${agentRow.name}`,
                JSON.stringify(envelope), nextCap, `agent:${agentRow.id}`, JSON.stringify(ctxVersions), row.created_by, newId(), reqHash]
             );
             await audit(db, p, agentRow.scope, 'task.submitted', followUpId, { kind: 'turn', agent_id: agentRow.id });
@@ -979,6 +988,11 @@ export class TaskService {
       if (row.swarm_step_id) {
         const failureObj = result.failure as { code?: string; detail?: string } | undefined;
         await this.swarms.onStepTaskFinished(db, p, row.swarm_step_id, row.id, row.scope, outcome, replyMsgId, failureObj, budget);
+      }
+
+      // Bots B1: post task card into bot thread on review-ready or failed
+      if (row.bot_id) {
+        await postBotTaskCard(db, p, row, outcome, result);
       }
 
       await taskChanged(db,p,next,'finished');

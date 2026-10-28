@@ -30,6 +30,8 @@ All examples below show **tool arguments and unwrapped tool results**, without t
 | `events_poll` | `events:read` | Exact authorized scope; each event type also requires its resource's read permission |
 | `agent_create`, `agent_update`, `agent_archive` | `agent:manage` and `agent:read` | Exact authorized scope |
 | `agent_get`, `agent_list` | `agent:read` | Exact authorized scope |
+| `bot_create`, `bot_update`, `bot_archive` | `agent:manage` and `agent:read` | Exact authorized scope |
+| `bot_get`, `bot_list` | `agent:read` | Exact authorized scope |
 | `thread_post` | `thread:write` and `thread:read` | Exact authorized scope |
 | `thread_read`, `thread_mark_read`, `thread_list` | `thread:read` | Exact authorized scope |
 
@@ -638,8 +640,85 @@ Agent turns do not use a separate MCP server in worker CLIs. Instead:
 - **Authentication:** Standard service bearer token (`Authorization: Bearer <token>`).
 - **Cursor ordering:** Uses durable `events` table ordering by `(xid, seq)`. The cursor format is `"<xid>.<seq>"`.
 - **`after=now` support:** Passing `after=now` starts reading from the latest event in the database and immediately sends `event: cursor` with `{"cursor":"<current_cursor>"}`.
-- **Event types:** `message.created`, `message.updated`, `thread.read`, `agent.updated`, `swarm.updated`, `question.created`, `question.answered`.
+- **Event types:** `message.created`, `message.updated`, `thread.read`, `agent.updated`, `bot.updated`, `swarm.updated`, `question.created`, `question.answered`.
 - **Payloads:** Metadata and IDs only (no message bodies or task results). Reconnecting with `after=<cursor>` resumes without event loss.
 - **Heartbeat:** Sends `:keepalive` comment frames every 15 seconds. Uses TCP nodelay for low latency (< 1 s delivery).
 
 Streams share one LISTEN connection per service pool. Transactional `swarmaa_events` notifications wake all streams; full batches drain immediately, with a 2 s safety poll and listener reconnection backoff. The durable xmin/cursor visibility rules are unchanged.
+
+## Bots: persistent, configured swarms (migration 027)
+
+A **bot** is a persistent, configured swarm that performs a designated job. A bot ties together:
+- **a crew of agents:** one lead agent plus member agents;
+- **one dedicated bot thread (`kind: 'bot'`),** which routes like a channel (addressed `@Member`, else lead) and records everything the bot executes;
+- **its own routing and standing rules,** governing research, patch, review, and summary work across tasks created by the bot.
+
+Tasks started by a bot propagate `tasks.bot_id`. When bot tasks finish review-ready (`completed` with `result.head_commit`) or `failed`, the service automatically posts a task card message (`kind: 'task'`) into the bot thread.
+
+### Tools
+
+#### `bot_create`
+- **Permission:** `agent:manage` (response read requires `agent:read`)
+- **Arguments:**
+  - `name`: string (1..64)
+  - `job`: string (<= 8192 UTF-8 bytes, standing brief)
+  - `scope`: exact scope (e.g. `project:alpha`)
+  - `lead_agent_id`: UUID
+  - `member_agent_ids`: array of UUIDs
+  - `routing` (optional): object mapping kinds (`research`, `patch`, `review`, `summary`) to runner configurations (`{mode:'auto'}` or `{provider, model?, effort?}`, with `review` also allowing `{mode:'different_from_author'}`)
+  - `rules` (optional): object with `quota_floor_pct` (0..50, default 0), `approve_public` (boolean, default true), `review_edits` (boolean, default true), `require_tests` (boolean, default false)
+  - `schedule` (optional): 5-field cron string, optionally prefixed with `CRON_TZ=<zone> `
+  - `avatar` (optional): string (<= 200)
+  - `idempotency_key` (optional): string (<= 200)
+- **Returns:** `{ bot, thread, replayed?: boolean }`. Creates the `kind: 'bot'` thread with members for lead and members. All crew agents must be live and in the bot's scope. Live bot names must be unique within a scope (returns 409 `name_taken`).
+
+#### `bot_update`
+- **Permission:** `agent:manage` (response read requires `agent:read`)
+- **Arguments:**
+  - `bot_id`: UUID
+  - `expected_version`: integer (>= 1)
+  - Any of: `name`, `job`, `avatar`, `lead_agent_id`, `member_agent_ids`, `routing`, `rules`, `schedule`
+- **Returns:** `{ bot }`. Optimistically versioned. A routing or crew change posts an explanatory `notice` message into the bot thread and emits `bot.updated`.
+
+#### `bot_get`
+- **Permission:** `agent:read`
+- **Arguments:** `bot_id: UUID`
+- **Returns:** `{ bot, crew, routing_now }`. `crew` lists agents with the lead agent first. Includes `badges` (`unread`, `needs_you`, `latest`).
+
+#### `bot_list`
+- **Permission:** `agent:read`
+- **Arguments:** `scope?`, `include_archived?` (boolean), `after?` (UUID), `limit?` (1..100, default 50)
+- **Returns:** `{ bots, has_more, next_cursor }`. Ordered with **updates first**: bots with `badges.needs_you > 0`, then `badges.unread > 0`, then by last activity. Uses a constant number of queries per page.
+
+#### `bot_archive`
+- **Permission:** `agent:manage` (response read requires `agent:read`)
+- **Arguments:** `bot_id: UUID`
+- **Returns:** `{ bot }`. Marks the bot archived and cancels its queued tasks. The thread remains readable.
+
+### Task cards: message kind `task`
+
+When a bot task with `tasks.bot_id` completes with a `head_commit` (review-ready) or fails, the service atomically posts a message with `kind = 'task'` into the bot thread:
+- **`ref`:** `{ "task_id": "<uuid>" }`
+- **`author`:** `{ "kind": "system", "id": "service" }`
+- **`body`:** A concise one-line summary, e.g. `"Forge finished the launch banner · swarmaa/claude/4f1e · 7 files"` or `"Failed · quota_exhausted on Codex"`.
+- Never posts duplicate cards for the same task and outcome.
+
+### Thread read embed: `task`
+
+Calling `thread_read` on a bot thread automatically batches and embeds a `task` object on `kind: 'task'` messages:
+
+```jsonc
+{
+  "id": "uuid",
+  "title": "the launch banner",
+  "kind": "patch",
+  "status": "completed",
+  "resolved": false,
+  "branch": "swarmaa/claude/4f1e",
+  "changed_files": 7,
+  "served": { "provider": "claude", "model": "claude-opus-5-5" },
+  "failure": null,
+  "check": null
+}
+```
+

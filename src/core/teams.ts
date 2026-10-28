@@ -9,6 +9,8 @@ import { booleanOption } from './memory.js';
 import { assertKnownScope, audit, canonicalJson, event, newId, noExtraKeys, requireFound, scopeLock, scopeSql, sha256, teamsLock, type Db } from './shared.js';
 import { runnerCapability, type RunnerConfig } from '../bridge/adapters.js';
 import { sectionView, swarmView, type SwarmRow, type SwarmStepRow, type QuestionRow, type SectionRow } from './swarms.js';
+import { botCapability } from './bots.js';
+import type { TaskRow } from './tasks.js';
 
 export function clipUtf8(value: string, maxBytes: number): string {
   const buf = Buffer.from(value.replaceAll('\0', '\uFFFD'), 'utf8');
@@ -89,7 +91,7 @@ export interface ThreadRow {
   tenant_id: string;
   scope: string;
   agent_id: string | null;
-  kind: 'agent_main' | 'agent_side' | 'channel';
+  kind: 'agent_main' | 'agent_side' | 'channel' | 'bot';
   title: string | null;
   lead_agent_id?: string | null;
   archived: boolean;
@@ -105,7 +107,7 @@ export interface MessageRow {
   thread_id: string;
   seq: string | number | bigint;
   author: { kind: 'human' | 'agent' | 'system'; id: string };
-  kind: 'text' | 'handoff' | 'swarm' | 'run' | 'question' | 'answer' | 'notice';
+  kind: 'text' | 'handoff' | 'swarm' | 'run' | 'question' | 'answer' | 'notice' | 'task';
   body: string;
   ref: Record<string, unknown> | null;
   idempotency_key: string | null;
@@ -136,7 +138,7 @@ function runnerDisplayName(runner: RunnerConfig): string {
   return runner.provider ?? 'Auto';
 }
 
-function agentView(row: AgentRow, status = 'idle', unreadCount = 0): Record<string, unknown> {
+export function agentView(row: AgentRow, status = 'idle', unreadCount = 0): Record<string, unknown> {
   return {
     id: row.id,
     scope: row.scope,
@@ -505,7 +507,15 @@ export class TeamService {
         }
       }
 
-      if (thread.kind === 'channel') {
+      if (thread.kind === 'channel' || thread.kind === 'bot') {
+        let bot: { id: string; routing: Record<string, unknown> } | undefined;
+        if (thread.kind === 'bot') {
+          bot = (await db.query<{ id: string; routing: Record<string, unknown> }>(
+            'SELECT id, routing FROM bots WHERE thread_id=$1',
+            [threadId]
+          )).rows[0];
+        }
+
         const members = (await db.query<{ agent_id: string; name: string }>(
           `SELECT m.agent_id, a.name
            FROM thread_members m
@@ -548,9 +558,14 @@ export class TeamService {
             const agent = (await db.query<AgentRow>('SELECT * FROM agents WHERE id=$1 FOR UPDATE', [agentId])).rows[0];
             if (!agent) continue;
 
-            const requiredCap = runnerCapability(agent.runner, agent.edits);
+            const botId = bot?.id ?? null;
+            const turnKind = agent.edits ? 'patch' : 'summary';
+            const requiredCap = bot ? botCapability(bot, turnKind, agent.edits) : runnerCapability(agent.runner, agent.edits);
             const taskId = newId();
-            const turnObjective = `Turn for agent ${agent.name} in #${thread.title ?? 'channel'}`;
+            const cleanBody = clipUtf8(body.replace(/@[a-zA-Z0-9_-]+\s*/g, '').trim(), 256);
+            const turnObjective = thread.kind === 'bot'
+              ? (cleanBody || `Turn for agent ${agent.name} in ${thread.title ?? 'bot'}`)
+              : `Turn for agent ${agent.name} in #${thread.title ?? 'channel'}`;
             const envelope = {
               deploy: false, publish: false, purchase: false, local_patch: agent.edits,
               read_project: true, send_messages: false, permission_changes: false, external_side_effects: false
@@ -562,11 +577,11 @@ export class TeamService {
 
             await db.query(
               `INSERT INTO tasks
-                 (id, tenant_id, scope, kind, agent_id, thread_id, objective, constraints, acceptance_criteria,
+                 (id, tenant_id, scope, kind, agent_id, thread_id, bot_id, objective, constraints, acceptance_criteria,
                   permission_envelope, required_capability, resource_key, context_versions, status, created_by,
                   idempotency_key, request_hash, max_attempts)
-               VALUES ($1, $2, $3, 'turn', $4, $5, $6, '[]'::jsonb, '[]'::jsonb, $7::jsonb, $8, $9, $10::jsonb, 'queued', $11, $12, $13, 3)`,
-              [taskId, p.tenantId, agent.scope, agent.id, threadId, turnObjective, JSON.stringify(envelope),
+               VALUES ($1, $2, $3, 'turn', $4, $5, $6, $7, '[]'::jsonb, '[]'::jsonb, $8::jsonb, $9, $10, $11::jsonb, 'queued', $12, $13, $14, 3)`,
+              [taskId, p.tenantId, agent.scope, agent.id, threadId, botId, turnObjective, JSON.stringify(envelope),
                requiredCap, `agent:${agent.id}`, JSON.stringify(contextVersions), p.id, newId(), reqHash]
             );
 
@@ -645,6 +660,13 @@ export class TeamService {
         closed_at: s.closed_at ? new Date(s.closed_at) : null }, steps: [] });
       if (r.id) swarms.get(s.id)!.steps.push(r);
     }
+    const taskCardIds = rows.filter(r => r.kind === 'task')
+      .flatMap(r => typeof r.ref?.task_id === 'string' && /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(r.ref.task_id) ? [r.ref.task_id] : []);
+    const taskRows = taskCardIds.length ? (await this.pool.query<TaskRow>(
+      'SELECT * FROM tasks WHERE id=ANY($1::uuid[]) AND tenant_id=$2 AND scope=$3',
+      [taskCardIds, p.tenantId, thread.scope]
+    )).rows : [];
+    const taskMap = new Map(taskRows.map(t => [t.id, t]));
     const messages = rows.map(r => {
       const view = messageView(r);
       const q = questions.get(String(r.ref?.question_id));
@@ -656,6 +678,26 @@ export class TeamService {
       if (q && r.kind === 'answer') view.answer = { question_id: q.id, choices: q.choices, text: q.answer_text };
       const sw = swarms.get(String(r.ref?.swarm_id));
       if (sw && r.kind === 'swarm') view.swarm = swarmView(sw.swarm, sw.steps);
+      if (r.kind === 'task') {
+        const t = taskMap.get(String(r.ref?.task_id));
+        if (t) {
+          const res = (t.result ?? {}) as Record<string, unknown>;
+          const served = (res.served ?? (res.provider ? { provider: res.provider, model: res.model } : null)) as { provider?: string; model?: string } | null;
+          const failure = res.failure as { code?: string; detail?: string } | undefined;
+          view.task = {
+            id: t.id,
+            title: t.objective,
+            kind: t.kind,
+            status: t.status,
+            resolved: Boolean(t.resolved_at),
+            branch: typeof res.branch === 'string' ? res.branch : null,
+            changed_files: typeof res.changed_files === 'number' ? res.changed_files : null,
+            served: served ? { provider: served.provider, model: served.model } : null,
+            failure: failure ? { code: failure.code, detail: failure.detail } : null,
+            check: null
+          };
+        }
+      }
       return view;
     });
     return {
@@ -720,7 +762,12 @@ export class TeamService {
        WHERE t.tenant_id = $2
          AND ($3::boolean OR t.scope = ANY($4::text[]))
          AND ($5::uuid IS NULL OR t.agent_id = $5)
-         AND ($6::text IS NULL OR t.kind = $6)
+         AND (
+           CASE
+             WHEN $6::text IS NOT NULL THEN t.kind = $6
+             ELSE t.kind != 'bot'
+           END
+         )
          AND ($7::boolean OR NOT t.archived)
          AND ($8::uuid IS NULL OR t.created_at < (SELECT created_at FROM threads WHERE id = $8))
        ORDER BY t.created_at DESC, t.id DESC
