@@ -697,6 +697,14 @@ final class TeamsModel: ObservableObject {
         }
     }
 
+    /// The banner's Retry: reconnect the stream now (skipping its backoff) and reload.
+    func retryConnection() async {
+        stopStream()
+        streamState = "Connecting"
+        startStream()
+        await refresh()
+    }
+
     func stopStream() {
         streamTask?.cancel(); streamTask = nil
         staleThreads.formUnion(messages.keys)

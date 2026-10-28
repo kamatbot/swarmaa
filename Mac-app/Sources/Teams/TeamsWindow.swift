@@ -68,7 +68,7 @@ struct TeamsRootView: View {
                             Text("· updated \(date, style: .relative) ago").font(KS.body(13)).foregroundStyle(KS.textMuted)
                         }
                         Spacer()
-                        Button(L10n.t("Retry")) { Task { await model.refresh() } }.buttonStyle(.ks(.white, compact: true))
+                        Button(L10n.t("Retry")) { Task { await model.retryConnection() } }.buttonStyle(.ks(.white, compact: true))
                     }
                     .padding(.horizontal, 16).padding(.vertical, 8)
                     .background(KS.white)
