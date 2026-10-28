@@ -10,6 +10,7 @@ import { assertKnownScope, audit, canonicalJson, event, newId, noExtraKeys, requ
 import { assignThreadSeq, clipUtf8, type AgentRow, type ThreadRow, type MessageRow } from './teams.js';
 import { runnerCapability } from '../bridge/adapters.js';
 import { cancelTask, taskView, type TaskRow } from './tasks.js';
+import { botCapability } from './bots.js';
 import type { TurnAction, TurnGrantContext, SwarmStartStepInput } from './actions.js';
 
 // Teams writes take teamsLock first.
@@ -346,7 +347,7 @@ export class SwarmsService {
       requireCondition(Boolean(agent), 400, 'agent_not_found', `Assignee agent '${st.assignee_agent_id}' not found or archived in scope '${scope}'.`);
     }
 
-    const swarmOwner = ownerAgentId ?? thread.agent_id;
+    const swarmOwner = ownerAgentId ?? thread.agent_id ?? thread.lead_agent_id ?? null;
     const reqHash = sha256(canonicalJson({
       title, goal, scope, thread_id: threadId, steps: validatedSteps, owner_agent_id: swarmOwner
     }));
@@ -936,7 +937,17 @@ export class SwarmsService {
       });
 
       // Queue the agent's next turn with initiator answer
-      const requiredCap = runnerCapability(agent.runner, agent.edits);
+      let botId: string | null = null;
+      let requiredCap = runnerCapability(agent.runner, agent.edits);
+      if (q.thread_id) {
+        const bot = (await db.query<{ id: string; routing: Record<string, unknown> }>(
+          'SELECT id, routing FROM bots WHERE thread_id=$1', [q.thread_id]
+        )).rows[0];
+        if (bot) {
+          botId = bot.id;
+          requiredCap = botCapability(bot, agent.edits ? 'patch' : 'summary', agent.edits);
+        }
+      }
       const taskId = newId();
       const envelope = {
         deploy: false, publish: false, purchase: false, local_patch: agent.edits,
@@ -949,11 +960,11 @@ export class SwarmsService {
 
       await db.query(
         `INSERT INTO tasks
-           (id, tenant_id, scope, kind, agent_id, thread_id, swarm_step_id, objective, constraints, acceptance_criteria,
+           (id, tenant_id, scope, kind, agent_id, thread_id, bot_id, swarm_step_id, objective, constraints, acceptance_criteria,
             permission_envelope, required_capability, resource_key, context_versions, status, created_by,
             idempotency_key, request_hash, max_attempts, initiator_kind, initiator_id)
-         VALUES ($1, $2, $3, 'turn', $4, $5, $6, $7, '[]'::jsonb, '[]'::jsonb, $8::jsonb, $9, $10, $11::jsonb, 'queued', $12, $13, $14, 3, 'answer', $15)`,
-        [taskId, p.tenantId, agent.scope, agent.id, q.thread_id, q.swarm_step_id, `Answer to: ${q.prompt}`,
+         VALUES ($1, $2, $3, 'turn', $4, $5, $6, $7, $8, '[]'::jsonb, '[]'::jsonb, $9::jsonb, $10, $11, $12::jsonb, 'queued', $13, $14, $15, 3, 'answer', $16)`,
+        [taskId, p.tenantId, agent.scope, agent.id, q.thread_id, botId, q.swarm_step_id, `Answer to: ${q.prompt}`,
          JSON.stringify(envelope), requiredCap, `agent:${agent.id}`, JSON.stringify(contextVersions), p.id, newId(), reqHash, questionId]
       );
 
@@ -1347,8 +1358,16 @@ export class SwarmsService {
       }
 
       // One summarising turn per swarm, however often its last step finishes.
-      const ownerAgent = swarm.owner_agent_id
-        ? (await db.query<AgentRow>('SELECT * FROM agents WHERE id=$1', [swarm.owner_agent_id])).rows[0]
+      let ownerAgentId = swarm.owner_agent_id;
+      if (!ownerAgentId && swarm.thread_id) {
+        const tr = (await db.query<{ lead_agent_id: string | null; agent_id: string | null }>(
+          'SELECT lead_agent_id, agent_id FROM threads WHERE id=$1',
+          [swarm.thread_id]
+        )).rows[0];
+        ownerAgentId = tr?.lead_agent_id ?? tr?.agent_id ?? null;
+      }
+      const ownerAgent = ownerAgentId
+        ? (await db.query<AgentRow>('SELECT * FROM agents WHERE id=$1', [ownerAgentId])).rows[0]
         : undefined;
       if (ownerAgent && swarm.summary_task_id === null) {
         if (budget && budget.queued >= MAX_TURNS_PER_FINISH) {
@@ -1368,7 +1387,17 @@ export class SwarmsService {
                WHERE s.swarm_id=$1 ORDER BY s.order_index`, [swarm.id])).rows;
             await this.postNotice(db, p, swarm.scope, swarm.thread_id, `"${swarm.title}" is done. Step results:\n\n`
               + results.map((r, n) => `${n + 1}. ${r.title} (${r.name ?? 'unassigned'}): ${(r.body ?? '(no reply)').slice(0, 2000)}`).join('\n\n'));
-            const requiredCap = runnerCapability(ownerAgent.runner, ownerAgent.edits);
+            let botId: string | null = null;
+            let requiredCap = runnerCapability(ownerAgent.runner, ownerAgent.edits);
+            if (swarm.thread_id) {
+              const bot = (await db.query<{ id: string; routing: Record<string, unknown> }>(
+                'SELECT id, routing FROM bots WHERE thread_id=$1', [swarm.thread_id]
+              )).rows[0];
+              if (bot) {
+                botId = bot.id;
+                requiredCap = botCapability(bot, ownerAgent.edits ? 'patch' : 'summary', ownerAgent.edits);
+              }
+            }
             const envelope = {
               deploy: false, publish: false, purchase: false, local_patch: ownerAgent.edits,
               read_project: true, send_messages: false, permission_changes: false, external_side_effects: false
@@ -1379,11 +1408,11 @@ export class SwarmsService {
 
             await db.query(
               `INSERT INTO tasks
-                 (id, tenant_id, scope, kind, agent_id, thread_id, objective, constraints, acceptance_criteria,
+                 (id, tenant_id, scope, kind, agent_id, thread_id, bot_id, objective, constraints, acceptance_criteria,
                   permission_envelope, required_capability, resource_key, context_versions, status, created_by,
                   idempotency_key, request_hash, max_attempts, initiator_kind, initiator_id)
-               VALUES ($1, $2, $3, 'turn', $4, $5, $6, '[]'::jsonb, '[]'::jsonb, $7::jsonb, $8, $9, $10::jsonb, 'queued', $11, $12, $13, 3, 'swarm', $14)`,
-              [followUpId, p.tenantId, ownerAgent.scope, ownerAgent.id, swarm.thread_id,
+               VALUES ($1, $2, $3, 'turn', $4, $5, $6, $7, '[]'::jsonb, '[]'::jsonb, $8::jsonb, $9, $10, $11::jsonb, 'queued', $12, $13, $14, 3, 'swarm', $15)`,
+              [followUpId, p.tenantId, ownerAgent.scope, ownerAgent.id, swarm.thread_id, botId,
                `Summarise the results of "${swarm.title}" for the user. Reply only; start no new work.`, JSON.stringify(envelope),
                requiredCap, `agent:${ownerAgent.id}`, JSON.stringify({ hop_depth: budget ? budget.hop + 1 : 0, summary: true }),
                p.id, `swarm:summary:${swarm.id}`, reqHash, swarm.id]
@@ -1479,7 +1508,16 @@ export class SwarmsService {
 
       // 3. Queue turn task for target agent with initiator handoff, within the hop limit and fan-out cap
       if (!(await this.takeTurn(db, p, budget, targetAgent.name))) return;
-      const requiredCap = runnerCapability(targetAgent.runner, targetAgent.edits);
+      let botId: string | null = ctx.botId ?? null;
+      let requiredCap = runnerCapability(targetAgent.runner, targetAgent.edits);
+      if (botId) {
+        const bot = (await db.query<{ id: string; routing: Record<string, unknown> }>(
+          'SELECT id, routing FROM bots WHERE id=$1', [botId]
+        )).rows[0];
+        if (bot) {
+          requiredCap = botCapability(bot, targetAgent.edits ? 'patch' : 'summary', targetAgent.edits);
+        }
+      }
       const taskId = newId();
       const envelope = {
         deploy: false, publish: false, purchase: false, local_patch: targetAgent.edits,
@@ -1492,11 +1530,11 @@ export class SwarmsService {
 
       await db.query(
         `INSERT INTO tasks
-           (id, tenant_id, scope, kind, agent_id, thread_id, swarm_step_id, objective, constraints, acceptance_criteria,
+           (id, tenant_id, scope, kind, agent_id, thread_id, bot_id, swarm_step_id, objective, constraints, acceptance_criteria,
             permission_envelope, required_capability, resource_key, context_versions, status, created_by,
             idempotency_key, request_hash, max_attempts, initiator_kind, initiator_id)
-         VALUES ($1, $2, $3, 'turn', $4, $5, $6, $7, '[]'::jsonb, '[]'::jsonb, $8::jsonb, $9, $10, $11::jsonb, 'queued', $12, $13, $14, 3, 'handoff', $15)`,
-        [taskId, ctx.tenantId, targetAgent.scope, targetAgent.id, targetThreadId, act.swarm_step_id ?? null,
+         VALUES ($1, $2, $3, 'turn', $4, $5, $6, $7, $8, '[]'::jsonb, '[]'::jsonb, $9::jsonb, $10, $11, $12::jsonb, 'queued', $13, $14, $15, 3, 'handoff', $16)`,
+        [taskId, ctx.tenantId, targetAgent.scope, targetAgent.id, targetThreadId, botId, act.swarm_step_id ?? null,
          `Handoff from ${ctx.agent.name}: ${act.body}`, JSON.stringify(envelope),
          requiredCap, `agent:${targetAgent.id}`, JSON.stringify(ctxVersions), p.id, newId(), reqHash, ctx.agent.id]
       );
@@ -1741,7 +1779,19 @@ export class SwarmsService {
     });
 
     // Queue turn task
-    const requiredCap = runnerCapability(agent.runner, agent.edits);
+    const sw = (await db.query<{ thread_id: string }>('SELECT thread_id FROM swarms WHERE id=$1', [swarmId])).rows[0];
+    let botId: string | null = null;
+    let requiredCap = runnerCapability(agent.runner, agent.edits);
+    if (sw?.thread_id) {
+      const bot = (await db.query<{ id: string; routing: Record<string, unknown> }>(
+        'SELECT id, routing FROM bots WHERE thread_id=$1', [sw.thread_id]
+      )).rows[0];
+      if (bot) {
+        botId = bot.id;
+        const routingKind = agent.edits ? 'patch' : 'research';
+        requiredCap = botCapability(bot, routingKind, agent.edits);
+      }
+    }
     const taskId = newId();
     const envelope = {
       deploy: false, publish: false, purchase: false, local_patch: agent.edits,
@@ -1754,11 +1804,11 @@ export class SwarmsService {
 
     await db.query(
       `INSERT INTO tasks
-         (id, tenant_id, scope, kind, agent_id, thread_id, swarm_step_id, objective, constraints, acceptance_criteria,
+         (id, tenant_id, scope, kind, agent_id, thread_id, bot_id, swarm_step_id, objective, constraints, acceptance_criteria,
           permission_envelope, required_capability, resource_key, context_versions, status, created_by,
           idempotency_key, request_hash, max_attempts, initiator_kind, initiator_id)
-       VALUES ($1, $2, $3, 'turn', $4, $5, $6, $7, '[]'::jsonb, '[]'::jsonb, $8::jsonb, $9, $10, $11::jsonb, 'queued', $12, $13, $14, 3, 'swarm', $15)`,
-      [taskId, p.tenantId, scope, agent.id, targetThreadId, step.id,
+       VALUES ($1, $2, $3, 'turn', $4, $5, $6, $7, $8, '[]'::jsonb, '[]'::jsonb, $9::jsonb, $10, $11, $12::jsonb, 'queued', $13, $14, $15, 3, 'swarm', $16)`,
+      [taskId, p.tenantId, scope, agent.id, targetThreadId, botId, step.id,
        step.instructions ?? step.title, JSON.stringify(envelope),
        requiredCap, `agent:${agent.id}`, JSON.stringify(ctxVersions), p.id, newId(), reqHash, swarmId]
     );

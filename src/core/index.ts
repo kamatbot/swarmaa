@@ -5,6 +5,7 @@ import { AppError, requireCondition } from '../errors.js';
 import { hasPermission, requirePermission } from '../policy.js';
 import type { Permission, Principal, ToolBackend, ToolDefinition } from '../types.js';
 import { integer, object, optionalString, scopeName, string, uuid } from '../validation.js';
+import { BotService } from './bots.js';
 import { FlowService } from './flows.js';
 import { InboxService } from './inbox.js';
 import { LESSON_GUIDANCE, LessonService } from './lessons.js';
@@ -27,6 +28,7 @@ const responseReadPermissions:Partial<Record<string,Permission>> = {
   task_checkpoint:'task:read',task_finish:'task:read',task_cancel:'task:read',
   lesson_propose:'memory:read',lesson_review:'memory:read',
   agent_create:'agent:read',agent_update:'agent:read',agent_archive:'agent:read',thread_post:'thread:read',
+  bot_create:'agent:read',bot_update:'agent:read',bot_archive:'agent:read',
   swarm_start:'task:read',swarm_update:'task:read',swarm_cancel:'task:read',question_answer:'thread:read',
   channel_create:'agent:read',channel_update:'agent:read',section_set:'thread:read',task_resolve:'task:read',
   attention_list:'thread:read',
@@ -43,6 +45,7 @@ export class CoreService implements ToolBackend {
   private readonly inbox:InboxService;
   private readonly flows:FlowService;
   private readonly teams:TeamService;
+  private readonly bots:BotService;
 
   constructor(private readonly pool:Pool) {
     this.memories = new MemoryService(pool);
@@ -54,6 +57,7 @@ export class CoreService implements ToolBackend {
     this.inbox = new InboxService(pool);
     this.flows = new FlowService(pool);
     this.teams = new TeamService(pool);
+    this.bots = new BotService(pool);
   }
 
   listTools(principal:Principal):ToolDefinition[] {
@@ -135,6 +139,11 @@ export class CoreService implements ToolBackend {
       case 'question_list': return this.swarms.questionList(principal,input);
       case 'attention_list': return this.swarms.attentionList(principal,input);
       case 'task_resolve': return this.swarms.taskResolve(principal,input);
+      case 'bot_create': return this.bots.botCreate(principal,input);
+      case 'bot_update': return this.bots.botUpdate(principal,input);
+      case 'bot_get': return this.bots.botGet(principal,input);
+      case 'bot_list': return this.bots.botList(principal,input);
+      case 'bot_archive': return this.bots.botArchive(principal,input);
       default: throw new AppError(404,'unknown_tool','Unknown tool name.');
     }
   }
@@ -177,7 +186,7 @@ export class CoreService implements ToolBackend {
     if (hasPermission(p,'memory:read')) names.push('memory.changed');
     if (hasPermission(p,'task:read')) names.push('task.updated','swarm.updated');
     if (hasPermission(p,'thread:read')) names.push('message.created','message.updated','thread.read','question.created','question.answered');
-    if (hasPermission(p,'agent:read')) names.push('agent.updated');
+    if (hasPermission(p,'agent:read')) names.push('agent.updated','bot.updated');
     if (!names.length) return {scope,events:[],next_cursor:legacy ? '0.0' : after,has_more:false};
     return transaction(this.pool,async db => {
       // Capture the legacy upgrade fence before reading: an empty page can resume at xmin.0 safely.

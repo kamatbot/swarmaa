@@ -476,7 +476,7 @@ export function createHttpHandler(dependencies: HttpDependencies): (request: Inc
 
       const names: string[] = [];
       if (hasPermission(principal, 'thread:read')) names.push('message.created', 'message.updated', 'thread.read', 'question.created', 'question.answered');
-      if (hasPermission(principal, 'agent:read')) names.push('agent.updated');
+      if (hasPermission(principal, 'agent:read')) names.push('agent.updated', 'bot.updated');
       if (hasPermission(principal, 'task:read')) names.push('task.updated', 'swarm.updated');
       if (hasPermission(principal, 'memory:read')) names.push('memory.changed');
 
