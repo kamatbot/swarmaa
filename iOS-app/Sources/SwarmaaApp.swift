@@ -353,8 +353,19 @@ struct RootView: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     VStack(alignment: .leading, spacing: 12) {
-                        ForEach(model.messages) { message in
-                            messageView(message).id(message.id)
+                        ForEach(threadRows(model.messages)) { row in
+                            if row.folded {
+                                let threadID = model.openBot?.threadID ?? ""
+                                DisclosureGroup(isExpanded: Binding(
+                                    get: { model.expandedWorkingNotes[threadID, default: []].contains(row.id) },
+                                    set: { if $0 { model.expandedWorkingNotes[threadID, default: []].insert(row.id) }
+                                           else { model.expandedWorkingNotes[threadID]?.remove(row.id) } }
+                                )) {
+                                    ForEach(row.messages) { messageView($0).id($0.id) }
+                                } label: { Text(row.label).font(KS.body(14)).frame(minHeight: 44) }
+                            } else if let message = row.messages.first {
+                                messageView(message).id(message.id)
+                            }
                         }
                         ForEach(Array(model.typing.enumerated()), id: \.offset) { _, typing in
                             let agent = model.replyingAgent(typing)
@@ -786,6 +797,13 @@ private extension AppModel {
         tasks = [Demo.task("banner", "Draft the launch banner", "completed", "claude"), Demo.task("pricing", "Summarise competitor pricing", "failed", "codex"), Demo.task("calendar", "Check the launch calendar", "running", "antigravity"), Demo.task("limits", "Fix the plan limits on the pricing page", "running", "claude")]
         attention = Array(tasks.prefix(2))
         messages = [Demo.message("m1", 1, "text", .string("Plan Friday’s launch. Ask me before anything goes public."), human: true), Demo.message("m2", 2, "text", .string("On it. Scout reads the brief, Forge drafts the banner. I’ll ask before anything goes out.")), Demo.message("m3", 3, "task", tasks[0]), Demo.message("m4", 4, "question", Demo.question)]
+        if ProcessInfo.processInfo.arguments.contains("-working-notes-demo") {
+            var first = Demo.message("note1", 2, "notice", .string("Checking the launch brief"))
+            var last = Demo.message("note2", 3, "handoff", .string("Handed off to the launch crew"))
+            first.raw["created_at"] = .string("2026-10-28T10:00:00Z")
+            last.raw["created_at"] = .string("2026-10-28T10:03:00Z")
+            messages.insert(contentsOf: [first, last], at: 1)
+        }
         typing = [.object(["agent_id": .string("scout"), "task_id": .string("demo-turn"), "text": .string("I’m checking the launch calendar…")])]
         let providers = ["antigravity", "claude", "codex"]
         status = .object(["scopes": .array([.object(["scope": .string("project:swarma")])]), "usage": .array(zip(providers, [79, 61, 11]).map { provider, left in

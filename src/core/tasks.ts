@@ -868,7 +868,8 @@ export class TaskService {
           const extracted = extractActionsBlock(String(rawAnswer));
           const answer = clipUtf8(redactSecrets(extracted.cleanText), 16384);
           const scheduled = row.bot_id && row.initiator_kind === 'schedule';
-          const quiet = scheduled && String(rawAnswer).trim() === '{"quiet":true}';
+          // Models wrap JSON in fences or spaces; any {"quiet": true} as the whole answer counts.
+          const quiet = scheduled && /^\s*(?:```(?:json)?\s*)?\{\s*"quiet"\s*:\s*true\s*\}\s*(?:```)?\s*$/u.test(String(rawAnswer));
           if (!quiet) {
             // Defer the schedule notice until there is a reply; quiet runs never touch the thread.
             if (scheduled) {
@@ -880,19 +881,23 @@ export class TaskService {
               );
               await event(db,p,row.scope,'message.created',id,{thread_id:targetThreadId,message_id:id,seq:Number(seq),kind:'notice'});
             }
+            const emptyBotAnswer = Boolean(row.bot_id) && !answer.trim();
+            const replyKind = emptyBotAnswer ? 'notice' : 'text';
+            const replyAuthor = emptyBotAnswer ? { kind: 'system', id: 'service' } : { kind: 'agent', id: row.agent_id };
             const nextSeq = await assignThreadSeq(db, p.tenantId, targetThreadId);
             replyMsgId = newId();
             await db.query(
               `INSERT INTO messages (id, tenant_id, scope, thread_id, seq, author, kind, body)
-               VALUES ($1, $2, $3, $4, $5, $6::jsonb, 'text', $7)`,
-              [replyMsgId, p.tenantId, row.scope, targetThreadId, nextSeq, JSON.stringify({ kind: 'agent', id: row.agent_id }), answer]
+               VALUES ($1, $2, $3, $4, $5, $6::jsonb, $8, $7)`,
+              [replyMsgId, p.tenantId, row.scope, targetThreadId, nextSeq, JSON.stringify(replyAuthor),
+               emptyBotAnswer ? 'Finished without a summary' : answer, replyKind]
             );
             await event(db, p, row.scope, 'message.created', replyMsgId, {
               thread_id: targetThreadId,
               message_id: replyMsgId,
               seq: Number(nextSeq),
-              kind: 'text',
-              author: { kind: 'agent', id: row.agent_id }
+              kind: replyKind,
+              author: replyAuthor
             });
           }
           if (result.native_session) {

@@ -32,7 +32,19 @@ struct ThreadView: View {
                             Text(verbatim: L10n.t("No messages yet. Say hello below."))
                                 .foregroundStyle(Palette.textSecondary).frame(maxWidth: .infinity).padding(.top, 40)
                         }
-                        ForEach(messages) { MessageRow(model: model, message: $0).id($0.id) }
+                        ForEach(teamsThreadRows(messages)) { row in
+                            if row.folded {
+                                DisclosureGroup(isExpanded: Binding(
+                                    get: { model.expandedWorkingNotes[threadID, default: []].contains(row.id) },
+                                    set: { if $0 { model.expandedWorkingNotes[threadID, default: []].insert(row.id) }
+                                           else { model.expandedWorkingNotes[threadID]?.remove(row.id) } }
+                                )) {
+                                    ForEach(row.messages) { MessageRow(model: model, message: $0).id($0.id) }
+                                } label: { Text(row.label).font(KS.mono(11)).foregroundStyle(KS.textMuted) }
+                            } else if let message = row.messages.first {
+                                MessageRow(model: model, message: message).id(message.id)
+                            }
+                        }
                         ForEach(model.liveTyping(threadID)) { TypingBubble(model: model, typing: $0).id("typing:" + $0.id) }
                     }
                     .padding(.horizontal, 24).padding(.vertical, 18)
