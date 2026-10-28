@@ -176,7 +176,6 @@ export class BridgeWorker {
           throw new Error(`Stream request failed with status ${response.status}`);
         }
 
-        backoffMs = 500;
         const reader = response.body.getReader();
         let buffer = '';
         const decoder = new TextDecoder('utf8');
@@ -194,6 +193,8 @@ export class BridgeWorker {
               const delimLength = match ? match[0].length : 2;
               buffer = buffer.slice(boundary + delimLength);
               this.handleSseBlock(eventBlock, myScopes);
+              // Reset only once something arrives: a 200 that closes at once must keep backing off.
+              backoffMs = 500;
             }
           }
         } finally {
@@ -419,8 +420,7 @@ export class BridgeWorker {
 
       checkpointInFlight = true;
       try {
-        await renew();
-        if (leaseLost || finished) return;
+        // Checkpoint only: lease renewal stays with the heartbeat loop.
         await this.client.call('task_checkpoint', { ...lease, checkpoint: checkpoint('running') });
         lastSentPartialText = currentPartialText;
         lastCheckpointTime = Date.now();
@@ -597,15 +597,16 @@ export class BridgeWorker {
       const runnerModel = envelope?.runner?.model ?? envelope?.model ?? (task as any).runner?.model;
       const isTurn = task.kind === 'turn';
       const isEditTurn = isTurn && (isPatchWork || Boolean(envelope?.local_patch));
-      const hasEnvelopeModel = Boolean(runnerModel);
-      const askedModel = (isTurn && !isEditTurn && (runnerModel || agent.turn_model)) ? (runnerModel ?? agent.turn_model) : agent.model;
+      // Same rule as buildInvocation: the fast model only for non-edit, non-delegated turns without a runner model.
+      const fastTurn = isTurn && !isEditTurn && !runnerModel && Boolean(agent.turn_model) && envelope?.runner?.delegated !== true;
+      const askedModel = isTurn && !isEditTurn && runnerModel ? runnerModel : fastTurn ? agent.turn_model : agent.model;
       let served: ServedStamp = task.kind === 'check' ? { provider: 'bridge', model: null } : extractServed(agent.provider, result, askedModel);
       if (agent.provider === 'antigravity' && !served.model) {
         const model = await antigravityLogModel(Date.parse(startedAt));
         if (model) served = { provider: 'antigravity', model, ...(askedModel && !sameModel(askedModel, model) ? { substituted: true } : {}) };
       }
       const rawAnswer = task.kind === 'check' ? checkFact!.output_tail : finalAnswer(agent.provider, result.stdout);
-      const { cleanAnswer, delegate } = extractDelegate(rawAnswer, hasEnvelopeModel);
+      const { cleanAnswer, delegate } = extractDelegate(rawAnswer, !fastTurn);
       const completion = {
         ...lease, outcome, artifact_ids: [artifact.artifact.id, ...(diffArtifact ? [diffArtifact.artifact.id] : [])], result: {
           agent: agent.id, provider: task.kind==='check' ? 'bridge' : agent.provider, execution_completed: outcome === 'completed',

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { readFileSync } from 'node:fs';
 import { BridgeWorker } from '../src/bridge/worker.js';
 import { parseBridgeConfig } from '../src/bridge/config.js';
 import {
@@ -513,4 +514,16 @@ test('a delegated turn without a runner model uses the full model and carries it
   assert.equal(req.input.lastIndexOf('Compare the three pricing pages in depth'), at, 'only once: not also as trusted instructions');
   const before = req.input.slice(0, at);
   assert.match(before.slice(before.lastIndexOf('<<<UNTRUSTED_CONTENT_')), /^<<<UNTRUSTED_CONTENT_[0-9a-f]{16}>>>\n$/, 'inside the untrusted delimiters');
+});
+
+test('a real Claude stream-json turn (with --include-partial-messages) yields its text live and the same final answer', () => {
+  const stdout = readFileSync(new URL('./fixtures/claude-stream-json.ndjson', import.meta.url), 'utf8');
+  const lines = stdout.trimEnd().split('\n');
+  const firstDelta = lines.findIndex(l => l.includes('"text_delta"'));
+  assert.equal(extractPartialText('claude', lines.slice(0, firstDelta + 1).join('\n')), 'one', 'text arrives before the turn ends');
+  assert.equal(extractPartialText('claude', stdout), 'one two three four five');
+  assert.equal(finalAnswer('claude', stdout), 'one two three four five');
+  const cfg = baseConfig();
+  const req = buildInvocation(cfg.agents[0]!, cfg.projects[0]!, makeTurnTask({ kind: 'turn', required_capability: 'claude.read', permission_envelope: { local_patch: false } } as any), {}, cfg, new AbortController().signal);
+  assert.ok(req.args.includes('--include-partial-messages'), 'without it the CLI emits no deltas');
 });

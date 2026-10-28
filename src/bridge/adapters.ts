@@ -165,7 +165,7 @@ export function buildTurnPrompt(
     'The actions block must be the very last element in your response.'
   ].join('\n');
 
-  const fastModeInstruction = 'Reply now: answer directly when you can, briefly and honestly. If the request needs real work (code, research, multi-step reasoning, or anything you are unsure of), say in one line what you will do, then end your reply with a final line exactly `DELEGATE: <one-line objective>`.';
+  const fastModeInstruction = 'Reply now: answer directly when you can, briefly and honestly. If the request needs real work (code, research, multi-step reasoning, or anything you are unsure of), say in one line what you will do, then end your reply with a final line exactly `DELEGATE: <one-line objective>`. That line comes after everything else, including any actions block.';
 
   const promptSections = [
     workerRules,
@@ -248,7 +248,8 @@ export function buildInvocation(agent: AgentConfig, project: ProjectConfig, task
     args = [
       '--print',
       '--output-format', isTurn ? 'stream-json' : 'json',
-      ...(isTurn ? ['--verbose'] : []),
+      // --include-partial-messages is what emits the text deltas; --verbose alone writes only whole messages.
+      ...(isTurn ? ['--verbose', '--include-partial-messages'] : []),
       '--permission-mode', 'bypassPermissions',
       '--max-turns', '200',
       ...(native?.harness === 'claude' ? ['--session-id', native.id!] : []),
