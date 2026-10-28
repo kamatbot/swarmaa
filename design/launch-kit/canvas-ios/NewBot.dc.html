@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>New bot</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Stardos+Stencil:wght@400;700&amp;family=IBM+Plex+Sans+Condensed:ital,wght@0,400;0,500;0,600;0,700;1,400&amp;family=IBM+Plex+Mono:wght@500;600&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+a{color:#15111F}a:hover{color:#3A3347}
+</style>
+</helmet>
+<div style="width: 390px; height: 844px; box-sizing: border-box; background: #8F8A84; color: #15111F; font-family: 'IBM Plex Sans Condensed', 'Arial Narrow', sans-serif; display: flex; flex-direction: column; overflow: hidden;">
+  <div aria-hidden="true" style="flex: 1;"></div>
+  <form role="dialog" aria-modal="true" aria-labelledby="nb-title" style="padding: 14px 20px 34px; background: #F4EFE6; border-top: 3px solid #15111F; border-radius: 28px 28px 0 0; display: flex; flex-direction: column; gap: 12px;">
+    <div style="display: flex; align-items: center; gap: 12px;">
+      <a href="Main.dc.html" aria-label="Close" style="flex: none; width: 44px; height: 44px; display: inline-flex; align-items: center; justify-content: center; border: 2px solid #15111F; border-radius: 999px; background: #FFFFFF;">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#15111F" stroke-width="2.8" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"></path></svg></a>
+      <h2 id="nb-title" style="margin: 0; font-family: 'Stardos Stencil', serif; font-weight: 700; font-size: 34px; line-height: .95;">NEW BOT.</h2>
+    </div>
+    <p style="margin: 0; font-size: 15px; color: #3A3347;">One job, done for as long as the bot exists. Add a crew and routing after.</p>
+
+    <label style="display: flex; flex-direction: column; gap: 6px;">
+      <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; font-weight: 500; letter-spacing: .14em; color: #5A5168;">NAME</span>
+      <input type="text" value="Launch" style="height: 48px; box-sizing: border-box; padding: 0 14px; border: 2px solid #15111F; border-radius: 14px; background: #FFFFFF; font-family: inherit; font-size: 17px; color: #15111F;">
+    </label>
+    <label style="display: flex; flex-direction: column; gap: 6px;">
+      <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; font-weight: 500; letter-spacing: .14em; color: #5A5168;">WHAT IT DOES</span>
+      <textarea rows="3" placeholder="e.g. Plans each product launch and asks me before anything goes public." style="box-sizing: border-box; padding: 12px 14px; border: 2px solid #15111F; border-radius: 14px; background: #FFFFFF; font-family: inherit; font-size: 16px; line-height: 1.4; color: #15111F; resize: none;"></textarea>
+    </label>
+
+    <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px;">
+      <label style="display: flex; flex-direction: column; gap: 6px;">
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; font-weight: 500; letter-spacing: .14em; color: #5A5168;">PROJECT</span>
+        <select style="height: 48px; padding: 0 12px; border: 2px solid #15111F; border-radius: 14px; background: #FFFFFF; font-family: inherit; font-size: 16px; color: #15111F;"><option>swarma</option><option>demo</option><option>fametc</option></select>
+      </label>
+      <label style="display: flex; flex-direction: column; gap: 6px;">
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; font-weight: 500; letter-spacing: .14em; color: #5A5168;">LEAD</span>
+        <select style="height: 48px; padding: 0 12px; border: 2px solid #15111F; border-radius: 14px; background: #FFFFFF; font-family: inherit; font-size: 16px; color: #15111F;"><option>A new agent</option><option>Atlas</option><option>Scout</option></select>
+      </label>
+    </div>
+
+    <label style="display: flex; flex-direction: column; gap: 6px;">
+      <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; font-weight: 500; letter-spacing: .14em; color: #5A5168;">CHAT REPLIES</span>
+      <select style="height: 48px; padding: 0 12px; border: 2px solid #15111F; border-radius: 14px; background: #FFFFFF; font-family: inherit; font-size: 16px; color: #15111F;"><option>Haiku 5.5 · replies in seconds, hands off to Opus</option><option>Sonnet 5.5 · fast with more depth</option><option>Opus 5.5 · thinks hard on every reply</option><option>Gemini Flash · fast, on Antigravity</option><option>Agent's own model</option></select>
+    </label>
+
+    <p style="margin: 2px 0 0; font-size: 14px; color: #5A5168;">Say what it does to make the bot.</p>
+    <button type="submit" disabled style="height: 54px; border: 3px solid #15111F; border-radius: 999px; background: #CFE08A; box-shadow: 5px 5px 0 #15111F; font-family: inherit; font-weight: 600; font-size: 18px; color: #15111F; opacity: .45;">Make bot</button>
+  </form>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":390,"height":844}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

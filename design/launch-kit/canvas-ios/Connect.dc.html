@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Connect to a host</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Stardos+Stencil:wght@400;700&amp;family=IBM+Plex+Sans+Condensed:ital,wght@0,400;0,500;0,600;0,700;1,400&amp;family=IBM+Plex+Mono:wght@500;600&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+a{color:#15111F}a:hover{color:#3A3347}
+</style>
+</helmet>
+<div style="width: 390px; height: 844px; box-sizing: border-box; background: #F4EFE6; color: #15111F; font-family: 'IBM Plex Sans Condensed', 'Arial Narrow', sans-serif; display: flex; flex-direction: column; overflow: hidden;">
+  <header style="padding: 64px 24px 0; display: flex; flex-direction: column; gap: 14px;">
+    <img src="/_blob/dd3060eb199f24c4b32c42d7dde92c71" alt="" style="width: 76px; height: 76px;">
+    <h1 style="margin: 0; font-family: 'Stardos Stencil', serif; font-weight: 700; font-size: 52px; line-height: .92;">YOUR SWARM.<br><span style="font-family: 'IBM Plex Sans Condensed', sans-serif; font-style: italic; font-weight: 400; font-size: 36px; letter-spacing: -.02em;">in your pocket.</span></h1>
+    <p style="margin: 0; font-size: 17px; line-height: 1.5; color: #3A3347;">Your agents run on your Mac. This phone talks to them through the Swarmaa relay, from anywhere.</p>
+  </header>
+
+  <ol style="margin: 22px 24px 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 10px;">
+    <li style="display: flex; gap: 12px; align-items: baseline;"><span style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; font-weight: 600; letter-spacing: .12em;">01</span><span style="font-size: 16px;">On your Mac, open Swarmaa and choose Pair a phone.</span></li>
+    <li style="display: flex; gap: 12px; align-items: baseline;"><span style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; font-weight: 600; letter-spacing: .12em;">02</span><span style="font-size: 16px;">Type the six words it shows. They work once, for five minutes.</span></li>
+  </ol>
+
+  <div style="flex: 1;"></div>
+
+  <form style="padding: 18px 20px 34px; display: flex; flex-direction: column; gap: 12px; background: #FFFFFF; border-top: 2.5px solid #15111F; border-radius: 28px 28px 0 0;">
+    <p style="margin: 0; font-family: 'IBM Plex Mono', monospace; font-size: 12px; font-weight: 500; letter-spacing: .16em; color: #5A5168;">PAIRING CODE</p>
+    <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px;">
+      <sc-for list="{{words}}" as="w" hint-placeholder-count="6">
+        <label style="display: flex; flex-direction: column; gap: 2px;">
+          <span style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #5A5168;">{{w.n}}</span>
+          <input type="text" value="{{w.value}}" aria-label="{{w.label}}" autocapitalize="off" style="height: 44px; box-sizing: border-box; padding: 0 10px; border: 2px solid #15111F; border-radius: 12px; background: #F4EFE6; font-family: 'IBM Plex Mono', monospace; font-size: 14px; color: #15111F; min-width: 0;">
+        </label>
+      </sc-for>
+    </div>
+    <div style="display: flex; align-items: center; gap: 8px; font-size: 14px; color: #3A3347;"><span aria-hidden="true" style="width: 8px; height: 8px; border-radius: 999px; background: #3F7D20;"></span>Mac Studio is online at the relay</div>
+    <a href="Main.dc.html" style="height: 54px; display: inline-flex; align-items: center; justify-content: center; border: 3px solid #15111F; border-radius: 999px; background: #CFE08A; box-shadow: 5px 5px 0 #15111F; font-weight: 600; font-size: 18px; text-decoration: none; color: #15111F;">Connect</a>
+    <button type="button" style="height: 44px; border: 0; background: transparent; font-family: inherit; font-weight: 600; font-size: 15px; color: #3A3347; text-decoration: underline;">Sign in with an address instead</button>
+  </form>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":390,"height":844}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const words = ['amberharbor', 'cedarbloom', 'dawnfinch', 'frostgrove', '', ''];
+    return { words: words.map((value, i) => ({ value, n: String(i + 1).padStart(2, '0'), label: 'Word ' + (i + 1) })) };
+  }
+}
+</script>
+</body>
+</html>

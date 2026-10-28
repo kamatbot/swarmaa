@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Bot settings</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Stardos+Stencil:wght@400;700&amp;family=IBM+Plex+Sans+Condensed:ital,wght@0,400;0,500;0,600;0,700;1,400&amp;family=IBM+Plex+Mono:wght@500;600&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+a{color:#15111F}a:hover{color:#3A3347}
+</style>
+</helmet>
+<div style="width: 390px; height: 844px; box-sizing: border-box; background: #F4EFE6; color: #15111F; font-family: 'IBM Plex Sans Condensed', 'Arial Narrow', sans-serif; display: flex; flex-direction: column; overflow: hidden;">
+  <header style="padding: 54px 20px 12px; display: flex; flex-direction: column; gap: 8px; border-bottom: 2.5px solid #15111F;">
+    <div style="display: flex; align-items: center; gap: 10px;">
+      <a href="Thread.dc.html" aria-label="Close" style="flex: none; width: 44px; height: 44px; display: inline-flex; align-items: center; justify-content: center; border: 2px solid #15111F; border-radius: 999px; background: #FFFFFF;">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#15111F" stroke-width="2.8" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"></path></svg></a>
+      <img src="/_blob/5bf63c436893591ac5a5f737f776dea7" alt="" style="width: 40px; height: 40px;">
+      <h1 style="margin: 0; font-family: 'Stardos Stencil', serif; font-weight: 700; font-size: 32px; line-height: .95;">LAUNCH BOT.</h1>
+    </div>
+    <p style="margin: 0; font-size: 15px; line-height: 1.4; color: #3A3347;">Plans each product launch across the crew and asks before anything goes public.</p>
+  </header>
+
+  <section aria-label="Settings" style="flex: 1; min-height: 0; padding: 12px 16px; display: flex; flex-direction: column; gap: 12px; overflow: hidden;">
+    <div style="padding: 12px 14px; background: #FFFFFF; border: 2.5px solid #15111F; border-radius: 18px; display: flex; flex-direction: column; gap: 8px;">
+      <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; font-weight: 500; letter-spacing: .14em; color: #5A5168;">01 — CHAT REPLIES</span>
+      <div role="group" aria-label="Chat replies" style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px;">
+        <sc-for list="{{models}}" as="m" hint-placeholder-count="3">
+          <button type="button" aria-pressed="{{m.pressed}}" onClick="{{m.pick}}" style="{{m.style}}">{{m.label}}</button>
+        </sc-for>
+      </div>
+      <span style="font-size: 14px; color: #3A3347;">{{modelDetail}}</span>
+    </div>
+
+    <div style="padding: 12px 14px; background: #FFFFFF; border: 2.5px solid #15111F; border-radius: 18px; display: flex; flex-direction: column; gap: 8px;">
+      <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; font-weight: 500; letter-spacing: .14em; color: #5A5168;">02 — CREW</span>
+      <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+        <span style="display: inline-flex; align-items: center; gap: 6px; height: 36px; padding: 0 12px 0 4px; border: 2px solid #15111F; border-radius: 999px; background: #EAD9A6; font-weight: 600; font-size: 15px;"><img src="/_blob/5bf63c436893591ac5a5f737f776dea7" alt="" style="width: 28px; height: 28px;">Atlas · lead</span>
+        <span style="display: inline-flex; align-items: center; gap: 6px; height: 36px; padding: 0 12px 0 4px; border: 2px solid #15111F; border-radius: 999px; background: #F4EFE6; font-weight: 600; font-size: 15px;"><img src="/_blob/a11264d77dce4bae147ceeba225dba7d" alt="" style="width: 28px; height: 28px;">Scout</span>
+        <span style="display: inline-flex; align-items: center; gap: 6px; height: 36px; padding: 0 12px 0 4px; border: 2px solid #15111F; border-radius: 999px; background: #F4EFE6; font-weight: 600; font-size: 15px;"><img src="/_blob/dbfe885a978f2a74c8f66bfefbd665f7" alt="" style="width: 28px; height: 28px;">Forge</span>
+        <button type="button" style="height: 36px; padding: 0 12px; border: 2px dashed #15111F; border-radius: 999px; background: transparent; font-family: inherit; font-weight: 600; font-size: 15px; color: #15111F;">Add</button>
+      </div>
+    </div>
+
+    <div style="padding: 4px 14px; background: #FFFFFF; border: 2.5px solid #15111F; border-radius: 18px; display: flex; flex-direction: column;">
+      <span style="padding-top: 8px; font-family: 'IBM Plex Mono', monospace; font-size: 11px; font-weight: 500; letter-spacing: .14em; color: #5A5168;">03 — WHO DOES WHAT</span>
+      <sc-for list="{{routes}}" as="r" hint-placeholder-count="3">
+        <label style="display: flex; align-items: center; gap: 10px; min-height: 48px; border-bottom: 2px solid #EDE6DA;">
+          <span style="flex: 1; font-weight: 600; font-size: 16px;">{{r.kind}}</span>
+          <select aria-label="{{r.kind}}" style="height: 38px; padding: 0 10px; border: 2px solid #15111F; border-radius: 999px; background: #F4EFE6; font-family: inherit; font-size: 15px; color: #15111F;"><option>{{r.value}}</option><option>Auto</option><option>Claude</option><option>Codex</option><option>Antigravity</option></select>
+        </label>
+      </sc-for>
+    </div>
+
+    <div style="padding: 4px 14px; background: #FFFFFF; border: 2.5px solid #15111F; border-radius: 18px; display: flex; flex-direction: column;">
+      <sc-for list="{{rules}}" as="r" hint-placeholder-count="3">
+        <label style="display: flex; align-items: center; gap: 10px; min-height: 48px; border-bottom: 2px solid #EDE6DA;">
+          <span style="flex: 1; font-size: 16px;">{{r.label}}</span>
+          <input type="checkbox" checked="{{r.on}}" style="width: 22px; height: 22px; accent-color: #15111F;">
+        </label>
+      </sc-for>
+    </div>
+  </section>
+
+  <div style="padding: 12px 20px 34px; border-top: 2.5px solid #15111F; display: flex; flex-direction: column; gap: 8px;">
+    <p style="margin: 0; font-size: 14px; color: #5A5168;">Changes apply from the next turn. Running work keeps its settings.</p>
+    <a href="Thread.dc.html" style="height: 54px; display: inline-flex; align-items: center; justify-content: center; border: 3px solid #15111F; border-radius: 999px; background: #CFE08A; box-shadow: 5px 5px 0 #15111F; font-weight: 600; font-size: 18px; text-decoration: none; color: #15111F;">Save changes</a>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":390,"height":844}}'>
+class Component extends DCLogic {
+  constructor(props) { super(props); this.state = { model: 'haiku' }; }
+  renderVals() {
+    const base = 'height: 44px; border: 2px solid #15111F; border-radius: 999px; font-family: inherit; font-weight: 600; font-size: 15px; color: #15111F; ';
+    const choices = [
+      ['haiku', 'Haiku', 'Replies in seconds, hands off to Opus when it needs to.'],
+      ['sonnet', 'Sonnet', 'Fast with more depth, hands off when it needs to.'],
+      ['opus', 'Opus', 'Thinks hard on every reply, for heavy work.']
+    ];
+    const picked = choices.find(c => c[0] === this.state.model);
+    return {
+      models: choices.map(([id, label]) => {
+        const on = this.state.model === id;
+        return { label, pressed: on ? 'true' : 'false', style: base + (on ? 'background: #15111F; color: #CFE08A;' : 'background: #F4EFE6;'), pick: () => this.setState({ model: id }) };
+      }),
+      modelDetail: picked[2],
+      routes: [{ kind: 'Research', value: 'Auto' }, { kind: 'Edits', value: 'Claude' }, { kind: 'Review', value: 'Different from author' }],
+      rules: [{ label: 'Star this bot (your bottom-right shortcut)', on: true }, { label: 'Ask me before anything public', on: true }, { label: 'Review every edit', on: true }, { label: 'Run tests before an edit is done', on: false }]
+    };
+  }
+}
+</script>
+</body>
+</html>

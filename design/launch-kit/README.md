@@ -9,6 +9,7 @@ Every design element made for the Swarmaa Mac app, kept for the launch video. Ad
 | `characters/` | The ten Kind Swarm characters as SVG (master), plus transparent 1024 px PNGs (`<name>@1024.png`) and a strip of all ten (`all-characters.png`). |
 | `screens/` | The real SwiftUI screens, rendered at 1440×900 from example data: Bots home, Bot settings, Tasks, Usage, the usage hover card, and the live reply bubble (a bot's answer appearing as it is written). |
 | `canvas/` | The source artboards of the "Swarmaa main window" design canvas (`.dc.html` and `canvas.json`). |
+| `canvas-ios/` | The nine iPhone screens of the "Swarmaa iOS" canvas (https://claude.ai/artifact/BG62yZE5DXEJ1dE8xj87fL). Character images there point at the canvas's uploads; the originals are in `characters/`. |
 | `tokens/` | `kind-swarm-tokens.json` (the full Kind Swarm system) and `app-palette.json` (the muted palette the app actually uses). |
 
 ## The characters

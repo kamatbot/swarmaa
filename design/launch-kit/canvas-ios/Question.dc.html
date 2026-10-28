@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Answer a question</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Stardos+Stencil:wght@400;700&amp;family=IBM+Plex+Sans+Condensed:ital,wght@0,400;0,500;0,600;0,700;1,400&amp;family=IBM+Plex+Mono:wght@500;600&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+a{color:#15111F}a:hover{color:#3A3347}
+</style>
+</helmet>
+<div style="width: 390px; height: 844px; box-sizing: border-box; background: #8F8A84; color: #15111F; font-family: 'IBM Plex Sans Condensed', 'Arial Narrow', sans-serif; display: flex; flex-direction: column; overflow: hidden;">
+  <div aria-hidden="true" style="flex: 1; padding: 58px 16px 0; display: flex; flex-direction: column; gap: 10px; opacity: .35;">
+    <div style="height: 44px; border-radius: 999px; background: #F4EFE6; width: 60%;"></div>
+    <div style="height: 64px; border-radius: 20px; background: #F4EFE6;"></div>
+    <div style="height: 92px; border-radius: 20px; background: #F4EFE6;"></div>
+  </div>
+
+  <section role="dialog" aria-modal="true" aria-labelledby="q-title" style="padding: 14px 20px 34px; background: #F4EFE6; border-top: 3px solid #15111F; border-radius: 28px 28px 0 0; display: flex; flex-direction: column; gap: 14px;">
+    <div style="display: flex; align-items: center; gap: 10px;">
+      <a href="Thread.dc.html" aria-label="Close" style="flex: none; width: 44px; height: 44px; display: inline-flex; align-items: center; justify-content: center; border: 2px solid #15111F; border-radius: 999px; background: #FFFFFF;">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#15111F" stroke-width="2.8" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"></path></svg></a>
+      <img src="/_blob/5bf63c436893591ac5a5f737f776dea7" alt="" style="width: 32px; height: 32px;">
+      <span style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; font-weight: 500; letter-spacing: .14em; color: #3A3347;">ATLAS ASKS · LAUNCH</span>
+    </div>
+    <h2 id="q-title" style="margin: 0; font-family: 'Stardos Stencil', serif; font-weight: 700; font-size: 32px; line-height: .95;">WHICH CHANNELS SHOULD THE LAUNCH USE?</h2>
+    <p style="margin: 0; font-size: 15px; color: #3A3347;">Pick any. Nothing is posted until you approve the drafts.</p>
+
+    <div role="group" aria-label="Channels" style="display: flex; flex-wrap: wrap; gap: 8px;">
+      <sc-for list="{{options}}" as="o" hint-placeholder-count="4">
+        <button type="button" aria-pressed="{{o.pressed}}" onClick="{{o.toggle}}" style="{{o.style}}">{{o.label}}</button>
+      </sc-for>
+    </div>
+
+    <label style="display: flex; flex-direction: column; gap: 6px;">
+      <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; font-weight: 500; letter-spacing: .14em; color: #5A5168;">ANYTHING ELSE</span>
+      <input type="text" placeholder="e.g. skip X this time" style="height: 48px; box-sizing: border-box; padding: 0 14px; border: 2px solid #15111F; border-radius: 14px; background: #FFFFFF; font-family: inherit; font-size: 16px; color: #15111F;">
+    </label>
+
+    <a href="Thread.dc.html" style="height: 54px; display: inline-flex; align-items: center; justify-content: center; border: 3px solid #15111F; border-radius: 999px; background: #CFE08A; box-shadow: 5px 5px 0 #15111F; font-weight: 600; font-size: 18px; text-decoration: none; color: #15111F;">Send answer</a>
+  </section>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":390,"height":844}}'>
+class Component extends DCLogic {
+  constructor(props) { super(props); this.state = { picked: { blog: true, ph: true } }; }
+  renderVals() {
+    const base = 'height: 46px; padding: 0 16px; border: 2px solid #15111F; border-radius: 999px; font-family: inherit; font-weight: 600; font-size: 15px; color: #15111F; ';
+    const opts = [['blog', 'Blog and changelog'], ['x', 'X'], ['li', 'LinkedIn'], ['ph', 'Product Hunt']];
+    return {
+      options: opts.map(([id, label]) => {
+        const on = !!this.state.picked[id];
+        return {
+          label, pressed: on ? 'true' : 'false',
+          style: base + (on ? 'background: #15111F; color: #CFE08A;' : 'background: #FFFFFF;'),
+          toggle: () => this.setState({ picked: { ...this.state.picked, [id]: !on } })
+        };
+      })
+    };
+  }
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,131 @@
+{
+  "v": 3,
+  "createdOnFiles": {
+    "v": 1,
+    "at": "2026-10-28T11:20:00Z"
+  },
+  "title": "Swarmaa iOS",
+  "launch": {
+    "view": "canvas"
+  },
+  "pages": [],
+  "boards": {
+    "Main.dc.html": {
+      "x": 0,
+      "y": 0,
+      "w": 390,
+      "h": 844,
+      "title": "01 Bots home",
+      "radius": 44
+    },
+    "Thread.dc.html": {
+      "x": 470,
+      "y": 0,
+      "w": 390,
+      "h": 844,
+      "title": "02 Bot thread",
+      "radius": 44
+    },
+    "Tasks.dc.html": {
+      "x": 940,
+      "y": 0,
+      "w": 390,
+      "h": 844,
+      "title": "03 Tasks",
+      "radius": 44
+    },
+    "Usage.dc.html": {
+      "x": 1410,
+      "y": 0,
+      "w": 390,
+      "h": 844,
+      "title": "04 Usage",
+      "radius": 44
+    },
+    "Connect.dc.html": {
+      "x": 0,
+      "y": 1264,
+      "w": 390,
+      "h": 844,
+      "title": "05 Connect to a host",
+      "radius": 44
+    },
+    "Question.dc.html": {
+      "x": 470,
+      "y": 1264,
+      "w": 390,
+      "h": 844,
+      "title": "06 Answer a question",
+      "radius": 44,
+      "is_interactive": true
+    },
+    "NewBot.dc.html": {
+      "x": 940,
+      "y": 1264,
+      "w": 390,
+      "h": 844,
+      "title": "07 New bot",
+      "radius": 44
+    },
+    "BotSettings.dc.html": {
+      "x": 1410,
+      "y": 1264,
+      "w": 390,
+      "h": 844,
+      "title": "08 Bot settings",
+      "radius": 44,
+      "is_interactive": true
+    },
+    "More.dc.html": {
+      "x": 1880,
+      "y": 1264,
+      "w": 390,
+      "h": 844,
+      "title": "09 You (avatar)",
+      "radius": 44
+    }
+  },
+  "order": [
+    "Main.dc.html",
+    "Thread.dc.html",
+    "Tasks.dc.html",
+    "Usage.dc.html",
+    "Connect.dc.html",
+    "Question.dc.html",
+    "NewBot.dc.html",
+    "BotSettings.dc.html",
+    "More.dc.html"
+  ],
+  "notes": {
+    "row1": {
+      "x": 0,
+      "y": -300,
+      "text": "Daily use",
+      "kind": "title1",
+      "maxW": 1800
+    },
+    "row2": {
+      "x": 0,
+      "y": 964,
+      "text": "Setup and settings",
+      "kind": "title1",
+      "maxW": 1800
+    },
+    "rule": {
+      "x": 2350,
+      "y": 0,
+      "w": 380,
+      "fill": "teal",
+      "text": "Home has no tabs. Top: your avatar (opens You: new bot, hosts, settings), host status, and small Tasks and Usage icons. Bottom: search, and the starred bot as a shortcut bottom-right. Only one bot is starred; star another in its settings to move the shortcut. The Action Button opens or asks the starred bot (App Shortcut)."
+    }
+  },
+  "designSystems": [
+    {
+      "title": "Kind Swarm",
+      "namespace": "kind-swarm",
+      "artifact": "https://claude.ai/artifact/GTtCTSDLFihHmqgY9kJnYf",
+      "version": "1793161881-3d67",
+      "copiedAt": "2026-10-28T11:20:00Z"
+    }
+  ]
+}

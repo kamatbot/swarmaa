@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Tasks</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Stardos+Stencil:wght@400;700&amp;family=IBM+Plex+Sans+Condensed:ital,wght@0,400;0,500;0,600;0,700;1,400&amp;family=IBM+Plex+Mono:wght@500;600&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+a{color:#15111F}a:hover{color:#3A3347}
+</style>
+</helmet>
+<div style="width: 390px; height: 844px; box-sizing: border-box; background: #F4EFE6; color: #15111F; font-family: 'IBM Plex Sans Condensed', 'Arial Narrow', sans-serif; display: flex; flex-direction: column; overflow: hidden;">
+  <header style="padding: 58px 20px 12px; display: flex; flex-direction: column; gap: 10px;">
+    <a href="Main.dc.html" aria-label="Close" style="flex: none; width: 44px; height: 44px; display: inline-flex; align-items: center; justify-content: center; border: 2px solid #15111F; border-radius: 999px; background: #FFFFFF;">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#15111F" stroke-width="2.8" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"></path></svg></a>
+    <h1 style="margin: 0; font-family: 'Stardos Stencil', serif; font-weight: 700; font-size: 56px; line-height: .92;">TASKS.</h1>
+    <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px;">
+      <div style="padding: 8px 10px; border: 2px solid #15111F; border-radius: 14px; background: #FBEFE7;"><div style="font-family: 'Stardos Stencil', serif; font-size: 28px; line-height: 1;">02</div><div style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: .12em; color: #3A3347;">NEED YOU</div></div>
+      <div style="padding: 8px 10px; border: 2px solid #15111F; border-radius: 14px; background: #FFFFFF;"><div style="font-family: 'Stardos Stencil', serif; font-size: 28px; line-height: 1;">03</div><div style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: .12em; color: #3A3347;">WORKING</div></div>
+      <div style="padding: 8px 10px; border: 2px solid #15111F; border-radius: 14px; background: #F1F5E2;"><div style="font-family: 'Stardos Stencil', serif; font-size: 28px; line-height: 1;">37</div><div style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: .12em; color: #3A3347;">DONE TODAY</div></div>
+    </div>
+  </header>
+
+  <section aria-label="Tasks" style="flex: 1; min-height: 0; padding: 4px 16px; display: flex; flex-direction: column; gap: 10px; overflow: hidden;">
+    <p style="margin: 2px 4px 0; font-family: 'IBM Plex Mono', monospace; font-size: 12px; font-weight: 500; letter-spacing: .16em; text-transform: uppercase; color: #5A5168;">01 — Needs you</p>
+    <div style="padding: 12px 14px; background: #FFFFFF; border: 2.5px solid #15111F; border-radius: 18px; box-shadow: 4px 4px 0 #15111F; display: flex; flex-direction: column; gap: 6px;">
+      <div style="display: flex; gap: 8px; align-items: center;"><span style="padding: 2px 8px; border: 2px solid #15111F; border-radius: 999px; background: #CFE08A; font-family: 'IBM Plex Mono', monospace; font-size: 10px; font-weight: 600; letter-spacing: .1em;">READY FOR REVIEW</span><span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #5A5168;">Launch · claude</span></div>
+      <strong style="font-size: 17px;">Draft the launch banner</strong>
+      <span style="font-size: 14px; color: #3A3347;">Branch swarmaa/claude/4f1e · 7 files · tests pass</span>
+    </div>
+    <div style="padding: 12px 14px; background: #FFFFFF; border: 2.5px solid #15111F; border-radius: 18px; box-shadow: 4px 4px 0 #15111F; display: flex; flex-direction: column; gap: 6px;">
+      <div style="display: flex; gap: 8px; align-items: center;"><span style="padding: 2px 8px; border: 2px solid #15111F; border-radius: 999px; background: #E8836B; font-family: 'IBM Plex Mono', monospace; font-size: 10px; font-weight: 600; letter-spacing: .1em;">FAILED</span><span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #5A5168;">Competitor watch · codex</span></div>
+      <strong style="font-size: 17px;">Summarise competitor pricing</strong>
+      <span style="font-size: 14px; color: #3A3347;">Codex weekly limit. A retry routes to Claude.</span>
+    </div>
+
+    <p style="margin: 6px 4px 0; font-family: 'IBM Plex Mono', monospace; font-size: 12px; font-weight: 500; letter-spacing: .16em; text-transform: uppercase; color: #5A5168;">02 — Working</p>
+    <div style="padding: 10px 14px; border: 2px solid #15111F; border-radius: 18px; display: flex; align-items: center; gap: 10px;">
+      <span aria-hidden="true" style="width: 10px; height: 10px; border-radius: 999px; background: #3D6FB0; flex: none;"></span>
+      <span style="flex: 1; min-width: 0; display: flex; flex-direction: column;"><strong style="font-size: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Check the launch calendar</strong><span style="font-size: 13px; color: #5A5168;">Pulse · antigravity · 2 min</span></span>
+    </div>
+    <div style="padding: 10px 14px; border: 2px solid #15111F; border-radius: 18px; display: flex; align-items: center; gap: 10px;">
+      <span aria-hidden="true" style="width: 10px; height: 10px; border-radius: 999px; background: #3D6FB0; flex: none;"></span>
+      <span style="flex: 1; min-width: 0; display: flex; flex-direction: column;"><strong style="font-size: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Fix the plan limits on the pricing page</strong><span style="font-size: 13px; color: #5A5168;">Forge · claude · 6 min</span></span>
+    </div>
+  </section>
+
+  <div role="group" aria-label="Filter tasks" style="padding: 12px 16px 34px; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; border-top: 2.5px solid #15111F;">
+    <button type="button" aria-pressed="true" style="height: 44px; border: 2px solid #15111F; border-radius: 999px; background: #15111F; color: #CFE08A; font-family: inherit; font-weight: 600; font-size: 15px;">All</button>
+    <button type="button" aria-pressed="false" style="height: 44px; border: 2px solid #15111F; border-radius: 999px; background: #FFFFFF; color: #15111F; font-family: inherit; font-weight: 600; font-size: 15px;">Needs you</button>
+    <button type="button" aria-pressed="false" style="height: 44px; border: 2px solid #15111F; border-radius: 999px; background: #FFFFFF; color: #15111F; font-family: inherit; font-weight: 600; font-size: 15px;">Working</button>
+    <button type="button" aria-pressed="false" style="height: 44px; border: 2px solid #15111F; border-radius: 999px; background: #FFFFFF; color: #15111F; font-family: inherit; font-weight: 600; font-size: 15px;">Done</button>
+  </div>
+
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":390,"height":844}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>
