@@ -425,6 +425,9 @@ enum TeamsCopy {
         case "5h": return L10n.t("Session · 5 h")
         case "weekly": return L10n.t("Week")
         case nil: return L10n.t("Window")
+        case let n? where n.hasPrefix("weekly_"):  // per-model weekly caps, e.g. weekly_fable
+            let model = n.dropFirst(7).replacingOccurrences(of: "_", with: " ")
+            return L10n.t("Week") + " · " + model.prefix(1).uppercased() + model.dropFirst()
         default: return name!.prefix(1).uppercased() + name!.dropFirst()
         }
     }
