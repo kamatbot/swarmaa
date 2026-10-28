@@ -7,6 +7,7 @@ import { createPool, transaction } from '../src/db.js';
 import { requireCondition } from '../src/errors.js';
 import { EventService } from '../src/events.js';
 import { PasskeyService } from '../src/passkeys.js';
+import { provisionConnection } from '../src/provision.js';
 import { GRANTABLE_PERMISSIONS, ROLE_PERMISSIONS } from '../src/policy.js';
 import type { Permission, Role } from '../src/types.js';
 import { enumValue, scopeName, string } from '../src/validation.js';
@@ -70,11 +71,8 @@ try {
     const scopes = parseScopes(role);
     const extra = (values.grant ?? []).map(v => enumValue<Permission>(v, 'grant', ['task:patch', 'task:submit', 'task:cancel']));
     requireCondition(!extra.includes('task:patch') || role === 'worker', 400, 'invalid_grant', 'task:patch is a worker execution grant.');
-    const token = newToken();
-    const id = randomUUID();
     const permissions = [...new Set([...ROLE_PERMISSIONS[role], ...extra])];
-    await pool.query('INSERT INTO principals(id,tenant_id,name,role,scopes,permissions,token_hash) VALUES($1,$2,$3,$4,$5,$6,$7)', [id, tenant, name, role, scopes, permissions, hashToken(token)]);
-    await emit({ id, tenant, name, role, scopes, permissions, token }, true);
+    await emit(await provisionConnection(pool, { tenant, name, role, scopes, permissions }), true);
   } else if (command === 'list') {
     const result = await pool.query('SELECT id,name,role,scopes,permissions,disabled,created_at FROM principals WHERE tenant_id=$1 ORDER BY name', [tenant]);
     await emit(result.rows);

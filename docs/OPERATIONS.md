@@ -140,3 +140,30 @@ For hosted invitations, apply `015_gateway_tenants.sql` after the existing migra
 Visitors to `/oauth/authorize` without an owner session see the invite-only message, existing-passkey sign-in, and “Have an invite?”. That link opens `/account` with a local OAuth return path; entering the invite code and completing passkey signup returns to approval. Opening the invite URL directly lands on the account page; start the app's OAuth connection to approve it. First approval in the new tenant creates one `frontend` identity with `project:general` and the standard frontend permissions. Existing identities retain the selection/review flow. Dynamic client registration does not create a tenant or identity and keeps its existing caps.
 
 On `/account`, “Add a worker Mac” posts to `/account/workers` using the owner session. It creates a worker in that tenant with standard worker permissions and the union of its enabled non-admin frontend projects (or `project:general` before first approval). The token appears once alongside a bridge configuration snippet. Set `COLLECTIVE_WORKER_TOKEN` privately on that Mac, adjust the snippet's binary and project paths, and run the existing bridge setup. No worker is connected automatically. The bridge supports at most 512 projects; patch execution is off by default. Reloading the page cannot recover the token. Owner actions require same-origin JSON; OAuth approval retains its browser cookie and single-use CSRF checks.
+
+## Host relay agent
+
+With Node 24, run `npm run relay:agent` using the existing `.env` (`PUBLIC_URL`,
+`HOST`, `PORT`, and `DATABASE_URL`). `RELAY_URL` defaults to
+`wss://relay.swarmaa.com`. The agent logs its stable `host_id` once and stores its
+Ed25519 private key in `.local/relay-host.key`; it refuses permissions other than
+0600. Back up this private key securely to preserve the host identity.
+
+Run `npm run relay:pair` on the host to display a six-word code once. It expires
+in five minutes and can be redeemed once. Only its SHA-256 hash and expiry are
+written to `.local/relay-pairing.json` (0600). The running agent notices new codes
+and reannounces pending codes after reconnecting. Pairing creates a separate
+frontend identity with the scopes and permissions of `RELAY_PAIR_TEMPLATE`
+(default `notchtrader`); the template must be an enabled frontend, uniquely named
+across tenants. Admin and wildcard templates are refused. Revoke paired devices
+with the existing `admin revoke --name relay-...` command. Tokens and codes must
+never be copied into logs or source control.
+
+To install/restart the optional launchd agent after the usual build and bridge
+drain, use `npm run deploy:local -- --relay`. It writes
+`~/Library/LaunchAgents/com.swarma.relay.plist`, loads it into the user session,
+and restarts it after service readiness. Logs are `.local/logs/relay.log` and
+`.local/logs/relay.err.log`. `--dry-run --relay` previews this without mutation.
+The relay is TLS-terminated at Cloudflare in v1; it does not provide end-to-end
+encryption. Live relay connectivity and client pairing require a separate smoke
+check after deployment.

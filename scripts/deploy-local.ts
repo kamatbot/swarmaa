@@ -1,5 +1,8 @@
 import { execFileSync } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { plist } from './setup-lib.js';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { HttpToolClient } from '../src/bridge/client.js';
@@ -14,6 +17,7 @@ export interface DeployIO {
   log(message: string): void;
   uid: number;
   port: string;
+  installRelay?(): string;
 }
 
 /** launchctl list <label> is a dictionary, unlike the three-column job listing. */
@@ -25,6 +29,17 @@ export function launchPid(output: string): number | undefined {
 function localIO(): DeployIO {
   const port = process.env.PORT || '8787';
   return {
+    installRelay: () => {
+      const root = resolve('.'), agents = resolve(homedir(), 'Library/LaunchAgents');
+      mkdirSync(agents, { recursive: true });
+      mkdirSync(resolve(root, '.local/logs'), { recursive: true, mode: 0o700 });
+      const file = resolve(agents, 'com.swarma.relay.plist');
+      writeFileSync(file, plist('com.swarma.relay', [process.execPath, '--env-file=.env', 'dist/src/relay-agent.js'], {
+        workingDirectory: root, stdout: resolve(root, '.local/logs/relay.log'), stderr: resolve(root, '.local/logs/relay.err.log'),
+        env: { PATH: `/opt/homebrew/opt/node@24/bin:${process.env.PATH ?? ''}` },
+      }), { mode: 0o600 });
+      return file;
+    },
     port, uid: process.getuid?.() ?? -1,
     command: (command, args, timeout) => {
       try { return execFileSync(command, args, { encoding: 'utf8', timeout, maxBuffer: 4 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] }); }
@@ -49,12 +64,13 @@ function localIO(): DeployIO {
 }
 
 export async function deployLocal(args = process.argv.slice(2), io = localIO()): Promise<void> {
-  let dry = false, service = true, only: string | undefined;
+  let dry = false, service = true, relay = false, only: string | undefined;
   for (let i = 0; i < args.length; i++) {
-    if (args[i] === '--dry-run') dry = true;
+    if (args[i] === '--relay') relay = true;
+    else if (args[i] === '--dry-run') dry = true;
     else if (args[i] === '--no-service') service = false;
     else if (args[i] === '--only' && ['claude', 'codex', 'agy'].includes(args[i + 1] ?? '')) only = args[++i];
-    else throw new Error('Usage: npm run deploy:local -- [--dry-run] [--only claude|codex|agy] [--no-service]');
+    else throw new Error('Usage: npm run deploy:local -- [--dry-run] [--only claude|codex|agy] [--no-service] [--relay]');
   }
   if (!/^\d+$/u.test(io.port) || Number(io.port) < 1 || Number(io.port) > 65535 || io.uid < 0) throw new Error('A valid PORT and a launchd user session are required');
   const launch = (...a: string[]): string => io.command('launchctl', a, 10000);
@@ -69,6 +85,7 @@ export async function deployLocal(args = process.argv.slice(2), io = localIO()):
   const target = `gui/${io.uid}/com.swarma.service`;
   const healthUrl = `http://127.0.0.1:${io.port}/.well-known/oauth-authorization-server`;
   if (dry) {
+    if (relay) io.log('Would install and restart com.swarma.relay after service readiness');
     if (service) io.log(`After every bridge has a new PID: launchctl kickstart -k ${target}; wait for HTTP 200 at ${healthUrl}`);
     return;
   }
@@ -93,11 +110,23 @@ export async function deployLocal(args = process.argv.slice(2), io = localIO()):
       }
     }
   }
-  if (!service) return;
+  const restartRelay = async () => {
+    if (!relay) return;
+    if (!io.installRelay) throw new Error('Relay plist installation unavailable');
+    const file = io.installRelay(), relayTarget = `gui/${io.uid}/com.swarma.relay`;
+    try { launch('bootout', relayTarget); } catch { /* first install */ }
+    try { launch('bootstrap', `gui/${io.uid}`, file); }
+    catch { await io.sleep(1000); launch('bootstrap', `gui/${io.uid}`, file); }
+    launch('kickstart', '-k', relayTarget);
+    io.log('Relay installed and restarted; check its log for host_id and connection status');
+  };
+  if (!service) { await restartRelay(); return; }
   io.log(`Restarting ${target}`);
   launch('kickstart', '-k', target);
   for (let attempt = 0; attempt < 30; attempt++) {
-    try { if (await io.healthy(healthUrl)) { io.log('Service ready (HTTP 200)'); return; } } catch { /* starting */ }
+    let healthy = false;
+    try { healthy = await io.healthy(healthUrl); } catch { /* starting */ }
+    if (healthy) { io.log('Service ready (HTTP 200)'); await restartRelay(); return; }
     await io.sleep(2000);
   }
   throw new Error('Service did not return HTTP 200 after restart');
