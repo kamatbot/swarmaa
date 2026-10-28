@@ -268,15 +268,17 @@ export function createHttpHandler(dependencies: HttpDependencies): (request: Inc
 
   // `oauthStream`: the read-only event stream also takes OAuth tokens, so remote OAuth
   // sign-ins get live updates. Tool routes stay MCP-only for OAuth.
+  async function principalFor(token: string, oauthAllowed: boolean): Promise<Principal | null> {
+    if (token.length > 4096) return null;
+    if (token.startsWith('cn_access_')) return oauthAllowed && oauth ? oauth.authenticate(token) : null;
+    return dependencies.auth.authenticate(token);
+  }
+
   async function authenticate(request: IncomingMessage, response: ServerResponse, mcp: boolean, oauthStream = false): Promise<Principal> {
     const header = oneHeader(request, 'authorization');
     const match = header?.match(/^Bearer ([A-Za-z0-9._~+\/-]+=*)$/iu);
     const token = match?.[1];
-    let principal: Principal | null = null;
-    if (token && token.length <= 4096) {
-      if (token.startsWith('cn_access_')) principal = (mcp || oauthStream) && oauth ? await oauth.authenticate(token) : null;
-      else principal = await dependencies.auth.authenticate(token);
-    }
+    const principal = token ? await principalFor(token, mcp || oauthStream) : null;
     if (!principal) {
       response.setHeader('WWW-Authenticate', oauth && mcp
         ? `Bearer resource_metadata="${publicUrl.origin}/.well-known/oauth-protected-resource/mcp", scope="mcp"`
@@ -512,7 +514,8 @@ export function createHttpHandler(dependencies: HttpDependencies): (request: Inc
         if (!active || response.destroyed) return;
         try {
           // Re-check without spending the request rate limit: revoked tokens, lost permission or lost scopes end the stream.
-          const fresh = await dependencies.auth.authenticate(oneHeader(request, 'authorization')?.match(/^Bearer (\S+)$/iu)?.[1] ?? '');
+          // Same lookup as the opening request, so an OAuth stream is re-checked as OAuth.
+          const fresh = await principalFor(oneHeader(request, 'authorization')?.match(/^Bearer (\S+)$/iu)?.[1] ?? '', true);
           if (!fresh || !hasPermission(fresh, 'events:read')
             || (allScopes ? !(fresh.role === 'admin' && fresh.scopes.includes('*')) : !scopes.every(s => canAccessScope(fresh, s)))) {
             cleanup();

@@ -66,6 +66,18 @@ test('an OAuth access token opens the event stream but still cannot call REST to
   const stream = await fetch(`${origin}/api/stream?after=now`, { headers: { ...bearer, accept: 'text/event-stream' }, signal: controller.signal });
   assert.equal(stream.status, 200);
   assert.match(stream.headers.get('content-type') ?? '', /^text\/event-stream/);
+  // Heartbeats re-check the token every 50 ms here: the OAuth stream must survive them...
+  const reader = stream.body!.getReader();
+  const decoder = new TextDecoder();
+  let seen = '';
+  while ((seen.match(/: heartbeat/g) ?? []).length < 3) {
+    const { value, done } = await reader.read();
+    assert.equal(done, false, 'the server ended an OAuth stream at a heartbeat');
+    seen += decoder.decode(value);
+  }
+  // ...and end once the token is revoked.
+  await oauth.revokeToken(new URLSearchParams({ client_id: clientId, token: String(issued.access_token) }));
+  for (;;) { const { done } = await reader.read(); if (done) break; }
   controller.abort();
 
   const tool = await fetch(`${origin}/api/tools/context_get`, { method: 'POST', headers: { ...bearer, 'content-type': 'application/json' }, body: '{}' });
