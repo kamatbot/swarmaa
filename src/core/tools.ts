@@ -77,7 +77,7 @@ const specs: Spec[] = [
   ['question_answer','thread:write','Answer an open question asked by an agent, posting the answer to the thread and resuming the agent.', { question_id:id, choices:{type:'array',items:text(80)}, text:text(16384), idempotency_key:text(200) }, ['question_id','choices']],
   ['question_list','thread:read','List structured questions asked by agents, filtered by status (default open).', { status:text(32), after:id, limit:{type:'integer',minimum:1,maximum:100} }, [], true],
   ['attention_list','task:read','List items needing owner attention: open questions, completed review-required tasks, failed tasks, and waiting/blocked swarms.', { scope, after:text(100), limit:{type:'integer',minimum:1,maximum:100} }, [], true],
-  ['task_resolve','task:submit','Mark a completed or failed task as resolved or unresolved by setting or clearing resolved_at.', { task_id:id, resolved:{type:'boolean'}, expected_version:version }, ['task_id','resolved','expected_version']],
+  ['task_resolve','answer_questions','Mark a completed or failed task as resolved or unresolved by setting or clearing resolved_at.', { task_id:id, resolved:{type:'boolean'}, expected_version:version }, ['task_id','resolved','expected_version']],
 ];
 
 export const TOOL_PERMISSIONS = Object.fromEntries(specs.map(([name, permission]) => [name, permission])) as Record<string, Permission>;

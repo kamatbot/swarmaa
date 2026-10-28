@@ -1,3 +1,4 @@
+import { eventWakeup } from './event-wakeup.js';
 import { isIP } from 'node:net';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
@@ -502,6 +503,9 @@ export function createHttpHandler(dependencies: HttpDependencies): (request: Inc
 
       let active = true;
       let pollTimer: NodeJS.Timeout | undefined;
+      let polling = false;
+      let pending = false;
+      let unsubscribe: (() => void) | undefined;
       const heartbeatTimer = setInterval(async () => {
         if (!active || response.destroyed) return;
         try {
@@ -529,6 +533,7 @@ export function createHttpHandler(dependencies: HttpDependencies): (request: Inc
       const cleanup = () => {
         if (!active) return;
         active = false;
+        unsubscribe?.();
         clearInterval(heartbeatTimer);
         clearTimeout(maxDurationTimer);
         if (pollTimer) clearTimeout(pollTimer);
@@ -539,11 +544,18 @@ export function createHttpHandler(dependencies: HttpDependencies): (request: Inc
       };
       response.on('close', cleanup);
 
+      const wake = () => {
+        if (!active || response.destroyed) return;
+        if (polling) { pending = true; return; }
+        clearTimeout(pollTimer);
+        void poll();
+      };
       const poll = async () => {
         if (!active || response.destroyed) return;
+        polling = true;
+        pending = false;
         try {
           if (names.length === 0) {
-            pollTimer = setTimeout(poll, 1000);
             return;
           }
           const sql = legacy
@@ -591,19 +603,22 @@ export function createHttpHandler(dependencies: HttpDependencies): (request: Inc
             curSeq = row.seq;
           }
 
-          if (result.rows.length > 0) {
-            pollTimer = setTimeout(poll, 10);
-          } else {
-            pollTimer = setTimeout(poll, 200);
-          }
+          if (result.rows.length === 50) pending = true;
         } catch {
+          // The safety poll also recovers from transient read failures.
+        } finally {
+          polling = false;
           if (active && !response.destroyed) {
-            pollTimer = setTimeout(poll, 500);
+            if (pending) void poll();
+            else pollTimer = setTimeout(wake, 2000);
           }
         }
       };
 
-      void poll();
+      const subscription = eventWakeup(dependencies.pool).subscribe(wake);
+      wake(); // Poll independently while LISTEN connects (or reconnects).
+      unsubscribe = await subscription;
+      if (!active || response.destroyed) unsubscribe();
       return;
     }
     const toolMatch = path.match(/^\/api\/tools\/([a-z][a-z0-9_]{0,127})$/u);

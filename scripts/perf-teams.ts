@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { createServer, type Server } from 'node:http';
 import { parseEnv } from 'node:util';
 import pg, { type Pool, type PoolClient } from 'pg';
@@ -137,9 +137,9 @@ async function scenarios() {
   await call(p2, 'thread_read', { thread_id: a2[0].main_thread_id, limit: 100 }, tr); capture('read-first', tr);
   tr = { op: 'thread_read', queries: [] };
   await call(p2, 'thread_read', { thread_id: a2[0].main_thread_id, before_seq: 2501, limit: 100 }, tr); capture('read-before', tr);
-  await measure(2, 'first 100 / 5,000 messages', 100, async () => {
+  await measure(2, 'latest 100 / 5,000 messages', 100, async () => {
     const r = await call(p2, 'thread_read', { thread_id: a2[0].main_thread_id, limit: 100 });
-    assert.equal(r.messages.length, 100); assert.equal(r.messages[0].seq, 1); assert(r.has_more);
+    assert.equal(r.messages.length, 100); assert.equal(r.messages[0].seq, 4901); assert(r.has_more);
   });
   const pageTimes: number[] = [], pageStart = now();
   for (let sweep = 0; sweep < 3; sweep++) {
@@ -296,7 +296,7 @@ async function streamScenario() {
       const r = await call(p, 'thread_post', { thread_id: a.main_thread_id, body: 'Stream benchmark', idempotency_key: uid() }, trace);
       assert(trace.commit !== undefined, 'Missing server COMMIT acknowledgement');
       committed.push({ id: r.message.id, at: trace.commit });
-      await new Promise(r => setTimeout(r, 5 + i % 7 * 3)); // Avoid phase-locking posts to the 200 ms poll.
+      await new Promise(r => setTimeout(r, 5 + i % 7 * 3)); // Vary posting intervals independently of event arrivals.
     }
     await until(() => streams.every(s => committed.every(c => s.frames.some(e => e.event === 'message.created' && e.data.subject_id === c.id))), '100 messages on all streams');
     for (const c of committed) {
@@ -330,7 +330,7 @@ async function streamScenario() {
     } finally { await s.close(); }
   }
   metric(6, 'cursor reconnect → all 1,000 missed events', catchups, undefined, 10_000);
-  notes.push('Live SSE uses production 200 ms idle / 10 ms nonempty polling and default 15 s heartbeat. Posts are spaced by 5–23 ms plus HTTP time, independently of event arrivals; observed delivery rate is not a saturation test. Commit timestamps are server-side COMMIT acknowledgements, slightly after the database commit, not HTTP response completion. Four clients each received all 100 posted message ids. Reconnect replays exactly 1,000 real channel posts/events in separate HTTP transactions, checked for missing/duplicate cursors, ten times; event generation is excluded.');
+  notes.push('Live SSE uses transactional LISTEN/NOTIFY, a 2 s safety poll and immediate full-batch draining and default 15 s heartbeat. Posts are spaced by 5–23 ms plus HTTP time, independently of event arrivals; observed delivery rate is not a saturation test. Commit timestamps are server-side COMMIT acknowledgements, slightly after the database commit, not HTTP response completion. Four clients each received all 100 posted message ids. Reconnect replays exactly 1,000 real channel posts/events in separate HTTP transactions, checked for missing/duplicate cursors, ten times; event generation is excluded.');
 }
 
 function nodes(plan: any): any[] { return [plan, ...(plan.Plans ?? []).flatMap(nodes)]; }
@@ -417,7 +417,17 @@ async function main() {
   }
   meta.Finished = new Date().toISOString(); meta.Cleanup = 'random schema dropped; pg_namespace confirms absent';
   await mkdir(new URL('../docs/perf/', import.meta.url), { recursive: true });
-  await writeFile(new URL('../docs/perf/teams-2026-10-28.md', import.meta.url), render(meta));
+  const report = new URL('../docs/perf/teams-2026-10-28.md', import.meta.url);
+  if (process.argv.includes('--after-fixes')) {
+    const lines = ['\n## After fixes', '', ...Object.entries(meta).map(([k, v]) => `- **${k}:** ${v}`),
+      '- Source is the uncommitted service-fix patch on the recorded baseline; original measurements above are preserved.',
+      '- LISTEN/NOTIFY wakes streams; 2 s safety poll; full batches drain without sleeps. Default thread reads select the latest page.',
+      ...notes.filter(n => n.startsWith('agent_list')).map(n => `- ${n}`), '',
+      '| Scenario | Measurement | n | p50 ms | p95 ms | p99 ms | max ms | Throughput /s |',
+      '|---|---|---:|---:|---:|---:|---:|---:|'];
+    for (const m of metrics.filter(m => m.scenario === 3 || m.scenario === 6)) lines.push(`| ${m.scenario} | ${m.name} | ${m.samples.length} | ${f(pct(m.samples, .5))} | ${f(pct(m.samples, .95))} | ${f(pct(m.samples, .99))} | ${f(Math.max(...m.samples))} | ${f((m.units ?? m.samples.length) * 1000 / m.elapsed)} |`);
+    await appendFile(report, lines.join('\n') + '\n');
+  } else await writeFile(report, render(meta));
   console.log(`Report written: ${metrics.length} metric rows; ${plans.length} real query plans.`);
 }
 main().catch(error => { console.error(`Benchmark failed: ${String(error.message).replace(/postgres(?:ql)?:\/\/\S+/gi, '[redacted database URL]')}`); process.exitCode = 1; });

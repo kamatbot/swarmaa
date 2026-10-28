@@ -1,14 +1,14 @@
 import type { Pool, PoolClient } from 'pg';
 import { transaction } from '../db.js';
 import { AppError, requireCondition } from '../errors.js';
-import { canAccessScope, requirePermission, requireScope } from '../policy.js';
+import { canAccessScope, hasPermission, requirePermission, requireScope } from '../policy.js';
 import { redactSecrets } from '../safety/redact.js';
 import type { Principal } from '../types.js';
 import { integer, object, optionalString, scopeName, string, uuid } from '../validation.js';
 import { booleanOption } from './memory.js';
 import { assertKnownScope, audit, canonicalJson, event, newId, noExtraKeys, requireFound, scopeLock, scopeSql, sha256, teamsLock, type Db } from './shared.js';
 import { runnerCapability, type RunnerConfig } from '../bridge/adapters.js';
-import { sectionView, type SectionRow } from './swarms.js';
+import { sectionView, swarmView, type SwarmRow, type SwarmStepRow, type QuestionRow, type SectionRow } from './swarms.js';
 
 export function clipUtf8(value: string, maxBytes: number): string {
   const buf = Buffer.from(value.replaceAll('\0', '\uFFFD'), 'utf8');
@@ -371,12 +371,19 @@ export class TeamService {
     const hasMore = rows.length > limit;
     const paged = rows.slice(0, limit);
 
-    const agents = await Promise.all(
-      paged.map(async r => {
-        const status = await this.computeAgentStatus(this.pool, r);
-        return agentView(r, status, Number(r.unread_count));
-      })
-    );
+    const running = new Set((await this.pool.query<{ agent_id: string }>(
+      "SELECT DISTINCT agent_id FROM tasks WHERE tenant_id=$1 AND agent_id=ANY($2::uuid[]) AND status='running'",
+      [p.tenantId, paged.map(a => a.id)]
+    )).rows.map(r => r.agent_id));
+    const liveScopes = new Set((await this.pool.query<{ scope: string }>(
+      `SELECT DISTINCT unnest(scopes) AS scope FROM principals
+       WHERE tenant_id=$1 AND role='worker' AND NOT disabled
+         AND scopes && $2::text[] AND last_seen_at>clock_timestamp()-interval '60 seconds'`,
+      [p.tenantId, [...new Set(paged.map(a => a.scope))]]
+    )).rows.map(r => r.scope));
+    const agents = paged.map(r => agentView(r,
+      r.archived ? 'offline' : running.has(r.id) ? 'working' : liveScopes.has(r.scope) ? 'idle' : 'offline',
+      Number(r.unread_count)));
 
     const sections = (await this.pool.query<SectionRow>(
       'SELECT * FROM sections WHERE tenant_id=$1 AND principal_id=$2 ORDER BY order_index ASC, created_at ASC',
@@ -607,16 +614,53 @@ export class TeamService {
       rows = res.rows.slice(0, limit);
     } else {
       const res = await this.pool.query<MessageRow>(
-        `SELECT * FROM messages WHERE thread_id=$1 ORDER BY seq ASC LIMIT $2`,
+        `SELECT * FROM messages WHERE thread_id=$1 ORDER BY seq DESC LIMIT $2`,
         [threadId, limit + 1]
       );
       hasMore = res.rows.length > limit;
-      rows = res.rows.slice(0, limit);
+      rows = res.rows.slice(0, limit).reverse();
     }
 
+    // Reference ids are untrusted; constrain every batch to this tenant and thread scope.
+    const questionIds = rows.filter(r => r.kind === 'question' || r.kind === 'answer')
+      .flatMap(r => typeof r.ref?.question_id === 'string' && /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(r.ref.question_id) ? [r.ref.question_id] : []);
+    const questions = new Map((questionIds.length ? (await this.pool.query<QuestionRow>(
+      'SELECT * FROM questions WHERE id=ANY($1::uuid[]) AND tenant_id=$2 AND scope=$3',
+      [questionIds, p.tenantId, thread.scope]
+    )).rows : []).map(q => [q.id, q]));
+    const swarmIds = rows.filter(r => r.kind === 'swarm' && hasPermission(p, 'task:read'))
+      .flatMap(r => typeof r.ref?.swarm_id === 'string' && /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(r.ref.swarm_id) ? [r.ref.swarm_id] : []);
+    // A join keeps swarm headers and ordered steps in one round trip and preserves pg Date parsing.
+    const swarmRows = swarmIds.length ? (await this.pool.query<SwarmStepRow & { card: SwarmRow }>(
+      `SELECT st.*, row_to_json(s) AS card FROM swarms s
+       LEFT JOIN swarm_steps st ON st.swarm_id=s.id
+       WHERE s.id=ANY($1::uuid[]) AND s.tenant_id=$2 AND s.scope=$3
+       ORDER BY st.order_index ASC`, [swarmIds, p.tenantId, thread.scope]
+    )).rows : [];
+    const swarms = new Map<string, { swarm: SwarmRow; steps: SwarmStepRow[] }>();
+    for (const r of swarmRows) {
+      const s = r.card;
+      if (!swarms.has(s.id)) swarms.set(s.id, { swarm: { ...s,
+        created_at: new Date(s.created_at), updated_at: new Date(s.updated_at),
+        closed_at: s.closed_at ? new Date(s.closed_at) : null }, steps: [] });
+      if (r.id) swarms.get(s.id)!.steps.push(r);
+    }
+    const messages = rows.map(r => {
+      const view = messageView(r);
+      const q = questions.get(String(r.ref?.question_id));
+      if (q && r.kind === 'question') view.question = {
+        id: q.id, prompt: q.prompt, options: q.options, multi: q.multi, free_text: q.free_text,
+        status: q.status, swarm_step_id: q.swarm_step_id, created_at: q.created_at.toISOString(),
+        answer: q.status === 'answered' ? { choices: q.choices, text: q.answer_text } : null
+      };
+      if (q && r.kind === 'answer') view.answer = { question_id: q.id, choices: q.choices, text: q.answer_text };
+      const sw = swarms.get(String(r.ref?.swarm_id));
+      if (sw && r.kind === 'swarm') view.swarm = swarmView(sw.swarm, sw.steps);
+      return view;
+    });
     return {
       thread_id: threadId,
-      messages: rows.map(messageView),
+      messages,
       has_more: hasMore
     };
   }

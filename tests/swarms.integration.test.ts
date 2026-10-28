@@ -916,7 +916,7 @@ describe('teams phase 2 swarms and coordination', { skip: !connectionString, con
     // Cannot resolve a running task
     await assert.rejects(async () => {
       await call(user, 'task_resolve', { task_id: taskId, resolved: true, expected_version: 1 });
-    }, (err: any) => err.status === 400 && err.code === 'invalid_state');
+    }, (err: any) => err.status === 409 && err.code === 'task_active');
 
     // Complete the task
     await pool.query("UPDATE tasks SET status='completed', lease_owner=NULL, lease_hash=NULL, lease_expires_at=NULL, completed_at=clock_timestamp() WHERE id=$1", [taskId]);

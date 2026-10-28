@@ -1202,7 +1202,7 @@ export class SwarmsService {
 
   async taskResolve(p: Principal, input: Record<string, unknown>): Promise<unknown> {
     noExtraKeys(input, ['task_id', 'resolved', 'expected_version']);
-    requireCondition(p.role === 'admin', 403, 'owner_required', 'Only an owner may resolve tasks.');
+    requireCondition(!['grok', 'dot'].includes(p.name.toLowerCase()) && hasPermission(p, 'answer_questions'), 403, 'owner_required', 'Only an owner or an identity granted answer_questions may resolve tasks.');
     const taskId = uuid(input.task_id, 'task_id');
     const resolved = booleanOption(input.resolved, 'resolved');
     const expected = integer(input.expected_version, 'expected_version', 1, 2147483647);
@@ -1215,6 +1215,7 @@ export class SwarmsService {
       )).rows[0];
       requireFound(task, 'Task');
       requireScope(p, task.scope);
+      requireCondition(!['running', 'queued'].includes(task.status), 409, 'task_active', 'Wait for the active task to finish or cancel it before resolving.');
       if (expected !== null) {
         requireCondition(task.version === expected, 409, 'version_conflict', 'Task has changed; reload before resolving.');
       }
