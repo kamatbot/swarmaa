@@ -849,6 +849,12 @@ struct SettingsView: View {
     private var appearancePane: some View {
         Form {
             Section(L10n.t("Notch")) {
+                Toggle(L10n.t("Show the notch"), isOn: $preferences.showsNotch)
+                Text(L10n.t("Usage and swarms at the top of the screen, as well as in the main window. Off by default, since the main window shows the same."))
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
                 Picker(L10n.t("Reset time"), selection: $preferences.resetTimeFormat) {
                     ForEach(ResetTimeFormat.allCases) { Text($0.title).tag($0) }
                 }

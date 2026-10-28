@@ -137,6 +137,12 @@ final class Preferences: ObservableObject {
         didSet { defaults.set(providerOrder, forKey: Keys.order) }
     }
 
+    /// Whether the notch is on at all. Off by default: the main window is home,
+    /// and the notch would duplicate it. `notchVisibility` applies once it is on.
+    @Published var showsNotch: Bool {
+        didSet { defaults.set(showsNotch, forKey: Keys.showsNotch) }
+    }
+
     /// How much of itself the notch shows at rest.
     @Published var notchVisibility: NotchVisibility {
         didSet { defaults.set(notchVisibility.rawValue, forKey: Keys.visibility) }
@@ -629,6 +635,7 @@ final class Preferences: ObservableObject {
         static let accountNicknames = "accountNicknames"
         static let hasLaunched = "hasLaunchedBefore"
         static let visibility = "notchVisibility"
+        static let showsNotch = "showsNotch"
         static let foldsForFullScreen = "foldsForFullScreen"
         static let presence = "appPresence"
         static let notificationChannel = "notificationChannel"
@@ -1002,6 +1009,7 @@ final class Preferences: ObservableObject {
         // Absent means never chosen, which is the hover behaviour the app was
         // designed around — not hidden, which would make a fresh install look
         // like it failed to start.
+        self.showsNotch = defaults.object(forKey: Keys.showsNotch) as? Bool ?? false
         self.notchVisibility = defaults.string(forKey: Keys.visibility)
             .flatMap(NotchVisibility.init(rawValue:)) ?? .onHover
         // Absent means the fold that has shipped since full-screen detection

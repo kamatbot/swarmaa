@@ -644,7 +644,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 .sink { [weak statusItem] in statusItem?.showsWeeklyLimit = $0 }
                 .store(in: &cancellables)
 
-            preferences.$notchVisibility
+            preferences.$showsNotch.combineLatest(preferences.$notchVisibility)
+                .map { shows, visibility in shows ? visibility : .hidden }
                 .receive(on: RunLoop.main)
                 .sink { [weak fleet] in fleet?.apply($0) }
                 .store(in: &cancellables)

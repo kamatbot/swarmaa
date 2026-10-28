@@ -617,4 +617,13 @@ final class NotchScaleRangeTests: XCTestCase {
                                     "the hot zone shrank with the notch")
         XCTAssertGreaterThanOrEqual(m.wakeLength, NotchLayout.pillHotZone)
     }
+
+    @MainActor func testNotchIsOffByDefaultAndTheChoicePersists() {
+        let suite = "notch-toggle-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        XCTAssertFalse(Preferences(defaults: defaults).showsNotch)
+        Preferences(defaults: defaults).showsNotch = true
+        XCTAssertTrue(Preferences(defaults: defaults).showsNotch)
+    }
 }
