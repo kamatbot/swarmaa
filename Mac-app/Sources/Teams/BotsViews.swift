@@ -567,3 +567,40 @@ struct NewBotSheet: View {
         }
     }
 }
+
+// MARK: - Schedule card
+
+struct ScheduleCardView: View {
+    @ObservedObject var model: TeamsModel
+    let message: TeamsMessage
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if let card = message.schedule {
+                Text(verbatim: card.description).font(KS.body(17, .bold))
+                Text(verbatim: card.timezone).font(KS.mono(12)).foregroundStyle(KS.textMuted)
+                if card.paused { Text("Paused").font(KS.body(14)) }
+                ForEach(card.nextRuns, id: \.self) { run in
+                    Text(run, format: .relative(presentation: .named)).font(KS.body(14))
+                }
+                if let bot = model.bot(id: card.botID), bot.threadID == message.threadID {
+                    HStack {
+                        Button(card.paused ? "Resume" : "Pause") {
+                            var rules = bot.rules
+                            rules.schedulePaused = !card.paused
+                            Task {
+                                _ = await model.saveBot(bot, name: bot.name, job: bot.job, leadAgentID: bot.leadAgentID,
+                                                        memberAgentIDs: bot.memberAgentIDs, routing: bot.routing,
+                                                        rules: rules, schedule: bot.schedule)
+                                await model.refreshBot(bot.id)
+                                await model.loadLatest(bot.threadID)
+                            }
+                        }.buttonStyle(.ks(.primary, compact: true))
+                            .disabled(card.cron == nil || model.savingBot || bot.archived)
+                        Button("Edit") { model.editingBotID = bot.id }.buttonStyle(.ks(.paper, compact: true))
+                    }
+                }
+            } else { Text(verbatim: message.body ?? "Schedule") }
+        }.padding(16).frame(maxWidth: 640, alignment: .leading).ksCard(radius: 20)
+    }
+}

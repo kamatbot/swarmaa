@@ -13,7 +13,7 @@ import { taskChanged, type TaskRow } from './tasks.js';
 export interface BotRoutingRow {
   id:string; tenant_id:string; scope:string; thread_id:string; lead_agent_id:string; created_by:string;
   job:string; routing:Partial<Record<BotKind, RunnerConfig | {mode:'different_from_author'}>>;
-  rules:{quota_floor_pct?:number; review_edits?:boolean; require_tests?:boolean};
+  rules:{schedule_paused?:boolean; quota_floor_pct?:number; review_edits?:boolean; require_tests?:boolean};
   schedule:string|null; next_run_at:Date|null; archived:boolean;
 }
 export const BOT_KINDS = ['research','patch','review','summary'] as const;
@@ -159,9 +159,57 @@ export function nextCronRun(schedule:string,after:Date):Date {
   throw new Error('unreachable');
 }
 
+/** Describe only simple, unambiguous cron patterns; preserve everything else verbatim. */
+export function describeSchedule(expression:string):string {
+  const [minute,hour,day,month,weekday] = expression.split(/\s+/);
+  if (day!=='*' || month!=='*') return expression;
+  if (weekday==='*' && hour==='*' && (minute==='*' || /^\*\/\d+$/.test(minute!))) {
+    const n = minute==='*' ? 1 : Number(minute!.slice(2));
+    if (60 % n === 0) return n===1 ? 'Every minute' : `Every ${n} minutes`;
+  }
+  if (weekday==='*' && minute==='0' && (hour==='*' || /^\*\/\d+$/.test(hour!))) {
+    const n = hour==='*' ? 1 : Number(hour!.slice(2));
+    if (24 % n === 0) return n===1 ? 'Every hour' : `Every ${n} hours`;
+  }
+  if (!/^\d+$/.test(minute!) || !/^\d+$/.test(hour!)) return expression;
+  const at = `${hour!.padStart(2,'0')}:${minute!.padStart(2,'0')}`;
+  if (weekday==='*') return `Daily at ${at}`;
+  if (weekday==='1-5') return `Weekdays at ${at}`;
+  if (/^[0-7]$/.test(weekday!)) return `Weekly on ${['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'][Number(weekday)%7]} at ${at}`;
+  return expression;
+}
+
+export function scheduleCard(schedule:string|null, paused:boolean, now:Date) {
+  const parts = schedule?.trim().split(/\s+/) ?? [];
+  const timezone = parts[0]?.startsWith('CRON_TZ=') ? parts.shift()!.slice(8) : 'UTC';
+  const cron = schedule ? parts.join(' ') : null;
+  const next_runs:string[] = [];
+  if (schedule && !paused) {
+    let next = now;
+    for (let i=0;i<3;i++) { next=nextCronRun(schedule,next); next_runs.push(next.toISOString()); }
+  }
+  return {cron,description:cron ? describeSchedule(cron) : 'Schedule cleared',timezone,next_runs,paused};
+}
+
+/** Caller holds teamsLock. Preserve the card's id and seq for message.updated consumers. */
+export async function syncScheduleCard(db:Db,p:Principal,bot:{id:string;scope:string;thread_id:string;schedule:string|null;rules:Record<string,unknown>},now:Date):Promise<void> {
+  const card = scheduleCard(bot.schedule,bot.rules.schedule_paused===true,now);
+  const ref = JSON.stringify({bot_id:bot.id,...card});
+  const body = `${card.description} · ${card.timezone}${card.paused ? ' · Paused' : ''}`;
+  const previous = (await db.query<{id:string;seq:string}>(
+    `SELECT id,seq FROM messages WHERE tenant_id=$1 AND thread_id=$2 AND kind='schedule' AND ref->>'bot_id'=$3`,
+    [p.tenantId,bot.thread_id,bot.id])).rows[0];
+  const id = previous?.id ?? newId();
+  const seq = previous?.seq ?? await assignThreadSeq(db,p.tenantId,bot.thread_id);
+  if (previous) await db.query('UPDATE messages SET body=$3,ref=$4::jsonb,edited_at=clock_timestamp() WHERE id=$1 AND tenant_id=$2',[id,p.tenantId,body,ref]);
+  else await db.query(`INSERT INTO messages(id,tenant_id,scope,thread_id,seq,author,kind,body,ref)
+    VALUES($1,$2,$3,$4,$5,'{"kind":"system","id":"service"}','schedule',$6,$7::jsonb)`,[id,p.tenantId,bot.scope,bot.thread_id,seq,body,ref]);
+  await event(db,p,bot.scope,previous ? 'message.updated' : 'message.created',id,{thread_id:bot.thread_id,message_id:id,seq:Number(seq),kind:'schedule'});
+}
+
 /** One bounded sweep; locks are ordered scope, Teams, then rows just like task claims. */
 export async function tickBotSchedules(pool:Pool):Promise<void> {
-  const bots = (await pool.query<BotRoutingRow>(`SELECT * FROM bots WHERE NOT archived AND schedule IS NOT NULL AND (next_run_at IS NULL OR next_run_at<=clock_timestamp()) ORDER BY next_run_at NULLS FIRST,id LIMIT 100`)).rows;
+  const bots = (await pool.query<BotRoutingRow>(`SELECT * FROM bots WHERE NOT archived AND schedule IS NOT NULL AND rules->>'schedule_paused' IS DISTINCT FROM 'true' AND (next_run_at IS NULL OR next_run_at<=clock_timestamp()) ORDER BY next_run_at NULLS FIRST,id LIMIT 100`)).rows;
   for (const candidate of bots) {
     try { await fireSchedule(pool,candidate); }
     catch (err) {
@@ -182,11 +230,12 @@ async function fireSchedule(pool:Pool,candidate:BotRoutingRow):Promise<void> {
     const p:Principal = {id:candidate.created_by,tenantId:candidate.tenant_id,name:'bot-scheduler',role:'admin',scopes:[candidate.scope],permissions:[]};
     await scopeLock(db,'tasks',p,candidate.scope);
     await teamsLock(db,p.tenantId);
-    const bot = (await db.query<BotRoutingRow>(`SELECT * FROM bots WHERE id=$1 AND NOT archived AND schedule IS NOT NULL AND (next_run_at IS NULL OR next_run_at<=clock_timestamp()) FOR UPDATE`,[candidate.id])).rows[0];
+    const bot = (await db.query<BotRoutingRow>(`SELECT * FROM bots WHERE id=$1 AND NOT archived AND schedule IS NOT NULL AND rules->>'schedule_paused' IS DISTINCT FROM 'true' AND (next_run_at IS NULL OR next_run_at<=clock_timestamp()) FOR UPDATE`,[candidate.id])).rows[0];
     if (!bot) return;
     const now = (await db.query<{now:Date}>('SELECT clock_timestamp() AS now')).rows[0]!.now;
     const next = nextCronRun(bot.schedule!,now);
     await db.query('UPDATE bots SET next_run_at=$2,updated_at=clock_timestamp() WHERE id=$1',[bot.id,next]);
+    await syncScheduleCard(db,p,bot,now);
     if (!bot.next_run_at) return;
     const agent = (await db.query<{id:string;edits:boolean;archived:boolean}>('SELECT id,edits,archived FROM agents WHERE id=$1 AND tenant_id=$2 AND scope=$3',[bot.lead_agent_id,p.tenantId,bot.scope])).rows[0];
     if (!agent || agent.archived || (await db.query(`SELECT 1 FROM tasks WHERE tenant_id=$1 AND agent_id=$2 AND kind='turn' AND status IN ('queued','running')`,[p.tenantId,agent.id])).rowCount) return;

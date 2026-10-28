@@ -597,7 +597,7 @@ enum PushNotification {
     }
     func save(_ bot: Bot) async throws {
         guard let service, bot.raw["version"].int > 0 else { throw AppFailure.invalidResponse }
-        var input = bot.raw.object.filter { ["name", "job", "lead_agent_id", "member_agent_ids", "routing", "rules", "starred"].contains($0.key) }
+        var input = bot.raw.object.filter { ["name", "job", "lead_agent_id", "member_agent_ids", "routing", "rules", "starred", "schedule"].contains($0.key) }
         input["bot_id"] = .string(bot.id); input["expected_version"] = bot.raw["version"]
         let updated = Bot(raw: try await service.call("bot_update", input)["bot"])
         // Server enforces uniqueness; refresh both the newly and previously starred rows.

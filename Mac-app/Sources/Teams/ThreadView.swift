@@ -214,6 +214,7 @@ struct MessageRow: View {
             else { TextBubble(model: model, message: message) }
         case .answer: AnswerBubble(answer: message.answer)
         case .task: TaskCardView(model: model, message: message)
+        case .schedule: ScheduleCardView(model: model, message: message)
         case .unknown: EmptyView()
         }
     }

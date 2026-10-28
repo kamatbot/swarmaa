@@ -325,7 +325,7 @@ struct TeamsAnswer: Decodable, Equatable {
 }
 
 struct TeamsMessage: Decodable, Equatable, Identifiable {
-    enum Kind: String { case text, handoff, swarm, run, question, answer, notice, task, unknown }
+    enum Kind: String { case text, handoff, swarm, run, question, answer, notice, task, schedule, unknown }
     struct Author: Decodable, Equatable {
         /// `human`, `agent` or `system`.
         var kind: String
@@ -363,6 +363,7 @@ struct TeamsMessage: Decodable, Equatable, Identifiable {
     var run: TeamsRun?
     /// `task`: the bot task this card stands for.
     var task: TeamsTaskCard?
+    var schedule: TeamsScheduleCard?
 
     var isHuman: Bool { author.kind == "human" }
 
@@ -379,6 +380,7 @@ struct TeamsMessage: Decodable, Equatable, Identifiable {
         author = c.opt(Author.self, .author) ?? Author(kind: "system", id: nil, name: nil)
         kind = Kind(rawValue: c.opt(String.self, .kind) ?? "") ?? .unknown
         ref = c.opt(Ref.self, .ref)
+        schedule = kind == .schedule ? c.opt(TeamsScheduleCard.self, .ref) : nil
         createdAt = c.opt(Date.self, .createdAt); editedAt = c.opt(Date.self, .editedAt)
         swarm = c.opt(TeamsSwarm.self, .swarm); run = c.opt(TeamsRun.self, .run); task = c.opt(TeamsTaskCard.self, .task)
         // `question` and `answer` carry an object body; every other kind a string.
@@ -398,7 +400,7 @@ struct TeamsMessage: Decodable, Equatable, Identifiable {
     /// One line for a sidebar row.
     var preview: String {
         switch kind {
-        case .text, .handoff, .notice: return body ?? ""
+        case .text, .handoff, .notice, .schedule: return body ?? ""
         case .swarm: return swarm.map { "\($0.title) \($0.progress.done)/\($0.progress.total)" } ?? L10n.t("Swarm")
         case .run: return run?.summary ?? L10n.t("Ran subagents")
         case .question: return question?.prompt ?? body ?? L10n.t("Question")

@@ -388,7 +388,9 @@ struct RootView: View {
         }
     }
     @ViewBuilder private func messageView(_ message: Message) -> some View {
-        if message.kind == "task" {
+        if message.kind == "schedule" {
+            ScheduleCard(model: model, message: message) { screen = .settings }
+        } else if message.kind == "task" {
             let task = message.raw["task"]
             VStack(alignment: .leading, spacing: 10) {
                 Eyebrow(task["resolved"].bool ? "Resolved" : task["status"].string == "completed" ? "Ready for review" : task["status"].string)
@@ -743,6 +745,11 @@ struct SettingsView: View {
                                 Text("Claude").tag("claude"); Text("Codex").tag("codex"); Text("Antigravity").tag("antigravity")
                             }.frame(minHeight: 44)
                         }
+                        Eyebrow("Schedule")
+                        TextField("Cron, e.g. 0 9 * * 1-5", text: Binding(get: { draft.raw["schedule"].string }, set: {
+                            draft.raw["schedule"] = $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? .null : .string($0)
+                        })).textInputAutocapitalization(.never).autocorrectionDisabled().padding(12).card(.white, radius: 14)
+                        Text("Optional CRON_TZ=Area/City prefix. Leave blank to clear.").font(KS.body(14)).foregroundStyle(KS.muted)
                         Toggle("Star this bot (your bottom-right shortcut)", isOn: Binding(get: { draft.starred }, set: { draft.raw["starred"] = .bool($0) })).frame(minHeight: 44)
                         Toggle("Ask me before anything public", isOn: rule("approve_public")).frame(minHeight: 44)
                         Toggle("Review every edit", isOn: rule("review_edits")).frame(minHeight: 44)
@@ -822,3 +829,45 @@ struct SwipeBack: ViewModifier {
 }
 extension View { func swipeBack(_ action: @escaping () -> Void) -> some View { modifier(SwipeBack(action: action)) } }
 
+
+struct ScheduleCard: View {
+    @Bindable var model: AppModel
+    let message: Message
+    var edit: () -> Void
+    @State private var saving = false
+    @State private var error: String?
+    private var card: JSON { message.raw["ref"] }
+    private var bot: Bot? { model.bots.first { $0.id == card["bot_id"].string && $0.threadID == message.raw["thread_id"].string } }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Eyebrow("Schedule")
+            Text(card["description"].string.isEmpty ? message.text : card["description"].string).font(KS.body(17, .bold))
+            Text(card["timezone"].string).font(KS.mono(12))
+            if card["paused"].bool { Text("Paused") }
+            ForEach(card["next_runs"].array.map(\.string), id: \.self) { value in
+                if let run = date(value) { Text(run, format: .relative(presentation: .named)) }
+            }
+            HStack {
+                Button(card["paused"].bool ? "Resume" : "Pause") {
+                    guard let bot, let service = model.service else { return }
+                    saving = true; error = nil
+                    Task {
+                        defer { saving = false }
+                        do {
+                            let result = try await service.call("bot_update", ["bot_id": .string(bot.id), "expected_version": bot.raw["version"],
+                                "rules": .object(["schedule_paused": .bool(!card["paused"].bool)])])
+                            let updated = Bot(raw: result["bot"])
+                            if let i = model.bots.firstIndex(where: { $0.id == updated.id }) { model.bots[i] = updated }
+                            if model.openBot?.id == updated.id { model.openBot = updated }
+                            try await model.readThread(updated)
+                        } catch { self.error = safeError(error); await model.refresh() }
+                    }
+                }.buttonStyle(Pill(fill: KS.lime))
+                    .disabled(saving || model.isDemo || bot == nil || card["cron"] == .null)
+                Button("Edit") { if let bot { model.openBot = bot; edit() } }.buttonStyle(Pill()).disabled(bot == nil || saving)
+            }
+            if let error { Text(error).font(KS.body(14)) }
+        }.padding(14).frame(maxWidth: .infinity, alignment: .leading).card(.white)
+    }
+}

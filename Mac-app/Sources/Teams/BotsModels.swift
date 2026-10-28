@@ -174,6 +174,7 @@ struct TeamsBotRules: Codable, Equatable {
     var approvePublic = true
     var reviewEdits = true
     var requireTests = false
+    var schedulePaused: Bool?
     /// The model for chat replies (`rules.first_reply`). Haiku and Sonnet answer fast and hand off to the
     /// full model when needed; Opus thinks hard on every reply; "off" uses the agent's own model.
     var firstReply = Self.defaultFirstReply
@@ -187,6 +188,7 @@ struct TeamsBotRules: Codable, Equatable {
     ]
     private enum CodingKeys: String, CodingKey {
         case quotaFloorPct = "quota_floor_pct", approvePublic = "approve_public"
+        case schedulePaused = "schedule_paused"
         case reviewEdits = "review_edits", requireTests = "require_tests", firstReply = "first_reply"
     }
     init() {}
@@ -196,6 +198,7 @@ struct TeamsBotRules: Codable, Equatable {
         approvePublic = c.opt(Bool.self, .approvePublic) ?? true
         reviewEdits = c.opt(Bool.self, .reviewEdits) ?? true
         requireTests = c.opt(Bool.self, .requireTests) ?? false
+        schedulePaused = c.opt(Bool.self, .schedulePaused)
         firstReply = c.opt(String.self, .firstReply) ?? Self.defaultFirstReply
     }
 }
@@ -242,4 +245,16 @@ struct TeamsTaskCard: Decodable, Equatable {
 
     var isFailed: Bool { status == "failed" || check?.status == "failed" }
     var readyForReview: Bool { status == "completed" && branch != nil && !resolved && check?.status != "failed" }
+}
+
+struct TeamsScheduleCard: Decodable, Equatable {
+    var botID: String
+    var cron: String?
+    var description: String
+    var timezone: String
+    var nextRuns: [Date]
+    var paused: Bool
+    private enum CodingKeys: String, CodingKey {
+        case botID = "bot_id", cron, description, timezone, nextRuns = "next_runs", paused
+    }
 }
