@@ -360,6 +360,30 @@ describe("HostRoom DO and Cloudflare Worker Relay", () => {
     host2.ws.close();
   });
 
+  it("pairing by 6-digit code: /pair/resolve finds the host, rejects unknown codes, rate limits guessing", async () => {
+    const { keyPair, rawPubkey, hostId } = await createKeyPair();
+    const host = await connectHost(hostId, keyPair, rawPubkey);
+    const code = "482913";
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(code));
+    const codeHash = Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, "0")).join("");
+    host.ws.send(JSON.stringify({ t: "pair_open", code_hash: codeHash, expires_at: Date.now() + 60000 }));
+    await new Promise((r) => setTimeout(r, 30));
+    const resolve = (c: string, ip: string) => SELF.fetch("http://example.com/pair/resolve", {
+      method: "POST", body: JSON.stringify({ code: c }), headers: { "cf-connecting-ip": ip }
+    });
+    const found = await resolve(" 482913 ", "198.51.100.1");
+    expect(found.status).toBe(200);
+    expect(await found.json()).toEqual({ host_id: hostId });
+    expect((await resolve("111111", "198.51.100.1")).status).toBe(404);
+    expect((await resolve("abc", "198.51.100.1")).status).toBe(404);
+    for (let i = 0; i < 7; i++) await resolve("000000", "198.51.100.1");
+    const limited = await resolve("482913", "198.51.100.1");
+    expect(limited.status).toBe(429);
+    expect((await resolve("482913", "198.51.100.2")).status).toBe(200);
+    expect((await SELF.fetch("http://example.com/pair/resolve")).status).toBe(404);
+    host.ws.close();
+  });
+
   it("pairing: success once, then bad_code on reuse, expiry, and the redeem rate limit", async () => {
     const { keyPair, rawPubkey, hostId } = await createKeyPair();
     const host = await connectHost(hostId, keyPair, rawPubkey);

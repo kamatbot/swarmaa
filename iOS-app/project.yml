@@ -23,7 +23,7 @@ targets:
     info:
       path: Info.plist
       properties:
-        NSCameraUsageDescription: Scan the pairing QR code displayed on your Mac to connect securely.
+        NSCameraUsageDescription: Take photos to send to your bots in chat.
         CFBundleURLTypes:
           - CFBundleURLName: app.swarmaa.ios.pair
             CFBundleURLSchemes: [swarmaa]

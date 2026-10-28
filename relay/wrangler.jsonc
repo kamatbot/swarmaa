@@ -11,6 +11,10 @@
       {
         "name": "HOST_ROOM",
         "class_name": "HostRoom"
+      },
+      {
+        "name": "PAIR_INDEX",
+        "class_name": "PairIndex"
       }
     ]
   },
@@ -19,6 +23,12 @@
       "tag": "v1",
       "new_sqlite_classes": [
         "HostRoom"
+      ]
+    },
+    {
+      "tag": "v2",
+      "new_sqlite_classes": [
+        "PairIndex"
       ]
     }
   ],

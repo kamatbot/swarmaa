@@ -30,6 +30,6 @@
 	<key>CFBundleVersion</key>
 	<string>1</string>
 	<key>NSCameraUsageDescription</key>
-	<string>Scan the pairing QR code displayed on your Mac to connect securely.</string>
+	<string>Take photos to send to your bots in chat.</string>
 </dict>
 </plist>

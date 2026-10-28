@@ -2,6 +2,7 @@ import { DurableObject } from "cloudflare:workers";
 
 export interface Env {
   HOST_ROOM: DurableObjectNamespace<HostRoom>;
+  PAIR_INDEX: DurableObjectNamespace;
   HELLO_TIMEOUT_MS?: string;
 }
 
@@ -403,6 +404,13 @@ export class HostRoom extends DurableObject<Env> {
           code_hash: frame.code_hash,
           expires_at: frame.expires_at
         });
+        // Let a phone find this host from the code alone (POST /pair/resolve).
+        try {
+          await this.env.PAIR_INDEX.get(this.env.PAIR_INDEX.idFromName("global")).fetch("https://index/register", {
+            method: "POST",
+            body: JSON.stringify({ code_hash: frame.code_hash, host_id: att.hostId, expires_at: frame.expires_at })
+          });
+        } catch {}
         break;
       }
       case "pair_result": {

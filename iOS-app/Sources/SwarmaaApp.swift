@@ -1,7 +1,6 @@
 import SwiftUI
 import UIKit
 import AppIntents
-import VisionKit
 
 @MainActor enum Runtime {
     static let model = AppModel()
@@ -514,135 +513,54 @@ private func time(_ value: String) -> String { date(value).map { $0.formatted(da
 struct ConnectView: View {
     @Bindable var model: AppModel
     var close: () -> Void
-    @State private var host = ""
-    @State private var words = Array(repeating: "", count: 6)
+    @State private var code = ""
     @State private var error: String?
     @State private var connecting = false
-    @State private var manual = false
-    @State private var scanning = false
-    private func connect(_ url: URL) {
-        guard !connecting else { return }
-        scanning = false; connecting = true; error = nil
+    @FocusState private var focused: Bool
+    private var digits: String { String(code.filter(\.isNumber).prefix(6)) }
+    private func connect() {
+        guard !connecting, digits.count == 6 else { return }
+        connecting = true; error = nil
         Task {
             defer { connecting = false }
-            do { try await model.handlePairingURL(url); close() }
+            do { try await model.pair(code: digits); code = ""; close() }
             catch { self.error = safeError(error) }
         }
     }
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 16) {
             if model.connected { CloseButton(action: close) }
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    HStack(alignment: .top, spacing: 12) {
-                        Moji(seed: "", size: 56, mark: true)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("YOUR SWARM.").font(KS.display(38))
-                            Text("in your pocket.").font(KS.body(27)).italic()
-                        }
-                    }
-                    Text("Your agents run on your Mac. This phone talks to them through the Swarmaa relay, from anywhere.").foregroundStyle(KS.soft)
-                    Eyebrow("01 — On your Mac, choose Pair a phone")
-                    Text("Scan its QR code or paste its pairing link. The link works once, for five minutes.")
-                    Button("Scan QR code") { scanning = true }
-                        .buttonStyle(Pill(fill: KS.lime, primary: true))
-                        .disabled(!DataScannerViewController.isSupported || !DataScannerViewController.isAvailable || connecting || model.isDemo)
-                    if !DataScannerViewController.isSupported || !DataScannerViewController.isAvailable {
-                        Text("Camera scanning is unavailable here. Paste the link or type the code instead.").font(KS.body(14))
-                    }
-                    Button("Paste link") {
-                        guard let text = UIPasteboard.general.string?.trimmingCharacters(in: .whitespacesAndNewlines), let url = URL(string: text) else { error = safeError(AppFailure.invalidPairing); return }
-                        connect(url)
-                    }.buttonStyle(Pill(primary: true)).disabled(connecting || model.isDemo)
-                    DisclosureGroup("Type the code instead", isExpanded: $manual) {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Eyebrow("Host ID")
-                            TextField("Host ID from your Mac", text: $host).font(KS.mono(13)).textInputAutocapitalization(.never).autocorrectionDisabled().padding(12).card(.white, radius: 12).privacySensitive()
-                            Eyebrow("Pairing code")
-                            LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 3), spacing: 8) {
-                                ForEach(0..<6) { i in
-                                    SecureField("Word \(i + 1)", text: $words[i]).font(KS.mono(13)).textInputAutocapitalization(.never).autocorrectionDisabled().padding(10).frame(minHeight: 44).card(.white, radius: 12).accessibilityLabel("Pairing word \(i + 1)")
-                                }
-                            }
-                            Button("Connect with code") {
-                                connecting = true; error = nil
-                                Task {
-                                    defer { connecting = false }
-                                    do { try await model.pair(host: host.trimmingCharacters(in: .whitespacesAndNewlines), code: words.joined(separator: " ")); words = Array(repeating: "", count: 6); host = ""; close() }
-                                    catch { self.error = safeError(error) }
-                                }
-                            }.buttonStyle(Pill(fill: KS.lime, primary: true)).disabled(connecting || model.isDemo || host.isEmpty || words.contains(where: { $0.isEmpty }))
-                        }.padding(.top, 12)
-                    }
-                }.padding(4).frame(maxWidth: .infinity, alignment: .leading)
-            }
-            if let error { Text(error).font(KS.body(14)) }
-            if connecting { ProgressView("Connecting securely…") }
-        }.padding(20).background(KS.paper)
-            .sheet(isPresented: $scanning) {
-                VStack {
-                    HStack { Text("Scan your Mac’s pairing QR"); Spacer(); CloseButton { scanning = false } }.padding()
-                    PairingScanner { text in
-                        guard let url = URL(string: text) else { scanning = false; error = safeError(AppFailure.invalidPairing); return }
-                        connect(url)
-                    } failed: { scanning = false; error = "Camera scanning is unavailable. Paste the link instead." }
-                    // A UIViewController in a stack has no height of its own: without this it drew nothing.
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                }.background(KS.paper)
-                .presentationDetents([.large])
-            }
-    }
-}
-struct PairingScanner: UIViewControllerRepresentable {
-    var found: (String) -> Void
-    var failed: () -> Void
-    func makeCoordinator() -> Coordinator { Coordinator(found: found, failed: failed) }
-    func makeUIViewController(context: Context) -> ScannerHost {
-        let scanner = DataScannerViewController(recognizedDataTypes: [.barcode(symbologies: [.qr])], recognizesMultipleItems: false, isHighlightingEnabled: true)
-        scanner.delegate = context.coordinator
-        return ScannerHost(scanner: scanner, failed: failed)
-    }
-    func updateUIViewController(_ controller: ScannerHost, context: Context) {}
-    static func dismantleUIViewController(_ controller: ScannerHost, coordinator: Coordinator) { controller.scanner.stopScanning() }
-
-    /// `startScanning()` only works once the scanner's view is on screen; called while the
-    /// representable is being made, it left a blank camera. So: embed it, start it in viewDidAppear.
-    final class ScannerHost: UIViewController {
-        let scanner: DataScannerViewController
-        let failed: () -> Void
-        init(scanner: DataScannerViewController, failed: @escaping () -> Void) {
-            self.scanner = scanner; self.failed = failed
-            super.init(nibName: nil, bundle: nil)
-        }
-        required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
-        override func viewDidLoad() {
-            super.viewDidLoad()
-            addChild(scanner)
-            scanner.view.frame = view.bounds
-            scanner.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-            view.addSubview(scanner.view)
-            scanner.didMove(toParent: self)
-        }
-        override func viewDidAppear(_ animated: Bool) {
-            super.viewDidAppear(animated)
-            guard !scanner.isScanning else { return }
-            do { try scanner.startScanning() } catch { failed() }
-        }
-    }
-    final class Coordinator: NSObject, DataScannerViewControllerDelegate {
-        let found: (String) -> Void
-        let failed: () -> Void
-        var delivered = false
-        init(found: @escaping (String) -> Void, failed: @escaping () -> Void) { self.found = found; self.failed = failed }
-        func dataScanner(_ scanner: DataScannerViewController, didAdd addedItems: [RecognizedItem], allItems: [RecognizedItem]) {
-            guard !delivered else { return }
-            for item in addedItems {
-                if case .barcode(let barcode) = item, let text = barcode.payloadStringValue {
-                    delivered = true; scanner.stopScanning(); found(text); return
+            HStack(alignment: .top, spacing: 12) {
+                Moji(seed: "", size: 56, mark: true)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("YOUR SWARM.").font(KS.display(38))
+                    Text("in your pocket.").font(KS.body(27)).italic()
                 }
             }
+            Text("Your agents run on your Mac. This phone talks to them through the Swarmaa relay, from anywhere.").foregroundStyle(KS.soft)
+            Eyebrow("01 — On your Mac, run npm run relay:pair")
+            Text("Type the 6-digit code it shows. It works once, for five minutes.")
+            Spacer(minLength: 0)
+            Eyebrow("Pairing code")
+            TextField("000 000", text: $code)
+                .keyboardType(.numberPad)
+                .textContentType(.oneTimeCode)
+                .font(KS.mono(34)).multilineTextAlignment(.center)
+                .padding(.vertical, 14).frame(maxWidth: .infinity).card(.white, radius: 16)
+                .focused($focused).privacySensitive()
+                .accessibilityLabel("6-digit pairing code")
+                .onChange(of: code) { _, value in
+                    let clean = String(value.filter(\.isNumber).prefix(6))
+                    if clean != value { code = clean }
+                    if clean.count == 6 { connect() }
+                }
+            if let error { Text(error).font(KS.body(14)) }
+            Button(connecting ? "Connecting…" : "Connect", action: connect)
+                .buttonStyle(Pill(fill: KS.lime, primary: true))
+                .disabled(connecting || model.isDemo || digits.count < 6)
         }
-        func dataScanner(_ scanner: DataScannerViewController, becameUnavailableWithError error: DataScannerViewController.ScanningUnavailable) { failed() }
+        .padding(20).background(KS.paper)
+        .onAppear { focused = !model.isDemo }
     }
 }
 

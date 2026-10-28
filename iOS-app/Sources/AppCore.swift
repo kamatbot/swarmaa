@@ -154,11 +154,12 @@ struct ConnectionKeychain: Sendable {
 }
 
 enum AppFailure: LocalizedError {
-    case keychain, invalidPairing, invalidResponse, unauthorized, offline, timeout, noStar, invalidMessage, service(Int)
+    case keychain, invalidPairing, tooManyTries, invalidResponse, unauthorized, offline, timeout, noStar, invalidMessage, service(Int)
     var errorDescription: String? {
         switch self {
         case .keychain: "Could not access this device’s secure connection. Unlock your phone and try again."
-        case .invalidPairing: "This pairing link or code is invalid. Scan or paste a fresh link from your Mac."
+        case .invalidPairing: "That code is wrong, already used or expired. Run npm run relay:pair on your Mac for a new one."
+        case .tooManyTries: "Too many tries. Wait a few minutes, then use a new code from your Mac."
         case .invalidResponse: "The host returned an unreadable response."
         case .unauthorized: "This connection was revoked. Pair with your Mac again."
         case .offline: "Your host is offline. Try again when your Mac is connected."
@@ -176,6 +177,8 @@ func safeError(_ error: Error) -> String {
     if let error = error as? SwarmaRelayTransport.Failure {
         switch error {
         case .hostOffline: return AppFailure.offline.localizedDescription
+        case .rateLimited: return AppFailure.tooManyTries.localizedDescription
+        case .other(let code) where code == "bad_code": return AppFailure.invalidPairing.localizedDescription
         default: break
         }
     }
@@ -352,9 +355,28 @@ struct EventParser {
         let name = agent?["name"].string ?? typing["author"]["name"].string
         return (id, name.isEmpty ? "Agent" : name)
     }
+    /// The 6-digit code from `npm run relay:pair` on the Mac. The relay says which host it belongs to,
+    /// then the host's room checks and consumes it.
+    func pair(code raw: String, relay: String = "relay.swarmaa.com") async throws {
+        let code = raw.filter(\.isNumber)
+        guard code.count == 6 else { throw AppFailure.invalidPairing }
+        var request = URLRequest(url: URL(string: "https://\(relay)/pair/resolve")!)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 15
+        request.httpBody = try JSONSerialization.data(withJSONObject: ["code": code])
+        let (data, response) = try await URLSession.shared.data(for: request)
+        switch (response as? HTTPURLResponse)?.statusCode {
+        case 200: break
+        case 429: throw AppFailure.tooManyTries
+        default: throw AppFailure.invalidPairing
+        }
+        guard let host = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["host_id"] as? String else { throw AppFailure.invalidPairing }
+        try await pair(host: host, code: code, relay: relay)
+    }
     func pair(host: String, code: String, relay: String = "relay.swarmaa.com", transport supplied: SwarmaRelayTransport? = nil) async throws {
         guard host.range(of: "^[a-z2-7]{26}$", options: .regularExpression) != nil,
-              code.split(whereSeparator: \.isWhitespace).count == 6 else { throw AppFailure.invalidPairing }
+              code.range(of: "^[0-9]{6}$", options: .regularExpression) != nil
+                || code.split(whereSeparator: \.isWhitespace).count == 6 else { throw AppFailure.invalidPairing }
         let transport = supplied ?? SwarmaRelayTransport(relay: relay, hostID: host)
         do {
             let token = try await RelayService.bounded(transport: transport, seconds: 15) {

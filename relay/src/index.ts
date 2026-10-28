@@ -1,6 +1,7 @@
 import { HostRoom, type Env } from "./room";
+import { PairIndex } from "./pairindex";
 
-export { HostRoom, type Env };
+export { HostRoom, PairIndex, type Env };
 
 const HOST_ID_REGEX = /^[a-z2-7]{26}$/;
 
@@ -16,6 +17,15 @@ export default {
       return new Response("ok", {
         status: 200,
         headers: { "Content-Type": "text/plain; charset=utf-8" }
+      });
+    }
+
+    // A phone types the 6-digit code; this says which host it belongs to.
+    if (pathname === "/pair/resolve") {
+      if (request.method !== "POST") return new Response("Not Found", { status: 404 });
+      return env.PAIR_INDEX.get(env.PAIR_INDEX.idFromName("global")).fetch("https://index/resolve", {
+        method: "POST", body: await request.text(),
+        headers: { "cf-connecting-ip": request.headers.get("cf-connecting-ip") ?? "unknown" }
       });
     }
 
