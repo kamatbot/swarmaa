@@ -28,6 +28,12 @@ export function clipUtf8(value: string, maxBytes: number): string {
   return buf.subarray(0, end + seqLen).toString('utf8');
 }
 
+/** A clear 409 instead of the unique index's 500; callers hold teamsLock, so the check cannot race. */
+async function requireFreeName(db: Db, tenantId: string, scope: string, name: string): Promise<void> {
+  const taken = await db.query('SELECT 1 FROM agents WHERE tenant_id=$1 AND scope=$2 AND lower(name)=lower($3) AND NOT archived', [tenantId, scope, name]);
+  requireCondition(!taken.rowCount, 409, 'name_taken', `An agent named ${name} already exists in ${scope}.`);
+}
+
 export async function assignThreadSeq(db: Db, tenantId: string, threadId: string): Promise<bigint> {
   const row = (await db.query<{ id: string }>(
     'SELECT id FROM threads WHERE tenant_id=$1 AND id=$2 FOR UPDATE',
@@ -218,6 +224,7 @@ export class TeamService {
         }
       }
 
+      await requireFreeName(db, p.tenantId, scope, name);
       const agentId = newId();
       const threadId = newId();
 
@@ -263,6 +270,7 @@ export class TeamService {
       requireCondition(existing.version === expected, 409, 'version_conflict', 'Agent has changed; reload before updating.');
 
       const nextName = input.name !== undefined ? string(input.name, 'name', 64) : existing.name;
+      if (nextName.toLowerCase() !== existing.name.toLowerCase()) await requireFreeName(db, existing.tenant_id, existing.scope, nextName);
       const nextRole = input.role !== undefined ? string(input.role, 'role', 64) : existing.role;
       let nextInstructions = existing.instructions;
       if (input.instructions !== undefined) {

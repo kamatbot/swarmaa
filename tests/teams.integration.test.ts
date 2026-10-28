@@ -781,6 +781,16 @@ describe('teams phase 1 service foundation', { skip: !connectionString, concurre
     assert.equal(claimRes.task.thread_messages[39].seq, 45);
   });
 
+  it('agent names: a live name clash is a 409, an archived agent frees its name', async () => {
+    const tenantId = randomUUID();
+    const user = await createPrincipal(tenantId, 'user-names');
+    const make = (name: string) => call(user, 'agent_create', { name, role: 'R', instructions: 'I', scope: 'project:a', runner: { provider: 'codex' } });
+    const { agent } = await make('Scout');
+    await assert.rejects(() => make('scout'), (e: any) => e.code === 'name_taken');
+    await call(user, 'agent_archive', { agent_id: agent.id });
+    assert.equal((await make('Scout')).agent.name, 'Scout');
+  });
+
   it('regression 6: agent_update rejects scope argument', async () => {
     const tenantId = randomUUID();
     const user = await createPrincipal(tenantId, 'user-scope-1');
