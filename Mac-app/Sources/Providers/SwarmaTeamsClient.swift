@@ -643,8 +643,8 @@ actor SwarmaTeamsClient {
     private struct BotWrapper: Decodable { let bot: TeamsBot }
 
     /// Updates first, as the service orders them.
-    func botList() async throws -> [TeamsBot] {
-        try await allPages("bot_list", ["limit": 100], as: TeamsBot.self)
+    func botList(includeArchived: Bool = false) async throws -> [TeamsBot] {
+        try await allPages("bot_list", ["limit": 100, "include_archived": includeArchived], as: TeamsBot.self)
     }
 
     func botGet(id: String) async throws -> TeamsBot {
@@ -667,6 +667,20 @@ actor SwarmaTeamsClient {
                                       "routing": try json(routing), "rules": try json(rules),
                                       "schedule": schedule.map { $0 as Any } ?? NSNull()],
                        as: BotWrapper.self).bot
+    }
+
+    func botArchive(id: String) async throws -> TeamsBot {
+        try await call("bot_archive", ["bot_id": id], as: BotWrapper.self).bot
+    }
+
+    func botUnarchive(id: String) async throws -> TeamsBot {
+        try await call("bot_unarchive", ["bot_id": id], as: BotWrapper.self).bot
+    }
+
+    func botDelete(id: String, confirmName: String) async throws {
+        struct Deleted: Decodable { let deleted: Bool }
+        let result = try await call("bot_delete", ["bot_id": id, "confirm_name": confirmName], as: Deleted.self)
+        guard result.deleted else { throw Failure.service(.badResponse) }
     }
 
     /// Returns the `routing_now` map itself, keyed by kind.

@@ -187,7 +187,7 @@ struct RootView: View {
                     case .usage: usage.swipeBack { screen = .home }
                     case .connect: ConnectView(model: model) { screen = .home }.swipeBack { screen = .home }
                     case .settings:
-                        if let bot = model.openBot ?? model.starred { SettingsView(model: model, bot: bot) { screen = .thread }.swipeBack { screen = .thread } }
+                        if let bot = model.openBot ?? model.starred { SettingsView(model: model, bot: bot) { screen = model.openBot == nil ? .home : .thread }.swipeBack { screen = .thread } }
                         else { empty("Open a bot to change its settings.") }
                     }
                 } else { ConnectView(model: model) { screen = .home } }
@@ -240,7 +240,10 @@ struct RootView: View {
         .onChange(of: model.bots) { _, _ in openPushBot() }
         .onChange(of: screen) { _, _ in updateVisibleThread() }
         .onChange(of: sheet?.id) { _, _ in updateVisibleThread() }
-        .onChange(of: model.openBot?.id) { _, _ in updateVisibleThread() }
+        .onChange(of: model.openBot?.id) { _, id in
+            if id == nil && (screen == .thread || screen == .settings) { screen = .home; sheet = nil; composer = "" }
+            updateVisibleThread()
+        }
         .onChange(of: model.openBot?.id) { _, value in if value != nil, Runtime.openStarRequested { screen = .thread; Runtime.openStarRequested = false } }
         .onChange(of: phase) { _, phase in
             guard phase == .active else { return }
@@ -286,8 +289,8 @@ struct RootView: View {
                 Button { screen = .tasks; perform { try await model.loadTasks() } } label: {
                     Image(systemName: "list.bullet").frame(width: 44, height: 44).card(.white, radius: 24)
                         .overlay(alignment: .topTrailing) {
-                            if model.bots.reduce(0, { $0 + $1.needsYou }) > 0 {
-                                Text("\(model.bots.reduce(0, { $0 + $1.needsYou }))").font(KS.mono(10)).padding(4).background(KS.coral, in: Circle())
+                            if model.sortedBots.reduce(0, { $0 + $1.needsYou }) > 0 {
+                                Text("\(model.sortedBots.reduce(0, { $0 + $1.needsYou }))").font(KS.mono(10)).padding(4).background(KS.coral, in: Circle())
                             }
                         }
                 }.accessibilityLabel("Tasks")
@@ -295,7 +298,7 @@ struct RootView: View {
             }.buttonStyle(.plain).padding(.horizontal, 18).padding(.top, 8)
             HStack(alignment: .firstTextBaseline, spacing: 12) {
                 Text("BOTS.").font(KS.display(44))
-                Text("\(model.bots.filter { $0.needsYou > 0 }.count) need you").foregroundStyle(KS.soft)
+                Text("\(model.sortedBots.filter { $0.needsYou > 0 }.count) need you").foregroundStyle(KS.soft)
                 Spacer()
             }.padding(.horizontal, 20).padding(.vertical, 16)
             Rectangle().fill(KS.ink).frame(height: 2.5)
@@ -321,12 +324,13 @@ struct RootView: View {
                                     }
                                 }
                             }.padding(.vertical, 14).padding(.horizontal, 4).contentShape(Rectangle())
-                        }.buttonStyle(.plain).accessibilityIdentifier("bot-" + bot.id)
+                        }.buttonStyle(.plain).opacity(bot.archived ? 0.5 : 1).accessibilityIdentifier("bot-" + bot.id)
                         Divider().overlay(KS.ink.opacity(0.12))
                     }
                     if model.sortedBots.isEmpty && !model.loading { empty("No bots yet. Open You to make your first bot.") }
                 }.padding(.horizontal, 16)
             }
+            Toggle("Show hidden", isOn: $model.showHidden).font(KS.body(14)).padding(.horizontal, 20).frame(minHeight: 44)
             HStack(spacing: 12) {
                 HStack { Image(systemName: "magnifyingglass"); TextField("Search bots", text: $search).accessibilityLabel("Search bots") }
                     .padding(.horizontal, 18).frame(height: 54).card(.white, radius: 28, shadow: true)
@@ -720,6 +724,9 @@ struct SettingsView: View {
     @Bindable var model: AppModel
     var close: () -> Void
     @State private var draft: Bot
+    @State private var confirmingDelete = false
+    @State private var confirmName = ""
+    private var savedBot: Bot { model.bots.first { $0.id == draft.id } ?? draft }
     @State private var error: String?
     @State private var saving = false
     init(model: AppModel, bot: Bot, close: @escaping () -> Void) { self.model = model; self.close = close; _draft = State(initialValue: bot) }
@@ -773,7 +780,42 @@ struct SettingsView: View {
                     saving = true
                     Task { defer { saving = false }; do { try await model.save(draft); close() } catch { self.error = safeError(error) } }
                 }.buttonStyle(Pill(fill: KS.lime, primary: true)).disabled(saving || model.isDemo || draft.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || draft.job.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                HStack {
+                    if savedBot.archived {
+                        Button("Unhide") { changeVisibility() }.frame(maxWidth: .infinity, minHeight: 44)
+                        Button("Delete bot…", role: .destructive) { confirmName = ""; confirmingDelete = true }
+                            .foregroundStyle(.red).frame(maxWidth: .infinity, minHeight: 44)
+                    } else {
+                        Button("Hide bot", role: .destructive) { changeVisibility() }
+                            .foregroundStyle(.red).frame(maxWidth: .infinity, minHeight: 44)
+                    }
+                }.buttonStyle(.plain).disabled(saving || model.isDemo)
             }.padding(20)
+        }
+        .alert("Delete bot permanently?", isPresented: $confirmingDelete) {
+            TextField("Bot name", text: $confirmName).textInputAutocapitalization(.never).autocorrectionDisabled()
+            Button("Cancel", role: .cancel) {}
+            Button("Delete bot", role: .destructive) {
+                saving = true
+                Task {
+                    defer { saving = false }
+                    do { try await model.delete(savedBot, confirmName: confirmName); close() }
+                    catch { self.error = safeError(error) }
+                }
+            }.disabled(confirmName != savedBot.name || saving)
+        } message: {
+            Text("This permanently deletes the bot and its chat. Type “" + savedBot.name + "” to confirm.")
+        }
+    }
+    private func changeVisibility() {
+        saving = true
+        Task {
+            defer { saving = false }
+            do {
+                if savedBot.archived { try await model.unarchive(savedBot) }
+                else { try await model.archive(savedBot) }
+                close()
+            } catch { self.error = safeError(error) }
         }
     }
 }
@@ -799,6 +841,9 @@ private extension AppModel {
         guard ProcessInfo.processInfo.arguments.contains("-demo") else { return }
         isDemo = true; connected = true; online = true
         bots = [Demo.bot("launch", "Launch", "Which channels should we use?", needs: 1, star: true), Demo.bot("watch", "Competitor watch", "Pricing summary needs a retry", needs: 1), Demo.bot("pulse", "Pulse", "The calendar is ready", unread: 3), Demo.bot("forge", "Forge", "Drafted the pricing page"), Demo.bot("scout", "Scout", "Read the launch brief"), Demo.bot("notes", "Notes", "Everything is up to date")]
+        if ProcessInfo.processInfo.arguments.contains("-hidden-bot-demo") {
+            bots[bots.count - 1].raw["archived"] = .bool(true)
+        }
         openBot = bots[0]
         agents = [JSON.object(["id": .string("launch"), "name": .string("Atlas"), "scope": .string("project:swarma")]), .object(["id": .string("scout"), "name": .string("Scout"), "scope": .string("project:swarma")]), .object(["id": .string("forge"), "name": .string("Forge"), "scope": .string("project:swarma")])]
         tasks = [Demo.task("banner", "Draft the launch banner", "completed", "claude"), Demo.task("pricing", "Summarise competitor pricing", "failed", "codex"), Demo.task("calendar", "Check the launch calendar", "running", "antigravity"), Demo.task("limits", "Fix the plan limits on the pricing page", "running", "claude")]

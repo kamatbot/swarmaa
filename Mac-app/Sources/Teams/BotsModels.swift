@@ -97,6 +97,24 @@ struct TeamsBot: Decodable, Equatable, Identifiable {
     }
 }
 
+/// Pure list derivations, shared by the sidebar and its regression tests.
+enum TeamsBotList {
+    static func filter(_ bots: [TeamsBot], showHidden: Bool, search: String = "") -> [TeamsBot] {
+        let query = search.trimmingCharacters(in: .whitespaces).lowercased()
+        return bots.filter {
+            (showHidden || !$0.archived) &&
+                (query.isEmpty || $0.name.lowercased().contains(query) || $0.job.lowercased().contains(query))
+        }
+    }
+
+    static func label(_ bot: TeamsBot) -> String {
+        if bot.rules.schedulePaused == true { return L10n.t("Paused") }
+        if let schedule = bot.schedule, !schedule.isEmpty { return L10n.t("Scheduled") }
+        let count = bot.crewIDs.count
+        return count > 1 ? L10n.t("Swarm · \(count)") : L10n.t("Bot")
+    }
+}
+
 /// Per-kind runners. `nil` means auto. Review may also be "a different service than the author".
 struct TeamsBotRouting: Codable, Equatable {
     enum Kind: String, CaseIterable, Identifiable {

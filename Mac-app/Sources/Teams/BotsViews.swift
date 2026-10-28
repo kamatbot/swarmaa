@@ -9,29 +9,36 @@ struct BotsHome: View {
     @ObservedObject var model: TeamsModel
 
     var body: some View {
-        if model.bots.isEmpty {
-            VStack(spacing: 0) {
-                TeamsEmptyState(symbol: "person.2.fill", title: L10n.t("Make your first bot"),
-                                detail: L10n.t("A bot is a persistent swarm with one job. It keeps one thread where everything it does, and everything it needs from you, shows up."),
-                                action: nil)
-                KSBottomBar { Spacer(); Button(L10n.t("New bot")) { model.creatingBot = true }.buttonStyle(.ks(.primary)) }
-            }
-        } else {
-            HStack(spacing: 0) {
-                BotsSidebar(model: model).frame(width: 300)
-                Rectangle().fill(KS.ink).frame(width: 2.5)
-                Group {
-                    if let id = model.editingBotID, let bot = model.bot(id: id) {
-                        BotSettingsPane(model: model, bot: bot).id(id)
-                    } else if let t = model.selectedThreadID {
-                        ThreadView(model: model, threadID: t).id(t)
-                    } else {
-                        TeamsEmptyState(symbol: "bubble.left.and.bubble.right", title: L10n.t("Choose a bot"), detail: nil, action: nil)
+        Group {
+            if model.bots.isEmpty {
+                VStack(spacing: 0) {
+                    TeamsEmptyState(symbol: "person.2.fill", title: L10n.t("Make your first bot"),
+                                    detail: L10n.t("A bot is a persistent swarm with one job. It keeps one thread where everything it does, and everything it needs from you, shows up."),
+                                    action: nil)
+                    KSBottomBar {
+                        Toggle(L10n.t("Show hidden"), isOn: $model.showHiddenBots).controlSize(.small)
+                        Spacer()
+                        Button(L10n.t("New bot")) { model.creatingBot = true }.buttonStyle(.ks(.primary))
                     }
                 }
-                .frame(minWidth: 460, maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                HStack(spacing: 0) {
+                    BotsSidebar(model: model).frame(width: 300)
+                    Rectangle().fill(KS.ink).frame(width: 2.5)
+                    Group {
+                        if let id = model.editingBotID, let bot = model.bot(id: id) {
+                            BotSettingsPane(model: model, bot: bot).id(id)
+                        } else if let t = model.selectedThreadID {
+                            ThreadView(model: model, threadID: t).id(t)
+                        } else {
+                            TeamsEmptyState(symbol: "bubble.left.and.bubble.right", title: L10n.t("Choose a bot"), detail: nil, action: nil)
+                        }
+                    }
+                    .frame(minWidth: 460, maxWidth: .infinity, maxHeight: .infinity)
+                }
             }
         }
+        .task(id: model.showHiddenBots) { await model.loadBots() }
     }
 }
 
@@ -63,6 +70,7 @@ struct BotsSidebar: View {
                 .padding(.horizontal, 12).padding(.bottom, 12)
             }
             KSBottomBar {
+                Toggle(L10n.t("Show hidden"), isOn: $model.showHiddenBots).controlSize(.small).fixedSize()
                 Button { model.creatingBot = true } label: { Label(L10n.t("New bot"), systemImage: "plus").frame(maxWidth: .infinity) }
                     .buttonStyle(.ks(.white))
             }
@@ -77,11 +85,7 @@ struct BotRow: View {
 
     private var selected: Bool { model.selectedThreadID == bot.threadID }
 
-    private var tag: String {
-        if let s = bot.schedule, !s.isEmpty { return L10n.t("Scheduled") }
-        let n = bot.crewIDs.count
-        return n > 1 ? L10n.t("Swarm · \(n)") : L10n.t("Bot")
-    }
+    private var tag: String { TeamsBotList.label(bot) }
 
     var body: some View {
         let needs = model.botNeedsYou(bot), unread = model.botUnread(bot)
@@ -115,7 +119,15 @@ struct BotRow: View {
             .contentShape(RoundedRectangle(cornerRadius: 16))
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(bot.name + (needs > 0 ? ", " + L10n.t("needs you") : unread > 0 ? ", " + L10n.t("\(unread) new") : ""))
+        .opacity(bot.archived ? 0.55 : 1)
+        .contextMenu {
+            Button(L10n.t("Bot settings")) { model.editingBotID = bot.id }
+            if bot.archived, !bot.isLegacyAgent {
+                Button(L10n.t("Unhide")) { Task { await model.setBotHidden(bot, hidden: false) } }
+                    .disabled(model.savingBot)
+            }
+        }
+        .accessibilityLabel((bot.archived ? L10n.t("Hidden") + ", " : "") + bot.name + (needs > 0 ? ", " + L10n.t("needs you") : unread > 0 ? ", " + L10n.t("\(unread) new") : ""))
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
 }
@@ -250,6 +262,7 @@ struct BotSettingsPane: View {
     @State private var scheduled = false
     @State private var schedule = ""
     @State private var adding = false
+    @State private var deleting = false
 
     private var scopeAgents: [TeamsAgent] { model.agents.filter { $0.scope == bot.scope || bot.scope.isEmpty } }
 
@@ -299,8 +312,24 @@ struct BotSettingsPane: View {
                 .buttonStyle(.ks(.primary)).keyboardShortcut(.defaultAction)
                 .disabled(bot.isLegacyAgent || model.savingBot || name.trimmingCharacters(in: .whitespaces).isEmpty || leadID.isEmpty)
             }
+            if !bot.isLegacyAgent {
+                KSBottomBar {
+                    Spacer()
+                    if bot.archived {
+                        Button(L10n.t("Unhide")) { Task { await model.setBotHidden(bot, hidden: false) } }
+                            .buttonStyle(.ks(.paper))
+                        Button(L10n.t("Delete bot…"), role: .destructive) { deleting = true }
+                            .buttonStyle(.plain).foregroundStyle(.red)
+                    } else {
+                        Button(L10n.t("Hide bot"), role: .destructive) { Task { await model.setBotHidden(bot, hidden: true) } }
+                            .buttonStyle(.plain).foregroundStyle(.red)
+                    }
+                }
+                .disabled(model.savingBot)
+            }
         }
         .background(KS.paper)
+        .sheet(isPresented: $deleting) { DeleteBotSheet(model: model, bot: bot) }
         .onAppear(perform: load)
         .task(id: bot.id) { await model.refreshBot(bot.id) }
     }
@@ -486,6 +515,43 @@ struct BotSettingsPane: View {
             Spacer(minLength: 8)
             control()
         }
+    }
+}
+
+/// Deletion is only available for an already hidden bot; the server checks again.
+private struct DeleteBotSheet: View {
+    @ObservedObject var model: TeamsModel
+    let bot: TeamsBot
+    @Environment(\.dismiss) private var dismiss
+    @State private var confirmName = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text(verbatim: L10n.t("Delete bot?")).font(KS.display(32))
+            Text(verbatim: L10n.t("This permanently deletes the bot and its chat. This cannot be undone."))
+                .font(KS.body(15))
+            Text(verbatim: L10n.t("Type the bot's name exactly to confirm:")).font(KS.body(14))
+            Text(verbatim: bot.name).font(KS.body(16, .bold)).textSelection(.enabled)
+            TextField(L10n.t("Bot name"), text: $confirmName).textFieldStyle(.roundedBorder)
+            if let error = model.botError {
+                Text(verbatim: error).font(KS.body(14)).foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            HStack {
+                if model.savingBot { ProgressView().controlSize(.small) }
+                Spacer()
+                Button(L10n.t("Cancel")) { dismiss() }.buttonStyle(.ks(.paper)).keyboardShortcut(.cancelAction)
+                    .disabled(model.savingBot)
+                Button(L10n.t("Delete bot"), role: .destructive) {
+                    Task { if await model.deleteBot(bot, confirmName: confirmName) { dismiss() } }
+                }
+                .buttonStyle(.plain).foregroundStyle(.red)
+                .disabled(!bot.archived || confirmName != bot.name || model.savingBot)
+            }
+        }
+        .padding(24).frame(width: 460).background(KS.paper)
+        .interactiveDismissDisabled(model.savingBot)
+        .onAppear { model.botError = nil }
     }
 }
 

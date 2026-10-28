@@ -6,6 +6,7 @@ actor IOSRelaySocket: SwarmaRelayTransport.SwarmaWebSocket {
     var queue: [String] = []
     var waiting: [CheckedContinuation<String, Error>] = []
     var inputs: [(String, JSON)] = []
+    var deleted = false
     var posted = false
     var replyEnabled = true
     var hangingTool = ""
@@ -31,7 +32,16 @@ actor IOSRelaySocket: SwarmaRelayTransport.SwarmaWebSocket {
             if tool == hangingTool { return }
             let result: JSON
             switch tool {
-            case "bot_list": result = .object(["bots": .array([bot]), "has_more": .bool(false)]) // the service's real shape
+            case "bot_list": result = .object(["bots": .array(deleted ? [] : [bot]), "has_more": .bool(false)]) // the service's real shape
+            case "bot_archive":
+                bot["archived"] = .bool(true); bot["starred"] = .bool(false)
+                result = .object(["bot": bot])
+            case "bot_unarchive":
+                bot["archived"] = .bool(false)
+                result = .object(["bot": bot])
+            case "bot_delete":
+                deleted = true
+                result = .object(["deleted": .bool(true)])
             case "swarm_status": result = .object(["usage": .array([])])
             case "agent_list": result = .object(["agents": .array([])])
             case "thread_post":
