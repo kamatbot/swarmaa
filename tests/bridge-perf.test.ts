@@ -540,3 +540,14 @@ test('a bot chat-reply runner: fast models get the hand-off instruction, Opus an
   assert.deepEqual(run({ provider: 'claude', model: 'claude-opus-5-5', fast: false }), { model: 'claude-opus-5-5', fast: false });
   assert.deepEqual(run({ fast: false }), { model: agent.model, fast: false }, 'off: the full model, never turn_model');
 });
+
+test('chat replies run the Claude CLI without user hooks, plugins or MCP; edits and delegated turns keep the full setup', () => {
+  const cfg = baseConfig();
+  const agent = cfg.agents[0]!;
+  const args = (task: Record<string, unknown>) => buildInvocation(agent, cfg.projects[0]!, makeTurnTask(task as any), {}, cfg, new AbortController().signal).args;
+  const light = (a: string[]) => a.includes('--strict-mcp-config') && a[a.indexOf('--setting-sources') + 1] === 'project';
+  assert.ok(light(args({ kind: 'turn', required_capability: 'claude.read', permission_envelope: { local_patch: false } })));
+  assert.ok(light(args({ kind: 'turn', required_capability: 'claude.read', permission_envelope: { local_patch: false, runner: { model: 'claude-opus-5-5', fast: false } } })), 'an Opus bot reply is still a chat reply');
+  assert.ok(!light(args({ kind: 'turn', required_capability: 'claude.patch', permission_envelope: { local_patch: true } })), 'edit turn');
+  assert.ok(!light(args({ kind: 'turn', required_capability: 'claude.read', permission_envelope: { local_patch: false, runner: { delegated: true } } })), 'delegated full turn');
+});

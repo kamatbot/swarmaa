@@ -243,6 +243,7 @@ export function buildInvocation(agent: AgentConfig, project: ProjectConfig, task
     }
   }
 
+  const lightChat = isNonEditTurn && envelope?.runner?.delegated !== true;
   let args: string[];
   if (agent.provider === 'claude') {
     // The real CLIs as the user runs them (their config, MCP servers, skills, models, login), headless with
@@ -256,6 +257,9 @@ export function buildInvocation(agent: AgentConfig, project: ProjectConfig, task
       '--permission-mode', 'bypassPermissions',
       '--max-turns', '200',
       ...(native?.harness === 'claude' ? ['--session-id', native.id!] : []),
+      // Chat replies need no tools: skip the user's hooks, plugins and MCP servers, which cost 7-10 s of
+      // startup. Edits, delegated (full) turns and task work keep the full setup.
+      ...(lightChat ? ['--setting-sources', 'project', '--strict-mcp-config'] : []),
     ];
   } else if (agent.provider === 'codex') {
     // --search is a top-level flag and must come before `exec`. Codex's own sandbox can't nest inside Seatbelt.
