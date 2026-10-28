@@ -58,6 +58,7 @@ Control frames to the DO: `hello` (role, host_id, version), `presence`, `pair_op
 - **Host identity:** an Ed25519 key is created on first run and kept in `.local/relay-host.key` with mode 0600. `host_id` is the base32 SHA-256 of the public key, truncated to 26 characters. The host proves possession by signing the DO's nonce in `hello`. The DO pins the first key per `host_id`, so nobody else can register that room.
 - **Clients:** any client may open a socket to a room. Every relayed request still needs a valid bearer token, which the service checks. A bad token gets the same 401 as through the tunnel today. The DO rate-limits sockets per IP and per room. `pair_redeem` is limited to 5 tries per room per 10 minutes.
 - **Revoking a device:** revoke its connection token in the service, as today.
+- **Trust in the relay (v1):** the host agent does not see the pairing code. It trusts the DO's hash check and consumes the pending code on the first forwarded `pair_redeem`. A compromised relay could therefore redeem a pending code within its five minutes. End-to-end encryption in v2 removes this, by checking the code inside the encrypted channel.
 - **Limits:** the existing body, response and rate limits stay in the service. The DO adds per-socket frame and byte limits.
 
 ## Build plan
