@@ -165,6 +165,37 @@ describe('teams phase 1 service foundation', { skip: !connectionString, concurre
     });
   }
 
+  it('delegation keeps hop depth, pins auto agents to Claude, queues behind a busy agent, and skips swarm steps', async () => {
+    const user = await createPrincipal(randomUUID(), 'delegate-review');
+    const worker = await createPrincipal(user.tenantId, 'delegate-review-worker', 'worker');
+    const { agent, thread } = await call(user, 'agent_create', { name: 'Auto', role: 'Helper', instructions: 'Help', scope: 'project:a', runner: { mode: 'auto' } });
+    await call(user, 'thread_post', { thread_id: thread.id, body: 'Research this', idempotency_key: 'r1' });
+    const claim = await call(worker, 'task_claim', { scope: 'project:a', capabilities: ['auto.read', 'claude.read'], kinds: ['turn'] });
+    await pool.query("UPDATE tasks SET context_versions = context_versions || '{\"hop_depth\":2}'::jsonb WHERE id=$1", [claim.task.id]);
+    // Another task of the same agent is already queued: the delegation must still be queued.
+    await pool.query(`INSERT INTO tasks (id, tenant_id, scope, kind, agent_id, thread_id, objective, constraints, acceptance_criteria, permission_envelope,
+      required_capability, resource_key, context_versions, status, created_by, idempotency_key, request_hash, max_attempts)
+      SELECT gen_random_uuid(), tenant_id, scope, 'turn', agent_id, thread_id, 'busy', '[]', '[]', permission_envelope, required_capability, resource_key,
+      '{}', 'queued', created_by, gen_random_uuid()::text, 'busy', 3 FROM tasks WHERE id=$1`, [claim.task.id]);
+    await call(worker, 'task_finish', { task_id: claim.task.id, lease_token: claim.lease_token, lease_generation: claim.lease_generation,
+      outcome: 'completed', result: { answer: 'On it.', delegate: { objective: 'Research in depth' } } });
+    const follow = (await pool.query("SELECT * FROM tasks WHERE agent_id=$1 AND objective='Research in depth'", [agent.id])).rows;
+    assert.equal(follow.length, 1, 'queued even though the agent was busy');
+    assert.equal(follow[0].context_versions.hop_depth, 2, 'hop depth carries over');
+    assert.equal(follow[0].required_capability, 'claude.read', 'an auto agent is pinned to Claude for the Claude model');
+    assert.equal(follow[0].permission_envelope.runner.provider, 'claude');
+    assert.equal(follow[0].permission_envelope.runner.model, 'claude-opus-5-5');
+
+    const codex = await call(user, 'agent_create', { name: 'Cx', role: 'Helper', instructions: 'Help', scope: 'project:a', runner: { provider: 'codex' } });
+    await call(user, 'thread_post', { thread_id: codex.thread.id, body: 'Do it', idempotency_key: 'c1' });
+    const c = await call(worker, 'task_claim', { scope: 'project:a', capabilities: ['codex.read'], kinds: ['turn'] });
+    await call(worker, 'task_finish', { task_id: c.task.id, lease_token: c.lease_token, lease_generation: c.lease_generation,
+      outcome: 'completed', result: { answer: 'On it.', delegate: { objective: 'Deeper' } } });
+    const cf = (await pool.query("SELECT * FROM tasks WHERE agent_id=$1 AND objective='Deeper'", [codex.agent.id])).rows[0];
+    assert.equal(cf.required_capability, 'codex.read', 'a named non-Claude runner keeps its provider');
+    assert.equal(cf.permission_envelope.runner.model, undefined, 'and is never handed a Claude model');
+  });
+
   it('post queues one turn and finish posts the reply with the next seq', async () => {
     const tenantId = randomUUID();
     const user = await createPrincipal(tenantId, 'user-alice');

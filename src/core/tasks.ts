@@ -972,7 +972,8 @@ export class TaskService {
 
         const runner = row.permission_envelope.runner as { delegated?: unknown } | undefined;
         const delegate = result.delegate as { objective?: unknown } | undefined;
-        const delegateObjective = outcome === 'completed' && runner?.delegated !== true && typeof delegate?.objective === 'string'
+        // A swarm step's turn never delegates: the step would complete with the placeholder reply.
+        const delegateObjective = outcome === 'completed' && runner?.delegated !== true && !row.swarm_step_id && typeof delegate?.objective === 'string'
           ? redactSecrets(delegate.objective).trim().slice(0, 500) : '';
         if ((pendingHuman || delegateObjective) && agentRow) {
           const active = (await db.query(
@@ -982,7 +983,8 @@ export class TaskService {
             [p.tenantId, row.agent_id, row.id]
           )).rows[0];
 
-          if (!active) {
+          // A delegation is queued even behind a busy agent (resource_key runs it after); the user was told it is coming.
+          if (!active || delegateObjective) {
             const botId = row.bot_id ?? null;
             let nextCap = runnerCapability(agentRow.runner, agentRow.edits);
             if (botId) {
@@ -990,13 +992,18 @@ export class TaskService {
               if (bot) nextCap = botCapability(bot, agentRow.edits ? 'patch' : 'summary', agentRow.edits);
             }
             const followUpId = newId();
-            const delegateModel = agentRow.runner.model ?? DELEGATE_MODEL;
+            // The full model must match the provider that runs it: a named non-Claude runner keeps its own model
+            // (the bridge's full model when unset); Claude or auto agents are pinned to Claude on DELEGATE_MODEL.
+            const pinnedProvider = agentRow.runner.provider;
+            const delegateModel = pinnedProvider && pinnedProvider !== 'claude' ? agentRow.runner.model : (agentRow.runner.model ?? DELEGATE_MODEL);
+            if (delegateObjective && (!pinnedProvider || pinnedProvider === 'claude')) nextCap = `claude.${agentRow.edits ? 'patch' : 'read'}`;
             const envelope = {
               deploy: false, publish: false, purchase: false, local_patch: agentRow.edits,
               read_project: true, send_messages: false, permission_changes: false, external_side_effects: false,
-              ...(delegateObjective ? { runner: { ...agentRow.runner, model: delegateModel, delegated: true } } : {})
+              ...(delegateObjective ? { runner: { ...agentRow.runner, ...(delegateModel ? { model: delegateModel } : {}), ...(pinnedProvider ? {} : { provider: 'claude', mode: undefined }), delegated: true } } : {})
             };
-            const ctxVersions = { message_seq: Number(pendingHuman?.seq ?? processedSeq) };
+            // hop_depth carries over, so a handoff -> delegate -> handoff chain still reaches MAX_HANDOFF_HOPS.
+            const ctxVersions = { message_seq: Number(pendingHuman?.seq ?? processedSeq), hop_depth: (row.context_versions as any)?.hop_depth ?? 0 };
             const reqHash = sha256(canonicalJson({
               kind: 'turn', scope: agentRow.scope, agent_id: agentRow.id, thread_id: row.thread_id, seq: Number(pendingHuman?.seq ?? processedSeq)
             }));
@@ -1019,7 +1026,7 @@ export class TaskService {
                 `INSERT INTO messages (id, tenant_id, scope, thread_id, seq, author, kind, body)
                  VALUES ($1, $2, $3, $4, $5, $6::jsonb, 'notice', $7)`,
                 [noticeId, p.tenantId, row.scope, row.thread_id, seq, JSON.stringify(author),
-                 redactSecrets(`${agentRow.name} handed this to ${delegateModel} for a fuller answer`)]
+                 redactSecrets(`${agentRow.name} handed this to ${delegateModel ?? 'its full model'} for a fuller answer`)]
               );
               await event(db, p, row.scope, 'message.created', noticeId, {
                 thread_id: row.thread_id, message_id: noticeId, seq: Number(seq), kind: 'notice', author
