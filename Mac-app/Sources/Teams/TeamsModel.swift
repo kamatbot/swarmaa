@@ -196,17 +196,24 @@ final class TeamsModel: ObservableObject {
         }
         // Channels, swarms and questions arrive with a later service phase: a
         // service that has agents but not those still gets a working window.
-        do { channels = try await client.threadList(kind: "channel").filter { !$0.archived } }
+        // Independent calls run at once: through the tunnel each is a round trip.
+        async let channelList = client.threadList(kind: "channel")
+        async let swarmList = client.swarmList()
+        async let questionList = client.questionList()
+        async let statusNow = client.status()
+        async let botsLoaded: Void = loadBots()
+        do { channels = try await channelList.filter { !$0.archived } }
         catch { staleError = SwarmaTeamsClient.Failure.map(error).message }
-        do { openSwarms = try await client.swarmList() }
+        do { openSwarms = try await swarmList }
         catch { staleError = SwarmaTeamsClient.Failure.map(error).message }
         for s in openSwarms { swarms[s.id] = s }
-        do { openQuestions = try await client.questionList() }
+        do { openQuestions = try await questionList }
         catch { staleError = SwarmaTeamsClient.Failure.map(error).message }
-        do { status = try await client.status() }
+        do { status = try await statusNow }
         catch { staleError = SwarmaTeamsClient.Failure.map(error).message }
+        // Tasks need the scopes from `status`.
         await loadTasks()
-        await loadBots()
+        await botsLoaded
         for a in agents { if let t = a.mainThreadID { seed(t, a.unread, a.lastSeq, a.lastReadSeq, a.lastMessage) } }
         for c in channels { seed(c.id, c.unread, c.lastSeq, c.lastReadSeq, c.lastMessage) }
         phase = .ready
@@ -355,23 +362,42 @@ final class TeamsModel: ObservableObject {
         guard !loadingTasks else { return }
         loadingTasks = true
         defer { loadingTasks = false }
-        do { attention = try await client.attentionList() }
-        catch { staleError = SwarmaTeamsClient.Failure.map(error).message }
-        for scope in (status?.scopes ?? []).map(\.scope) where scopes == nil || scopes!.contains(scope) {
-            for state in ["running", "queued"] {
-                do {
-                    let tasks = try await client.taskList(scope: scope, status: state)
-                    workingTasks.removeAll { $0.scope == scope && $0.status == state }
-                    workingTasks += tasks
-                } catch { staleError = SwarmaTeamsClient.Failure.map(error).message }
+        async let attentionNow = client.attentionList()
+        // (scope, "running" | "queued"), or (scope, nil) for the resolved page.
+        let jobs: [(String, String?)] = (status?.scopes ?? []).map(\.scope).filter { scopes == nil || scopes!.contains($0) }
+            .flatMap { scope -> [(String, String?)] in [(scope, "running"), (scope, "queued"), (scope, nil)] }
+        let client = self.client
+        await withTaskGroup(of: (String, String?, Result<(tasks: [TeamsTask], next: String?), Error>).self) { group in
+            func add(_ job: (String, String?)) {
+                group.addTask {
+                    let (scope, state) = job
+                    do {
+                        if let state { return (scope, state, .success((try await client.taskList(scope: scope, status: state), nil))) }
+                        return (scope, nil, .success(try await client.resolvedTaskPage(scope: scope)))
+                    } catch { return (scope, state, .failure(error)) }
+                }
             }
-            do {
-                let page = try await client.resolvedTaskPage(scope: scope)
-                resolvedTasks.removeAll { $0.scope == scope }
-                resolvedTasks += page.tasks
-                resolvedCursors[scope] = page.next
-            } catch { staleError = SwarmaTeamsClient.Failure.map(error).message }
+            var pending = jobs[...]
+            // At most 8 `task_list` calls in flight.
+            for _ in 0..<8 { if let job = pending.popFirst() { add(job) } }
+            for await (scope, state, result) in group {
+                if let job = pending.popFirst() { add(job) }
+                switch result {
+                case .success(let page):
+                    if let state {
+                        workingTasks.removeAll { $0.scope == scope && $0.status == state }
+                        workingTasks += page.tasks
+                    } else {
+                        resolvedTasks.removeAll { $0.scope == scope }
+                        resolvedTasks += page.tasks
+                        resolvedCursors[scope] = page.next
+                    }
+                case .failure(let error): staleError = SwarmaTeamsClient.Failure.map(error).message
+                }
+            }
         }
+        do { attention = try await attentionNow }
+        catch { staleError = SwarmaTeamsClient.Failure.map(error).message }
     }
 
     func loadMoreResolved() async {

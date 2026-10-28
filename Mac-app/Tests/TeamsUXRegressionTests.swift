@@ -518,3 +518,40 @@ extension TeamsUXRegressionTests {
         XCTAssertEqual(transport.requests.filter { $0.0 == "agent_create" }.count, 1)
     }
 }
+
+/// Peak in-flight requests, for the concurrency checks.
+private final class InFlight: @unchecked Sendable {
+    private let lock = NSLock()
+    private var now = 0, top = 0
+    var peak: Int { lock.lock(); defer { lock.unlock() }; return top }
+    func around<T>(_ work: () async throws -> T) async rethrows -> T {
+        lock.lock(); now += 1; top = max(top, now); lock.unlock()
+        defer { lock.lock(); now -= 1; lock.unlock() }
+        return try await work()
+    }
+}
+
+extension TeamsUXRegressionTests {
+    @MainActor func testRefreshRunsIndependentCallsConcurrentlyBoundedForTasks() async throws {
+        let stub = UXTransport()
+        let all = InFlight(), lists = InFlight()
+        let scopes = (1...6).map { "{\"scope\":\"project:\($0)\"}" }.joined(separator: ",")
+        stub.respond = { tool, _ in
+            try await all.around {
+                let reply = { try await Task.sleep(for: .milliseconds(40)) }
+                switch tool {
+                case "agent_list": return (200, #"{"result":{"agents":[]}}"#)
+                case "swarm_status": try await reply(); return (200, "{\"result\":{\"scopes\":[\(scopes)]}}")
+                case "task_list": return try await lists.around { try await reply(); return (200, #"{"result":{"tasks":[]}}"#) }
+                default: try await reply(); return (200, #"{"result":{"items":[]}}"#)
+                }
+            }
+        }
+        let model = TeamsModel(client: try stub.client(self))
+        await model.refresh()
+        model.stopStream()
+        XCTAssertEqual(stub.requests.filter { $0.0 == "task_list" }.count, 18)
+        XCTAssertGreaterThanOrEqual(all.peak, 5, "channels, swarms, questions, status and bots overlap")
+        XCTAssertEqual(lists.peak, 8, "task_list runs 8 at once, no more")
+    }
+}
