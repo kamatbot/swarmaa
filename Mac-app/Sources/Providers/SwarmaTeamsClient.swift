@@ -645,12 +645,9 @@ actor SwarmaTeamsClient {
                        as: BotWrapper.self).bot
     }
 
+    /// Returns the `routing_now` map itself, keyed by kind.
     func botRoutingPreview(id: String) async throws -> [String: TeamsRoutingNow] {
-        struct Preview: Decodable {
-            let routingNow: [String: TeamsRoutingNow]
-            private enum CodingKeys: String, CodingKey { case routingNow = "routing_now" }
-        }
-        return try await call("bot_routing_preview", ["bot_id": id], as: Preview.self).routingNow
+        try await call("bot_routing_preview", ["bot_id": id], as: [String: TeamsRoutingNow].self)
     }
 
     // MARK: Threads

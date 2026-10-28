@@ -279,6 +279,12 @@ final class TeamsModel: ObservableObject {
     }
     #endif
 
+    /// `bot_list` carries no `routing_now`; the settings pane fetches it with `bot_get`.
+    func refreshBot(_ id: String) async {
+        guard botsSupported, let fresh = try? await client.botGet(id: id) else { return }
+        replaceBot(fresh)
+    }
+
     private func replaceBot(_ bot: TeamsBot) {
         if let i = bots.firstIndex(where: { $0.id == bot.id }) { bots[i] = bot } else { bots.append(bot) }
     }

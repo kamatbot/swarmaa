@@ -32,6 +32,28 @@ enum ReleaseNotes {
     static var all: [ReleaseNote] {
         [
             ReleaseNote(
+                version: "1.26.0",
+                headline: L10n.t("Bots: persistent swarms with their own crew, routing and rules."),
+                changes: [
+                    ReleaseNote.Change(
+                        title: L10n.t("Bots home"),
+                        detail: L10n.t("Bots with updates or questions sit at the top with a badge. Their messages, task cards and questions appear in the right pane.")
+                    ),
+                    ReleaseNote.Change(
+                        title: L10n.t("Bot settings"),
+                        detail: L10n.t("Pick which service researches, edits and reviews, set a quota floor, require tests, and run a bot on a schedule.")
+                    ),
+                    ReleaseNote.Change(
+                        title: L10n.t("Usage in the sidebar"),
+                        detail: L10n.t("Each service shows a usage ring in the left rail. Hover it for the 5-hour and weekly limits.")
+                    ),
+                    ReleaseNote.Change(
+                        title: L10n.t("A new look"),
+                        detail: L10n.t("A calmer Kind Swarm design with a character for every agent.")
+                    ),
+                ]
+            ),
+            ReleaseNote(
                 version: "1.25.0",
                 headline: L10n.t("A main window for your agents: what needs you, their threads, swarms and questions."),
                 changes: [

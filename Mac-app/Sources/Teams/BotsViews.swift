@@ -302,6 +302,7 @@ struct BotSettingsPane: View {
         }
         .background(KS.paper)
         .onAppear(perform: load)
+        .task(id: bot.id) { await model.refreshBot(bot.id) }
     }
 
     private func load() {
