@@ -9,10 +9,8 @@ struct ThreadView: View {
     @State private var nearBottom = true
     @State private var answeringQuestion: TeamsQuestion?
 
-    private var messages: [TeamsMessage] {
-        guard !model.loadingThreads.contains(threadID), !model.staleThreads.contains(threadID), model.threadErrors[threadID] == nil else { return [] }
-        return model.messages[threadID] ?? []
-    }
+    /// Cached history stays on screen while it refreshes, goes stale or fails; the state shows as a banner above it.
+    private var messages: [TeamsMessage] { model.messages[threadID] ?? [] }
 
     var body: some View {
         VStack(spacing: 0) {

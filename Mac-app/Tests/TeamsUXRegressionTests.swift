@@ -328,6 +328,38 @@ extension TeamsUXRegressionTests {
         }
     }
 
+    @MainActor func testRetryableSendFailuresKeepThePendingPost() async throws {
+        for (code, payload) in [(429, "{}"), (408, "{}"), (200, "not json")] {
+            let stub = UXTransport()
+            stub.respond = { _, _ in (code, payload) }
+            let model = TeamsModel(client: try stub.client(self))
+            model.drafts["t"] = "maybe landed"
+            let sent = await model.sendDraft(threadID: "t")
+            XCTAssertFalse(sent)
+            XCTAssertNotNil(model.pendingSends["t"], "HTTP \(code) is retried with the same key, not rejected")
+            XCTAssertNil(model.rejectedSends["t"])
+        }
+    }
+
+    @MainActor func testFailedEventFetchKeepsHistoryAndReadReceipts() async throws {
+        let stub = UXTransport()
+        var failNext = false
+        stub.respond = { tool, _ in
+            if tool == "thread_mark_read" { return (200, #"{"result":{}}"#) }
+            if failNext { return (500, "{}") }
+            return (200, #"{"result":{"messages":[{"id":"m1","seq":1,"kind":"text"}],"has_more":false}}"#)
+        }
+        let model = TeamsModel(client: try stub.client(self))
+        await model.loadLatest("t")
+        model.select(threadID: "t", refreshHistory: false)
+        model.isVisible = true
+        failNext = true
+        await model.apply(TeamsEvent(cursor: nil, name: "message.created", threadID: "t", seq: 2, authorKind: "agent"))
+        XCTAssertNil(model.threadErrors["t"], "a failed fetch must not blank the open thread")
+        XCTAssertNotNil(model.staleError)
+        XCTAssertEqual(model.messages["t"]?.map(\.seq), [1])
+    }
+
     @MainActor func testVisibleEventsDrainReadAcknowledgmentsAndIgnoreOwner() async throws {
         let stub = UXTransport()
         var latest = 1

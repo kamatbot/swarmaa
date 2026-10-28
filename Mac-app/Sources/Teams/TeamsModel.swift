@@ -472,8 +472,10 @@ final class TeamsModel: ObservableObject {
             let failure = SwarmaTeamsClient.Failure.map(error)
             sendErrors[t] = failure.message
             switch failure {
-            case .service(.unreachable): break
-            case .service(.http(let code)) where (500..<600).contains(code): break
+            // Retryable with the same idempotency key: the post may already have landed (a timeout or an
+            // undecodable 2xx), or the service asked us to slow down.
+            case .service(.unreachable), .service(.badResponse): break
+            case .service(.http(let code)) where (500..<600).contains(code) || code == 408 || code == 429: break
             default:
                 rejectedSends[t] = pending
                 pendingSends[t] = nil
@@ -596,7 +598,12 @@ final class TeamsModel: ObservableObject {
                     if pageIndex == 99 { throw SwarmaClient.Failure.badResponse }
                     after = last
                 }
-            } catch { threadErrors[t] = SwarmaTeamsClient.Failure.map(error).message }
+                threadErrors[t] = nil
+            } catch {
+                // One failed event fetch is a connection problem, not a broken thread: keep the history on
+                // screen and read receipts flowing, and say so in the offline banner.
+                staleError = SwarmaTeamsClient.Failure.map(error).message
+            }
             if isOpen { markSelectedRead() }
         case "swarm.updated":
             guard let id = event.subjectID else { return }
