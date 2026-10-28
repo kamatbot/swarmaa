@@ -416,8 +416,10 @@ enum PushNotification {
     private var pendingPost: (thread: String, text: String, key: String)?
     let keychain: ConnectionKeychain
     init(keychain: ConnectionKeychain = ConnectionKeychain()) { self.keychain = keychain }
+    /// Whether home's collapsed "Hidden" section is open. Hidden bots never mix into the main list.
     var showHidden = false
-    var sortedBots: [Bot] { Bot.sorted(bots, includeArchived: showHidden) }
+    var sortedBots: [Bot] { Bot.sorted(bots) }
+    var hiddenBots: [Bot] { bots.filter(\.archived).sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending } }
     var starred: Bot? { Bot.shortcut(bots) }
     var scopes: [String] {
         Array(Set(status["scopes"].array.map { $0["scope"].string } + bots.map(\.scope))).filter { !$0.isEmpty }.sorted()
@@ -689,7 +691,9 @@ enum PushNotification {
         if openBot?.id == bot.id { openBot = updated }
     }
     func delete(_ bot: Bot, confirmName: String) async throws {
-        guard let service, bot.archived, confirmName == bot.name else { throw AppFailure.invalidResponse }
+        guard let service, confirmName == bot.name else { throw AppFailure.invalidResponse }
+        // The service deletes only hidden bots; hide it first when deleting straight from settings.
+        if !bot.archived { _ = try await service.call("bot_archive", ["bot_id": .string(bot.id)]) }
         let result = try await service.call("bot_delete", ["bot_id": .string(bot.id), "confirm_name": .string(confirmName)])
         guard result["deleted"].bool else { throw AppFailure.invalidResponse }
         removeBot(bot.id)

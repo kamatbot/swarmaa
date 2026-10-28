@@ -8,8 +8,9 @@ extension AppTests {
         let model = AppModel()
         model.bots = [hidden, visible]
         XCTAssertEqual(model.sortedBots.map(\.id), ["visible"])
+        XCTAssertEqual(model.hiddenBots.map(\.id), ["hidden"], "hidden bots sit in their own section")
         model.showHidden = true
-        XCTAssertEqual(Set(model.sortedBots.map(\.id)), Set(["visible", "hidden"]))
+        XCTAssertEqual(model.sortedBots.map(\.id), ["visible"], "expanding the section never mixes them in")
         XCTAssertNil(model.starred)
     }
 
@@ -23,8 +24,7 @@ extension AppTests {
         try await model.archive(bot)
         XCTAssertNil(model.openBot)
         XCTAssertTrue(model.sortedBots.isEmpty)
-        model.showHidden = true
-        var hidden = try XCTUnwrap(model.sortedBots.first)
+        var hidden = try XCTUnwrap(model.hiddenBots.first)
         XCTAssertTrue(hidden.archived)
         XCTAssertFalse(hidden.starred)
         try await model.unarchive(hidden)
@@ -32,7 +32,6 @@ extension AppTests {
         try await model.archive(bot)
         hidden = try XCTUnwrap(model.bots.first)
         do { try await model.delete(hidden, confirmName: "launch"); XCTFail("Accepted wrong case") } catch {}
-        do { try await model.delete(bot, confirmName: bot.name); XCTFail("Accepted visible bot") } catch {}
         let rejected = await socket.calls("bot_delete")
         XCTAssertTrue(rejected.isEmpty)
         model.openBot = hidden
@@ -47,6 +46,7 @@ extension AppTests {
         XCTAssertEqual(unarchives.first, .object(["bot_id": .string(bot.id)]))
         XCTAssertEqual(deletes, [.object(["bot_id": .string(bot.id), "confirm_name": .string(bot.name)])])
         XCTAssertEqual(lists.first?["include_archived"], .bool(true))
+        XCTAssertEqual(archives.count, 2, "no extra archive when the bot is already hidden")
         await service.transport.disconnect()
     }
 

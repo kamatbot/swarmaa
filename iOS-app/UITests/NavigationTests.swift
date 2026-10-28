@@ -5,13 +5,11 @@ import XCTest
         let app = XCUIApplication()
         app.launchArguments = ["-demo", "-hidden-bot-demo"]
         app.launch()
-        let toggle = app.switches["Show hidden"]
-        XCTAssertTrue(toggle.waitForExistence(timeout: 10))
-        XCTAssertTrue(toggle.isHittable)
-        XCTAssertGreaterThan(toggle.frame.midY, app.frame.midY)
+        XCTAssertFalse(app.switches["Show hidden"].exists)
+        let section = app.buttons["hidden-section"]
+        XCTAssertTrue(section.waitForExistence(timeout: 10))
         XCTAssertFalse(app.buttons["bot-notes"].exists)
-        toggle.coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.5)).tap()
-        XCTAssertEqual(toggle.value as? String, "1")
+        section.tap()
         app.scrollViews.firstMatch.swipeUp()
         let hidden = app.buttons["bot-notes"]
         XCTAssertTrue(hidden.waitForExistence(timeout: 3))
@@ -27,7 +25,7 @@ import XCTest
         app.buttons["Bot settings"].tap()
         XCTAssertTrue(app.buttons["Hide bot"].waitForExistence(timeout: 3))
         XCTAssertGreaterThan(app.buttons["Hide bot"].frame.midY, app.frame.midY)
-        XCTAssertFalse(app.buttons["Delete bot…"].exists)
+        XCTAssertTrue(app.buttons["Delete bot…"].exists, "delete is offered on visible bots too")
     }
 
     func testDemoNavigationAndSingleStarredShortcut() {

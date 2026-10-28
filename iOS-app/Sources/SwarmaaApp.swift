@@ -88,6 +88,7 @@ struct SwarmaaShortcuts: AppShortcutsProvider {
 enum KS {
     static let ink = Color(hex: 0x15111F), paper = Color(hex: 0xF4EFE6), lime = Color(hex: 0xCFE08A)
     static let coral = Color(hex: 0xE8836B), sage = Color(hex: 0xF1F5E2), coralTint = Color(hex: 0xFBEFE7)
+    static let danger = Color(hex: 0xC8452F)
     static let sky = Color(hex: 0xB7CCE8), butter = Color(hex: 0xEAD9A6), lilac = Color(hex: 0xD9CDEE)
     static let soft = Color(hex: 0x3A3347), muted = Color(hex: 0x5A5168)
     static func body(_ size: CGFloat = 16, _ weight: Font.Weight = .regular) -> Font { .system(size: size, weight: weight).width(.condensed) }
@@ -111,12 +112,15 @@ extension View {
 struct Pill: ButtonStyle {
     var fill: Color = .white
     var primary = false
+    /// Hide and delete: red text and outline.
+    var danger = false
     @Environment(\.isEnabled) var enabled
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label.font(KS.body(16, .semibold)).foregroundStyle(KS.ink)
+        configuration.label.font(KS.body(16, .semibold)).foregroundStyle(danger ? KS.danger : KS.ink)
             .padding(.horizontal, 14).frame(minHeight: primary ? 54 : 44)
-            .frame(maxWidth: primary ? .infinity : nil)
+            .frame(maxWidth: primary || danger ? .infinity : nil)
             .card(fill, radius: 28, shadow: primary && !configuration.isPressed)
+            .overlay { if danger { RoundedRectangle(cornerRadius: 28).stroke(KS.danger, lineWidth: 2.5) } }
             .opacity(enabled ? 1 : 0.45)
             .offset(y: configuration.isPressed ? 2 : 0)
     }
@@ -305,7 +309,46 @@ struct RootView: View {
             if model.loading { ProgressView("Loading your bots").padding() }
             ScrollView {
                 LazyVStack(spacing: 0) {
-                    ForEach(model.sortedBots.filter { search.isEmpty || ($0.name + " " + $0.job).localizedCaseInsensitiveContains(search) }) { bot in
+                    ForEach(model.sortedBots.filter(matches)) { bot in
+                        row(bot)
+                        Divider().overlay(KS.ink.opacity(0.12))
+                    }
+                    let hidden = model.hiddenBots.filter(matches)
+                    if !hidden.isEmpty {
+                        Button { model.showHidden.toggle() } label: {
+                            HStack(spacing: 8) {
+                                Image(systemName: model.showHidden ? "chevron.down" : "chevron.right").font(.system(size: 12, weight: .bold))
+                                Text("HIDDEN · \(hidden.count)").font(KS.mono(12)).tracking(1)
+                                Spacer()
+                            }.foregroundStyle(KS.muted).frame(minHeight: 44).contentShape(Rectangle())
+                        }.buttonStyle(.plain).padding(.horizontal, 4).padding(.top, 8)
+                            .accessibilityLabel("Hidden bots, \(hidden.count)").accessibilityIdentifier("hidden-section")
+                        if model.showHidden {
+                            ForEach(hidden) { bot in
+                                row(bot)
+                                Divider().overlay(KS.ink.opacity(0.12))
+                            }
+                        }
+                    }
+                    if model.sortedBots.isEmpty && hidden.isEmpty && !model.loading { empty("No bots yet. Open You to make your first bot.") }
+                }.padding(.horizontal, 16)
+            }
+            HStack(spacing: 12) {
+                HStack { Image(systemName: "magnifyingglass"); TextField("Search bots", text: $search).accessibilityLabel("Search bots") }
+                    .padding(.horizontal, 18).frame(height: 54).card(.white, radius: 28, shadow: true)
+                if let starred = model.starred {
+                    Button { open(starred) } label: {
+                        Moji(seed: starred.raw["lead_agent_id"].string, size: 44).frame(width: 54, height: 54).card(.white, radius: 28, shadow: true)
+                            .overlay(alignment: .bottomLeading) { Image(systemName: "star.fill").font(.system(size: 10)).padding(5).background(KS.butter, in: Circle()).overlay(Circle().stroke(KS.ink, lineWidth: 2)) }
+                    }.buttonStyle(.plain).accessibilityLabel("Open starred bot").accessibilityIdentifier("starred-shortcut")
+                }
+            }.padding(18).padding(.bottom, 6)
+        }
+    }
+    private func matches(_ bot: Bot) -> Bool {
+        search.isEmpty || (bot.name + " " + bot.job).localizedCaseInsensitiveContains(search)
+    }
+    private func row(_ bot: Bot) -> some View {
                         Button { open(bot) } label: {
                             HStack(spacing: 12) {
                                 Moji(seed: bot.raw["lead_agent_id"].string, size: 46)
@@ -325,23 +368,6 @@ struct RootView: View {
                                 }
                             }.padding(.vertical, 14).padding(.horizontal, 4).contentShape(Rectangle())
                         }.buttonStyle(.plain).opacity(bot.archived ? 0.5 : 1).accessibilityIdentifier("bot-" + bot.id)
-                        Divider().overlay(KS.ink.opacity(0.12))
-                    }
-                    if model.sortedBots.isEmpty && !model.loading { empty("No bots yet. Open You to make your first bot.") }
-                }.padding(.horizontal, 16)
-            }
-            Toggle("Show hidden", isOn: $model.showHidden).font(KS.body(14)).padding(.horizontal, 20).frame(minHeight: 44)
-            HStack(spacing: 12) {
-                HStack { Image(systemName: "magnifyingglass"); TextField("Search bots", text: $search).accessibilityLabel("Search bots") }
-                    .padding(.horizontal, 18).frame(height: 54).card(.white, radius: 28, shadow: true)
-                if let starred = model.starred {
-                    Button { open(starred) } label: {
-                        Moji(seed: starred.raw["lead_agent_id"].string, size: 44).frame(width: 54, height: 54).card(.white, radius: 28, shadow: true)
-                            .overlay(alignment: .bottomLeading) { Image(systemName: "star.fill").font(.system(size: 10)).padding(5).background(KS.butter, in: Circle()).overlay(Circle().stroke(KS.ink, lineWidth: 2)) }
-                    }.buttonStyle(.plain).accessibilityLabel("Open starred bot").accessibilityIdentifier("starred-shortcut")
-                }
-            }.padding(18).padding(.bottom, 6)
-        }
     }
     private var thread: some View {
         VStack(spacing: 0) {
@@ -780,16 +806,12 @@ struct SettingsView: View {
                     saving = true
                     Task { defer { saving = false }; do { try await model.save(draft); close() } catch { self.error = safeError(error) } }
                 }.buttonStyle(Pill(fill: KS.lime, primary: true)).disabled(saving || model.isDemo || draft.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || draft.job.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                HStack {
-                    if savedBot.archived {
-                        Button("Unhide") { changeVisibility() }.frame(maxWidth: .infinity, minHeight: 44)
-                        Button("Delete bot…", role: .destructive) { confirmName = ""; confirmingDelete = true }
-                            .foregroundStyle(.red).frame(maxWidth: .infinity, minHeight: 44)
-                    } else {
-                        Button("Hide bot", role: .destructive) { changeVisibility() }
-                            .foregroundStyle(.red).frame(maxWidth: .infinity, minHeight: 44)
-                    }
-                }.buttonStyle(.plain).disabled(saving || model.isDemo)
+                HStack(spacing: 12) {
+                    Button(savedBot.archived ? "Unhide" : "Hide bot") { changeVisibility() }
+                        .buttonStyle(Pill(danger: !savedBot.archived)).frame(maxWidth: .infinity)
+                    Button("Delete bot…") { confirmName = ""; confirmingDelete = true }
+                        .buttonStyle(Pill(danger: true)).frame(maxWidth: .infinity)
+                }.disabled(saving || model.isDemo)
             }.padding(20)
         }
         .alert("Delete bot permanently?", isPresented: $confirmingDelete) {
@@ -804,7 +826,7 @@ struct SettingsView: View {
                 }
             }.disabled(confirmName != savedBot.name || saving)
         } message: {
-            Text("This permanently deletes the bot and its chat. Type “" + savedBot.name + "” to confirm.")
+            Text("This hides the bot and permanently deletes it and its chat. Type “" + savedBot.name + "” to confirm.")
         }
     }
     private func changeVisibility() {
