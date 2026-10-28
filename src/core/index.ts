@@ -18,7 +18,7 @@ import { TeamService } from './teams.js';
 import { TOOL_PERMISSIONS, TOOLS } from './tools.js';
 
 const workerTools = new Set(['usage_report','task_claim','task_heartbeat','task_checkpoint','task_finish','artifact_put']);
-const ownerTools = new Set(['memory_promote','memory_retract','flow_approve','task_resolve']);
+const ownerTools = new Set(['memory_promote','memory_retract','flow_approve']);
 const responseReadPermissions:Partial<Record<string,Permission>> = {
   task_watch:'events:read',flow_start:'task:read',flow_cancel:'task:read',flow_approve:'task:read',
   memory_propose:'memory:read',memory_promote:'memory:read',memory_retract:'memory:read',

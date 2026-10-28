@@ -468,7 +468,8 @@ Persistent agents, conversation threads, turn execution, read cursors and real-t
   - `after_seq`? (integer): fetch messages with `seq > after_seq` (oldest first)
   - `before_seq`? (integer): fetch messages with `seq < before_seq` (newest first, reversed to chronological order)
   - `limit`? (integer 1-100, default 50)
-- **Output:** `{ thread, messages: MessageView[] }`.
+- With neither cursor, returns the newest `limit` messages in ascending sequence order; `has_more` indicates older messages. `before_seq` takes precedence when both cursors are supplied.
+- **Output:** `{ thread_id, messages: MessageView[], has_more }`. Body and ref are unchanged. Question messages embed `question: {id, prompt, options, multi, free_text, status, swarm_step_id, created_at, answer: {choices, text} | null}`; answer messages embed `answer: {question_id, choices, text}`. Swarm messages embed the `swarm_get` swarm object, including steps and progress, when the caller has `task:read`. Card references are restricted to the thread's tenant and scope; unavailable references are omitted. Cards are fetched in batches.
 
 #### `thread_mark_read`
 - **Permissions:** `thread:read`
@@ -597,12 +598,12 @@ Persistent agents, conversation threads, turn execution, read cursors and real-t
     - Blocked or waiting swarms.
 
 #### `task_resolve`
-- **Permissions:** `admin` role (owner only)
+- **Permissions:** `answer_questions` (admins included), in the task scope; Grok and Dot are refused by name.
 - **Input:**
   - `task_id` (UUID)
   - `resolved` (boolean)
   - `expected_version` (integer)
-- **Output:** `{ task: TaskView }`. Sets or clears `resolved_at` timestamp on task, removing or restoring it in `attention_list`.
+- **Output:** `{ task: TaskView }`. Sets or clears `resolved_at` timestamp on task, removing or restoring it in `attention_list`. Running or queued tasks return 409 `task_active`.
 
 ### Updated Task Filters
 
@@ -640,3 +641,5 @@ Agent turns do not use a separate MCP server in worker CLIs. Instead:
 - **Event types:** `message.created`, `message.updated`, `thread.read`, `agent.updated`, `swarm.updated`, `question.created`, `question.answered`.
 - **Payloads:** Metadata and IDs only (no message bodies or task results). Reconnecting with `after=<cursor>` resumes without event loss.
 - **Heartbeat:** Sends `:keepalive` comment frames every 15 seconds. Uses TCP nodelay for low latency (< 1 s delivery).
+
+Streams share one LISTEN connection per service pool. Transactional `swarmaa_events` notifications wake all streams; full batches drain immediately, with a 2 s safety poll and listener reconnection backoff. The durable xmin/cursor visibility rules are unchanged.
