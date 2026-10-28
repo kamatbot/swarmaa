@@ -5,16 +5,20 @@ import SwiftUI
 /// One at a time; reopening brings it forward and refreshes.
 @MainActor
 final class TeamsWindowController: NSObject, NSWindowDelegate {
-    private var window: NSWindow?
-    let model = TeamsModel()
+    private(set) var window: NSWindow?
+    let model: TeamsModel
+    init(model: TeamsModel? = nil) { self.model = model ?? TeamsModel(); super.init() }
 
     /// `threadID` opens straight onto that thread (a notch swarm or question).
-    func show(threadID: String? = nil) {
+    func show(threadID: String? = nil, connect: Bool = true) {
         if window == nil {
             let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1100, height: 720),
                                   styleMask: [.titled, .closable, .miniaturizable, .resizable],
                                   backing: .buffered, defer: false)
             window.title = "Swarmaa"
+            window.setAccessibilityElement(true)
+            window.setAccessibilityRole(.window)
+            window.setAccessibilityLabel("Swarmaa")
             window.minSize = NSSize(width: 820, height: 520)
             window.contentView = NSHostingView(rootView: TeamsRootView(model: model))
             window.isReleasedWhenClosed = false
@@ -23,19 +27,20 @@ final class TeamsWindowController: NSObject, NSWindowDelegate {
             if !window.setFrameUsingName("SwarmaaTeamsWindow") { window.center() }
             self.window = window
             // The first time the window opens, show the setup checklist if anything is wrong.
-            Task { [model] in
+            if connect { Task { [model] in
                 await model.runSetup()
                 if model.setupRows.contains(where: { $0.state == .needsSetup }) { model.showSetup = true }
-            }
+            } }
         }
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
         model.isVisible = true
         if let threadID { model.select(threadID: threadID) }
-        Task { await model.refresh() }
+        if connect { Task { await model.refresh() } }
     }
 
     func windowDidBecomeKey(_ notification: Notification) { model.isVisible = true }
+    func windowDidResignKey(_ notification: Notification) { model.isVisible = false }
     func windowDidMiniaturize(_ notification: Notification) { model.isVisible = false }
     func windowDidDeminiaturize(_ notification: Notification) { model.isVisible = true }
     func windowWillClose(_ notification: Notification) {
@@ -48,10 +53,22 @@ struct TeamsRootView: View {
     @ObservedObject var model: TeamsModel
 
     var body: some View {
-        HStack(spacing: 0) {
-            TeamsRail(model: model)
+        VStack(spacing: 0) {
+            VStack(spacing: 0) {
+                content
+                if model.staleError != nil || model.streamState != "Live" {
+                    HStack {
+                        VStack(alignment: .leading) {
+                            Text(model.staleError == nil ? model.streamState : "Offline · " + (model.staleError ?? ""))
+                            if let date = model.lastUpdated { Text("Last updated \(date, style: .relative) ago").font(.caption) }
+                        }
+                        Spacer()
+                        Button("Retry") { Task { await model.refresh() } }
+                    }.padding(12)
+                }
+            }
             Divider()
-            content
+            TeamsRail(model: model)
         }
         .frame(minWidth: 820, minHeight: 520)
         .foregroundStyle(Palette.textPrimary)
@@ -61,6 +78,7 @@ struct TeamsRootView: View {
         .sheet(item: Binding(get: { model.detailSwarmID.map(SwarmID.init) }, set: { model.detailSwarmID = $0?.id })) {
             SwarmDetailView(model: model, swarmID: $0.id)
         }
+        .sheet(isPresented: $model.creatingAgent) { CreateAgentSheet(model: model) }
         .sheet(isPresented: $model.showSetup) { SetupChecklistView(model: model) { model.showSetup = false } }
     }
 
@@ -89,7 +107,7 @@ struct TeamsRootView: View {
                     HSplitView {
                         TeamsSidebar(model: model).frame(minWidth: 240, idealWidth: 280, maxWidth: 360)
                         Group {
-                            if let t = model.selectedThreadID { ThreadView(model: model, threadID: t) }
+                            if let t = model.selectedThreadID { ThreadView(model: model, threadID: t).id(t) }
                             else {
                                 TeamsEmptyState(symbol: "bubble.left.and.bubble.right", title: L10n.t("Choose an agent or channel"),
                                                 detail: nil, action: nil)
@@ -111,7 +129,7 @@ struct TeamsRail: View {
     @ObservedObject var model: TeamsModel
 
     var body: some View {
-        VStack(spacing: 14) {
+        HStack(spacing: 14) {
             item("tray.full.fill", L10n.t("Needs you"), .home)
                 .overlay(alignment: .topTrailing) {
                     if !model.attention.isEmpty {
@@ -123,22 +141,23 @@ struct TeamsRail: View {
                 }
             item("checklist", L10n.t("Tasks"), .tasks)
             item("person.2.fill", L10n.t("Agents"), .agents)
-            item("point.3.connected.trianglepath.dotted", L10n.t("Flows"), .flows)
+            item("point.3.connected.trianglepath.dotted", L10n.t("Swarms"), .flows)
             item("chart.pie.fill", L10n.t("Usage"), .usage)
-            Divider().frame(width: 28)
+            Divider().frame(height: 28)
             ForEach(model.status?.usage ?? [], id: \.provider) { usage in
                 Button { model.pane = .usage } label: { QuotaRing(usage: usage) }
                     .buttonStyle(.plain)
+                    .accessibilityLabel(SwarmaCells.vendorName(usage.provider) + " quota")
+                    .accessibilityValue(usage.headroom.map { "\(Int($0)) percent left" } ?? "Unknown")
                     .help("\(SwarmaCells.vendorName(usage.provider)): \(usage.headroom.map { "\(Int($0))% " + L10n.t("left") } ?? L10n.t("unknown"))")
             }
-            Spacer()
             Button { AppDelegate.shared?.openSettings() } label: {
                 Image(systemName: "gearshape").font(.system(size: 17)).frame(width: 36, height: 36)
             }
-            .buttonStyle(.plain).foregroundStyle(Palette.textSecondary).help(L10n.t("Settings"))
+            .buttonStyle(.plain).foregroundStyle(Palette.textSecondary).help(L10n.t("Settings")).accessibilityLabel("Settings")
         }
-        .padding(.vertical, 14)
-        .frame(width: 60)
+        .padding(.horizontal, 14).padding(.vertical, 8)
+        .frame(maxWidth: .infinity)
     }
 
     private func item(_ symbol: String, _ title: String, _ pane: TeamsModel.Pane) -> some View {
@@ -151,6 +170,7 @@ struct TeamsRail: View {
         .foregroundStyle(model.pane == pane ? Palette.textPrimary : Palette.textSecondary)
         .help(title)
         .accessibilityLabel(title)
+        .accessibilityAddTraits(model.pane == pane ? .isSelected : [])
     }
 }
 
@@ -184,8 +204,6 @@ struct TeamsSidebar: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            TextField(L10n.t("Search"), text: $model.search)
-                .textFieldStyle(.roundedBorder).padding(10)
             List(selection: Binding(get: { model.selectedThreadID }, set: { model.select(threadID: $0) })) {
                 ForEach(model.visibleSections, id: \.section.id) { entry in
                     Section(entry.section.name) {
@@ -196,6 +214,9 @@ struct TeamsSidebar: View {
                 }
             }
             .listStyle(.sidebar)
+            if model.visibleSections.isEmpty { Text("No matching agents or channels").padding() }
+            TextField(L10n.t("Search"), text: $model.search).textFieldStyle(.roundedBorder).padding(10)
+            Button("Create agent…") { model.creatingAgent = true }.padding(12)
         }
     }
 }
@@ -208,19 +229,19 @@ struct TeamsRowView: View {
             TeamsAvatar(seed: row.avatarSeed, name: row.name, isChannel: row.isChannel)
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
-                    Text(verbatim: row.isChannel ? "# " + row.name : row.name).font(.system(size: 13, weight: .semibold)).lineLimit(1)
+                    Text(verbatim: row.isChannel ? "# " + row.name : row.name).font(.system(size: 13, weight: .semibold)).lineLimit(2)
                     if let role = row.role, !role.isEmpty { RoleBadge(role: role) }
                     Spacer(minLength: 4)
                     if let time = row.time {
                         Text(time, format: .relative(presentation: .numeric, unitsStyle: .narrow))
-                            .font(.system(size: 11)).foregroundStyle(Palette.textSecondary).lineLimit(1)
+                            .font(.caption).foregroundStyle(Palette.textSecondary).lineLimit(2)
                     }
                 }
                 HStack(spacing: 6) {
                     Text(verbatim: row.status == "waiting_on_you" ? L10n.t("Waiting on you") : row.preview)
-                        .font(.system(size: 12))
+                        .font(.callout)
                         .foregroundStyle(row.status == "waiting_on_you" ? Palette.watch : Palette.textSecondary)
-                        .lineLimit(1)
+                        .lineLimit(2)
                     Spacer(minLength: 4)
                     if row.unread > 0 {
                         Text(verbatim: row.unread > 99 ? "99+" : "\(row.unread)")
@@ -239,7 +260,7 @@ struct TeamsRowView: View {
 struct RoleBadge: View {
     let role: String
     var body: some View {
-        Text(verbatim: role).font(.system(size: 10, weight: .medium)).lineLimit(1)
+        Text(verbatim: role).font(.system(size: 10, weight: .medium)).lineLimit(2)
             .foregroundStyle(Palette.textSecondary)
             .padding(.horizontal, 5).padding(.vertical, 1)
             .background(Capsule().fill(Palette.barTrack))
@@ -290,13 +311,13 @@ struct TeamsEmptyState: View {
 
 struct CreateFirstAgentView: View {
     @ObservedObject var model: TeamsModel
-    @State private var creating = false
 
     var body: some View {
-        TeamsEmptyState(symbol: "person.crop.circle.badge.plus", title: L10n.t("Create your first agent"),
-                        detail: L10n.t("An agent is a teammate with a name, a role and a thread you come back to."),
-                        action: (L10n.t("Create agent…"), { creating = true }))
-            .sheet(isPresented: $creating) { CreateAgentSheet(model: model) }
+        VStack {
+            TeamsEmptyState(symbol: "person.crop.circle.badge.plus", title: L10n.t("Create your first agent"),
+                            detail: L10n.t("An agent is a teammate with a name, a role and a thread you come back to."), action: nil)
+            Button("Create agent…") { model.creatingAgent = true }.buttonStyle(.borderedProminent).padding(12)
+        }
     }
 }
 
@@ -331,7 +352,7 @@ struct CreateAgentSheet: View {
                 Toggle(L10n.t("May edit files"), isOn: $edits)
                 VStack(alignment: .leading, spacing: 4) {
                     Text(verbatim: L10n.t("Instructions"))
-                    TextEditor(text: $instructions).font(.body).frame(height: 110)
+                    TextEditor(text: $instructions).accessibilityLabel("Instructions").font(.body).frame(height: 110)
                         .overlay(RoundedRectangle(cornerRadius: 5).stroke(Palette.barTrack))
                 }
             }
@@ -353,7 +374,7 @@ struct CreateAgentSheet: View {
                 .keyboardShortcut(.defaultAction).disabled(!ready)
             }
         }
-        .padding(20).frame(width: 460)
+        .padding(20).frame(width: 460).fixedSize(horizontal: false, vertical: true)
         .onAppear { if scope.isEmpty, let first = scopes.first { scope = first } }
     }
 }

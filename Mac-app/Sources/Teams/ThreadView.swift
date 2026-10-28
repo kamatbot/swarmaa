@@ -6,18 +6,23 @@ struct ThreadView: View {
     @ObservedObject var model: TeamsModel
     let threadID: String
 
+    @State private var nearBottom = true
+    @State private var answeringQuestion: TeamsQuestion?
+
     private var messages: [TeamsMessage] { model.messages[threadID] ?? [] }
 
     var body: some View {
         VStack(spacing: 0) {
-            ThreadHeader(model: model, threadID: threadID)
-            Divider()
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 10) {
                         if model.hasOlder[threadID] == true {
                             ProgressView().controlSize(.small).frame(maxWidth: .infinity)
                                 .onAppear { Task { await model.loadOlder(threadID) } }
+                        }
+                        if model.loadingThreads.contains(threadID) { ProgressView("Loading messages") }
+                        if let error = model.threadErrors[threadID] {
+                            Text(error)
                         }
                         if messages.isEmpty, model.messages[threadID] != nil {
                             Text(verbatim: L10n.t("No messages yet. Say hello below."))
@@ -28,15 +33,68 @@ struct ThreadView: View {
                     .padding(16)
                 }
                 .defaultScrollAnchor(.bottom)
+                .onScrollGeometryChange(for: Bool.self) { geometry in
+                    geometry.contentOffset.y + geometry.containerSize.height >= geometry.contentSize.height - 80
+                } action: { _, value in nearBottom = value }
+                .onChange(of: model.targetQuestionID) { _, target in
+                    if let target, let message = messages.first(where: { $0.question?.id == target || $0.ref?.questionID == target }) {
+                        proxy.scrollTo(message.id, anchor: .center)
+                    }
+                }
                 .onChange(of: messages.last?.id) { _, last in
-                    guard let last else { return }
+                    guard let last, nearBottom else { return }
                     withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(last, anchor: .bottom) }
                     model.markSelectedRead()
                 }
+                .task(id: "\(model.targetQuestionID ?? ""):\(messages.count)") {
+                    guard let target = model.targetQuestionID else { return }
+                    if let message = messages.first(where: { $0.question?.id == target || $0.ref?.questionID == target }) {
+                        proxy.scrollTo(message.id, anchor: .center)
+                        if message.question?.status == "open" { answeringQuestion = message.question }
+                        model.targetQuestionID = nil
+                    } else if model.hasOlder[threadID] == true {
+                        // A changed page count restarts this task, including when
+                        // scroll-up already had an older-page request in flight.
+                        await model.loadOlder(threadID)
+                    }
+                }
             }
             Divider()
-            Composer(model: model, threadID: threadID)
+            HStack {
+                if model.threadErrors[threadID] != nil {
+                    Button("Retry history") { Task { await model.loadLatest(threadID) } }
+                }
+                let questions = messages.compactMap(\.question).filter { $0.status == "open" }
+                if !questions.isEmpty {
+                    Menu("Answer question (\(questions.count))") {
+                        ForEach(questions) { q in Button(q.prompt) { answeringQuestion = q } }
+                    }
+                }
+                let swarmMessages = messages.filter { $0.kind == .swarm }
+                if !swarmMessages.isEmpty {
+                    Menu("Open swarm") {
+                        ForEach(swarmMessages) { message in
+                            if let id = message.swarm?.id ?? message.ref?.swarmID {
+                                Button(model.swarms[id]?.title ?? message.swarm?.title ?? "Swarm") { model.detailSwarmID = id }
+                            }
+                        }
+                    }
+                }
+                Spacer()
+            }.padding(.horizontal, 16)
+            ThreadHeader(model: model, threadID: threadID)
+            Composer(model: model, threadID: threadID).id(threadID)
         }
+        .sheet(item: $answeringQuestion) { question in
+            VStack {
+                QuestionCard(model: model, question: currentQuestion(question)).padding()
+                HStack { Spacer(); Button("Done") { answeringQuestion = nil }.keyboardShortcut(.cancelAction) }.padding()
+            }.frame(width: 520).fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func currentQuestion(_ question: TeamsQuestion) -> TeamsQuestion {
+        messages.compactMap(\.question).first { $0.id == question.id } ?? question
     }
 }
 
@@ -97,8 +155,11 @@ struct RunnerPicker: View {
             Divider()
             ForEach(model.runnerProviders, id: \.provider) { p in
                 Menu(Self.providerTitle(p)) {
+                    ForEach(Array(Set(model.agents.filter { $0.runner.provider == p.provider }.compactMap { $0.runner.model })).sorted(), id: \.self) { name in
+                        Button(name) { set(TeamsRunner(provider: p.provider, model: name, effort: agent.runner.effort)) }
+                    }
                     ForEach(Self.efforts, id: \.self) { effort in
-                        let runner = TeamsRunner(provider: p.provider, effort: effort)
+                        let runner = agent.runner.changing(provider: p.provider, effort: effort)
                         Button { set(runner) } label: {
                             check(agent.runner.provider == p.provider && agent.runner.effort == effort, runner.label)
                         }
@@ -110,6 +171,7 @@ struct RunnerPicker: View {
             Text(verbatim: agent.runner.label)
         }
         .menuStyle(.borderlessButton).fixedSize()
+        .disabled(model.savingRunners.contains(agent.id))
         .help(L10n.t("Runner: which provider answers this agent. Changing it keeps the thread."))
     }
 
@@ -144,7 +206,8 @@ struct MessageRow: View {
         case .swarm: SwarmCard(model: model, message: message)
         case .run: RunCard(run: message.run, count: message.ref?.taskIDs.count ?? 0)
         case .question:
-            if let q = message.question { QuestionCard(model: model, question: q) }
+            if let q = message.question { QuestionCard(model: model, question: q, interactive: false) }
+            else { TextBubble(model: model, message: message) }
         case .answer: AnswerBubble(answer: message.answer)
         case .unknown: EmptyView()
         }
@@ -161,11 +224,7 @@ struct TextBubble: View {
 
     /// Agent bodies are untrusted text: shown, never acted on. Inline
     /// Markdown only, so nothing renders as more than styled text and links.
-    private var text: AttributedString {
-        let body = message.body ?? ""
-        return (try? AttributedString(markdown: body, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)))
-            ?? AttributedString(body)
-    }
+    @State private var text = AttributedString()
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
@@ -175,8 +234,8 @@ struct TextBubble: View {
             VStack(alignment: message.isHuman ? .trailing : .leading, spacing: 3) {
                 if !message.isHuman {
                     HStack(spacing: 6) {
-                        Text(verbatim: author).font(.system(size: 12, weight: .semibold))
-                        if let date = message.createdAt { Text(date, style: .time).font(.system(size: 11)).foregroundStyle(Palette.textSecondary) }
+                        Text(verbatim: author).font(.callout.weight(.semibold))
+                        if let date = message.createdAt { Text(date, style: .time).font(.caption).foregroundStyle(Palette.textSecondary) }
                     }
                 }
                 Text(text).textSelection(.enabled)
@@ -188,6 +247,10 @@ struct TextBubble: View {
             if !message.isHuman { Spacer(minLength: 60) }
         }
         .frame(maxWidth: .infinity, alignment: message.isHuman ? .trailing : .leading)
+        .task(id: message.body) {
+            let body = message.body ?? ""
+            text = (try? AttributedString(markdown: body, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(body)
+        }
     }
 }
 
@@ -209,7 +272,7 @@ struct ServiceLine: View {
     let text: String
     var body: some View {
         Label { Text(verbatim: text) } icon: { Image(systemName: symbol) }
-            .font(.system(size: 12)).foregroundStyle(Palette.textSecondary)
+            .font(.callout).foregroundStyle(Palette.textSecondary)
             .frame(maxWidth: .infinity)
     }
 }
@@ -232,7 +295,6 @@ private struct CardBox<Content: View>: View {
 struct SwarmCard: View {
     @ObservedObject var model: TeamsModel
     let message: TeamsMessage
-    @State private var expanded = false
 
     private var swarm: TeamsSwarm? {
         message.ref?.swarmID.flatMap { model.swarms[$0] } ?? message.swarm
@@ -242,25 +304,17 @@ struct SwarmCard: View {
         CardBox {
             if let swarm {
                 HStack(spacing: 8) {
-                    Button { expanded.toggle() } label: {
-                        Image(systemName: expanded ? "chevron.down" : "chevron.right").frame(width: 14)
-                    }
-                    .buttonStyle(.plain).accessibilityLabel(expanded ? L10n.t("Hide steps") : L10n.t("Show steps"))
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(verbatim: swarm.title).font(.system(size: 13, weight: .semibold))
-                        Text(verbatim: TeamsCopy.swarmStatus(swarm.status)).font(.system(size: 11))
+                        Text(verbatim: swarm.title).font(.body.weight(.semibold))
+                        Text(verbatim: TeamsCopy.swarmStatus(swarm.status)).font(.caption)
                             .foregroundStyle(swarm.status == "waiting_on_you" ? Palette.watch : Palette.textSecondary)
                     }
                     Spacer()
                     Text(verbatim: "\(swarm.progress.done)/\(swarm.progress.total)").font(.system(size: 13, weight: .bold).monospacedDigit())
-                    Button { model.detailSwarmID = swarm.id } label: { Image(systemName: "chevron.right.circle") }
-                        .buttonStyle(.plain).help(L10n.t("Open swarm"))
                 }
                 ProgressView(value: Double(swarm.progress.done), total: Double(max(swarm.progress.total, 1)))
                     .tint(Palette.ample)
-                if expanded {
-                    ForEach(swarm.steps) { SwarmStepRow(model: model, step: $0) }
-                }
+                Text("Open this swarm using the menu below").font(.caption)
             } else {
                 Text(verbatim: L10n.t("Swarm")).foregroundStyle(Palette.textSecondary)
             }
@@ -287,10 +341,10 @@ struct SwarmStepRow: View {
         let (icon, color) = Self.symbol(step.status)
         HStack(spacing: 8) {
             Image(systemName: icon).foregroundStyle(color)
-            Text(verbatim: step.title).font(.system(size: 12)).lineLimit(2)
+            Text(verbatim: step.title).font(.callout).lineLimit(2)
             Spacer()
             if let a = model.agent(id: step.assigneeAgentID) {
-                Text(verbatim: a.name).font(.system(size: 11)).foregroundStyle(Palette.textSecondary)
+                Text(verbatim: a.name).font(.caption).foregroundStyle(Palette.textSecondary)
             }
         }
     }
@@ -299,28 +353,26 @@ struct SwarmStepRow: View {
 struct RunCard: View {
     let run: TeamsRun?
     let count: Int
-    @State private var expanded = false
 
     var body: some View {
         CardBox {
-            Button { expanded.toggle() } label: {
+            Group {
                 HStack {
                     Image(systemName: "square.stack.3d.up")
                     Text(verbatim: run?.summary ?? (count == 1 ? L10n.t("Ran 1 subagent") : L10n.t("Ran \(count) subagents")))
-                        .font(.system(size: 12))
+                        .font(.callout)
                     Spacer()
-                    if run?.tasks.isEmpty == false { Image(systemName: expanded ? "chevron.down" : "chevron.right") }
                 }
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain).foregroundStyle(Palette.textSecondary)
-            if expanded, let run {
+            if let run {
                 ForEach(run.tasks, id: \.id) { t in
                     let (icon, color) = SwarmStepRow.symbol(t.status == "completed" ? "done" : t.status ?? "pending")
                     HStack(spacing: 8) {
                         Image(systemName: icon).foregroundStyle(color)
                         Text(verbatim: String(t.id.prefix(8))).font(.system(size: 11, design: .monospaced))
-                        if let p = t.provider { Text(verbatim: SwarmaCells.vendorName(p)).font(.system(size: 11)) }
+                        if let p = t.provider { Text(verbatim: SwarmaCells.vendorName(p)).font(.caption) }
                         Spacer()
                     }
                 }
@@ -333,40 +385,20 @@ struct RunCard: View {
 struct QuestionCard: View {
     @ObservedObject var model: TeamsModel
     let question: TeamsQuestion
+    var interactive = true
     @State private var choices: [String] = []
     @State private var text = ""
     @State private var sending = false
 
+    @State private var contentHeight: CGFloat = 200
     var body: some View {
-        CardBox {
-            if question.status == "answered" {
-                Label(L10n.t("Answers sent"), systemImage: "checkmark.circle.fill")
-                    .font(.system(size: 12, weight: .semibold)).foregroundStyle(Palette.ample)
-                Text(verbatim: question.prompt).font(.system(size: 13))
-                let answer = question.answer.map { $0.choices + [$0.text].compactMap { $0 } } ?? []
-                if !answer.isEmpty {
-                    Text(verbatim: answer.joined(separator: " · ")).font(.system(size: 12)).foregroundStyle(Palette.textSecondary)
-                }
-            } else if question.status == "expired" {
-                Text(verbatim: question.prompt).font(.system(size: 13))
-                Text(verbatim: L10n.t("This question expired")).font(.system(size: 12)).foregroundStyle(Palette.textSecondary)
-            } else {
-                Label(question.multi ? L10n.t("Choose any") : L10n.t("Choose one"), systemImage: "questionmark.bubble")
-                    .font(.system(size: 11)).foregroundStyle(Palette.watch)
-                Text(verbatim: question.prompt).font(.system(size: 13, weight: .semibold))
-                ChipFlow(options: question.options, selected: choices) { toggle($0) }
-                if question.freeText {
-                    TextField(L10n.t("Add a note"), text: $text, axis: .vertical).textFieldStyle(.roundedBorder).lineLimit(1...4)
-                }
-                if model.answeringBlocked {
-                    // 403 owner_required: the owner grants this Mac `answer_questions`.
-                    VStack(alignment: .leading, spacing: 4) {
-                        Label(L10n.t("Ask the owner to allow answering questions from this Mac"), systemImage: "lock")
-                            .font(.system(size: 12, weight: .semibold)).foregroundStyle(Palette.watch)
-                        Text(verbatim: TeamsSetup.grantCommand).font(.system(size: 11, design: .monospaced))
-                            .textSelection(.enabled).foregroundStyle(Palette.textSecondary)
-                    }
-                }
+        VStack(alignment: .leading) {
+            if interactive {
+                ScrollView {
+                    card.onGeometryChange(for: CGFloat.self) { $0.size.height } action: { contentHeight = $0 }
+                }.frame(height: min(contentHeight, 320))
+            } else { card }
+            if interactive && question.status == "open" {
                 HStack {
                     Spacer()
                     Button(L10n.t("Send")) {
@@ -376,6 +408,44 @@ struct QuestionCard: View {
                     .buttonStyle(.borderedProminent)
                     .disabled(sending || TeamsAnswerValidation.validate(question, choices: choices, text: text) != nil)
                 }
+            }
+        }
+    }
+
+    private var card: some View {
+        CardBox {
+            if question.status == "answered" {
+                Label(L10n.t("Answers sent"), systemImage: "checkmark.circle.fill")
+                    .font(.callout.weight(.semibold)).foregroundStyle(Palette.ample)
+                Text(verbatim: question.prompt).font(.body)
+                let answer = question.answer.map { $0.choices + [$0.text].compactMap { $0 } } ?? []
+                if !answer.isEmpty {
+                    Text(verbatim: answer.joined(separator: " · ")).font(.callout).foregroundStyle(Palette.textSecondary)
+                }
+            } else if question.status == "expired" {
+                Text(verbatim: question.prompt).font(.body)
+                Text(verbatim: L10n.t("This question expired")).font(.callout).foregroundStyle(Palette.textSecondary)
+            } else if !interactive {
+                Label("Question · answer using the menu below", systemImage: "questionmark.bubble")
+                Text(question.prompt).textSelection(.enabled)
+            } else {
+                Label(question.multi ? L10n.t("Choose any") : L10n.t("Choose one"), systemImage: "questionmark.bubble")
+                    .font(.caption).foregroundStyle(Palette.watch)
+                Text(verbatim: question.prompt).font(.body.weight(.semibold))
+                ChipFlow(options: question.options, selected: choices) { toggle($0) }
+                if question.freeText {
+                    TextField(L10n.t("Add a note"), text: $text, axis: .vertical).textFieldStyle(.roundedBorder).lineLimit(1...4)
+                }
+                if model.answeringBlocked {
+                    // 403 owner_required: the owner grants this Mac `answer_questions`.
+                    VStack(alignment: .leading, spacing: 4) {
+                        Label(L10n.t("Ask the owner to allow answering questions from this Mac"), systemImage: "lock")
+                            .font(.callout.weight(.semibold)).foregroundStyle(Palette.watch)
+                        Text(verbatim: TeamsSetup.grantCommand).font(.system(size: 11, design: .monospaced))
+                            .textSelection(.enabled).foregroundStyle(Palette.textSecondary)
+                    }
+                }
+
             }
         }
     }
@@ -398,7 +468,7 @@ struct ChipFlow: View {
             ForEach(options, id: \.self) { option in
                 let on = selected.contains(option)
                 Button { tap(option) } label: {
-                    Text(verbatim: option).font(.system(size: 12))
+                    Text(verbatim: option).font(.callout)
                         .padding(.horizontal, 10).padding(.vertical, 5)
                         .background(Capsule().fill(on ? Color.accentColor : Palette.barTrack))
                         .foregroundStyle(on ? Color.white : Palette.textPrimary)
@@ -422,7 +492,7 @@ struct FlowLayout: Layout {
         for row in arrange(width: bounds.width, subviews) {
             var x = bounds.minX
             for i in row.items {
-                let size = subviews[i].sizeThatFits(.unspecified)
+                let size = subviews[i].sizeThatFits(ProposedViewSize(width: bounds.width, height: nil))
                 subviews[i].place(at: CGPoint(x: x, y: bounds.minY + row.y), proposal: ProposedViewSize(size))
                 x += size.width + spacing
             }
@@ -433,7 +503,7 @@ struct FlowLayout: Layout {
         var rows: [(items: [Int], y: CGFloat, width: CGFloat, height: CGFloat)] = []
         var current: [Int] = [], x: CGFloat = 0, y: CGFloat = 0, h: CGFloat = 0
         for (i, view) in subviews.enumerated() {
-            let size = view.sizeThatFits(.unspecified)
+            let size = view.sizeThatFits(ProposedViewSize(width: width.isFinite ? width : nil, height: nil))
             if !current.isEmpty, x + size.width > width {
                 rows.append((current, y, x - spacing, h)); y += h + spacing
                 current = []; x = 0; h = 0
@@ -450,18 +520,27 @@ struct FlowLayout: Layout {
 struct Composer: View {
     @ObservedObject var model: TeamsModel
     let threadID: String
-    @State private var text = ""
-    @State private var sending = false
+    @FocusState private var editorFocused: Bool
+    private var text: Binding<String> {
+        Binding(get: { model.drafts[threadID] ?? "" }, set: { model.drafts[threadID] = $0 })
+    }
+    private var sending: Bool { model.sendingThreads.contains(threadID) }
 
     var body: some View {
-        HStack(alignment: .bottom, spacing: 8) {
+        VStack(alignment: .leading, spacing: 4) {
+            if let pending = model.pendingSends[threadID], !sending {
+                Text("Unsent: " + pending.body).font(.caption).lineLimit(3)
+                Text("Send retries this message; your new draft stays below.").font(.caption)
+            }
+            HStack(alignment: .bottom, spacing: 8) {
             ZStack(alignment: .topLeading) {
-                if text.isEmpty {
+                if text.wrappedValue.isEmpty {
                     Text(verbatim: L10n.t("Message"))
                         .foregroundStyle(Palette.textSecondary).padding(.horizontal, 5).padding(.vertical, 8)
                         .allowsHitTesting(false)
                 }
-                TextEditor(text: $text)
+                TextEditor(text: text)
+                    .focused($editorFocused).accessibilityLabel("Message in this thread")
                     .font(.body).scrollContentBackground(.hidden)
                     .frame(minHeight: 36, maxHeight: 140).fixedSize(horizontal: false, vertical: true)
                     .padding(.vertical, 8)
@@ -474,23 +553,22 @@ struct Composer: View {
             }
             Button(action: send) { Image(systemName: "arrow.up.circle.fill").font(.system(size: 24)) }
                 .buttonStyle(.plain).foregroundStyle(Color.accentColor)
-                .disabled(sending || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                .padding(.bottom, 8).help(L10n.t("Send"))
+                .disabled(sending || (model.pendingSends[threadID] == nil && text.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))
+                .padding(.bottom, 8).help(L10n.t("Send")).accessibilityLabel(model.pendingSends[threadID] == nil ? "Send message" : "Retry previous message")
         }
+            }
         .padding(.horizontal, 14).padding(.vertical, 4)
         .background(RoundedRectangle(cornerRadius: 12).fill(Palette.barTrack.opacity(0.5)))
         .padding(12)
+
     }
 
     private func send() {
-        let body = text
-        guard !sending, !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        sending = true
-        text = ""
-        Task {
-            if !(await model.send(body)) { text = body }
-            sending = false
-        }
+        guard !sending else { return }
+        let target = threadID
+        editorFocused = true
+        Task { _ = await model.sendDraft(threadID: target) }
+
     }
 }
 
@@ -513,12 +591,18 @@ struct SwarmDetailView: View {
                 if let goal = s.goal, !goal.isEmpty { Text(verbatim: goal).textSelection(.enabled) }
                 Divider()
                 ScrollView { VStack(alignment: .leading, spacing: 8) { ForEach(s.steps) { SwarmStepRow(model: model, step: $0) } } }
+                    .frame(height: min(CGFloat(s.steps.count) * 52 + 16, 320))
+            } else if let error = model.swarmErrors[swarmID] {
+                Text(error)
+                Button("Retry") { Task { await model.loadSwarm(swarmID) } }
             } else {
                 ProgressView().frame(maxWidth: .infinity)
             }
             HStack { Spacer(); Button(L10n.t("Done")) { dismiss() }.keyboardShortcut(.defaultAction) }
         }
-        .padding(20).frame(width: 520, height: 460)
+        .padding(20).frame(minWidth: 420, idealWidth: 520, maxWidth: 640)
+        .fixedSize(horizontal: false, vertical: true)
+        .onExitCommand { dismiss() }
         .task { await model.loadSwarm(swarmID) }
     }
 }

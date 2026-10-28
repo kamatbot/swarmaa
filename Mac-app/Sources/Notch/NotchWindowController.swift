@@ -1572,8 +1572,8 @@ final class NotchWindowController {
             let snapshot = model.snapshots[index]
             if snapshot.id == SwarmaCells.lessonsID, let onReviewLessons {
                 onReviewLessons()
-            } else if let thread = SwarmaCells.threadID(fromCellID: snapshot.id), let onOpenThread {
-                onOpenThread(thread)
+            } else if SwarmaCells.threadID(fromCellID: snapshot.id) != nil, let onOpenThread {
+                onOpenThread(String(snapshot.id.dropFirst(SwarmaCells.threadPrefix.count)))
             } else if let onRefreshProvider {
                 Task { await model.refresh(snapshot, using: onRefreshProvider) }
             }

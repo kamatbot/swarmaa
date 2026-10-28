@@ -166,7 +166,7 @@ final class SSEParserTests: XCTestCase {
         """)
         let e = try XCTUnwrap(TeamsEvent(frame))
         XCTAssertEqual(e, TeamsEvent(cursor: "10.3", name: "message.created", subjectID: "m1",
-                                     threadID: "t1", seq: 12, authorKind: "agent"))
+                                     threadID: "t1", seq: 12, authorKind: "agent", scope: "project:demo"))
         XCTAssertNil(TeamsEvent(.init(id: nil, event: nil, data: "{}")))
     }
 }

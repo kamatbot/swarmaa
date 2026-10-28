@@ -123,9 +123,10 @@ struct TeamsTaskRow: Identifiable, Equatable {
     let at: Date?
     let threadID: String?
     let branch: String?
+    let active: Bool
 
     /// Only tasks resolve; questions and swarms close themselves.
-    var resolvable: Bool { kind == "task" }
+    var resolvable: Bool { kind == "task" && !active && section != .working }
 
     static func split(_ nextStep: String) -> (word: String, rest: String) {
         guard let r = nextStep.range(of: " · ") else { return (nextStep, "") }
@@ -137,18 +138,18 @@ struct TeamsTaskRow: Identifiable, Equatable {
         let section = TeamsTaskSection.of(item)
         self.init(id: item.id, kind: item.kind, title: item.title, section: section,
                   word: word.isEmpty ? section.title : word, detail: rest, at: item.at,
-                  threadID: item.threadID, branch: item.branch)
+                  threadID: item.threadID, branch: item.branch, active: ["queued", "running"].contains(item.state))
     }
 
     init(_ task: TeamsTask, section: TeamsTaskSection) {
         self.init(id: task.id, kind: "task", title: task.objective, section: section, word: section.title,
-                  detail: task.scope.map(SwarmaCells.scopeLabel) ?? "", at: task.updatedAt, threadID: nil, branch: nil)
+                  detail: task.scope.map(SwarmaCells.scopeLabel) ?? "", at: task.updatedAt, threadID: nil, branch: nil, active: ["queued", "running"].contains(task.status))
     }
 
     init(id: String, kind: String, title: String, section: TeamsTaskSection, word: String, detail: String,
-         at: Date?, threadID: String?, branch: String?) {
+         at: Date?, threadID: String?, branch: String?, active: Bool = false) {
         self.id = id; self.kind = kind; self.title = title; self.section = section; self.word = word
-        self.detail = detail; self.at = at; self.threadID = threadID; self.branch = branch
+        self.detail = detail; self.at = at; self.threadID = threadID; self.branch = branch; self.active = active
     }
 }
 
@@ -196,12 +197,11 @@ struct TeamsSetupRow: Identifiable, Equatable {
 enum TeamsSetup {
     static let grantCommand = "npm run admin -- grant --name notchtrader --permission answer_questions"
 
-    /// `question_answer` with a made-up id: 404 means the call was allowed
-    /// and found nothing; 403 `owner_required` means it was refused.
+    /// Only a structured resource-not-found proves permission; HTTP status alone does not.
     static func answerProbe(_ error: Error?) -> TeamsSetupRow.State {
         switch error.map(SwarmaTeamsClient.Failure.map) {
-        case .serviceTooOld?: return .ready   // `map` reads every 404 as this
-        case .service(.forbidden)?: return .needsSetup
+        case .service(.serviceCode("not_found"))?: return .ready
+        case .serviceTooOld?, .service(.serviceCode("owner_required"))?: return .needsSetup
         default: return .notChecked   // success can't happen for a made-up id; anything else proves nothing
         }
     }
@@ -219,7 +219,8 @@ enum TeamsSetup {
     }
 
     /// Runs every probe; each row reads Not checked until its probe proves it.
-    static func check(client: SwarmaTeamsClient = .shared, base: SwarmaClient = .shared) async -> [TeamsSetupRow] {
+    static func check(client: SwarmaTeamsClient = .shared, base: SwarmaClient = .shared,
+                      progress: @escaping ([TeamsSetupRow]) async -> Void = { _ in }) async -> [TeamsSetupRow] {
         var reach = TeamsSetupRow(id: "reachable", title: L10n.t("The service is reachable"), state: .notChecked,
                                   fix: L10n.t("Start the Swarmaa service, or check the service URL in Settings → Swarmaa."))
         var token = TeamsSetupRow(id: "token", title: L10n.t("The token is valid"), state: .notChecked,
@@ -243,12 +244,15 @@ enum TeamsSetup {
             }
         } catch { reach.state = .needsSetup }
 
+        await progress([reach, token, tools] + providers + [stream, answer])
         if token.state == .ready {
             do { _ = try await client.agentList(); tools.state = .ready }
             catch { tools.state = SwarmaTeamsClient.Failure.map(error) == .serviceTooOld ? .needsSetup : .notChecked }
         }
+        await progress([reach, token, tools] + providers + [stream, answer])
         if tools.state == .ready {
             stream.state = await streamConnects(client) ? .ready : .needsSetup
+            await progress([reach, token, tools] + providers + [stream, answer])
             do {
                 try await client.questionAnswer(id: UUID().uuidString.lowercased(), choices: ["probe"], text: nil)
                 answer.state = answerProbe(nil)

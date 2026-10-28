@@ -286,6 +286,7 @@ actor SwarmaClient {
         case http(Int)
         case unreachable
         case badResponse
+        case serviceCode(String)
         /// `routing_set` refused the policy (400 invalid_policy); the service's own words.
         case invalidPolicy(String)
 
@@ -294,12 +295,20 @@ actor SwarmaClient {
             case .unreachable:   return L10n.t("Swarmaa not running")
             case .noToken:       return L10n.t("Swarmaa token file unreadable")
             case .unauthorized:  return L10n.t("Swarmaa rejected the token")
-            case .forbidden:     return L10n.t("This Mac's Swarmaa connection can't review lessons yet")
+            case .forbidden:     return L10n.t("This Mac’s Swarmaa connection lacks permission for this action")
             case .badURL:        return L10n.t("Swarmaa service URL is invalid")
             case .insecureURL:   return L10n.t("Swarmaa needs https off this Mac")
             case .http(let status): return L10n.t("Swarmaa error (HTTP \(status))")
             case .badResponse:   return L10n.t("Unexpected Swarmaa response")
             case .invalidPolicy(let text): return text
+            case .serviceCode(let code):
+                switch code {
+                case "owner_required": return L10n.t("Ask the owner to allow this action from this Mac")
+                case "task_active": return L10n.t("This task is queued or running. Wait until it stops before resolving it.")
+                case "not_found": return L10n.t("This item no longer exists")
+                case "unknown_tool": return L10n.t("Update the Swarmaa service to use this action")
+                default: return L10n.t("Swarmaa refused this action (\(code))")
+                }
             }
         }
     }
@@ -478,8 +487,11 @@ actor SwarmaClient {
         let structured = result["structuredContent"]
         let text = ((result["content"] as? [[String: Any]])?.first?["text"] as? String)
         if result["isError"] as? Bool == true {
-            let code = ((text.flatMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) } as? [String: Any])?["error"] as? [String: Any])?["code"] as? String
+            let errorValue = (structured as? [String: Any])
+                ?? (text.flatMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) } as? [String: Any])
+            let code = (errorValue?["error"] as? [String: Any])?["code"] as? String
             // `owner_required`: a permission only the owner can grant (e.g. `answer_questions`).
+            if let code, ["not_found", "owner_required", "unknown_tool", "task_active"].contains(code) { throw Failure.serviceCode(code) }
             if code?.contains("forbidden") == true || code == "permission_denied" || code == "owner_required" { throw Failure.forbidden }
             if code == "unauthorized" { throw Failure.unauthorized }
             // The REST route answers this as a 404; keep the two transports alike.
@@ -576,6 +588,10 @@ actor SwarmaClient {
             throw Failure.unreachable
         }
         guard let http = response as? HTTPURLResponse else { throw Failure.badResponse }
+        if !(200..<300).contains(http.statusCode),
+           let code = errorCode(data), ["not_found", "owner_required", "unknown_tool", "task_active"].contains(code) {
+            throw Failure.serviceCode(code)
+        }
         switch http.statusCode {
         case 200..<300: return data
         case 401:       throw Failure.unauthorized

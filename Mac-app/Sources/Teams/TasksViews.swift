@@ -5,6 +5,7 @@ import SwiftUI
 /// The default pane: what needs the owner, then what is running.
 struct NeedsYouPane: View {
     @ObservedObject var model: TeamsModel
+    @State private var selectedID: String?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -21,23 +22,29 @@ struct NeedsYouPane: View {
                 TeamsEmptyState(symbol: "checkmark.circle", title: L10n.t("Nothing needs you"),
                                 detail: L10n.t("Questions, reviews and failures from your agents show up here."), action: nil)
             } else {
-                List {
+                List(selection: $selectedID) {
                     if !model.attention.isEmpty {
                         Section(L10n.t("Needs you")) {
-                            ForEach(model.attention) { NeedsYouRow(model: model, item: $0) }
+                            ForEach(model.attention) { NeedsYouRow(model: model, item: $0).tag($0.id) }
                         }
                     }
                     if !model.openSwarms.isEmpty {
                         Section(L10n.t("Running")) {
-                            ForEach(model.openSwarms) { RunningSwarmRow(model: model, swarm: $0) }
+                            ForEach(model.openSwarms) { RunningSwarmRow(model: model, swarm: $0, interactive: false).tag($0.id) }
                         }
                     }
                 }
             }
             Divider()
             HStack {
+                if let item = model.attention.first(where: { $0.id == selectedID }) {
+                    AttentionActions(model: model, item: item)
+                } else if let swarm = model.openSwarms.first(where: { $0.id == selectedID }) {
+                    Button("Open swarm") { model.detailSwarmID = swarm.id }
+                } else if !model.isEmpty { Text("Select an item to act on it").font(.caption) }
                 Spacer()
-                Button(L10n.t("Refresh")) { Task { await model.loadTasks() } }
+                if model.isEmpty { Button("Create agent…") { model.creatingAgent = true }.buttonStyle(.borderedProminent) }
+                Button(L10n.t("Refresh")) { Task { await model.refresh() } }
             }
             .padding(12)
         }
@@ -53,20 +60,25 @@ struct NeedsYouRow: View {
     var body: some View {
         HStack(alignment: .center, spacing: 10) {
             VStack(alignment: .leading, spacing: 3) {
-                Text(verbatim: item.title).font(.system(size: 13, weight: .semibold)).lineLimit(1)
+                Text(verbatim: item.title).font(.system(size: 13, weight: .semibold)).lineLimit(2)
                 TaskStateLine(row: row)
             }
             Spacer(minLength: 8)
             if let at = item.at {
                 Text(at, format: .relative(presentation: .numeric, unitsStyle: .narrow))
-                    .font(.system(size: 11)).foregroundStyle(Palette.textSecondary)
+                    .font(.caption).foregroundStyle(Palette.textSecondary)
             }
-            actions
         }
         .padding(.vertical, 3)
     }
 
-    @ViewBuilder private var actions: some View {
+}
+
+struct AttentionActions: View {
+    @ObservedObject var model: TeamsModel
+    let item: TeamsAttentionItem
+    private var row: TeamsTaskRow { TeamsTaskRow(item) }
+    @ViewBuilder var body: some View {
         let busy = model.busyTasks.contains(item.id)
         switch (item.kind, row.section) {
         case ("question", _):
@@ -76,9 +88,9 @@ struct NeedsYouRow: View {
         case ("task", .failed):
             Button(L10n.t("Retry")) { Task { await model.retry(item.id) } }.disabled(busy)
         case ("task", .review) where row.branch != nil:
-            Button(L10n.t("Review")) { model.review(row) }
+            Button(model.reviewed.contains(row.id) ? "Review command copied" : "Copy review command") { model.review(row) }
                 .help(L10n.t("Copies git log -p \(row.branch ?? "") to the clipboard"))
-            if model.reviewed.contains(item.id) {
+            if model.reviewed.contains(item.id), !model.answeringBlocked {
                 Button(L10n.t("Mark resolved")) { Task { await model.resolve(item.id, true) } }
                     .buttonStyle(.borderedProminent).disabled(busy)
             }
@@ -91,24 +103,27 @@ struct NeedsYouRow: View {
 struct RunningSwarmRow: View {
     @ObservedObject var model: TeamsModel
     let swarm: TeamsSwarm
+    var interactive = true
 
     var body: some View {
-        Button {
-            if let t = swarm.threadID { model.select(threadID: t) } else { model.detailSwarmID = swarm.id }
-        } label: {
+        Group {
+            if interactive { Button { model.detailSwarmID = swarm.id } label: { summary }.buttonStyle(.plain) }
+            else { summary }
+        }
+    }
+
+    private var summary: some View {
             HStack(spacing: 10) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(verbatim: swarm.title).font(.system(size: 13, weight: .semibold)).lineLimit(1)
+                    Text(verbatim: swarm.title).font(.system(size: 13, weight: .semibold)).lineLimit(2)
                     let names = swarm.runningAssignees.compactMap { model.agent(id: $0)?.name }
                     Text(verbatim: names.isEmpty ? TeamsCopy.swarmStatus(swarm.status) : names.joined(separator: ", "))
-                        .font(.system(size: 12)).foregroundStyle(Palette.textSecondary).lineLimit(1)
+                        .font(.callout).foregroundStyle(Palette.textSecondary).lineLimit(2)
                 }
                 Spacer()
                 Text(verbatim: "\(swarm.progress.done)/\(swarm.progress.total)").font(.system(size: 13, weight: .bold).monospacedDigit())
             }
             .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
     }
 }
 
@@ -118,7 +133,7 @@ struct TaskStateLine: View {
     var body: some View {
         (Text(verbatim: row.word).foregroundColor(row.section.color).fontWeight(.semibold)
             + Text(verbatim: row.detail.isEmpty ? "" : " · " + row.detail).foregroundColor(Palette.textSecondary))
-            .font(.system(size: 12)).lineLimit(1)
+            .font(.callout).lineLimit(2)
     }
 }
 
@@ -127,6 +142,7 @@ struct TaskStateLine: View {
 struct TasksPane: View {
     @ObservedObject var model: TeamsModel
     @State private var showResolved = false
+    @State private var selectedID: String?
 
     var body: some View {
         let sections = TeamsTaskGrouping.sections(model.taskRows, search: model.taskSearch, sort: model.taskSort)
@@ -138,7 +154,10 @@ struct TasksPane: View {
                 TeamsEmptyState(symbol: "checklist", title: model.taskSearch.isEmpty ? L10n.t("No tasks") : L10n.t("No matches"),
                                 detail: model.taskSearch.isEmpty ? L10n.t("Tasks your agents run show up here.") : nil, action: nil)
             } else {
-                List {
+                List(selection: $selectedID) {
+                    if model.taskSort == .newest {
+                        rows(sections.flatMap(\.rows).sorted { ($0.at ?? .distantPast) > ($1.at ?? .distantPast) })
+                    } else {
                     ForEach(sections, id: \.section) { entry in
                         if entry.section == .resolved {
                             Section(isExpanded: $showResolved) { rows(entry.rows) } header: {
@@ -148,10 +167,14 @@ struct TasksPane: View {
                             Section(entry.section.title) { rows(entry.rows) }
                         }
                     }
+                    }
                 }
                 .listStyle(.sidebar)
             }
             Divider()
+            if let row = model.taskRows.first(where: { $0.id == selectedID }) {
+                TaskActions(model: model, row: row).padding(.horizontal, 12).padding(.top, 8)
+            }
             HStack(spacing: 10) {
                 TextField(L10n.t("Search tasks"), text: $model.taskSearch).textFieldStyle(.roundedBorder)
                 Picker(L10n.t("Sort"), selection: $model.taskSort) {
@@ -165,7 +188,7 @@ struct TasksPane: View {
     }
 
     private func rows(_ rows: [TeamsTaskRow]) -> some View {
-        ForEach(rows) { TaskRowView(model: model, row: $0) }
+        ForEach(rows) { TaskRowView(model: model, row: $0).tag($0.id) }
     }
 }
 
@@ -175,33 +198,51 @@ struct TaskRowView: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            if row.resolvable {
-                Toggle(isOn: Binding(get: { row.section == .resolved },
-                                     set: { on in Task { await model.resolve(row.id, on) } })) { EmptyView() }
-                    .toggleStyle(.checkbox).labelsHidden()
-                    .disabled(model.busyTasks.contains(row.id))
-                    .accessibilityLabel(row.section == .resolved ? L10n.t("Unresolve") : L10n.t("Resolve"))
-            } else {
-                Image(systemName: row.kind == "question" ? "questionmark.bubble" : "point.3.connected.trianglepath.dotted")
-                    .foregroundStyle(Palette.textSecondary).frame(width: 16)
-            }
+            Image(systemName: row.section == .resolved ? "checkmark.circle" : "circle")
+                .accessibilityLabel(row.section.title)
             VStack(alignment: .leading, spacing: 3) {
-                Text(verbatim: row.title).font(.system(size: 13)).lineLimit(1)
+                Text(verbatim: row.title).font(.body).lineLimit(2)
                     .strikethrough(row.section == .resolved).foregroundStyle(row.section == .resolved ? Palette.textSecondary : Palette.textPrimary)
                 TaskStateLine(row: row)
             }
             Spacer()
             if let at = row.at {
                 Text(at, format: .relative(presentation: .numeric, unitsStyle: .narrow))
-                    .font(.system(size: 11)).foregroundStyle(Palette.textSecondary)
+                    .font(.caption).foregroundStyle(Palette.textSecondary)
             }
         }
         .padding(.vertical, 2)
         .contentShape(Rectangle())
-        .onTapGesture(count: 2) {
-            if row.kind != "task", let item = model.attention.first(where: { $0.id == row.id }) { Task { await model.open(item) } }
+    }
+}
+
+struct TaskActions: View {
+    @ObservedObject var model: TeamsModel
+    let row: TeamsTaskRow
+    var body: some View {
+        HStack {
+            Text(row.title).lineLimit(2)
+            Spacer()
+            if row.kind != "task", let item = model.attention.first(where: { $0.id == row.id }) {
+                Button("Open") { Task { await model.open(item) } }
+                    .accessibilityLabel("Open: " + row.title)
+            }
+            if row.branch != nil {
+                Button(model.reviewed.contains(row.id) ? "Copied" : "Copy review command") { model.review(row) }
+            }
+            if row.kind == "task", row.section == .failed {
+                Button("Retry") { Task { await model.retry(row.id) } }.disabled(model.busyTasks.contains(row.id))
+            }
+            if row.resolvable, !model.answeringBlocked {
+                Button(row.section == .resolved ? "Unresolve" : "Resolve") {
+                    Task { await model.resolve(row.id, row.section != .resolved) }
+                }
+                .accessibilityLabel((row.section == .resolved ? "Unresolve: " : "Resolve: ") + row.title)
+                .disabled(model.busyTasks.contains(row.id))
+            }
         }
     }
+
 }
 
 // MARK: - Setup checklist
@@ -230,6 +271,7 @@ struct SetupChecklistView: View {
         .padding(20)
         .frame(width: 520)
         .fixedSize(horizontal: false, vertical: true)
+        .onExitCommand { onDone?() }
         .task { if model.setupRows.isEmpty { await model.runSetup() } }
     }
 }
@@ -250,9 +292,9 @@ struct SetupRowView: View {
             Text(verbatim: badge.0).font(.system(size: 11, weight: .semibold)).foregroundStyle(badge.1)
                 .frame(width: 84, alignment: .leading)
             VStack(alignment: .leading, spacing: 2) {
-                Text(verbatim: row.title).font(.system(size: 13))
+                Text(verbatim: row.title).font(.body)
                 if row.state != .ready {
-                    Text(verbatim: row.fix).font(.system(size: 11)).foregroundStyle(Palette.textSecondary)
+                    Text(verbatim: row.fix).font(.caption).foregroundStyle(Palette.textSecondary)
                         .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
                 }
             }
