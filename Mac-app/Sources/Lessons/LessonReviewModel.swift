@@ -99,7 +99,10 @@ final class LessonReviewModel: ObservableObject {
     }
 
     nonisolated static func describe(_ error: Error) -> String {
-        (error as? SwarmaClient.Failure)?.message ?? SwarmaClient.Failure.unreachable.message
+        if error as? SwarmaClient.Failure == .forbidden {
+            return L10n.t("This Mac's Swarmaa connection can't review lessons yet")
+        }
+        return (error as? SwarmaClient.Failure)?.message ?? SwarmaClient.Failure.unreachable.message
     }
 
     private func resetDraft() {

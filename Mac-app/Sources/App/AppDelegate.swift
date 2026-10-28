@@ -1513,6 +1513,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// opening it from Applications or Spotlight reopens the main window.
     func applicationShouldHandleReopen(_ sender: NSApplication,
                                        hasVisibleWindows: Bool) -> Bool {
+        if let onboarding, onboarding.isShowing { onboarding.show(); return true }
         openTeams()
         return true
     }

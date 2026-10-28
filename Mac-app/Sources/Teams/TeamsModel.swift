@@ -70,6 +70,8 @@ final class TeamsModel: ObservableObject {
     @Published private(set) var attention: [TeamsAttentionItem] = []
     @Published private(set) var workingTasks: [TeamsTask] = []
     @Published private(set) var resolvedTasks: [TeamsTask] = []
+    @Published private(set) var resolvedCursors: [String: String] = [:]
+    @Published private(set) var loadingResolved = false
     /// Review rows whose `git log` has been copied, so they offer Mark resolved.
     @Published private(set) var reviewed: Set<String> = []
     @Published private(set) var busyTasks: Set<String> = []
@@ -82,10 +84,13 @@ final class TeamsModel: ObservableObject {
     @Published var taskSort = TeamsTaskSort.newest
     @Published var drafts: [String: String] = [:]
     @Published private(set) var pendingSends: [String: PendingSend] = [:]
+    @Published private(set) var rejectedSends: [String: PendingSend] = [:]
+    @Published private(set) var sendErrors: [String: String] = [:]
     @Published private(set) var sendingThreads: Set<String> = []
     @Published private(set) var savingRunners: Set<String> = []
     @Published private(set) var threadErrors: [String: String] = [:]
     @Published private(set) var loadingThreads: Set<String> = []
+    @Published private(set) var staleThreads: Set<String> = []
     @Published private(set) var swarmErrors: [String: String] = [:]
     @Published private(set) var lastUpdated: Date?
     @Published private(set) var staleError: String?
@@ -218,20 +223,39 @@ final class TeamsModel: ObservableObject {
         guard !loadingTasks else { return }
         loadingTasks = true
         defer { loadingTasks = false }
-        do {
-            let nextAttention = try await client.attentionList()
-            // Retain other scopes during a scoped stream refresh. Missing scope
-            // metadata uses the full-refresh path for older services.
-            var working = scopes.map { selected in workingTasks.filter { !selected.contains($0.scope ?? "") } } ?? []
-            var resolved = scopes.map { selected in resolvedTasks.filter { !selected.contains($0.scope ?? "") } } ?? []
-            for scope in (status?.scopes ?? []).map(\.scope) where scopes == nil || scopes!.contains(scope) {
-                working += try await client.taskList(scope: scope, status: "running")
-                working += try await client.taskList(scope: scope, status: "queued")
-                resolved += try await client.taskList(scope: scope, resolved: true)
+        do { attention = try await client.attentionList() }
+        catch { staleError = SwarmaTeamsClient.Failure.map(error).message }
+        for scope in (status?.scopes ?? []).map(\.scope) where scopes == nil || scopes!.contains(scope) {
+            for state in ["running", "queued"] {
+                do {
+                    let tasks = try await client.taskList(scope: scope, status: state)
+                    workingTasks.removeAll { $0.scope == scope && $0.status == state }
+                    workingTasks += tasks
+                } catch { staleError = SwarmaTeamsClient.Failure.map(error).message }
             }
-            attention = nextAttention
-            workingTasks = working; resolvedTasks = resolved
-        } catch { staleError = SwarmaTeamsClient.Failure.map(error).message }
+            do {
+                let page = try await client.resolvedTaskPage(scope: scope)
+                resolvedTasks.removeAll { $0.scope == scope }
+                resolvedTasks += page.tasks
+                resolvedCursors[scope] = page.next
+            } catch { staleError = SwarmaTeamsClient.Failure.map(error).message }
+        }
+    }
+
+    func loadMoreResolved() async {
+        guard !loadingResolved, !loadingTasks else { return }
+        loadingResolved = true
+        loadingTasks = true
+        defer { loadingResolved = false; loadingTasks = false }
+        for (scope, cursor) in resolvedCursors {
+            do {
+                let page = try await client.resolvedTaskPage(scope: scope, beforeID: cursor)
+                let known = Set(resolvedTasks.map(\.id))
+                resolvedTasks += page.tasks.filter { !known.contains($0.id) }
+                guard page.next != cursor else { throw SwarmaClient.Failure.badResponse }
+                resolvedCursors[scope] = page.next
+            } catch { staleError = SwarmaTeamsClient.Failure.map(error).message }
+        }
     }
 
     private func scheduleTaskRefresh(scope: String?) {
@@ -264,10 +288,24 @@ final class TeamsModel: ObservableObject {
     func open(_ item: TeamsAttentionItem) async {
         if item.kind == "swarm", threadID(for: item) == nil { await loadSwarm(item.id) }
         guard let t = threadID(for: item) else { error = L10n.t("This item has no thread to open"); return }
-        if messages[t] == nil { await loadLatest(t) }
-        select(threadID: t)
+        await loadLatest(t)
+        select(threadID: t, refreshHistory: false)
         if item.kind == "question" { targetQuestionID = item.id }
         if item.kind == "swarm" { detailSwarmID = item.id }
+    }
+
+    /// `open` has fetched the newest history. Search at most one older page.
+    func findTargetQuestion(in threadID: String) async -> TeamsMessage? {
+        guard selectedThreadID == threadID, let target = targetQuestionID else { return nil }
+        defer {
+            if selectedThreadID == threadID, targetQuestionID == target { targetQuestionID = nil }
+        }
+        func match() -> TeamsMessage? {
+            messages[threadID]?.first { $0.question?.id == target || $0.ref?.questionID == target }
+        }
+        if match() == nil { await loadOlder(threadID) }
+        guard selectedThreadID == threadID, targetQuestionID == target else { return nil }
+        return match()
     }
 
     /// Copies `git log -p <branch>` and offers Mark resolved.
@@ -305,6 +343,7 @@ final class TeamsModel: ObservableObject {
             let failure = SwarmaTeamsClient.Failure.map(error)
             if failure == .service(.serviceCode("owner_required")) { answeringBlocked = true }
             self.error = "Task " + String(id.prefix(8)) + ": " + failure.message
+            if failure == .service(.serviceCode("task_active")) { await loadTasks() }
             return false
         }
         await loadTasks()
@@ -319,12 +358,14 @@ final class TeamsModel: ObservableObject {
         checkingSetup = false
     }
 
-    func select(threadID: String?) {
+    func select(threadID: String?, refreshHistory: Bool = true) {
+        if selectedThreadID != threadID { targetQuestionID = nil }
+        if refreshHistory, let threadID { staleThreads.insert(threadID) }
         selectedThreadID = threadID
         pane = .agents
         guard let threadID else { return }
         Task {
-            if messages[threadID] == nil { await loadLatest(threadID) }
+            if refreshHistory { await loadLatest(threadID) }
             markSelectedRead()
         }
     }
@@ -332,12 +373,27 @@ final class TeamsModel: ObservableObject {
     func loadLatest(_ threadID: String) async {
         guard loadingThreads.insert(threadID).inserted else { return }
         threadErrors[threadID] = nil
-        defer { loadingThreads.remove(threadID) }
+        defer { loadingThreads.remove(threadID); markSelectedRead() }
         do {
-            let page = try await client.threadRead(id: threadID, limit: 50)
-            merge(page.messages, into: threadID)
-            hasOlder[threadID] = page.hasMore ?? (page.messages.count == 50)
-            markSelectedRead()
+            if let last = messages[threadID]?.last?.seq {
+                var after = last
+                // Keep the contiguous cached prefix on failure so Retry resumes
+                // at the last successfully fetched page, never across a gap.
+                for index in 0..<100 {
+                    try Task.checkCancellation()
+                    let page = try await client.threadRead(id: threadID, afterSeq: after, limit: 50)
+                    merge(page.messages, into: threadID)
+                    guard page.hasMore == true else { break }
+                    guard let next = page.messages.last?.seq, next > after else { throw SwarmaClient.Failure.badResponse }
+                    after = next
+                    if index == 99 { throw SwarmaClient.Failure.badResponse }
+                }
+            } else {
+                let page = try await client.threadRead(id: threadID, limit: 50)
+                merge(page.messages, into: threadID)
+                hasOlder[threadID] = page.hasMore ?? (page.messages.count == 50)
+            }
+            staleThreads.remove(threadID)
         } catch { threadErrors[threadID] = SwarmaTeamsClient.Failure.map(error).message }
     }
 
@@ -369,15 +425,21 @@ final class TeamsModel: ObservableObject {
     }
 
     func markSelectedRead() {
-        guard threadIsVisible, let t = selectedThreadID, let seq = messages[t]?.last?.seq,
+        guard threadIsVisible, let t = selectedThreadID, !loadingThreads.contains(t), !staleThreads.contains(t), threadErrors[t] == nil, let seq = messages[t]?.last?.seq,
               seq > (markedSeq[t] ?? -1), pendingReads.insert(t).inserted else { return }
         Task {
             defer { pendingReads.remove(t) }
             do {
-                try await client.threadMarkRead(id: t, seq: seq)
-                markedSeq[t] = seq
-                // A later unseen message must survive this acknowledgment.
-                if seq >= (badges.lastSeq[t] ?? 0) { badges.read(threadID: t) }
+                var through = seq
+                while true {
+                    try await client.threadMarkRead(id: t, seq: through)
+                    markedSeq[t] = through
+                    if through >= (badges.lastSeq[t] ?? 0) { badges.read(threadID: t) }
+                    guard threadIsVisible, selectedThreadID == t,
+                          !loadingThreads.contains(t), !staleThreads.contains(t), threadErrors[t] == nil,
+                          let latest = messages[t]?.last?.seq, latest > through else { break }
+                    through = latest
+                }
             } catch { staleError = SwarmaTeamsClient.Failure.map(error).message }
         }
     }
@@ -391,6 +453,8 @@ final class TeamsModel: ObservableObject {
             let text = (drafts[t] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty else { return false }
             pending = PendingSend(body: text, key: UUID().uuidString)
+            rejectedSends[t] = nil
+            sendErrors[t] = nil
             pendingSends[t] = pending
             drafts[t] = ""
         }
@@ -401,12 +465,32 @@ final class TeamsModel: ObservableObject {
                 merge([message], into: t)
             }
             pendingSends[t] = nil
+            sendErrors[t] = nil
             markSelectedRead()
             return true
         } catch {
-            self.error = SwarmaTeamsClient.Failure.map(error).message
+            let failure = SwarmaTeamsClient.Failure.map(error)
+            sendErrors[t] = failure.message
+            switch failure {
+            case .service(.unreachable): break
+            case .service(.http(let code)) where (500..<600).contains(code): break
+            default:
+                rejectedSends[t] = pending
+                pendingSends[t] = nil
+            }
             return false
         }
+    }
+
+    func discardSend(_ t: String, edit: Bool = false) {
+        guard !sendingThreads.contains(t) else { return }
+        if edit, let failed = rejectedSends[t] ?? pendingSends[t] {
+            let draft = drafts[t] ?? ""
+            drafts[t] = failed.body + (draft.isEmpty ? "" : "\n" + draft)
+        }
+        rejectedSends[t] = nil
+        pendingSends[t] = nil
+        sendErrors[t] = nil
     }
 
     func answer(_ q: TeamsQuestion, choices: [String], text: String) async -> Bool {
@@ -484,7 +568,10 @@ final class TeamsModel: ObservableObject {
         }
     }
 
-    func stopStream() { streamTask?.cancel(); streamTask = nil }
+    func stopStream() {
+        streamTask?.cancel(); streamTask = nil
+        staleThreads.formUnion(messages.keys)
+    }
 
     func apply(_ event: TeamsEvent) async {
         switch event.name {
@@ -492,7 +579,7 @@ final class TeamsModel: ObservableObject {
             guard let t = event.threadID else { return }
             let isOpen = t == selectedThreadID && threadIsVisible
             if event.name == "message.created",
-               !badges.created(threadID: t, seq: event.seq, authorKind: nil, isOpen: false) { return }
+               !badges.created(threadID: t, seq: event.seq, authorKind: event.authorKind, isOpen: isOpen) { return }
             // Bodies never ride the stream: fetch the one message, or the tail.
             do {
                 var after = event.name == "message.updated" ? event.seq.map { $0 - 1 } : messages[t]?.last?.seq

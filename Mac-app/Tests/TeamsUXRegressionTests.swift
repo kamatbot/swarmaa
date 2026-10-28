@@ -54,7 +54,7 @@ final class TeamsUXRegressionTests: XCTestCase {
         XCTAssertNil(stub.requests.first?.1["after_seq"])
         await model.loadOlder("t")
         XCTAssertEqual(model.messages["t"]?.map(\.seq), [50, 51])
-        model.select(threadID: "t")
+        model.select(threadID: "t", refreshHistory: false)
         model.isVisible = true
         await model.apply(TeamsEvent(cursor: nil, name: "message.created", threadID: "t", seq: 53))
         XCTAssertEqual(model.messages["t"]?.map(\.seq), [50, 51, 52, 53])
@@ -282,5 +282,178 @@ extension TeamsUXRegressionTests {
         XCTAssertEqual(calls.count, 3)
         XCTAssertTrue(calls.allSatisfy { $0.1["scope"] as? String == "project:a" })
         XCTAssertEqual(model.workingTasks.filter { $0.scope == "project:b" }.count, 2)
+    }
+}
+
+extension TeamsUXRegressionTests {
+    @MainActor func testReopenPagesForwardFromCachedTail() async throws {
+        let stub = UXTransport()
+        stub.respond = { _, body in
+            let after = body["after_seq"] as? Int
+            let numbers = after == nil ? [1] : (after == 1 ? Array(2...51) : (after == 51 ? Array(52...101) : (after == 101 ? Array(102...121) : [])))
+            let rows = numbers.map { "{\"id\":\"m\($0)\",\"seq\":\($0),\"kind\":\"text\"}" }.joined(separator: ",")
+            return (200, "{\"result\":{\"messages\":[\(rows)],\"has_more\":\(after == 1 || after == 51)}}")
+        }
+        let model = TeamsModel(client: try stub.client(self))
+        await model.loadLatest("t")
+        await model.loadLatest("t")
+        XCTAssertEqual(model.messages["t"]?.map(\.seq), Array(1...121))
+        XCTAssertEqual(stub.requests.compactMap { $0.1["after_seq"] as? Int }, [1, 51, 101])
+        model.select(threadID: "other")
+        model.select(threadID: "t")
+        for _ in 0..<50 { await Task.yield() }
+        XCTAssertTrue(stub.requests.contains { $0.1["after_seq"] as? Int == 121 })
+    }
+
+    @MainActor func testPermanentSendFailureReleasesComposer() async throws {
+        for (code, payload) in [(404, #"{"error":{"code":"not_found"}}"#),
+                                (403, #"{"error":{"code":"owner_required"}}"#), (400, "{}")] {
+            let stub = UXTransport()
+            var posts = 0
+            stub.respond = { _, _ in
+                posts += 1
+                return posts == 1 ? (code, payload) : (200, #"{"result":{}}"#)
+            }
+            let model = TeamsModel(client: try stub.client(self))
+            model.drafts["t"] = "rejected"
+            let first = await model.sendDraft(threadID: "t")
+            XCTAssertFalse(first)
+            XCTAssertNil(model.pendingSends["t"])
+            model.drafts["t"] = "corrected"
+            let second = await model.sendDraft(threadID: "t")
+            XCTAssertTrue(second)
+            let sent = stub.requests.filter { $0.0 == "thread_post" }
+            XCTAssertEqual(sent.last?.1["body"] as? String, "corrected")
+            XCTAssertNotEqual(sent.first?.1["idempotency_key"] as? String, sent.last?.1["idempotency_key"] as? String)
+        }
+    }
+
+    @MainActor func testVisibleEventsDrainReadAcknowledgmentsAndIgnoreOwner() async throws {
+        let stub = UXTransport()
+        var latest = 1
+        stub.respond = { tool, _ in
+            if tool == "thread_mark_read" {
+                try await Task.sleep(for: .milliseconds(80))
+                return (200, #"{"result":{}}"#)
+            }
+            return (200, "{\"result\":{\"messages\":[{\"id\":\"m\(latest)\",\"seq\":\(latest),\"kind\":\"text\"}],\"has_more\":false}}")
+        }
+        let model = TeamsModel(client: try stub.client(self))
+        await model.loadLatest("t")
+        model.select(threadID: "t")
+        model.isVisible = true
+        for _ in 0..<30 { await Task.yield() }
+        latest = 2
+        await model.apply(TeamsEvent(cursor: nil, name: "message.created", threadID: "t", seq: 2, authorKind: "agent"))
+        latest = 3
+        await model.apply(TeamsEvent(cursor: nil, name: "message.created", threadID: "t", seq: 3, authorKind: "agent"))
+        XCTAssertEqual(model.badges.count("t"), 0)
+        await model.apply(TeamsEvent(cursor: nil, name: "message.created", threadID: "closed", seq: 3, authorKind: "human"))
+        XCTAssertEqual(model.badges.count("closed"), 0)
+        try await Task.sleep(for: .milliseconds(250))
+        XCTAssertEqual(stub.requests.filter { $0.0 == "thread_mark_read" }.last?.1["seq"] as? Int, 3)
+    }
+
+    @MainActor func testResolvedRefreshIsOnePageAndRetainsPartialResults() async throws {
+        let stub = UXTransport()
+        stub.respond = { tool, body in
+            switch tool {
+            case "agent_list": return (200, #"{"result":{"agents":[]}}"#)
+            case "thread_list": return (200, #"{"result":{"threads":[]}}"#)
+            case "swarm_list": return (200, #"{"result":{"swarms":[]}}"#)
+            case "question_list": return (200, #"{"result":{"questions":[]}}"#)
+            case "attention_list": return (200, #"{"result":{"items":[{"id":"attention","kind":"task","title":"Review","state":"completed"}]}}"#)
+            case "swarm_status": return (200, #"{"result":{"scopes":[{"scope":"project:a"},{"scope":"project:b"}]}}"#)
+            case "task_list":
+                if body["scope"] as? String == "project:b" { return (503, "{}") }
+                if body["resolved"] as? Bool == true {
+                    return (200, #"{"result":{"tasks":[{"id":"done","scope":"project:a","status":"completed"}],"next_before_id":"done"}}"#)
+                }
+                return (200, #"{"result":{"tasks":[{"id":"running","scope":"project:a","status":"running"}]}}"#)
+            default: return (200, #"{"result":{}}"#)
+            }
+        }
+        let model = TeamsModel(client: try stub.client(self))
+        await model.refresh()
+        model.stopStream()
+        XCTAssertEqual(stub.requests.filter { $0.0 == "task_list" && $0.1["scope"] as? String == "project:a" && $0.1["resolved"] as? Bool == true }.count, 1)
+        XCTAssertEqual(model.resolvedTasks.map(\.id), ["done"])
+        XCTAssertEqual(model.attention.map(\.id), ["attention"])
+        XCTAssertFalse(model.workingTasks.isEmpty)
+    }
+
+    @MainActor func testLessonPermissionMessageStaysSpecific() {
+        XCTAssertEqual(LessonReviewModel.describe(SwarmaClient.Failure.forbidden), "This Mac's Swarmaa connection can't review lessons yet")
+        XCTAssertFalse(SwarmaClient.Failure.forbidden.message.contains("review lessons"))
+    }
+}
+
+extension TeamsUXRegressionTests {
+    @MainActor func testRejectedSendCanBeEditedOrDiscarded() async throws {
+        let stub = UXTransport()
+        stub.respond = { _, _ in (400, "{}") }
+        let model = TeamsModel(client: try stub.client(self))
+        model.drafts["t"] = "bad draft"
+        _ = await model.sendDraft(threadID: "t")
+        XCTAssertNotNil(model.sendErrors["t"])
+        XCTAssertEqual(model.rejectedSends["t"]?.body, "bad draft")
+        model.drafts["t"] = "new typing"
+        model.discardSend("t", edit: true)
+        XCTAssertEqual(model.drafts["t"], "bad draft\nnew typing")
+        XCTAssertNil(model.rejectedSends["t"])
+        _ = await model.sendDraft(threadID: "t")
+        model.discardSend("t")
+        XCTAssertNil(model.rejectedSends["t"])
+        XCTAssertNil(model.sendErrors["t"])
+    }
+
+    @MainActor func testQuestionTargetIsBoundedAndClearedOnSwitch() async throws {
+        let stub = UXTransport()
+        stub.respond = { _, body in
+            let seq = body["before_seq"] == nil ? 100 : 50
+            return (200, "{\"result\":{\"messages\":[{\"id\":\"m\(seq)\",\"seq\":\(seq),\"kind\":\"text\"}],\"has_more\":true}}")
+        }
+        let model = TeamsModel(client: try stub.client(self))
+        await model.loadLatest("t")
+        model.select(threadID: "t", refreshHistory: false)
+        model.targetQuestionID = "missing"
+        let found = await model.findTargetQuestion(in: "t")
+        XCTAssertNil(found)
+        XCTAssertNil(model.targetQuestionID)
+        XCTAssertEqual(stub.requests.filter { $0.1["before_seq"] != nil }.count, 1)
+        model.targetQuestionID = "another"
+        model.select(threadID: "other", refreshHistory: false)
+        XCTAssertNil(model.targetQuestionID)
+    }
+
+    @MainActor func testTaskActiveConflictRefreshesRows() async throws {
+        let stub = UXTransport()
+        stub.respond = { tool, _ in
+            switch tool {
+            case "task_get": return (200, #"{"result":{"task":{"id":"t","status":"completed","version":1}}}"#)
+            case "task_resolve": return (409, #"{"error":{"code":"task_active"}}"#)
+            default: return (200, #"{"result":{"items":[]}}"#)
+            }
+        }
+        let model = TeamsModel(client: try stub.client(self))
+        let resolved = await model.resolve("t", true)
+        XCTAssertFalse(resolved)
+        XCTAssertTrue(model.error?.contains("queued or running") == true)
+        XCTAssertEqual(stub.requests.map(\.0), ["task_get", "task_resolve", "attention_list"])
+    }
+
+    func testResolvedLoadMoreUsesBeforeID() async throws {
+        let stub = UXTransport()
+        stub.respond = { _, body in
+            if body["before_id"] as? String == "one" { return (200, #"{"result":{"tasks":[{"id":"two"}]}}"#) }
+            return (200, #"{"result":{"tasks":[{"id":"one"}],"next_before_id":"one"}}"#)
+        }
+        let client = try stub.client(self)
+        let first = try await client.resolvedTaskPage(scope: "project:test")
+        XCTAssertEqual(stub.requests.count, 1)
+        XCTAssertEqual(first.tasks.map(\.id), ["one"])
+        let second = try await client.resolvedTaskPage(scope: "project:test", beforeID: first.next)
+        XCTAssertEqual(second.tasks.map(\.id), ["two"])
+        XCTAssertNil(second.next)
     }
 }

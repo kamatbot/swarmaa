@@ -172,6 +172,10 @@ struct TasksPane: View {
                 .listStyle(.sidebar)
             }
             Divider()
+            if !model.resolvedCursors.isEmpty {
+                Button("Load more resolved tasks") { Task { await model.loadMoreResolved() } }
+                    .disabled(model.loadingResolved).padding(8)
+            }
             if let row = model.taskRows.first(where: { $0.id == selectedID }) {
                 TaskActions(model: model, row: row).padding(.horizontal, 12).padding(.top, 8)
             }

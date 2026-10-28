@@ -683,6 +683,13 @@ actor SwarmaTeamsClient {
         return try await allPages("task_list", input, as: TeamsTask.self)
     }
 
+    func resolvedTaskPage(scope: String, beforeID: String? = nil) async throws -> (tasks: [TeamsTask], next: String?) {
+        var input: [String: Any] = ["scope": scope, "resolved": true, "limit": 50]
+        input["before_id"] = beforeID
+        let page = try await call("task_list", input, as: ListPage<TeamsTask>.self)
+        return (page.items, page.next)
+    }
+
     /// Folds a task into Resolved, or back out. The version comes from `task_get`.
     func taskResolve(id: String, resolved: Bool, expectedVersion: Int) async throws {
         _ = try await raw("task_resolve", ["task_id": id, "resolved": resolved, "expected_version": expectedVersion])

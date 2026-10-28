@@ -9,14 +9,17 @@ struct ThreadView: View {
     @State private var nearBottom = true
     @State private var answeringQuestion: TeamsQuestion?
 
-    private var messages: [TeamsMessage] { model.messages[threadID] ?? [] }
+    private var messages: [TeamsMessage] {
+        guard !model.loadingThreads.contains(threadID), !model.staleThreads.contains(threadID), model.threadErrors[threadID] == nil else { return [] }
+        return model.messages[threadID] ?? []
+    }
 
     var body: some View {
         VStack(spacing: 0) {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 10) {
-                        if model.hasOlder[threadID] == true {
+                        if model.hasOlder[threadID] == true, !messages.isEmpty {
                             ProgressView().controlSize(.small).frame(maxWidth: .infinity)
                                 .onAppear { Task { await model.loadOlder(threadID) } }
                         }
@@ -24,7 +27,8 @@ struct ThreadView: View {
                         if let error = model.threadErrors[threadID] {
                             Text(error)
                         }
-                        if messages.isEmpty, model.messages[threadID] != nil {
+                        if model.messages[threadID]?.isEmpty == true, !model.loadingThreads.contains(threadID),
+                           !model.staleThreads.contains(threadID), model.threadErrors[threadID] == nil {
                             Text(verbatim: L10n.t("No messages yet. Say hello below."))
                                 .foregroundStyle(Palette.textSecondary).frame(maxWidth: .infinity).padding(.top, 40)
                         }
@@ -46,16 +50,10 @@ struct ThreadView: View {
                     withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(last, anchor: .bottom) }
                     model.markSelectedRead()
                 }
-                .task(id: "\(model.targetQuestionID ?? ""):\(messages.count)") {
-                    guard let target = model.targetQuestionID else { return }
-                    if let message = messages.first(where: { $0.question?.id == target || $0.ref?.questionID == target }) {
+                .task(id: "\(threadID):\(model.targetQuestionID ?? "")") {
+                    if let message = await model.findTargetQuestion(in: threadID) {
                         proxy.scrollTo(message.id, anchor: .center)
                         if message.question?.status == "open" { answeringQuestion = message.question }
-                        model.targetQuestionID = nil
-                    } else if model.hasOlder[threadID] == true {
-                        // A changed page count restarts this task, including when
-                        // scroll-up already had an older-page request in flight.
-                        await model.loadOlder(threadID)
                     }
                 }
             }
@@ -224,7 +222,7 @@ struct TextBubble: View {
 
     /// Agent bodies are untrusted text: shown, never acted on. Inline
     /// Markdown only, so nothing renders as more than styled text and links.
-    @State private var text = AttributedString()
+    @State private var rendered: (body: String, text: AttributedString)?
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
@@ -238,7 +236,7 @@ struct TextBubble: View {
                         if let date = message.createdAt { Text(date, style: .time).font(.caption).foregroundStyle(Palette.textSecondary) }
                     }
                 }
-                Text(text).textSelection(.enabled)
+                Text(rendered?.body == (message.body ?? "") ? rendered!.text : AttributedString(message.body ?? "")).textSelection(.enabled)
                     .padding(.horizontal, 12).padding(.vertical, 8)
                     .background(RoundedRectangle(cornerRadius: 12)
                         .fill(message.isHuman ? Color.accentColor.opacity(0.85) : Palette.barTrack))
@@ -249,7 +247,11 @@ struct TextBubble: View {
         .frame(maxWidth: .infinity, alignment: message.isHuman ? .trailing : .leading)
         .task(id: message.body) {
             let body = message.body ?? ""
-            text = (try? AttributedString(markdown: body, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(body)
+            let parsed = await Task.detached(priority: .userInitiated) {
+                (try? AttributedString(markdown: body, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(body)
+            }.value
+            guard !Task.isCancelled else { return }
+            rendered = (body, parsed)
         }
     }
 }
@@ -528,9 +530,16 @@ struct Composer: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            if let pending = model.pendingSends[threadID], !sending {
+            if let pending = model.rejectedSends[threadID] ?? model.pendingSends[threadID], !sending {
                 Text("Unsent: " + pending.body).font(.caption).lineLimit(3)
-                Text("Send retries this message; your new draft stays below.").font(.caption)
+                if let error = model.sendErrors[threadID] { Text(error).font(.caption).foregroundStyle(.red) }
+                HStack {
+                    if model.pendingSends[threadID] != nil {
+                        Button("Retry") { send() }
+                    }
+                    Button("Edit") { model.discardSend(threadID, edit: true) }
+                    Button("Discard") { model.discardSend(threadID) }
+                }
             }
             HStack(alignment: .bottom, spacing: 8) {
             ZStack(alignment: .topLeading) {
