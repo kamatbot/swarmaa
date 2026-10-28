@@ -511,8 +511,8 @@ export class TeamService {
         let bot: { id: string; routing: Record<string, unknown> } | undefined;
         if (thread.kind === 'bot') {
           bot = (await db.query<{ id: string; routing: Record<string, unknown> }>(
-            'SELECT id, routing FROM bots WHERE thread_id=$1',
-            [threadId]
+            'SELECT id, routing FROM bots WHERE thread_id=$1 AND tenant_id=$2 AND NOT archived',
+            [threadId, p.tenantId]
           )).rows[0];
         }
 
@@ -562,7 +562,7 @@ export class TeamService {
             const turnKind = agent.edits ? 'patch' : 'summary';
             const requiredCap = bot ? botCapability(bot, turnKind, agent.edits) : runnerCapability(agent.runner, agent.edits);
             const taskId = newId();
-            const cleanBody = clipUtf8(body.replace(/@[a-zA-Z0-9_-]+\s*/g, '').trim(), 256);
+            const cleanBody = clipUtf8(redactSecrets(body).replace(/@[a-zA-Z0-9_-]+\s*/g, '').trim(), 256);
             const turnObjective = thread.kind === 'bot'
               ? (cleanBody || `Turn for agent ${agent.name} in ${thread.title ?? 'bot'}`)
               : `Turn for agent ${agent.name} in #${thread.title ?? 'channel'}`;
@@ -686,14 +686,14 @@ export class TeamService {
           const failure = res.failure as { code?: string; detail?: string } | undefined;
           view.task = {
             id: t.id,
-            title: t.objective,
+            title: redactSecrets(t.objective),
             kind: t.kind,
             status: t.status,
             resolved: Boolean(t.resolved_at),
             branch: typeof res.branch === 'string' ? res.branch : null,
             changed_files: typeof res.changed_files === 'number' ? res.changed_files : null,
             served: served ? { provider: served.provider, model: served.model } : null,
-            failure: failure ? { code: failure.code, detail: failure.detail } : null,
+            failure: failure ? { code: failure.code ? clipUtf8(String(failure.code), 64) : undefined, detail: failure.detail ? clipUtf8(redactSecrets(String(failure.detail)), 300) : undefined } : null,
             check: null
           };
         }

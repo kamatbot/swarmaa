@@ -266,8 +266,8 @@ export async function postBotTaskCard(
   )).rows[0];
   if (!botRow) return;
 
-  // Turn grant rule: scope must match
-  requireCondition(botRow.scope === row.scope, 403, 'turn_grant_forbidden', 'Turn grant refuses posting to a bot thread in a different scope.');
+  // A card is best-effort: never fail task completion over it.
+  if (botRow.scope !== row.scope) return;
 
   // Idempotency: never post two cards for one task and one outcome
   const existingCards = (await db.query<{ id: string; body: string }>(
@@ -279,11 +279,11 @@ export async function postBotTaskCard(
 
   let agentName: string | null = null;
   if (row.agent_id) {
-    const agentRow = (await db.query<{ name: string }>('SELECT name FROM agents WHERE id=$1', [row.agent_id])).rows[0];
+    const agentRow = (await db.query<{ name: string }>('SELECT name FROM agents WHERE id=$1 AND tenant_id=$2', [row.agent_id, p.tenantId])).rows[0];
     if (agentRow) agentName = agentRow.name;
   }
 
-  const body = formatTaskCardBody(agentName, botRow.name, row.objective, outcome, result);
+  const body = clipUtf8(redactSecrets(formatTaskCardBody(agentName, botRow.name, row.objective, outcome, result)), 500);
   const nextSeq = await assignThreadSeq(db, p.tenantId, botRow.thread_id);
   const cardMsgId = newId();
 
@@ -341,7 +341,7 @@ export class BotService {
   constructor(private readonly pool: Pool) {}
 
   async computeBadgesForBots(
-    pool: Pool,
+    pool: Db,
     p: Principal,
     bots: BotRow[]
   ): Promise<Map<string, BotBadges>> {
@@ -424,13 +424,11 @@ export class BotService {
       latest_body: string;
       latest_created_at: Date;
     }>(
-      `SELECT thread_id,
-         (array_agg(kind ORDER BY seq DESC))[1] AS latest_kind,
-         (array_agg(body ORDER BY seq DESC))[1] AS latest_body,
-         max(created_at) AS latest_created_at
+      `SELECT DISTINCT ON (thread_id) thread_id, kind AS latest_kind,
+         left(body, 300) AS latest_body, created_at AS latest_created_at
        FROM messages
        WHERE thread_id = ANY($1::uuid[])
-       GROUP BY thread_id`,
+       ORDER BY thread_id, seq DESC`,
       [threadIds]
     );
     const messagesMap = new Map(messagesRes.rows.map(r => [r.thread_id, {
@@ -463,7 +461,7 @@ export class BotService {
       } else {
         const msg = messagesMap.get(b.thread_id);
         if (msg) {
-          latest = { kind: msg.kind, line: msg.body, at: msg.at.toISOString() };
+          latest = { kind: msg.kind, line: clipUtf8(redactSecrets(msg.body ?? ''), 300), at: msg.at.toISOString() };
         }
       }
 
@@ -510,7 +508,7 @@ export class BotService {
             'SELECT agent_id FROM thread_members WHERE thread_id=$1 AND agent_id<>$2',
             [existing.thread_id, existing.lead_agent_id]
           )).rows.map(r => r.agent_id);
-          const badges = await this.computeBadgesForBots(this.pool, p, [existing]);
+          const badges = await this.computeBadgesForBots(db, p, [existing]);
           return {
             bot: botView(existing, currentMembers, badges.get(existing.id)),
             thread: threadView(thread),
@@ -702,7 +700,7 @@ export class BotService {
       await audit(db, p, existing.scope, 'bot.update', botId, { version: updated.version });
       await event(db, p, existing.scope, 'bot.updated', botId, { bot_id: botId, reason: 'updated' });
 
-      const badges = await this.computeBadgesForBots(this.pool, p, [updated]);
+      const badges = await this.computeBadgesForBots(db, p, [updated]);
       return { bot: botView(updated, nextMemberIds, badges.get(updated.id)) };
     });
   }

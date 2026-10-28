@@ -966,7 +966,7 @@ export class TaskService {
             const botId = row.bot_id ?? null;
             let nextCap = runnerCapability(agentRow.runner, agentRow.edits);
             if (botId) {
-              const bot = (await db.query<{ id: string; routing: Record<string, unknown> }>('SELECT id, routing FROM bots WHERE id=$1', [botId])).rows[0];
+              const bot = (await db.query<{ id: string; routing: Record<string, unknown> }>('SELECT id, routing FROM bots WHERE id=$1 AND tenant_id=$2 AND NOT archived', [botId, p.tenantId])).rows[0];
               if (bot) nextCap = botCapability(bot, agentRow.edits ? 'patch' : 'summary', agentRow.edits);
             }
             const followUpId = newId();
