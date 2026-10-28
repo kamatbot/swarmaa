@@ -1,3 +1,4 @@
+import { pushDevice } from '../push.js';
 import { botRoutingPreview } from './bot-routing.js';
 import type { Pool } from 'pg';
 import { transaction } from '../db.js';
@@ -77,6 +78,8 @@ export class CoreService implements ToolBackend {
     requireCondition(!ownerTools.has(name) || principal.role === 'admin',403,'owner_required','This operation requires an owner/admin connection.');
     const input = object(args);
     switch (name) {
+      case 'push_register': return pushDevice(this.pool,principal,input,true);
+      case 'push_unregister': return pushDevice(this.pool,principal,input,false);
       case 'flow_list': return this.flows.list(principal,input);
       case 'flow_start': return this.flows.start(principal,input);
       case 'flow_get': return this.flows.get(principal,input);

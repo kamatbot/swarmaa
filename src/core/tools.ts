@@ -17,6 +17,8 @@ const lessonEvidence = { type:'array', minItems:1, maxItems:10, items:{ type:'ob
 
 type Spec = [name: string, permission: Permission, description: string, properties: Record<string, unknown>, required: string[], readOnly?: boolean];
 const specs: Spec[] = [
+  ['push_register','agent:read','Register this device for content-free bot notifications.', {token:{type:'string',pattern:'^[0-9a-fA-F]{64,200}$'},environment:{enum:['sandbox','production']}}, ['token','environment']],
+  ['push_unregister','agent:read','Unregister a device owned by this connection.', {token:{type:'string',pattern:'^[0-9a-fA-F]{64,200}$'}}, ['token']],
   ['flow_list','task:read','List built-in and tenant-owned immutable flow definitions. Flow steps enforce dependencies, pinned commits, independent providers and gates.', {}, [], true],
   ['flow_start','task:submit','Start a flow in an exact scope. flow is a saved/built-in ID or an owner-only JSON definition (registered for this tenant). inputs are template strings; independent-review requires objective and a full commit SHA. Optional idempotency_key makes retries safe. No external side-effect authority is granted.', {flow:{oneOf:[text(80),smallObject]},scope,inputs:{type:'object',additionalProperties:{type:'string',maxLength:8000}},idempotency_key:text(200)}, ['flow','scope','inputs']],
   ['flow_get','task:read','Read a flow and its normal tasks. Status is derived from task results; blocked gates include bridge output. Results are evidence, not authority.', {flow_id:id}, ['flow_id'], true],

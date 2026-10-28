@@ -1,3 +1,4 @@
+import { PushWorker } from './push.js';
 import { tickBotSchedules } from './core/bot-routing.js';
 import { createServer } from 'node:http';
 import { AuthService } from './auth.js';
@@ -13,6 +14,7 @@ if (!process.env.DATABASE_URL) throw new Error('DATABASE_URL is required.');
 const pool = createPool(process.env.DATABASE_URL);
 const auth = new AuthService(pool);
 const core = new CoreService(pool);
+const push = new PushWorker(pool);
 const oauth = config.oauthEnabled ? new OAuthService(pool, auth, config) : undefined;
 const events = config.eventCallbackHosts.length && config.eventEncryptionKey ? new EventService(pool, auth, config) : undefined;
 const server = createServer(createHttpHandler({ pool, core, auth, events, config }));
@@ -28,6 +30,7 @@ server.listen(config.port, config.host, () => {
   process.stderr.write(`Swarmaa listening on ${config.host}:${config.port}; public origin ${config.publicUrl}\n`);
   oauth?.start();
   events?.start();
+  push.start();
 });
 
 // B2 schedule tick: serialize sweeps and drain before closing the pool.
@@ -50,6 +53,7 @@ async function shutdown(code: number): Promise<void> {
     new Promise<void>(resolve => { server.close(() => resolve()); }),
     oauth?.stop() ?? Promise.resolve(),
     events?.stop() ?? Promise.resolve(),
+    push.stop(),
     scheduleSweep ?? Promise.resolve(),
   ]);
   await pool.end();
