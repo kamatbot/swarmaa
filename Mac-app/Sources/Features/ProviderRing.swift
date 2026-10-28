@@ -358,6 +358,12 @@ struct ProviderCell: View {
         .frame(height: NotchLayout.cellExtent)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilityText)
+        .accessibilityAddTraits(SwarmaCells.threadID(fromCellID: snapshot.id) != nil ? .isButton : [])
+        .accessibilityAction {
+            if SwarmaCells.threadID(fromCellID: snapshot.id) != nil {
+                AppDelegate.shared?.openTeams(threadID: String(snapshot.id.dropFirst(SwarmaCells.threadPrefix.count)))
+            }
+        }
     }
 
     /// Everything the cell says, as one sentence for VoiceOver and the tests.

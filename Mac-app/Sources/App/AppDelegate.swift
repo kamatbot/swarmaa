@@ -1510,10 +1510,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// With no dock icon, no menu bar item and no notch on screen, there is
     /// otherwise nothing left to click — choosing Hide would be a one-way door.
     /// Launching the app again while it is already running lands here, so
-    /// opening it from Applications or Spotlight reopens settings.
+    /// opening it from Applications or Spotlight reopens the main window.
     func applicationShouldHandleReopen(_ sender: NSApplication,
                                        hasVisibleWindows: Bool) -> Bool {
-        openSettings()
+        if let onboarding, onboarding.isShowing { onboarding.show(); return true }
+        openTeams()
         return true
     }
 
@@ -1523,7 +1524,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// The main window, from the status item or a notch swarm/question item.
     @MainActor func openTeams(threadID: String? = nil) {
         if teams == nil { teams = TeamsWindowController() }
-        teams?.show(threadID: threadID)
+        let cellID = threadID.map { SwarmaCells.threadPrefix + $0 }
+        teams?.show(threadID: cellID.flatMap { SwarmaCells.threadID(fromCellID: $0) })
+        if let cellID, let swarm = SwarmaCells.swarmID(fromCellID: cellID) { teams?.model.detailSwarmID = swarm }
     }
 
     private var lessonReview: LessonReviewWindowController?

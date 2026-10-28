@@ -17,6 +17,9 @@ struct TeamsRunner: Codable, Equatable, Hashable {
     var effort: String?
 
     static let auto = TeamsRunner()
+    func changing(provider: String, effort: String) -> TeamsRunner {
+        TeamsRunner(provider: provider, model: self.provider == provider ? model : nil, effort: effort)
+    }
     var isAuto: Bool { provider == nil }
 
     /// "Claude Opus 5.5 · High", "Codex · Medium", "Auto".
@@ -309,12 +312,14 @@ struct TeamsQuestion: Decodable, Equatable, Identifiable {
 }
 
 struct TeamsAnswer: Decodable, Equatable {
+    var questionID: String?
     var choices: [String]
     var text: String?
-    private enum CodingKeys: String, CodingKey { case choices, text }
+    private enum CodingKeys: String, CodingKey { case choices, text, questionID = "question_id" }
     init(choices: [String], text: String?) { self.choices = choices; self.text = text }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        questionID = c.opt(String.self, .questionID)
         choices = c.list(.choices); text = c.opt(String.self, .text)
     }
 }
@@ -382,6 +387,7 @@ struct TeamsMessage: Decodable, Equatable, Identifiable {
             if question?.threadID == nil { question?.threadID = threadID }
         case .answer:
             answer = c.opt(TeamsAnswer.self, .answer) ?? c.opt(TeamsAnswer.self, .body)
+                ?? body.map { TeamsAnswer(choices: [], text: $0) }
         default: break
         }
     }
@@ -392,7 +398,7 @@ struct TeamsMessage: Decodable, Equatable, Identifiable {
         case .text, .handoff, .notice: return body ?? ""
         case .swarm: return swarm.map { "\($0.title) \($0.progress.done)/\($0.progress.total)" } ?? L10n.t("Swarm")
         case .run: return run?.summary ?? L10n.t("Ran subagents")
-        case .question: return question?.prompt ?? L10n.t("Question")
+        case .question: return question?.prompt ?? body ?? L10n.t("Question")
         case .answer: return L10n.t("Answers sent")
         case .unknown: return ""
         }
@@ -445,10 +451,11 @@ struct TeamsEvent: Equatable {
     var threadID: String?
     var seq: Int?
     var authorKind: String?
+    var scope: String?
 
-    init(cursor: String?, name: String, subjectID: String? = nil, threadID: String? = nil, seq: Int? = nil, authorKind: String? = nil) {
+    init(cursor: String?, name: String, subjectID: String? = nil, threadID: String? = nil, seq: Int? = nil, authorKind: String? = nil, scope: String? = nil) {
         self.cursor = cursor; self.name = name; self.subjectID = subjectID
-        self.threadID = threadID; self.seq = seq; self.authorKind = authorKind
+        self.threadID = threadID; self.seq = seq; self.authorKind = authorKind; self.scope = scope
     }
 
     /// Reads one SSE frame. The data is the `events_poll` row shape; its
@@ -461,7 +468,8 @@ struct TeamsEvent: Equatable {
         self.init(cursor: string("cursor") ?? frame.id, name: name, subjectID: string("subject_id"),
                   threadID: string("thread_id"),
                   seq: (root["seq"] as? Int) ?? (payload["seq"] as? Int),
-                  authorKind: string("author_kind") ?? ((payload["author"] as? [String: Any])?["kind"] as? String))
+                  authorKind: string("author_kind") ?? ((payload["author"] as? [String: Any])?["kind"] as? String),
+                  scope: string("scope"))
     }
 }
 
@@ -541,7 +549,7 @@ actor SwarmaTeamsClient {
         static func map(_ error: Error) -> Failure {
             switch error {
             case let failure as Failure: return failure
-            case SwarmaClient.Failure.http(404): return .serviceTooOld
+            case SwarmaClient.Failure.http(404), SwarmaClient.Failure.serviceCode("unknown_tool"): return .serviceTooOld
             case let failure as SwarmaClient.Failure: return .service(failure)
             default: return .service(.badResponse)
             }
@@ -563,6 +571,8 @@ actor SwarmaTeamsClient {
         self.sleep = sleep
     }
 
+    func status() async throws -> SwarmaStatus { try await base.status() }
+
     // MARK: Agents
 
     struct AgentPage: Decodable { var agents: [TeamsAgent]; var sections: [TeamsSection]?; var nextCursor: String?
@@ -571,6 +581,7 @@ actor SwarmaTeamsClient {
     /// Every page; sections ride along when the service sends them.
     func agentList(scope: String? = nil) async throws -> (agents: [TeamsAgent], sections: [TeamsSection]?) {
         var agents: [TeamsAgent] = [], sections: [TeamsSection]?, after: String?
+        var seen = Set<String>()
         repeat {
             var input: [String: Any] = ["limit": 100]
             input["scope"] = scope; input["after"] = after
@@ -578,6 +589,7 @@ actor SwarmaTeamsClient {
             agents += page.agents
             sections = sections ?? page.sections
             after = page.agents.isEmpty ? nil : page.nextCursor
+            if let after, !seen.insert(after).inserted || seen.count > 100 { throw Failure.service(.badResponse) }
         } while after != nil
         return (agents, sections)
     }
@@ -621,7 +633,7 @@ actor SwarmaTeamsClient {
     func threadList(kind: String? = nil, agentID: String? = nil) async throws -> [TeamsThread] {
         var input: [String: Any] = [:]
         input["kind"] = kind; input["agent_id"] = agentID
-        return try await call("thread_list", input, as: ThreadPage.self).threads
+        return try await allPages("thread_list", input, as: TeamsThread.self)
     }
 
     func sectionSet(_ sections: [TeamsSection]) async throws {
@@ -635,11 +647,11 @@ actor SwarmaTeamsClient {
     }
 
     func swarmList(status: String = "open") async throws -> [TeamsSwarm] {
-        try await call("swarm_list", ["status": status, "limit": 100], as: SwarmPage.self).swarms
+        try await allPages("swarm_list", ["status": status, "limit": 100], as: TeamsSwarm.self)
     }
 
     func questionList(status: String = "open") async throws -> [TeamsQuestion] {
-        try await call("question_list", ["status": status], as: QuestionPage.self).questions
+        try await allPages("question_list", ["status": status, "limit": 100], as: TeamsQuestion.self)
     }
 
     func questionAnswer(id: String, choices: [String], text: String?) async throws {
@@ -656,18 +668,8 @@ actor SwarmaTeamsClient {
     }
 
     /// Everything waiting on the owner, newest first, every page.
-    // ponytail: stops at 5 pages (500 items); page on scroll if anyone ever has more.
     func attentionList() async throws -> [TeamsAttentionItem] {
-        var items: [TeamsAttentionItem] = [], after: String?, pages = 0
-        repeat {
-            var input: [String: Any] = ["limit": 100]
-            input["after"] = after
-            let page = try await call("attention_list", input, as: AttentionPage.self)
-            items += page.items
-            after = page.hasMore == true && !page.items.isEmpty ? page.nextCursor : nil
-            pages += 1
-        } while after != nil && pages < 5
-        return items
+        try await allPages("attention_list", ["limit": 100], as: TeamsAttentionItem.self)
     }
 
     func taskGet(id: String) async throws -> TeamsTask {
@@ -678,7 +680,14 @@ actor SwarmaTeamsClient {
     func taskList(scope: String, status: String? = nil, resolved: Bool? = nil, limit: Int = 50) async throws -> [TeamsTask] {
         var input: [String: Any] = ["scope": scope, "limit": min(limit, 100)]
         input["status"] = status; input["resolved"] = resolved
-        return try await call("task_list", input, as: TaskPage.self).tasks
+        return try await allPages("task_list", input, as: TeamsTask.self)
+    }
+
+    func resolvedTaskPage(scope: String, beforeID: String? = nil) async throws -> (tasks: [TeamsTask], next: String?) {
+        var input: [String: Any] = ["scope": scope, "resolved": true, "limit": 50]
+        input["before_id"] = beforeID
+        let page = try await call("task_list", input, as: ListPage<TeamsTask>.self)
+        return (page.items, page.next)
     }
 
     /// Folds a task into Resolved, or back out. The version comes from `task_get`.
@@ -697,7 +706,7 @@ actor SwarmaTeamsClient {
     /// seen with backoff (1 s doubling to 30 s, reset by any event). Ends by
     /// throwing only for `.serviceTooOld` or `.service(.unauthorized/.noToken)`,
     /// which retrying cannot fix; cancel the consuming task to stop it.
-    nonisolated func stream(after: String? = nil) -> AsyncThrowingStream<TeamsEvent, Error> {
+    nonisolated func stream(after: String? = nil, onState: @escaping @Sendable (String) -> Void = { _ in }) -> AsyncThrowingStream<TeamsEvent, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
                 // `now` starts at the live edge; with no cursor the service replays all history.
@@ -717,6 +726,7 @@ actor SwarmaTeamsClient {
                         case 401: throw SwarmaClient.Failure.unauthorized
                         default: throw SwarmaClient.Failure.http(response.statusCode)
                         }
+                        onState("Live")
                         var parser = SSEParser()
                         for try await chunk in chunks {
                             for frame in parser.feed(chunk) {
@@ -735,6 +745,7 @@ actor SwarmaTeamsClient {
                         }
                     }
                     if Task.isCancelled { break }
+                    onState("Reconnecting")
                     await sleep(delay)
                     delay = min(delay * 2, 30)
                 }
@@ -768,10 +779,29 @@ actor SwarmaTeamsClient {
         }
     }
     private struct TaskWrapper: Decodable { var task: TeamsTask }
-    private struct TaskPage: Decodable { var tasks: [TeamsTask] }
-    private struct ThreadPage: Decodable { var threads: [TeamsThread] }
-    private struct SwarmPage: Decodable { var swarms: [TeamsSwarm] }
-    private struct QuestionPage: Decodable { var questions: [TeamsQuestion] }
+    private struct ListPage<T: Decodable>: Decodable {
+        let items: [T]
+        let next: String?
+        private enum K: String, CodingKey { case tasks, threads, swarms, questions, items, next_cursor, next_before_id }
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: K.self)
+            items = try c.decode([T].self, forKey: [.tasks, .threads, .swarms, .questions, .items].first { c.contains($0) } ?? .tasks)
+            next = try c.decodeIfPresent(String.self, forKey: .next_cursor) ?? c.decodeIfPresent(String.self, forKey: .next_before_id)
+        }
+    }
+
+    private func allPages<T: Decodable>(_ tool: String, _ input: [String: Any], as: T.Type) async throws -> [T] {
+        var input = input, result: [T] = [], seen = Set<String>()
+        // ponytail: 100 pages per refresh; fail visibly rather than silently truncate.
+        for _ in 0..<100 {
+            let page = try await call(tool, input, as: ListPage<T>.self)
+            result += page.items
+            guard let next = page.next, !page.items.isEmpty else { return result }
+            guard seen.insert(next).inserted else { throw Failure.service(.badResponse) }
+            input[tool == "task_list" ? "before_id" : "after"] = next
+        }
+        throw Failure.service(.badResponse)
+    }
     private struct Envelope<T: Decodable>: Decodable { let result: T }
 
     private func json<T: Encodable>(_ value: T) throws -> Any {
@@ -838,6 +868,11 @@ extension SwarmaCells {
     /// thread: the swarm and question items the notch shows (TEAMS.md §1).
     static let threadPrefix = "swarm:thread:"
     static func threadCellID(_ threadID: String) -> String { threadPrefix + threadID }
+    static func swarmID(fromCellID id: String) -> String? {
+        guard id.hasPrefix(threadPrefix), let range = id.range(of: "/swarm/") else { return nil }
+        let value = String(id[range.upperBound...])
+        return value.isEmpty ? nil : value
+    }
     /// Drops a `/swarm/<id>` suffix: a swarm cell opens its thread too.
     static func threadID(fromCellID id: String) -> String? {
         guard id.hasPrefix(threadPrefix) else { return nil }

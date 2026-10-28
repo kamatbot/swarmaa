@@ -10,6 +10,8 @@ struct CodenotchMain: App {
         Settings { EmptyView() }
             .commands {
                 CommandGroup(replacing: .appSettings) {
+                    Button("Open Swarmaa") { appDelegate.openTeams() }
+                        .keyboardShortcut("1", modifiers: .command)
                     Button("Settings…") { appDelegate.openSettings() }
                         .keyboardShortcut(",", modifiers: .command)
                     Button("Review Lessons…") { appDelegate.reviewLessons() }
