@@ -1,6 +1,6 @@
 import { runFlowCheck } from './checks.js';
 import { setTimeout as delay } from 'node:timers/promises';
-import { AUTO_PATCH, AUTO_READ, buildInvocation, capability, antigravityLogModel, classifyFailure, deniedActions, extractServed, finalAnswer, projectCapabilities, providerSucceeded } from './adapters.js';
+import { AUTO_PATCH, AUTO_READ, buildInvocation, capability, antigravityLogModel, classifyFailure, deniedActions, extractDelegate, extractPartialText, extractServed, finalAnswer, projectCapabilities, providerSucceeded } from './adapters.js';
 import { collectUsage, headroom } from '../usage/index.js';
 import { windowsForModel } from '../usage/antigravity.js';
 import type { UsageProviderId, UsageSnapshot } from '../usage/types.js';
@@ -64,22 +64,170 @@ export class BridgeWorker {
   private draining = false;
   private readonly running = new Set<Promise<unknown>>();
   private readonly drainAbort = new AbortController();
+  private readonly streamAbort = new AbortController();
   private pollWait?: AbortController;
   private drainTimer?: ReturnType<typeof setTimeout>;
+  private readonly streamFetch?: typeof fetch;
+  private readonly streamToken?: string;
+  private lastWakeTime = 0;
+  private wakeTimer?: NodeJS.Timeout;
+  private wakePending = false;
 
   constructor(
     private readonly config: BridgeConfig,
     private readonly client: ToolClient,
     private readonly logger: BridgeLogger = (event, metadata) => process.stderr.write(`${JSON.stringify({ event, ...metadata })}\n`),
     private readonly runner: ProcessRunner = runBoundedProcess,
-    private readonly usage: (providers: UsageProviderId[]) => Promise<UsageSnapshot[]> = providers => collectUsage(providers)
-  ) {}
+    private readonly usage: (providers: UsageProviderId[]) => Promise<UsageSnapshot[]> = providers => collectUsage(providers),
+    streamOptions?: { fetcher?: typeof fetch; token?: string } | typeof fetch
+  ) {
+    if (typeof streamOptions === 'function') {
+      this.streamFetch = streamOptions;
+    } else if (streamOptions) {
+      this.streamFetch = streamOptions.fetcher;
+      this.streamToken = streamOptions.token;
+    }
+  }
+
+  private triggerWake(): void {
+    const now = Date.now();
+    const timeSinceLast = now - this.lastWakeTime;
+    if (timeSinceLast >= 200) {
+      this.lastWakeTime = now;
+      if (this.wakeTimer) {
+        clearTimeout(this.wakeTimer);
+        this.wakeTimer = undefined;
+      }
+      if (this.pollWait) {
+        this.pollWait.abort();
+      } else {
+        this.wakePending = true;
+      }
+    } else if (!this.wakeTimer) {
+      this.wakeTimer = setTimeout(() => {
+        this.wakeTimer = undefined;
+        this.lastWakeTime = Date.now();
+        if (this.pollWait) {
+          this.pollWait.abort();
+        } else {
+          this.wakePending = true;
+        }
+      }, 200 - timeSinceLast);
+    }
+  }
+
+  private handleSseBlock(block: string, myScopes: Set<string>): void {
+    let eventName = '';
+    let dataStr = '';
+
+    for (const rawLine of block.split(/\r?\n/)) {
+      const line = rawLine.trim();
+      if (!line || line.startsWith(':')) continue;
+      if (line.startsWith('event:')) {
+        eventName = line.slice(6).trim();
+      } else if (line.startsWith('data:')) {
+        dataStr = line.slice(5).trim();
+      }
+    }
+
+    if (!dataStr && !eventName) return;
+
+    let data: Record<string, unknown> = {};
+    if (dataStr) {
+      try { data = JSON.parse(dataStr); } catch {}
+    }
+
+    const name = eventName || String(data.name ?? '');
+    const scope = String(data.scope ?? (data.payload as any)?.scope ?? '');
+    const status = String((data.payload as any)?.status ?? data.status ?? '');
+
+    const isSubmitted = name === 'task.submitted';
+    const isQueuedUpdate = name === 'task.updated' && status === 'queued';
+
+    if ((isSubmitted || isQueuedUpdate) && (myScopes.has(scope) || myScopes.has('*'))) {
+      this.triggerWake();
+    }
+  }
+
+  private async maintainStream(signal: AbortSignal): Promise<void> {
+    const token = this.streamToken ?? (this.client as any).token ?? process.env[this.config.token_env];
+    if (!token && !this.streamFetch) {
+      return;
+    }
+    const baseUrl = (this.client as any).origin ?? this.config.service_url;
+    const url = `${baseUrl.replace(/\/+$/, '')}/api/stream?after=now`;
+    const fetcher = this.streamFetch ?? (this.client as any).fetcher ?? globalThis.fetch;
+    const myScopes = new Set(this.config.projects.map(p => p.scope));
+
+    let backoffMs = 500;
+
+    while (!signal.aborted && !this.draining) {
+      try {
+        const response = await fetcher(url, {
+          method: 'GET',
+          headers: {
+            Authorization: `Bearer ${token ?? 'worker-token'}`,
+            Accept: 'text/event-stream'
+          },
+          signal
+        });
+
+        if (!response.ok || !response.body) {
+          throw new Error(`Stream request failed with status ${response.status}`);
+        }
+
+        backoffMs = 500;
+        const reader = response.body.getReader();
+        let buffer = '';
+        const decoder = new TextDecoder('utf8');
+
+        try {
+          while (!signal.aborted && !this.draining) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += typeof value === 'string' ? value : decoder.decode(value, { stream: true });
+
+            let boundary: number;
+            while ((boundary = buffer.search(/\r?\n\r?\n/)) !== -1) {
+              const eventBlock = buffer.slice(0, boundary);
+              const match = buffer.slice(boundary).match(/^\r?\n\r?\n/);
+              const delimLength = match ? match[0].length : 2;
+              buffer = buffer.slice(boundary + delimLength);
+              this.handleSseBlock(eventBlock, myScopes);
+            }
+          }
+        } finally {
+          try { await reader.cancel(); } catch {}
+          reader.releaseLock();
+        }
+      } catch (err) {
+        if (signal.aborted || this.draining) break;
+        this.logger('stream_connection_failed', {
+          message: String((err as Error)?.message ?? err).slice(0, 200),
+          retry_in_ms: backoffMs
+        });
+      }
+
+      if (signal.aborted || this.draining) break;
+      try {
+        await delay(backoffMs, undefined, { signal });
+        backoffMs = Math.min(backoffMs * 2, 30_000);
+      } catch {
+        break;
+      }
+    }
+  }
 
   /** Stop claiming; the run loop and task heartbeats stay alive until every task settles. */
   drain(maxSeconds?: number): void {
     if (this.draining) return;
     this.draining = true;
     this.nextUsageAt = 0;
+    this.streamAbort.abort();
+    if (this.wakeTimer) {
+      clearTimeout(this.wakeTimer);
+      this.wakeTimer = undefined;
+    }
     this.logger('bridge_draining', { running: this.running.size });
     this.pollWait?.abort();
     if (maxSeconds !== undefined && this.running.size) this.drainTimer = setTimeout(() => {
@@ -113,44 +261,63 @@ export class BridgeWorker {
    */
   async run(signal: AbortSignal, once = false): Promise<void> {
     signal = AbortSignal.any([signal, this.drainAbort.signal]);
+    let streamTask: Promise<void> | undefined;
+    if (!once) {
+      const streamSignal = AbortSignal.any([signal, this.streamAbort.signal]);
+      streamTask = this.maintainStream(streamSignal).catch(err => {
+        this.logger('stream_loop_error', { message: String(err) });
+      });
+    }
     let inflight = 0;
     let claimedOnce = false;
     const running = this.running;
-    while (!signal.aborted && (!this.draining || running.size)) {
-      let claimedAny = false;
-      await this.reportUsage(signal);
-      for (let i = 0; i < this.config.projects.length; i += 64) {
-        const projects = this.config.projects.slice(i, i + 64);
-        while (!signal.aborted && !this.draining && !(once && claimedOnce) && inflight < this.config.max_concurrent) {
-          let claimed!: () => void;
-          const started = new Promise<boolean>(r => { claimed = () => r(true); });
-          inflight++;
-          const task = this.claimAndRun(projects, signal, claimed)
-            .catch(error => { this.logger('bridge_poll_failed', { scope: projects[0]!.scope, code: errorCode(error), message: String((error as Error)?.message ?? error).slice(0, 200) }); return false; })
-            .finally(() => {
-              inflight--; running.delete(task);
-              if (!running.size) {
-                if (this.drainTimer) clearTimeout(this.drainTimer);
-                if (this.draining || once) this.pollWait?.abort();
-              }
-            });
-          running.add(task);
-          if (!(await Promise.race([started, task]))) break; // nothing to claim here
-          claimedAny = true;
-          claimedOnce = true;
-          if (once) break;
+    try {
+      while (!signal.aborted && (!this.draining || running.size)) {
+        let claimedAny = false;
+        await this.reportUsage(signal);
+        for (let i = 0; i < this.config.projects.length; i += 64) {
+          const projects = this.config.projects.slice(i, i + 64);
+          while (!signal.aborted && !this.draining && !(once && claimedOnce) && inflight < this.config.max_concurrent) {
+            let claimed!: () => void;
+            const started = new Promise<boolean>(r => { claimed = () => r(true); });
+            inflight++;
+            const task = this.claimAndRun(projects, signal, claimed)
+              .catch(error => { this.logger('bridge_poll_failed', { scope: projects[0]!.scope, code: errorCode(error), message: String((error as Error)?.message ?? error).slice(0, 200) }); return false; })
+              .finally(() => {
+                inflight--; running.delete(task);
+                if (!running.size) {
+                  if (this.drainTimer) clearTimeout(this.drainTimer);
+                  if (this.draining || once) this.pollWait?.abort();
+                }
+              });
+            running.add(task);
+            if (!(await Promise.race([started, task]))) break; // nothing to claim here
+            claimedAny = true;
+            claimedOnce = true;
+            if (once) break;
+          }
+        }
+        if (once && !running.size) return;
+        if (this.draining && !running.size) break;
+        if (!claimedAny) {
+          if (this.wakePending) {
+            this.wakePending = false;
+            continue;
+          }
+          this.pollWait = new AbortController();
+          const seconds = this.draining ? Math.min(this.config.poll_seconds, this.config.usage_seconds || 30, 30) : this.config.poll_seconds;
+          try { await delay(seconds * 1000, undefined, { signal: AbortSignal.any([signal, this.pollWait.signal]) }); } catch { /* shutdown, drain, or the last task finished */ }
+          finally { this.pollWait = undefined; }
         }
       }
-      if (once && !running.size) return;
-      if (this.draining && !running.size) break;
-      if (!claimedAny) {
-        this.pollWait = new AbortController();
-        const seconds = this.draining ? Math.min(this.config.poll_seconds, this.config.usage_seconds || 30, 30) : this.config.poll_seconds;
-        try { await delay(seconds * 1000, undefined, { signal: AbortSignal.any([signal, this.pollWait.signal]) }); } catch { /* shutdown, drain, or the last task finished */ }
-        finally { this.pollWait = undefined; }
+    } finally {
+      this.streamAbort.abort();
+      if (this.wakeTimer) {
+        clearTimeout(this.wakeTimer);
+        this.wakeTimer = undefined;
       }
+      await Promise.allSettled([...running, ...(streamTask ? [streamTask] : [])]);
     }
-    await Promise.allSettled([...running]);
   }
 
   async claimAndRun(projects: ProjectConfig[], signal: AbortSignal, onClaimed?: () => void): Promise<boolean> {
@@ -202,6 +369,12 @@ export class BridgeWorker {
     let finalizeFailure: { worktree_path: string; recovery: string } | undefined;
     let expiryTimer: ReturnType<typeof setTimeout> | undefined;
     let progress = { output_bytes: 0, stdout_tail: '' };
+    let currentPartialText = '';
+    let lastSentPartialText = '';
+    let lastCheckpointTime = 0;
+    let partialTextTimer: NodeJS.Timeout | undefined;
+    let checkpointInFlight = false;
+    const streamParserState = { totalProcessedBytes: 0 };
     const startedAt = new Date().toISOString();
     const onShutdown = (): void => execution.abort();
     shutdown.addEventListener('abort', onShutdown, { once: true });
@@ -228,11 +401,84 @@ export class BridgeWorker {
       armExpiry(started);
     };
     armExpiry(claimStarted);
-    const checkpoint = (phase: string): Record<string, unknown> => ({
-      phase, agent: agent.id, provider: task.kind==='check' ? 'bridge' : agent.provider, started_at: startedAt,
-      output_bytes: progress.output_bytes, partial_output: untrusted(progress.stdout_tail, 8192),
-      partial_output_is_untrusted: true
-    });
+    const checkpoint = (phase: string): Record<string, unknown> => {
+      const base: Record<string, unknown> = {
+        phase, agent: agent.id, provider: task.kind==='check' ? 'bridge' : agent.provider, started_at: startedAt,
+        output_bytes: progress.output_bytes, partial_output: untrusted(progress.stdout_tail, 8192),
+        partial_output_is_untrusted: true
+      };
+      if (task.kind === 'turn' && agent.provider !== 'antigravity') {
+        base.partial_text = untrusted(currentPartialText, 8192);
+      }
+      return base;
+    };
+    const sendPartialCheckpoint = async (): Promise<void> => {
+      if (finished || leaseLost || execution.signal.aborted || heartbeatStop.signal.aborted) return;
+      if (checkpointInFlight) return;
+      if (currentPartialText === lastSentPartialText) return;
+
+      checkpointInFlight = true;
+      try {
+        await renew();
+        if (leaseLost || finished) return;
+        await this.client.call('task_checkpoint', { ...lease, checkpoint: checkpoint('running') });
+        lastSentPartialText = currentPartialText;
+        lastCheckpointTime = Date.now();
+      } catch (error) {
+        if (!transient(error)) { loseLease(errorCode(error)); return; }
+        this.logger('checkpoint_retry', { task_id: task.id, code: errorCode(error) });
+      } finally {
+        checkpointInFlight = false;
+        if (currentPartialText !== lastSentPartialText && !finished && !leaseLost) {
+          schedulePartialCheckpoint();
+        }
+      }
+    };
+    const schedulePartialCheckpoint = (): void => {
+      if (finished || leaseLost || execution.signal.aborted || heartbeatStop.signal.aborted || partialTextTimer) return;
+      const now = Date.now();
+      const elapsed = now - lastCheckpointTime;
+      if (elapsed >= 1500) {
+        void sendPartialCheckpoint();
+      } else {
+        partialTextTimer = setTimeout(() => {
+          partialTextTimer = undefined;
+          void sendPartialCheckpoint();
+        }, 1500 - elapsed);
+      }
+    };
+    const updatePartialText = (stdoutTail: string, outputBytes: number): void => {
+      if (task.kind !== 'turn' || agent.provider === 'antigravity') return;
+
+      const tailBuf = Buffer.from(stdoutTail, 'utf8');
+      const tailStartOffset = outputBytes - tailBuf.length;
+      const newBytesStart = Math.max(0, streamParserState.totalProcessedBytes - tailStartOffset);
+      const newBuf = tailBuf.subarray(newBytesStart);
+      const lastLf = newBuf.lastIndexOf(10); // '\n'
+
+      if (lastLf >= 0) {
+        const completeLinesBuf = newBuf.subarray(0, lastLf + 1);
+        streamParserState.totalProcessedBytes += completeLinesBuf.length;
+        const chunkText = completeLinesBuf.toString('utf8');
+        const extracted = extractPartialText(agent.provider, chunkText);
+        if (extracted) {
+          if (agent.provider === 'claude') {
+            currentPartialText += extracted;
+          } else if (agent.provider === 'codex') {
+            currentPartialText = extracted;
+          }
+        }
+      }
+
+      if (!currentPartialText) {
+        const fromTail = extractPartialText(agent.provider, stdoutTail);
+        if (fromTail) currentPartialText = fromTail;
+      }
+
+      if (currentPartialText !== lastSentPartialText) {
+        schedulePartialCheckpoint();
+      }
+    };
     const heartbeat = (async (): Promise<void> => {
       while (!heartbeatStop.signal.aborted) {
         try { await delay(this.config.heartbeat_seconds * 1000, undefined, { signal: heartbeatStop.signal }); } catch { return; }
@@ -240,7 +486,11 @@ export class BridgeWorker {
         try {
           await renew();
           if (leaseLost) return;
-          if (!finished) await this.client.call('task_checkpoint', { ...lease, checkpoint: checkpoint('running') });
+          if (!finished) {
+            await this.client.call('task_checkpoint', { ...lease, checkpoint: checkpoint('running') });
+            lastSentPartialText = currentPartialText;
+            lastCheckpointTime = Date.now();
+          }
         } catch (error) {
           if (finished) return;
           // A refusal is final. An ambiguous failure (slow service, restart, dropped connection) is retried on the
@@ -280,7 +530,10 @@ export class BridgeWorker {
           result = {exit_code:checkFact.exit_code,signal:null,stdout:checkFact.output_tail,stderr:'',duration_ms:checkFact.duration_ms,stop_reason:checkFact.stop_reason as ProcessResult['stop_reason']};
         } else {
           const request = buildInvocation(agent, project, task, context, this.config, execution.signal, process.env, worktree, nativePlan);
-          request.on_progress = value => { progress = value; };
+          request.on_progress = value => {
+            progress = value;
+            updatePartialText(value.stdout_tail, value.output_bytes);
+          };
           result = await this.runner(request);
           if (task.flow_id && task.kind!=='patch') {
             const snapshot = await inspectWorktree(worktree!);
@@ -336,11 +589,23 @@ export class BridgeWorker {
         else if (shutdown.aborted) failure = { code: 'cancelled', retry: false, detail: 'Task cancelled by shutdown or signal' };
         else failure = { code: 'harness_error', retry: false, detail: 'Harness failed' };
       }
-      let served: ServedStamp = task.kind === 'check' ? { provider: 'bridge', model: null } : extractServed(agent.provider, result, agent.model);
+      if (partialTextTimer) {
+        clearTimeout(partialTextTimer);
+        partialTextTimer = undefined;
+      }
+      const envelope = (task as any).permission_envelope ?? (task as any).envelope;
+      const runnerModel = envelope?.runner?.model ?? envelope?.model ?? (task as any).runner?.model;
+      const isTurn = task.kind === 'turn';
+      const isEditTurn = isTurn && (isPatchWork || Boolean(envelope?.local_patch));
+      const hasEnvelopeModel = Boolean(runnerModel);
+      const askedModel = (isTurn && !isEditTurn && (runnerModel || agent.turn_model)) ? (runnerModel ?? agent.turn_model) : agent.model;
+      let served: ServedStamp = task.kind === 'check' ? { provider: 'bridge', model: null } : extractServed(agent.provider, result, askedModel);
       if (agent.provider === 'antigravity' && !served.model) {
         const model = await antigravityLogModel(Date.parse(startedAt));
-        if (model) served = { provider: 'antigravity', model, ...(agent.model && !sameModel(agent.model, model) ? { substituted: true } : {}) };
+        if (model) served = { provider: 'antigravity', model, ...(askedModel && !sameModel(askedModel, model) ? { substituted: true } : {}) };
       }
+      const rawAnswer = task.kind === 'check' ? checkFact!.output_tail : finalAnswer(agent.provider, result.stdout);
+      const { cleanAnswer, delegate } = extractDelegate(rawAnswer, hasEnvelopeModel);
       const completion = {
         ...lease, outcome, artifact_ids: [artifact.artifact.id, ...(diffArtifact ? [diffArtifact.artifact.id] : [])], result: {
           agent: agent.id, provider: task.kind==='check' ? 'bridge' : agent.provider, execution_completed: outcome === 'completed',
@@ -350,7 +615,8 @@ export class BridgeWorker {
           served,
           ...(failure ? { failure } : {}),
           // The agent's own answer, so callers can read it with task_get; untrusted provider output.
-          answer: task.kind==='check' ? checkFact!.output_tail : untrusted(finalAnswer(agent.provider, result.stdout), 8 * 1024),
+          answer: task.kind==='check' ? checkFact!.output_tail : untrusted(cleanAnswer, 8 * 1024),
+          ...(delegate ? { delegate } : {}),
           ...(denied.length ? { denied_actions: denied, next_step: 'This worker cannot run those actions (read-only sandbox). Resubmit with a capability whose worker can, e.g. codex.read, or narrow the task.' } : {}),
           summary: task.kind==='check' ? `Deterministic bridge check ${outcome==='completed' ? 'passed' : 'did not pass'}. See the recorded check evidence.` : outcome === 'completed' ? 'Provider completed. Review the transcript and acceptance criteria before integrating changes.' : 'Provider did not complete successfully. Review the transcript before continuing the task.',
           ...(isPatchWork ? { commands_allowed: true, ...(patchResult ? { branch: patchResult.branch, base_ref: patchResult.base_ref, base_commit: patchResult.base_commit, head_commit: patchResult.head_commit, changed_files: patchResult.changed_files, diffstat: patchResult.diffstat, ...(patchResult.continued ? { continued: true } : {}) } : {}), ...(diffArtifactError ? { diff_artifact_error: diffArtifactError } : {}), ...(finalizeFailure ?? {}) } : {}),
@@ -391,6 +657,10 @@ export class BridgeWorker {
         } catch { this.logger('task_finish_unconfirmed', { task_id: task.id }); }
       }
     } finally {
+      if (partialTextTimer) {
+        clearTimeout(partialTextTimer);
+        partialTextTimer = undefined;
+      }
       if (worktree && !isPatchWork) {
         try { await removeSnapshot(project.root,worktree); } catch { this.logger('snapshot_cleanup_failed',{task_id:task.id}); }
       }
