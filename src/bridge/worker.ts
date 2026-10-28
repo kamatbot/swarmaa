@@ -1,6 +1,6 @@
 import { runFlowCheck } from './checks.js';
 import { setTimeout as delay } from 'node:timers/promises';
-import { AUTO_PATCH, AUTO_READ, buildInvocation, capability, antigravityLogModel, classifyFailure, deniedActions, extractDelegate, extractPartialText, extractServed, finalAnswer, projectCapabilities, providerSucceeded } from './adapters.js';
+import { AUTO_PATCH, AUTO_READ, buildInvocation, withTurnImages, capability, antigravityLogModel, classifyFailure, deniedActions, extractDelegate, extractPartialText, extractServed, finalAnswer, projectCapabilities, providerSucceeded } from './adapters.js';
 import { collectUsage, headroom } from '../usage/index.js';
 import { windowsForModel } from '../usage/antigravity.js';
 import type { UsageProviderId, UsageSnapshot } from '../usage/types.js';
@@ -529,12 +529,16 @@ export class BridgeWorker {
           checkFact = await runFlowCheck(task,project,agent,this.config,worktree!,this.runner,execution.signal);
           result = {exit_code:checkFact.exit_code,signal:null,stdout:checkFact.output_tail,stderr:'',duration_ms:checkFact.duration_ms,stop_reason:checkFact.stop_reason as ProcessResult['stop_reason']};
         } else {
-          const request = buildInvocation(agent, project, task, context, this.config, execution.signal, process.env, worktree, nativePlan);
+          result = await withTurnImages(agent, task, context, async images => {
+          const request = buildInvocation(agent, project, task, context, this.config, execution.signal, process.env, worktree, nativePlan, images);
+          const scrub = (s: string) => images.length ? s.replace(/[A-Za-z0-9+/]{128,}={0,2}/gu, "[photo removed]") : s;
           request.on_progress = value => {
-            progress = value;
-            updatePartialText(value.stdout_tail, value.output_bytes);
+            progress = images.length ? { ...value, stdout_tail: "" } : value;
+            updatePartialText(progress.stdout_tail, value.output_bytes);
           };
-          result = await this.runner(request);
+          const output = await this.runner(request);
+          return { ...output, stdout: scrub(output.stdout), stderr: scrub(output.stderr) };
+          });
           if (task.flow_id && task.kind!=='patch') {
             const snapshot = await inspectWorktree(worktree!);
             snapshotInvalid = snapshot.dirty || snapshot.commit!==observedCommit;
@@ -652,7 +656,7 @@ export class BridgeWorker {
           await this.client.call('task_finish', { ...lease, outcome: 'blocked', result: {
             agent: agent.id, code: errorCode(error), review_required: true,
             ...(task.kind==='check' ? {reason:`Deterministic check could not run: ${errorCode(error)}`,tests_run_by_bridge:true,observed_commit:observedCommit} : {}),
-            summary: 'Worker could not complete this attempt. Check local CLI authentication/version, project configuration, context size and service availability.',
+            summary: errorCode(error) === 'photo_provider_unsupported' ? 'This provider does not support photo input; retry with Claude or Codex.' : 'Worker could not complete this attempt. Check local CLI authentication/version, project configuration, context size and service availability.',
             acceptance_criteria_verified: false
           } });
           finished = true;

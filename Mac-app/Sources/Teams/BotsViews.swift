@@ -48,9 +48,9 @@ struct BotsSidebar: View {
         let updates = bots.filter { model.botHasUpdates($0) }
         let rest = bots.filter { !model.botHasUpdates($0) }
         VStack(spacing: 0) {
-            KSSearchField(prompt: L10n.t("Search bots"), text: $model.search).padding(14)
+            KSSearchField(prompt: L10n.t("Search bots"), text: $model.search).padding(10)
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 6) {
+                LazyVStack(alignment: .leading, spacing: 4) {
                     if !updates.isEmpty {
                         HStack(spacing: 8) { KSLabel(L10n.t("01 — Updates")); KSBadge(count: updates.count) }
                             .padding(.horizontal, 8).padding(.top, 2)
@@ -58,7 +58,7 @@ struct BotsSidebar: View {
                     }
                     if !rest.isEmpty {
                         KSLabel(updates.isEmpty ? L10n.t("01 — All bots") : L10n.t("02 — All bots"))
-                            .padding(.horizontal, 8).padding(.top, updates.isEmpty ? 2 : 14)
+                            .padding(.horizontal, 8).padding(.top, updates.isEmpty ? 2 : 10)
                         ForEach(rest) { BotRow(model: model, bot: $0) }
                     }
                     let hidden = model.hiddenBots
@@ -72,7 +72,7 @@ struct BotsSidebar: View {
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain).foregroundStyle(KS.textMuted)
-                        .padding(.horizontal, 8).padding(.top, 14)
+                        .padding(.horizontal, 8).padding(.top, 10)
                         .accessibilityLabel(L10n.t("Hidden bots, \(hidden.count)"))
                         if model.showHiddenBots { ForEach(hidden) { BotRow(model: model, bot: $0) } }
                     }
@@ -111,10 +111,10 @@ struct BotRow: View {
         let latest = model.botLatest(bot)
         Button { model.select(threadID: bot.threadID) } label: {
             HStack(spacing: 11) {
-                KSMoji(seed: bot.avatar ?? bot.leadAgentID, size: 40)
-                VStack(alignment: .leading, spacing: 4) {
+                KSMoji(seed: bot.avatar ?? bot.leadAgentID, size: 34)
+                VStack(alignment: .leading, spacing: 3) {
                     HStack(spacing: 6) {
-                        Text(verbatim: bot.name).font(KS.body(16, .bold)).lineLimit(1)
+                        Text(verbatim: bot.name).font(KS.body(14, .bold)).lineLimit(1)
                         Spacer(minLength: 2)
                         if unread > 0, needs == 0 { KSBadge(count: unread) }
                         if needs == 0, unread == 0, let at = latest?.at {
@@ -129,13 +129,13 @@ struct BotRow: View {
                     if needs > 0 { KSChip(L10n.t("Needs you"), fill: KS.coral) }
                 }
             }
-            .padding(.horizontal, 10).padding(.vertical, 10)
+            .padding(.horizontal, 9).padding(.vertical, 6)
             .background {
-                if selected { RoundedRectangle(cornerRadius: 16).fill(KS.ink).offset(x: 2, y: 2) }
-                RoundedRectangle(cornerRadius: 16).fill(selected ? KS.white : hovered ? KS.sageTint : .clear)
+                if selected { RoundedRectangle(cornerRadius: 12).fill(KS.ink).offset(x: 2, y: 2) }
+                RoundedRectangle(cornerRadius: 12).fill(selected ? KS.white : hovered ? KS.sageTint : .clear)
             }
-            .overlay(RoundedRectangle(cornerRadius: 16).stroke(selected ? KS.ink : .clear, lineWidth: 2))
-            .contentShape(RoundedRectangle(cornerRadius: 16))
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(selected ? KS.ink : .clear, lineWidth: 2))
+            .contentShape(RoundedRectangle(cornerRadius: 12))
         }
         .buttonStyle(.plain)
         .onHover { hovered = $0 }
@@ -158,68 +158,26 @@ struct BotThreadHeader: View {
     @ObservedObject var model: TeamsModel
     let bot: TeamsBot
 
-    private var crew: [TeamsAgent] { model.crew(bot) }
-
-    private var crewLine: String {
-        let names = crew.map(\.name)
-        guard let lead = names.first else { return SwarmaCells.scopeLabel(bot.scope) }
-        let others = names.dropFirst()
-        let who = others.isEmpty ? lead : lead + " " + L10n.t("leads") + " " + Self.list(Array(others))
-        return (others.isEmpty ? L10n.t("Bot") : L10n.t("Swarm")) + " · " + who + " · " + SwarmaCells.scopeLabel(bot.scope)
-    }
-
-    /// "Auto · Antigravity researches, Claude edits" from routing_now, else the configured runners.
-    private var routingLine: String {
-        func who(_ kind: TeamsBotRouting.Kind) -> String? {
-            if let p = bot.routingNow[kind.rawValue]?.providerNow { return SwarmaCells.vendorName(p) }
-            return bot.routing[kind].flatMap { $0.provider.map(SwarmaCells.vendorName) }
-        }
-        let auto = TeamsBotRouting.Kind.allCases.contains { bot.routing[$0] == nil }
-        var parts: [String] = []
-        if let r = who(.research) { parts.append(r + " " + L10n.t("researches")) }
-        if let e = who(.patch) { parts.append(e + " " + L10n.t("edits")) }
-        let head = auto ? L10n.t("Auto") : L10n.t("Set")
-        return parts.isEmpty ? head + " · " + L10n.t("most quota left") : head + " · " + parts.joined(separator: ", ")
-    }
-
-    static func list(_ names: [String]) -> String {
-        names.count <= 1 ? names.joined() : names.dropLast().joined(separator: ", ") + " " + L10n.t("and") + " " + names.last!
-    }
-
     var body: some View {
-        HStack(spacing: 12) {
-            KSMoji(seed: bot.avatar ?? bot.leadAgentID, size: 36)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(verbatim: bot.name).font(KS.body(21, .bold)).lineLimit(1)
-                Text(verbatim: crewLine.uppercased()).font(KS.mono(10)).tracking(1).foregroundStyle(KS.textMuted).lineLimit(1)
-            }
-            .layoutPriority(1)
-            Spacer(minLength: 8)
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 8) {
-                    HStack(spacing: -8) { ForEach(crew.dropFirst().prefix(5)) { KSMoji(seed: $0.avatar ?? $0.id, size: 26) } }
-                    Button { model.editingBotID = bot.id } label: {
-                        HStack(spacing: 7) {
-                            Circle().fill(KS.lime).frame(width: 9, height: 9).overlay(Circle().stroke(KS.ink, lineWidth: 2))
-                            Text(verbatim: routingLine).lineLimit(1)
-                        }
-                    }
-                    .buttonStyle(.ks(.white)).help(L10n.t("Which service does what, from Bot settings"))
-                    Button { model.editingBotID = bot.id } label: { Label(L10n.t("Bot settings"), systemImage: "slider.horizontal.3") }
-                        .buttonStyle(.ks(.paper))
-                }
-                .fixedSize(horizontal: true, vertical: false)
-                Button { model.editingBotID = bot.id } label: {
-                    Image(systemName: "slider.horizontal.3")
-                }
-                .buttonStyle(.ks(.paper))
+        HStack(spacing: 8) {
+            KSMoji(seed: bot.avatar ?? bot.leadAgentID, size: 26)
+            Text(verbatim: bot.name).font(KS.body(15, .semibold)).lineLimit(1)
+        }
+        .padding(.horizontal, 10).padding(.vertical, 4)
+        .background(Capsule().fill(KS.white))
+        .overlay(Capsule().strokeBorder(KS.ink, lineWidth: 1.5))
+        .frame(maxWidth: 240)
+        .frame(maxWidth: .infinity)
+        .overlay(alignment: .trailing) {
+            Button { model.editingBotID = bot.id } label: { Image(systemName: "slider.horizontal.3") }
+                .buttonStyle(.ks(.paper, compact: true))
                 .accessibilityLabel(L10n.t("Bot settings"))
                 .help(L10n.t("Bot settings"))
-            }
+                .padding(.trailing, 16)
         }
-        .padding(.horizontal, 20).padding(.vertical, 12)
+        .padding(.vertical, 5)
         .background(KS.paper)
-        .overlay(alignment: .bottom) { Rectangle().fill(KS.ink).frame(height: 2) }
+        .overlay(alignment: .bottom) { Rectangle().fill(KS.ink).frame(height: 1.5) }
     }
 }
 
@@ -232,9 +190,9 @@ struct TaskCardView: View {
 
     var body: some View {
         let task = message.task
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 7) {
             HStack(spacing: 10) {
-                Text(verbatim: task?.title ?? message.body ?? L10n.t("Task")).font(KS.body(16, .bold)).lineLimit(2)
+                Text(verbatim: task?.title ?? message.body ?? L10n.t("Task")).font(KS.body(15, .bold)).lineLimit(2)
                 Spacer()
                 if let task { KSChip(Self.state(task).0, fill: Self.state(task).1, ink: Self.state(task).2) }
             }
@@ -264,8 +222,8 @@ struct TaskCardView: View {
                 }
             }
         }
-        .padding(16).frame(maxWidth: 640, alignment: .leading)
-        .ksCard(fill: message.task?.isFailed == true ? KS.coralTint : KS.white, radius: 20)
+        .padding(12).frame(maxWidth: 640, alignment: .leading)
+        .ksCard(fill: message.task?.isFailed == true ? KS.coralTint : KS.white, radius: 16)
     }
 
     static func state(_ t: TeamsTaskCard) -> (String, Color, Color) {
@@ -303,13 +261,13 @@ struct BotSettingsPane: View {
                 Button { model.editingBotID = nil } label: { Label(bot.name, systemImage: "chevron.left") }.buttonStyle(.ks(.paper))
                 KSMoji(seed: bot.avatar ?? bot.leadAgentID, size: 40)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(verbatim: (name.isEmpty ? bot.name : name).uppercased() + L10n.t(" BOT.")).font(KS.display(34))
+                    Text(verbatim: (name.isEmpty ? bot.name : name).uppercased() + L10n.t(" BOT.")).font(KS.display(28))
                     Text(verbatim: L10n.t("A persistent swarm. These settings apply to everything it runs, and override the global Swarmaa defaults."))
                         .font(KS.body(14)).foregroundStyle(KS.textSoft)
                 }
                 Spacer()
             }
-            .padding(.horizontal, 24).padding(.vertical, 14)
+            .padding(.horizontal, 20).padding(.vertical, 10)
             .overlay(alignment: .bottom) { Rectangle().fill(KS.ink).frame(height: 2.5) }
 
             ScrollView {

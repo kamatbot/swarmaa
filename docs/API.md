@@ -33,7 +33,7 @@ All examples below show **tool arguments and unwrapped tool results**, without t
 | `bot_create`, `bot_update`, `bot_archive` | `agent:manage` and `agent:read` | Exact authorized scope |
 | `bot_get`, `bot_list` | `agent:read` | Exact authorized scope |
 | `thread_post` | `thread:write` and `thread:read` | Exact authorized scope |
-| `thread_read`, `thread_mark_read`, `thread_list` | `thread:read` | Exact authorized scope |
+| `thread_read`, `thread_attachment_get`, `thread_mark_read`, `thread_list` | `thread:read` | Exact authorized scope |
 
 The `admin` permission satisfies permission checks, but it does not turn an admin connection into a worker. Owner review and worker execution use separate identities. Default frontend and worker permissions do not include `memory:moderate` or `task:patch`. Capability strings route work; they are never permissions. Mutation tools that return a full memory/task also require that resource's read permission, preventing a custom write-only grant from exposing an existing record through a conflict or replay response.
 
@@ -457,13 +457,21 @@ Persistent agents, conversation threads, turn execution, read cursors and real-t
 - **Permissions:** `thread:write` and `thread:read`
 - **Input:**
   - `thread_id` (UUID)
-  - `body` (string, 1-16,384 characters, run through secret redaction)
-  - `idempotency_key` (string, 1-128 chars)
-  - `reply_to?` (integer sequence number)
+  - `body` (string, up to 16,384 UTF-8 bytes, run through secret redaction; may be empty with photos)
+  - `idempotency_key` (string, 1-200 chars)
+  - `reply_to?` (message UUID)
+  - `attachments?` (up to two `{name, media_type: "image/jpeg", data_base64}` objects). Each JPEG must be canonical base64, at most 160 KiB decoded and at most 2048 pixels per side. Native apps normalize orientation, strip source metadata and resize to at most 1600 pixels before sending. The existing 512 KiB HTTP request limit still applies.
 - **Output:** `{ message }`. Inserts the message with the next sequential `seq` in the thread under an advisory lock. Emits a `message.created` event.
   - When posted by a human caller to an `agent_main` thread, automatically queues a `turn` task for the agent.
   - The turn task's `scope` is the agent's scope, `required_capability` is derived from runner configuration (`auto.read`, `auto.patch`, `<provider>.read`, or `<provider>.patch`), and `resource_key` is `agent:<id>`.
   - If a turn task is already queued or currently running for the agent, additional messages batch into a follow-up turn upon task completion.
+  - Retrying an identical caption, ordered photo content/names and reply reference with the same key returns the original message. Changed content returns `idempotency_conflict`.
+  - Message views include `attachments: [{id, name, media_type, byte_length, sha256}]`; image bytes are excluded from message views and events. Photos live with their message in PostgreSQL. Authorized task claims include the newest two photo payloads in the bounded thread context; older photos remain metadata only.
+
+#### `thread_attachment_get`
+- **Permissions:** `thread:read`, exact thread tenant and scope.
+- **Input:** `thread_id`, `message_id`, `attachment_id` (UUIDs).
+- **Output:** `{attachment: {id, name, media_type, byte_length, sha256, data_base64}}` for that message's photo. Mismatched or inaccessible references return `not_found`. There are no public image URLs or arbitrary filesystem paths.
 
 #### `thread_read`
 - **Permissions:** `thread:read`
@@ -473,7 +481,7 @@ Persistent agents, conversation threads, turn execution, read cursors and real-t
   - `before_seq`? (integer): fetch messages with `seq < before_seq` (newest first, reversed to chronological order)
   - `limit`? (integer 1-100, default 50)
 - With neither cursor, returns the newest `limit` messages in ascending sequence order; `has_more` indicates older messages. `before_seq` takes precedence when both cursors are supplied.
-- **Output:** `{ thread_id, messages: MessageView[], has_more, typing: [{task_id, agent_id, text, updated_at}] }`. `typing` contains only running `turn` tasks in this thread with non-empty string `checkpoint.partial_text`; `text` passes through `redactSecrets` before retaining its last 4000 characters, and `updated_at` is an ISO timestamp. It is independent of message pagination and is empty when no task is typing. Raw `partial_output` is never included. Body and ref are unchanged. Question messages embed `question: {id, prompt, options, multi, free_text, status, swarm_step_id, created_at, answer: {choices, text} | null}`; answer messages embed `answer: {question_id, choices, text}`. Swarm messages embed the `swarm_get` swarm object, including steps and progress, when the caller has `task:read`. Card references are restricted to the thread's tenant and scope; unavailable references are omitted. Cards are fetched in batches.
+- **Output:** `{ thread_id, messages: MessageView[], has_more, typing: [{task_id, agent_id, text, updated_at}] }`. `typing` contains only running `turn` tasks in this thread with non-empty string `checkpoint.partial_text`; `text` passes through `redactSecrets` before retaining its last 4000 characters, and `updated_at` is an ISO timestamp. It is independent of message pagination and is empty when no task is typing. Raw `partial_output` is never included. Bodies and non-photo references are unchanged; photos expose only attachment metadata. Question messages embed `question: {id, prompt, options, multi, free_text, status, swarm_step_id, created_at, answer: {choices, text} | null}`; answer messages embed `answer: {question_id, choices, text}`. Swarm messages embed the `swarm_get` swarm object, including steps and progress, when the caller has `task:read`. Card references are restricted to the thread's tenant and scope; unavailable references are omitted. Cards are fetched in batches.
 
 #### `thread_mark_read`
 - **Permissions:** `thread:read`

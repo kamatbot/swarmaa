@@ -252,6 +252,31 @@ actor IOSRelaySocket: SwarmaRelayTransport.SwarmaWebSocket {
         XCTAssertEqual(before, after)
         await service.transport.disconnect()
     }
+    func testPhotoPostRetriesPreservePayloadAndKey() async throws {
+        @MainActor final class Recorder: HostService {
+            var posts: [[String: JSON]] = []
+            func call(_ tool: String, _ input: [String: JSON]) async throws -> JSON {
+                if tool == "thread_post" { posts.append(input); if input["thread_id"]?.string == "thread" { throw URLError(.timedOut) }; return .object([:]) }
+                return .object([:])
+            }
+            func events(after: String) -> AsyncThrowingStream<Data, Error> { AsyncThrowingStream { $0.finish() } }
+        }
+        let recorder = Recorder(), model = AppModel()
+        model.service = recorder
+        model.openBot = Bot(raw: .object(["id": .string("bot"), "thread_id": .string("thread")]))
+        let photo = ChatPhoto(id: UUID(), name: "photo.jpg", data: Data([1, 2, 3]))
+        do { try await model.post("  ", photos: [photo]); XCTFail("Expected timeout") } catch {}
+        XCTAssertEqual(recorder.posts[0]["body"]?.string, "")
+        model.openBot = Bot(raw: .object(["id": .string("other"), "thread_id": .string("other-thread")]))
+        try await model.post("another bot")
+        model.openBot = Bot(raw: .object(["id": .string("bot"), "thread_id": .string("thread")]))
+        do { try await model.post("", photos: [photo]); XCTFail("Expected timeout") } catch {}
+        XCTAssertEqual(recorder.posts.count, 3)
+        XCTAssertEqual(recorder.posts[0]["idempotency_key"], recorder.posts[2]["idempotency_key"])
+        XCTAssertEqual(recorder.posts[0]["attachments"], recorder.posts[2]["attachments"])
+        do { try await model.post("caption", photos: [photo]); XCTFail("Expected timeout") } catch {}
+        XCTAssertNotEqual(recorder.posts[2]["idempotency_key"], recorder.posts[3]["idempotency_key"])
+    }
     func testBackgroundSocketDropIsQuietAndOtherStreamErrorsClearOnReconnect() async throws {
         @MainActor final class Flaky: HostService {
             var failures: [Error]

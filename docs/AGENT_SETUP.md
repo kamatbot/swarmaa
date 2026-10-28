@@ -263,3 +263,9 @@ Official references reviewed while implementing this package:
 ## Flow check execution
 
 The bridge can execute service-owned flow checks without invoking a model. Enable `projects[].checks` in the owner's local bridge configuration and supply absolute Node 24 test/build commands. This requires the existing patch opt-ins and worker permission. See [Flows](FLOWS.md#owner-configured-bridge-checks); this setting does not change provider configuration or environment.
+
+## Chat photos and dictation
+
+Chat photos require the service, bridge and native apps to include the attachment protocol in [API](API.md#thread_post); update the service and bridge before rolling out photo-enabled apps. No database migration is required. The service keeps at most two recent image payloads in each claimed turn's context; older images remain metadata only. Claude receives native image content over stream-JSON stdin, and Codex receives private temporary JPEG files via `--image`. The bridge removes those files after completion or cancellation and excludes image bytes from text prompts, progress and stored output. Antigravity photo turns return an explicit unsupported-provider error; choose Claude or Codex for image conversations.
+
+The native microphone button requests Speech and Microphone permission on demand and transcribes into an editable draft. Sending remains explicit. Audio is handled by Apple's Speech framework, not uploaded to Swarmaa; see [Apple's Speech permission documentation](https://developer.apple.com/documentation/speech/asking-permission-to-use-speech-recognition). Recording stops when leaving the conversation or backgrounding the app. Validate hardware permission flows and real microphone capture as part of native distribution checks.

@@ -112,4 +112,22 @@ final class TeamsSnapshotRender: XCTestCase {
         try render(TeamsRootView(model: model), "4b-usage-compact", size: CGSize(width: 900, height: 650))
         try render(UsageCard(model: model, usage: model.status!.usage[1]), "5-usage-hover-card", size: CGSize(width: 290, height: 300))
     }
+
+    func testRenderPhotoComposer() throws {
+        let model = try fixture()
+        let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 80, pixelsHigh: 60, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+        let bytes = try XCTUnwrap(bitmap.bitmapData)
+        for y in 0..<60 { for x in 0..<80 {
+            let offset = y * bitmap.bytesPerRow + x * 4
+            bytes[offset] = y < 35 ? 166 : 122
+            bytes[offset + 1] = y < 35 ? 204 : 166
+            bytes[offset + 2] = y < 35 ? 230 : 89
+            bytes[offset + 3] = 255
+        } }
+        let photoData = try XCTUnwrap(bitmap.representation(using: .jpeg, properties: [:]))
+        XCTAssertNotNil(NSImage(data: photoData))
+        model.photoDrafts["t1"] = [ChatPhoto(id: UUID(), name: "photo.jpg", data: photoData)]
+        model.drafts["t1"] = "A photo for the launch"
+        try render(TeamsRootView(model: model), "1e-photo-composer-compact", size: CGSize(width: 900, height: 650))
+    }
 }

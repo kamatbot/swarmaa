@@ -32,6 +32,7 @@ settings:
     # ordinary file access. It is the App Sandbox that would break both, which
     # is why that stays off — Developer ID distribution does not require it.
     ENABLE_HARDENED_RUNTIME: "YES"
+    CODE_SIGN_ENTITLEMENTS: Sources/Codenotch.entitlements
     ENABLE_APP_SANDBOX: "NO"
     ENABLE_USER_SCRIPT_SANDBOXING: "NO"
 
@@ -106,6 +107,8 @@ targets:
             "100.64.0.0/10":
               NSExceptionAllowsInsecureHTTPLoads: true
         NSLocalNetworkUsageDescription: "Swarmaa answers your phone on this network so it can show your usage."
+        NSMicrophoneUsageDescription: "Swarmaa uses the microphone to transcribe your message."
+        NSSpeechRecognitionUsageDescription: "Swarmaa transcribes speech into your editable message."
         # --- Sparkle -------------------------------------------------------
         # Beside the download itself, on hivinz.com. It used to point at a
         # GitHub Pages URL for a repo that was never created, so every check

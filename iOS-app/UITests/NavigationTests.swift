@@ -58,6 +58,57 @@ import XCTest
         XCTAssertTrue(app.buttons["Close"].isHittable)
         app.buttons["Close"].tap()
         XCTAssertTrue(app.textFields["composer"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.buttons["chat-options"].isHittable)
+        XCTAssertTrue(app.buttons["Add photo"].isHittable)
+        XCTAssertTrue(app.buttons["Dictate message"].isHittable)
+        let chatCapture = XCTAttachment(screenshot: app.screenshot())
+        chatCapture.name = "Chat — accessibility text"
+        chatCapture.lifetime = .keepAlways
+        add(chatCapture)
+    }
+
+    func testPhotoPickerAddsAndRemovesPhoto() {
+        let app = XCUIApplication()
+        app.launchArguments = ["-demo", "-screen", "thread"]
+        app.launch()
+        let addPhoto = app.buttons["Add photo"]
+        XCTAssertTrue(addPhoto.waitForExistence(timeout: 10))
+        addPhoto.tap()
+        let photo = app.images.matching(identifier: "PXGGridLayout-Info").firstMatch
+        XCTAssertTrue(photo.waitForExistence(timeout: 10), app.debugDescription)
+        if photo.exists { photo.tap() }
+        let done = app.buttons["Done"]
+        if done.waitForExistence(timeout: 3) && done.isEnabled { done.tap() }
+        let remove = app.buttons["Remove photo"]
+        XCTAssertTrue(remove.waitForExistence(timeout: 10), app.debugDescription)
+        XCTAssertTrue(app.buttons["Send message"].isEnabled)
+        let capture = XCTAttachment(screenshot: app.screenshot())
+        capture.name = "Selected photo in chat"
+        capture.lifetime = .keepAlways
+        add(capture)
+        if remove.exists { remove.tap(); XCTAssertFalse(remove.exists) }
+    }
+
+    func testPhotoDraftSurvivesBotSwitch() {
+        let app = XCUIApplication()
+        app.launchArguments = ["-demo", "-screen", "thread", "-photo-preview-demo"]
+        app.launch()
+        XCTAssertTrue(app.buttons["Remove photo"].waitForExistence(timeout: 10))
+        let capture = XCTAttachment(screenshot: app.screenshot())
+        capture.name = "Chat photo preview"
+        capture.lifetime = .keepAlways
+        add(capture)
+        app.textFields["composer"].tap()
+        app.textFields["composer"].typeText("Keep this draft")
+        app.buttons["Back to bots"].tap()
+        app.buttons["bot-watch"].tap()
+        XCTAssertFalse(app.buttons["Remove photo"].exists)
+        app.buttons["Back to bots"].tap()
+        app.buttons["starred-shortcut"].tap()
+        XCTAssertTrue(app.buttons["Remove photo"].waitForExistence(timeout: 3))
+        XCTAssertEqual(app.textFields["composer"].value as? String, "Keep this draft")
+        app.buttons["Remove photo"].tap()
+        XCTAssertFalse(app.buttons["Remove photo"].exists)
     }
 
     func testHiddenOptionAndSettingsActionsAtBottom() {
@@ -73,14 +124,16 @@ import XCTest
         let hidden = app.buttons["bot-notes"]
         XCTAssertTrue(hidden.waitForExistence(timeout: 3))
         hidden.tap()
+        app.buttons["chat-options"].tap()
         app.buttons["Bot settings"].tap()
         XCTAssertTrue(app.buttons["Delete bot…"].waitForExistence(timeout: 3))
         XCTAssertTrue(app.buttons["Unhide"].exists)
         XCTAssertFalse(app.buttons["Hide bot"].exists)
         XCTAssertGreaterThan(app.buttons["Delete bot…"].frame.midY, app.frame.midY)
         app.buttons["Close"].tap()
-        app.buttons["Close"].tap()
+        app.buttons["Back to bots"].tap()
         app.buttons["starred-shortcut"].tap()
+        app.buttons["chat-options"].tap()
         app.buttons["Bot settings"].tap()
         XCTAssertTrue(app.buttons["Hide bot"].waitForExistence(timeout: 3))
         XCTAssertGreaterThan(app.buttons["Hide bot"].frame.midY, app.frame.midY)
@@ -103,13 +156,17 @@ import XCTest
         app.buttons["Close"].tap()
         app.buttons["starred-shortcut"].tap()
         XCTAssertTrue(app.textFields["composer"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.buttons["Add photo"].isHittable)
+        XCTAssertTrue(app.buttons["Dictate message"].isHittable)
+        XCTAssertGreaterThanOrEqual(app.buttons["chat-options"].frame.width, 44)
         XCTAssertTrue(app.staticTexts["Scout"].exists)
         app.scrollViews.firstMatch.swipeDown()
         XCTAssertTrue(app.staticTexts["Plan Friday’s launch. Ask me before anything goes public."].exists)
+        app.buttons["chat-options"].tap()
         app.buttons["Bot settings"].tap()
         XCTAssertTrue(app.buttons["Save changes"].waitForExistence(timeout: 3))
         app.buttons["Close"].tap()
-        app.buttons["Close"].tap()
+        app.buttons["Back to bots"].tap()
         app.buttons["You"].tap()
         XCTAssertTrue(app.buttons.containing(.staticText, identifier: "New bot").firstMatch.waitForExistence(timeout: 3))
         app.buttons.containing(.staticText, identifier: "New bot").firstMatch.tap()

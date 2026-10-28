@@ -324,6 +324,14 @@ struct TeamsAnswer: Decodable, Equatable {
     }
 }
 
+struct TeamsAttachment: Decodable, Equatable, Identifiable {
+    let id: String, name: String
+    let mediaType: String
+    let byteLength: Int
+    let sha256: String
+    enum CodingKeys: String, CodingKey { case id, name, sha256; case mediaType = "media_type", byteLength = "byte_length" }
+}
+
 struct TeamsMessage: Decodable, Equatable, Identifiable {
     enum Kind: String { case text, handoff, swarm, run, question, answer, notice, task, schedule, unknown }
     struct Author: Decodable, Equatable {
@@ -351,6 +359,7 @@ struct TeamsMessage: Decodable, Equatable, Identifiable {
     var kind: Kind
     /// Text for `text`, `handoff` and `notice`. Untrusted when an agent wrote it.
     var body: String?
+    var attachments: [TeamsAttachment] = []
     var ref: Ref?
     var createdAt: Date?
     var editedAt: Date?
@@ -368,7 +377,7 @@ struct TeamsMessage: Decodable, Equatable, Identifiable {
     var isHuman: Bool { author.kind == "human" }
 
     private enum CodingKeys: String, CodingKey {
-        case id, seq, author, kind, body, ref, swarm, run, question, answer, task
+        case id, seq, author, kind, body, ref, swarm, run, question, answer, task, attachments
         case threadID = "thread_id", createdAt = "created_at", editedAt = "edited_at"
     }
 
@@ -385,6 +394,7 @@ struct TeamsMessage: Decodable, Equatable, Identifiable {
         swarm = c.opt(TeamsSwarm.self, .swarm); run = c.opt(TeamsRun.self, .run); task = c.opt(TeamsTaskCard.self, .task)
         // `question` and `answer` carry an object body; every other kind a string.
         body = c.opt(String.self, .body)
+        attachments = c.list(.attachments)
         switch kind {
         case .question:
             question = c.opt(TeamsQuestion.self, .question) ?? c.opt(TeamsQuestion.self, .body)
@@ -708,9 +718,18 @@ actor SwarmaTeamsClient {
         return try await call("thread_read", input, as: MessagePage.self)
     }
 
-    func threadPost(id: String, body: String, idempotencyKey: String = UUID().uuidString) async throws -> TeamsMessage? {
-        try await call("thread_post", ["thread_id": id, "body": body, "idempotency_key": idempotencyKey],
+    func threadPost(id: String, body: String, idempotencyKey: String = UUID().uuidString, photos: [ChatPhoto] = []) async throws -> TeamsMessage? {
+        var input: [String: Any] = ["thread_id": id, "body": body, "idempotency_key": idempotencyKey]
+        if !photos.isEmpty { input["attachments"] = photos.map { ["name": $0.name, "media_type": "image/jpeg", "data_base64": $0.data.base64EncodedString()] } }
+        return try await call("thread_post", input,
                        as: OptionalMessage.self).message
+    }
+
+    func threadAttachment(threadID: String, messageID: String, attachmentID: String) async throws -> Data {
+        struct Payload: Decodable { struct Attachment: Decodable { let data_base64: String }; let attachment: Attachment }
+        let result = try await call("thread_attachment_get", ["thread_id": threadID, "message_id": messageID, "attachment_id": attachmentID], as: Payload.self)
+        guard let data = Data(base64Encoded: result.attachment.data_base64), data.count <= 160 * 1024 else { throw SwarmaClient.Failure.badResponse }
+        return data
     }
 
     func threadMarkRead(id: String, seq: Int) async throws {

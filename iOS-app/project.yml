@@ -20,6 +20,7 @@ targets:
       - Sources
       - Resources
       - path: ../Mac-app/Sources/Providers/SwarmaRelayTransport.swift
+      - path: ../Mac-app/Sources/Teams/ChatMedia.swift
     entitlements:
       path: Swarmaa.entitlements
       properties:
@@ -27,6 +28,8 @@ targets:
     info:
       path: Info.plist
       properties:
+        NSMicrophoneUsageDescription: Dictate messages to your bots.
+        NSSpeechRecognitionUsageDescription: Turn speech into an editable message.
         NSCameraUsageDescription: Take photos to send to your bots in chat.
         CFBundleURLTypes:
           - CFBundleURLName: app.swarmaa.ios.pair
@@ -51,6 +54,7 @@ targets:
       - Tests
       - path: Sources/AppCore.swift
       - path: ../Mac-app/Sources/Providers/SwarmaRelayTransport.swift
+      - path: ../Mac-app/Sources/Teams/ChatMedia.swift
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: app.swarmaa.ios.tests

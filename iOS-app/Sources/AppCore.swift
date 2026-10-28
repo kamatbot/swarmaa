@@ -413,7 +413,7 @@ enum PushNotification {
     private var presenceTask: Task<Void, Never>?
     private var cursor = "now"
     private var createdLeads: [String: String] = [:]
-    private var pendingPost: (thread: String, text: String, key: String)?
+    private var pendingPosts: [String: (text: String, photos: [ChatPhoto], key: String)] = [:]
     let keychain: ConnectionKeychain
     init(keychain: ConnectionKeychain = ConnectionKeychain()) { self.keychain = keychain }
     /// Whether home's collapsed "Hidden" section is open. Hidden bots never mix into the main list.
@@ -640,14 +640,17 @@ enum PushNotification {
         }
         tasks = rows; attention = try await needs
     }
-    func post(_ text: String) async throws {
-        guard let service, let bot = openBot, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw AppFailure.invalidMessage }
+    func post(_ text: String, photos: [ChatPhoto] = []) async throws {
+        guard let service, let bot = openBot, photos.count <= 2, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !photos.isEmpty else { throw AppFailure.invalidMessage }
+        let text = text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "" : text
         let key: String
-        if let pendingPost, pendingPost.thread == bot.threadID, pendingPost.text == text { key = pendingPost.key }
+        if let pendingPost = pendingPosts[bot.threadID], pendingPost.text == text, pendingPost.photos.count == photos.count, zip(pendingPost.photos, photos).allSatisfy({ $0.0.name == $0.1.name && $0.0.data == $0.1.data }) { key = pendingPost.key }
         else { key = UUID().uuidString }
-        pendingPost = (bot.threadID, text, key)
-        _ = try await service.call("thread_post", ["thread_id": .string(bot.threadID), "body": .string(text), "idempotency_key": .string(key)])
-        pendingPost = nil
+        pendingPosts[bot.threadID] = (text, photos, key)
+        var input: [String: JSON] = ["thread_id": .string(bot.threadID), "body": .string(text), "idempotency_key": .string(key)]
+        if !photos.isEmpty { input["attachments"] = .array(photos.map { .object(["name": .string($0.name), "media_type": .string("image/jpeg"), "data_base64": .string($0.data.base64EncodedString())]) }) }
+        _ = try await service.call("thread_post", input)
+        pendingPosts[bot.threadID] = nil
         do { try await readThread(bot, incremental: true) } catch { self.error = safeError(error) }
     }
     func create(_ draft: NewBotDraft) async throws {
@@ -699,6 +702,7 @@ enum PushNotification {
         removeBot(bot.id)
     }
     private func removeBot(_ id: String) {
+        if let thread = bots.first(where: { $0.id == id })?.threadID { pendingPosts[thread] = nil }
         bots.removeAll { $0.id == id }
         threadCache.removeValue(forKey: id)
         if pendingPushBotID == id { pendingPushBotID = nil }
@@ -726,7 +730,7 @@ enum PushNotification {
         streamTask?.cancel(); presenceTask?.cancel()
         if let service = service as? RelayService { await service.transport.disconnect() }
         service = nil; connected = false; online = false; openBot = nil
-        expandedWorkingNotes = [:]
+        expandedWorkingNotes = [:]; pendingPosts = [:]
         bots = []; messages = []; typing = []; tasks = []; attention = []; agents = []; status = .null; cursor = "now"
     }
 }

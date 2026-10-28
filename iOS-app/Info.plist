@@ -31,5 +31,9 @@
 	<string>1</string>
 	<key>NSCameraUsageDescription</key>
 	<string>Take photos to send to your bots in chat.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Dictate messages to your bots.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Turn speech into an editable message.</string>
 </dict>
 </plist>

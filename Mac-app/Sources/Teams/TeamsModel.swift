@@ -147,6 +147,7 @@ final class TeamsModel: ObservableObject {
     @Published var taskSearch = ""
     @Published var taskSort = TeamsTaskSort.newest
     @Published var drafts: [String: String] = [:]
+    @Published var photoDrafts: [String: [ChatPhoto]] = [:]
     @Published private(set) var pendingSends: [String: PendingSend] = [:]
     @Published private(set) var rejectedSends: [String: PendingSend] = [:]
     @Published private(set) var sendErrors: [String: String] = [:]
@@ -180,6 +181,7 @@ final class TeamsModel: ObservableObject {
     struct PendingSend: Equatable {
         let body: String
         let key: String
+        let photos: [ChatPhoto]
     }
     var threadIsVisible: Bool { isVisible && pane == .bots && editingBotID == nil }
     private var hasLoaded = false
@@ -807,17 +809,19 @@ final class TeamsModel: ObservableObject {
         if let retry = pendingSends[t] { pending = retry }
         else {
             let text = (drafts[t] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !text.isEmpty else { return false }
-            pending = PendingSend(body: text, key: UUID().uuidString)
+            let photos = photoDrafts[t] ?? []
+            guard !text.isEmpty || !photos.isEmpty else { return false }
+            pending = PendingSend(body: text, key: UUID().uuidString, photos: photos)
             rejectedSends[t] = nil
             sendErrors[t] = nil
             pendingSends[t] = pending
             drafts[t] = ""
+            photoDrafts[t] = []
         }
         sendingThreads.insert(t)
         defer { sendingThreads.remove(t) }
         do {
-            if let message = try await client.threadPost(id: t, body: pending.body, idempotencyKey: pending.key) {
+            if let message = try await client.threadPost(id: t, body: pending.body, idempotencyKey: pending.key, photos: pending.photos) {
                 merge([message], into: t)
             }
             pendingSends[t] = nil
@@ -845,6 +849,7 @@ final class TeamsModel: ObservableObject {
         if edit, let failed = rejectedSends[t] ?? pendingSends[t] {
             let draft = drafts[t] ?? ""
             drafts[t] = failed.body + (draft.isEmpty ? "" : "\n" + draft)
+            photoDrafts[t] = failed.photos + (photoDrafts[t] ?? [])
         }
         rejectedSends[t] = nil
         pendingSends[t] = nil

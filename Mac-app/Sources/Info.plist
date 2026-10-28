@@ -51,6 +51,10 @@
 	</dict>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Swarmaa answers your phone on this network so it can show your usage.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Swarmaa uses the microphone to transcribe your message.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Swarmaa transcribes speech into your editable message.</string>
 	<key>SUAutomaticallyUpdate</key>
 	<false/>
 	<key>SUEnableAutomaticChecks</key>

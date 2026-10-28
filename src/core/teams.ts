@@ -11,6 +11,7 @@ import { runnerCapability, type RunnerConfig } from '../bridge/adapters.js';
 import { sectionView, swarmView, type SwarmRow, type SwarmStepRow, type QuestionRow, type SectionRow } from './swarms.js';
 import { botCapability, firstReplyRunner } from './bots.js';
 import type { TaskRow } from './tasks.js';
+import { MAX_THREAD_PHOTOS, MESSAGE_METADATA_COLUMNS, parseThreadPhotos, photoMetadata, samePhotos, storedThreadPhotos, type ThreadPhoto } from './thread-attachments.js';
 
 export function clipUtf8(value: string, maxBytes: number): string {
   const buf = Buffer.from(value.replaceAll('\0', '\uFFFD'), 'utf8');
@@ -51,17 +52,35 @@ export async function assignThreadSeq(db: Db, tenantId: string, threadId: string
 
 export async function getTurnWindow(db: Db, threadId: string): Promise<Record<string, unknown>[]> {
   const mRes = await db.query<MessageRow>(
-    'SELECT * FROM messages WHERE thread_id=$1 ORDER BY seq DESC LIMIT 40',
+    `SELECT ${MESSAGE_METADATA_COLUMNS} FROM messages WHERE thread_id=$1 ORDER BY seq DESC LIMIT 40`,
     [threadId]
   );
   const rows = mRes.rows;
   const window: Record<string, unknown>[] = [];
+  const imageIds = new Set<string>();
+  const imageMessages: string[] = [];
   let totalBytes = 0;
   for (const row of rows) {
     const bytes = Buffer.byteLength(row.body ?? '', 'utf8');
     if (window.length > 0 && totalBytes + bytes > 24 * 1024) break;
     window.push(messageView(row));
+    // ponytail: keep the newest two images in model context; add an explicit retrieval tool if longer visual histories are needed.
+    const photos = storedThreadPhotos(row.ref).slice(0, MAX_THREAD_PHOTOS - imageIds.size);
+    if (photos.length) imageMessages.push(row.id);
+    for (const photo of photos) imageIds.add(photo.id);
     totalBytes += bytes;
+  }
+  if (imageMessages.length) {
+    const payloads = (await db.query<{ id: string; attachments: ThreadPhoto[] }>(
+      "SELECT id, ref->'attachments' AS attachments FROM messages WHERE thread_id=$1 AND id=ANY($2::uuid[])", [threadId, imageMessages]
+    )).rows;
+    for (const message of window) {
+      const payload = payloads.find(row => row.id === message.id);
+      if (payload) message.attachments = (message.attachments as ThreadPhoto[]).map(photo => {
+        const stored = imageIds.has(photo.id) ? payload.attachments.find(item => item.id === photo.id) : undefined;
+        return stored ? { ...photo, data_base64: stored.data_base64 } : photo;
+      });
+    }
   }
   window.reverse();
   return window;
@@ -181,6 +200,7 @@ export function threadView(
 }
 
 function messageView(row: MessageRow): Record<string, unknown> {
+  const { attachments: _photos, ...ref } = row.ref ?? {};
   return {
     id: row.id,
     thread_id: row.thread_id,
@@ -188,7 +208,8 @@ function messageView(row: MessageRow): Record<string, unknown> {
     author: row.author,
     kind: row.kind,
     body: row.body,
-    ref: row.ref,
+    ref: Object.keys(ref).length ? ref : null,
+    attachments: storedThreadPhotos(row.ref).map(photoMetadata),
     created_at: row.created_at.toISOString(),
     edited_at: row.edited_at ? row.edited_at.toISOString() : null
   };
@@ -424,10 +445,11 @@ export class TeamService {
   }
 
   async threadPost(p: Principal, input: Record<string, unknown>): Promise<unknown> {
-    noExtraKeys(input, ['thread_id', 'body', 'idempotency_key', 'reply_to']);
+    noExtraKeys(input, ['thread_id', 'body', 'idempotency_key', 'reply_to', 'attachments']);
     requirePermission(p, 'thread:write');
     const threadId = uuid(input.thread_id, 'thread_id');
-    const rawBody = string(input.body, 'body', 16384);
+    const photos = parseThreadPhotos(input.attachments);
+    const rawBody = photos.length && input.body === '' ? '' : string(input.body, 'body', 16384);
     requireCondition(Buffer.byteLength(rawBody, 'utf8') <= 16384, 400, 'invalid_arguments', 'body exceeds maximum size of 16384 bytes.');
     const body = clipUtf8(redactSecrets(rawBody), 16384);
     const idempotency = string(input.idempotency_key, 'idempotency_key', 200);
@@ -446,13 +468,13 @@ export class TeamService {
         [p.tenantId, threadId, JSON.stringify(author), idempotency]
       )).rows[0];
       if (existingMsg) {
-        requireCondition(existingMsg.body === body, 409, 'idempotency_conflict', 'Idempotency key reused with different message body.');
+        requireCondition(existingMsg.body === body && (existingMsg.ref?.reply_to ?? null) === replyTo && samePhotos(storedThreadPhotos(existingMsg.ref), photos), 409, 'idempotency_conflict', 'Idempotency key reused with different message content.');
         return { message: messageView(existingMsg), replayed: true };
       }
 
       const nextSeq = await assignThreadSeq(db, p.tenantId, threadId);
       const msgId = newId();
-      const ref = replyTo ? { reply_to: replyTo } : null;
+      const ref = replyTo || photos.length ? { ...(replyTo ? { reply_to: replyTo } : {}), ...(photos.length ? { attachments: photos } : {}) } : null;
 
       const inserted = (await db.query<MessageRow>(
         `INSERT INTO messages (id, tenant_id, scope, thread_id, seq, author, kind, body, ref, idempotency_key)
@@ -598,6 +620,23 @@ export class TeamService {
     });
   }
 
+  async threadAttachmentGet(p: Principal, input: Record<string, unknown>): Promise<unknown> {
+    noExtraKeys(input, ['thread_id', 'message_id', 'attachment_id']);
+    requirePermission(p, 'thread:read');
+    const threadId = uuid(input.thread_id, 'thread_id');
+    const messageId = uuid(input.message_id, 'message_id');
+    const attachmentId = uuid(input.attachment_id, 'attachment_id');
+    const [all, scopes] = scopeSql(p);
+    const row = (await this.pool.query<{ ref: Record<string, unknown> | null }>(
+      `SELECT m.ref FROM messages m JOIN threads t ON t.id=m.thread_id AND t.tenant_id=m.tenant_id AND t.scope=m.scope
+       WHERE m.id=$1 AND m.thread_id=$2 AND m.tenant_id=$3 AND ($4::boolean OR t.scope=ANY($5::text[]))`,
+      [messageId, threadId, p.tenantId, all, scopes]
+    )).rows[0];
+    requireFound(row, 'Photo');
+    const photo = requireFound(storedThreadPhotos(row.ref).find(item => item.id === attachmentId), 'Photo');
+    return { attachment: { ...photoMetadata(photo), data_base64: photo.data_base64 } };
+  }
+
   async threadRead(p: Principal, input: Record<string, unknown>): Promise<unknown> {
     noExtraKeys(input, ['thread_id', 'after_seq', 'before_seq', 'limit']);
     requirePermission(p, 'thread:read');
@@ -618,21 +657,21 @@ export class TeamService {
 
     if (beforeSeq !== null) {
       const res = await this.pool.query<MessageRow>(
-        `SELECT * FROM messages WHERE thread_id=$1 AND seq < $2 ORDER BY seq DESC LIMIT $3`,
+        `SELECT ${MESSAGE_METADATA_COLUMNS} FROM messages WHERE thread_id=$1 AND seq < $2 ORDER BY seq DESC LIMIT $3`,
         [threadId, beforeSeq, limit + 1]
       );
       hasMore = res.rows.length > limit;
       rows = res.rows.slice(0, limit).reverse();
     } else if (afterSeq !== null) {
       const res = await this.pool.query<MessageRow>(
-        `SELECT * FROM messages WHERE thread_id=$1 AND seq > $2 ORDER BY seq ASC LIMIT $3`,
+        `SELECT ${MESSAGE_METADATA_COLUMNS} FROM messages WHERE thread_id=$1 AND seq > $2 ORDER BY seq ASC LIMIT $3`,
         [threadId, afterSeq, limit + 1]
       );
       hasMore = res.rows.length > limit;
       rows = res.rows.slice(0, limit);
     } else {
       const res = await this.pool.query<MessageRow>(
-        `SELECT * FROM messages WHERE thread_id=$1 ORDER BY seq DESC LIMIT $2`,
+        `SELECT ${MESSAGE_METADATA_COLUMNS} FROM messages WHERE thread_id=$1 ORDER BY seq DESC LIMIT $2`,
         [threadId, limit + 1]
       );
       hasMore = res.rows.length > limit;

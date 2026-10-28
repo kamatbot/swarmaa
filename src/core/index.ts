@@ -126,6 +126,7 @@ export class CoreService implements ToolBackend {
       case 'agent_list': return this.teams.agentList(principal,input);
       case 'agent_archive': return this.teams.agentArchive(principal,input);
       case 'thread_post': return this.teams.threadPost(principal,input);
+      case 'thread_attachment_get': return this.teams.threadAttachmentGet(principal,input);
       case 'thread_read': return this.teams.threadRead(principal,input);
       case 'thread_mark_read': return this.teams.threadMarkRead(principal,input);
       case 'thread_list': return this.teams.threadList(principal,input);

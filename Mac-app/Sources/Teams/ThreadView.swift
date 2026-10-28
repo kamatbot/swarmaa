@@ -1,4 +1,6 @@
 import SwiftUI
+import AppKit
+import UniformTypeIdentifiers
 
 /// One thread: header with the runner picker, messages newest at the bottom,
 /// and the composer pinned below them.
@@ -19,7 +21,7 @@ struct ThreadView: View {
             else { ThreadHeader(model: model, threadID: threadID) }
             ScrollViewReader { proxy in
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 10) {
+                    LazyVStack(alignment: .leading, spacing: 7) {
                         if model.hasOlder[threadID] == true, !messages.isEmpty {
                             ProgressView().controlSize(.small).frame(maxWidth: .infinity)
                                 .onAppear { Task { await model.loadOlder(threadID) } }
@@ -48,7 +50,7 @@ struct ThreadView: View {
                         }
                         ForEach(model.liveTyping(threadID)) { TypingBubble(model: model, typing: $0).id("typing:" + $0.id) }
                     }
-                    .padding(.horizontal, 24).padding(.vertical, 18)
+                    .padding(.horizontal, 16).padding(.vertical, 12)
                 }
                 .defaultScrollAnchor(.bottom)
                 .onScrollGeometryChange(for: Bool.self) { geometry in
@@ -96,7 +98,7 @@ struct ThreadView: View {
                     }
                 }
                 Spacer()
-            }.padding(.horizontal, 20).padding(.top, 6)
+            }.padding(.horizontal, 16).padding(.top, 4)
             Composer(model: model, threadID: threadID).id(threadID)
         }
         .background(KS.paper)
@@ -252,8 +254,8 @@ struct TypingBubble: View {
                     Text(verbatim: L10n.t("typing")).font(KS.mono(10)).foregroundStyle(KS.textMuted)
                 }
                 Text(verbatim: typing.text).textSelection(.enabled)
-                    .font(KS.body(16)).lineSpacing(2)
-                    .padding(.horizontal, 15).padding(.vertical, 10)
+                    .font(KS.body(14)).lineSpacing(1)
+                    .padding(.horizontal, 12).padding(.vertical, 7)
                     .background(UnevenRoundedRectangle(topLeadingRadius: 20, bottomLeadingRadius: 6,
                                                        bottomTrailingRadius: 20, topTrailingRadius: 20).fill(KS.white))
                     .overlay(UnevenRoundedRectangle(topLeadingRadius: 20, bottomLeadingRadius: 6,
@@ -293,9 +295,13 @@ struct TextBubble: View {
                         if let date = message.createdAt { Text(date, style: .time).font(KS.mono(10)).foregroundStyle(KS.textMuted) }
                     }
                 }
+                ForEach(message.attachments) { attachment in
+                    ThreadPhoto(attachment: attachment, threadID: message.threadID, messageID: message.id)
+                }
+                if !(message.body ?? "").isEmpty {
                 Text(rendered?.body == (message.body ?? "") ? rendered!.text : AttributedString(message.body ?? "")).textSelection(.enabled)
-                    .font(KS.body(16)).lineSpacing(2)
-                    .padding(.horizontal, 15).padding(.vertical, 10)
+                    .font(KS.body(14)).lineSpacing(1)
+                    .padding(.horizontal, 12).padding(.vertical, 7)
                     .background(UnevenRoundedRectangle(topLeadingRadius: 20, bottomLeadingRadius: message.isHuman ? 20 : 6,
                                                        bottomTrailingRadius: message.isHuman ? 6 : 20, topTrailingRadius: 20)
                         .fill(message.isHuman ? KS.ink : KS.white))
@@ -303,6 +309,7 @@ struct TextBubble: View {
                                                     bottomTrailingRadius: message.isHuman ? 6 : 20, topTrailingRadius: 20)
                         .stroke(KS.ink, lineWidth: message.isHuman ? 0 : 2))
                     .foregroundStyle(message.isHuman ? KS.paper : KS.ink)
+                }
             }
             if !message.isHuman { Spacer(minLength: 60) }
         }
@@ -318,13 +325,33 @@ struct TextBubble: View {
     }
 }
 
+private struct ThreadPhoto: View {
+    let attachment: TeamsAttachment
+    let threadID: String
+    let messageID: String
+    @State private var image: NSImage?
+    @State private var failed = false
+    var body: some View {
+        Group {
+            if let image { Image(nsImage: image).resizable().scaledToFit().frame(maxWidth: 240, maxHeight: 200).clipShape(RoundedRectangle(cornerRadius: 14)) }
+            else if failed { Text(verbatim: L10n.t("Photo unavailable")).font(KS.body(13)).foregroundStyle(KS.textMuted) }
+            else { ProgressView().frame(width: 80, height: 60) }
+        }
+        .accessibilityLabel(attachment.name)
+        .task(id: attachment.id) {
+            do { image = NSImage(data: try await SwarmaTeamsClient.shared.threadAttachment(threadID: threadID, messageID: messageID, attachmentID: attachment.id)); failed = image == nil }
+            catch { failed = true }
+        }
+    }
+}
+
 struct AnswerBubble: View {
     let answer: TeamsAnswer?
     var body: some View {
         let parts = (answer?.choices ?? []) + [answer?.text].compactMap { $0 }
         Text(verbatim: parts.joined(separator: " · "))
-            .font(KS.body(16))
-            .padding(.horizontal, 15).padding(.vertical, 10)
+            .font(KS.body(14))
+            .padding(.horizontal, 12).padding(.vertical, 7)
             .background(RoundedRectangle(cornerRadius: 20).fill(KS.ink))
             .foregroundStyle(KS.paper)
             .frame(maxWidth: .infinity, alignment: .trailing)
@@ -350,10 +377,10 @@ typealias NoticeLine = ServiceLine
 private struct CardBox<Content: View>: View {
     @ViewBuilder let content: Content
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) { content }
-            .padding(16)
+        VStack(alignment: .leading, spacing: 7) { content }
+            .padding(12)
             .frame(maxWidth: 640, alignment: .leading)
-            .ksCard(radius: 22, shadow: true)
+            .ksCard(radius: 16, shadow: true)
     }
 }
 
@@ -371,12 +398,12 @@ struct SwarmCard: View {
                 HStack(spacing: 8) {
                     VStack(alignment: .leading, spacing: 2) {
                         KSLabel(L10n.t("Swarm"))
-                        Text(verbatim: swarm.title).font(KS.body(17, .bold))
+                        Text(verbatim: swarm.title).font(KS.body(15, .bold))
                         Text(verbatim: TeamsCopy.swarmStatus(swarm.status)).font(.caption)
                             .foregroundStyle(swarm.status == "waiting_on_you" ? Palette.watch : Palette.textSecondary)
                     }
                     Spacer()
-                    Text(verbatim: "\(swarm.progress.done)/\(swarm.progress.total)").font(KS.display(30))
+                    Text(verbatim: "\(swarm.progress.done)/\(swarm.progress.total)").font(KS.display(24))
                 }
                 ForEach(swarm.steps) { SwarmStepRow(model: model, step: $0) }
                 Button(L10n.t("Open swarm")) { model.detailSwarmID = swarm.id }.buttonStyle(.ks(.paper, compact: true))
@@ -406,7 +433,7 @@ struct SwarmStepRow: View {
         let (icon, color) = Self.symbol(step.status)
         HStack(spacing: 8) {
             Image(systemName: icon).foregroundStyle(color)
-            Text(verbatim: step.title).font(KS.body(15)).lineLimit(2)
+            Text(verbatim: step.title).font(KS.body(14)).lineLimit(2)
             Spacer()
             if let a = model.agent(id: step.assigneeAgentID) {
                 Text(verbatim: a.name.uppercased()).font(KS.mono(10)).foregroundStyle(KS.textMuted)
@@ -492,7 +519,7 @@ struct QuestionCard: View {
                 Text(verbatim: L10n.t("This question expired")).font(.callout).foregroundStyle(Palette.textSecondary)
             } else if !interactive {
                 HStack { KSLabel(L10n.t("Question")); Spacer(); KSChip(L10n.t("Needs you"), fill: KS.coral) }
-                Text(question.prompt).font(KS.body(18, .bold)).textSelection(.enabled)
+                Text(question.prompt).font(KS.body(15, .bold)).textSelection(.enabled)
                 if !question.options.isEmpty {
                     ChipFlow(options: question.options, selected: []) { _ in model.targetQuestionID = question.id }
                 }
@@ -502,7 +529,7 @@ struct QuestionCard: View {
                     Spacer()
                     KSChip(L10n.t("Needs you"), fill: KS.coral)
                 }
-                Text(verbatim: question.prompt).font(KS.body(18, .bold))
+                Text(verbatim: question.prompt).font(KS.body(15, .bold))
                 ChipFlow(options: question.options, selected: choices) { toggle($0) }
                 if question.freeText {
                     TextField(L10n.t("Add a note"), text: $text, axis: .vertical).textFieldStyle(.roundedBorder).lineLimit(1...4)
@@ -539,8 +566,8 @@ struct ChipFlow: View {
             ForEach(options, id: \.self) { option in
                 let on = selected.contains(option)
                 Button { tap(option) } label: {
-                    Text(verbatim: option).font(KS.body(15, .semibold))
-                        .padding(.horizontal, 13).padding(.vertical, 7)
+                    Text(verbatim: option).font(KS.body(13, .semibold))
+                        .padding(.horizontal, 11).padding(.vertical, 5)
                         .background(Capsule().fill(on ? KS.lime : KS.white))
                         .overlay(Capsule().stroke(KS.ink, lineWidth: 2))
                         .foregroundStyle(KS.ink)
@@ -593,6 +620,11 @@ struct Composer: View {
     @ObservedObject var model: TeamsModel
     let threadID: String
     @FocusState private var editorFocused: Bool
+    @StateObject private var dictation = ChatDictation()
+    @State private var mediaError: String?
+    @State private var preparingPhotos = false
+    @State private var startingDictation = false
+    @Environment(\.scenePhase) private var scenePhase
     private var text: Binding<String> {
         Binding(get: { model.drafts[threadID] ?? "" }, set: { model.drafts[threadID] = $0 })
     }
@@ -602,27 +634,69 @@ struct Composer: View {
         VStack(alignment: .leading, spacing: 4) {
             if let pending = model.rejectedSends[threadID] ?? model.pendingSends[threadID], !sending {
                 Text("Unsent: " + pending.body).font(.caption).lineLimit(3)
+                if !pending.photos.isEmpty {
+                    Text(verbatim: pending.photos.map(\.name).joined(separator: ", ")).font(.caption).lineLimit(2)
+                }
                 if let error = model.sendErrors[threadID] { Text(error).font(.caption).foregroundStyle(.red) }
                 HStack {
                     if model.pendingSends[threadID] != nil {
                         Button("Retry") { send() }
                     }
                     Button("Edit") { model.discardSend(threadID, edit: true) }
+                        .disabled(preparingPhotos || startingDictation || dictation.isRecording || pending.photos.count + (model.photoDrafts[threadID]?.count ?? 0) > 2)
                     Button("Discard") { model.discardSend(threadID) }
                 }
             }
+            if let error = mediaError ?? dictation.error { Text(verbatim: error).font(.caption).foregroundStyle(.red) }
+            if let photos = model.photoDrafts[threadID], !photos.isEmpty {
+                HStack {
+                    ForEach(photos) { photo in
+                        ZStack(alignment: .topTrailing) {
+                            Group {
+                                if let image = NSImage(data: photo.data) { Image(nsImage: image).resizable().scaledToFill() }
+                                else { Image(systemName: "photo").foregroundStyle(KS.textMuted) }
+                            }
+                            .frame(width: 52, height: 52).background(KS.paper).clipped()
+                            .clipShape(RoundedRectangle(cornerRadius: 7))
+                            .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(KS.ink, lineWidth: 1))
+                            Button { model.photoDrafts[threadID]?.removeAll { $0.id == photo.id } } label: { Image(systemName: "xmark.circle.fill") }
+                                .buttonStyle(.plain).accessibilityLabel(L10n.t("Remove photo"))
+                                .foregroundStyle(KS.ink).background(Circle().fill(KS.white))
+                                .offset(x: 5, y: -5)
+                        }
+                        .padding(5)
+                    }
+                }
+            }
             HStack(alignment: .bottom, spacing: 8) {
+            Button(action: choosePhotos) { Image(systemName: "photo") }
+                .buttonStyle(.ks(.paper, compact: true)).disabled(preparingPhotos || startingDictation || dictation.isRecording || (model.photoDrafts[threadID]?.count ?? 0) >= 2)
+                .help(L10n.t("Add photos")).accessibilityLabel(L10n.t("Add photos"))
+            Button {
+                if dictation.isRecording { dictation.stop() }
+                else {
+                    let prefix = text.wrappedValue
+                    startingDictation = true
+                    Task {
+                        await dictation.start { transcript in text.wrappedValue = prefix + (prefix.isEmpty ? "" : " ") + transcript }
+                        startingDictation = false
+                    }
+                }
+            } label: { Image(systemName: dictation.isRecording ? "stop.fill" : "mic.fill") }
+                .buttonStyle(.ks(.paper, compact: true)).disabled(startingDictation || preparingPhotos).help(L10n.t("Dictation"))
+                .accessibilityLabel(dictation.isRecording ? L10n.t("Stop dictation") : L10n.t("Start dictation"))
             ZStack(alignment: .topLeading) {
                 if text.wrappedValue.isEmpty {
                     Text(verbatim: L10n.t("Message · Return to send, Shift-Return for a new line"))
-                        .font(KS.body(16)).foregroundStyle(KS.textMuted).padding(.horizontal, 5).padding(.vertical, 8)
+                        .font(KS.body(14)).foregroundStyle(KS.textMuted).padding(.horizontal, 5).padding(.vertical, 5)
                         .allowsHitTesting(false)
                 }
                 TextEditor(text: text)
                     .focused($editorFocused).accessibilityLabel("Message in this thread")
-                    .font(KS.body(16)).scrollContentBackground(.hidden)
-                    .frame(minHeight: 36, maxHeight: 140).fixedSize(horizontal: false, vertical: true)
-                    .padding(.vertical, 8)
+                    .disabled(startingDictation || dictation.isRecording)
+                    .font(KS.body(14)).scrollContentBackground(.hidden)
+                    .frame(minHeight: 30, maxHeight: 140).fixedSize(horizontal: false, vertical: true)
+                    .padding(.vertical, 5)
                     // Return sends; Shift-Return is a new line.
                     .onKeyPress(.return, phases: .down) { press in
                         if press.modifiers.contains(.shift) { return .ignored }
@@ -632,24 +706,52 @@ struct Composer: View {
             }
             Button(action: send) { Label(L10n.t("Send"), systemImage: "arrow.right") }
                 .buttonStyle(.ks(.ink))
-                .disabled(sending || (model.pendingSends[threadID] == nil && text.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))
-                .padding(.bottom, 8).help(L10n.t("Send")).accessibilityLabel(model.pendingSends[threadID] == nil ? "Send message" : "Retry previous message")
+                .disabled(sending || preparingPhotos || (model.pendingSends[threadID] == nil && text.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && (model.photoDrafts[threadID]?.isEmpty ?? true)))
+                .padding(.bottom, 5).help(L10n.t("Send")).accessibilityLabel(model.pendingSends[threadID] == nil ? "Send message" : "Retry previous message")
         }
             }
-        .padding(.horizontal, 14).padding(.vertical, 6)
-        .ksCard(radius: 22, shadow: true)
-        .padding(.horizontal, 20).padding(.top, 10).padding(.bottom, 16)
+        .padding(.horizontal, 12).padding(.vertical, 4)
+        .ksCard(radius: 16, shadow: true)
+        .padding(.horizontal, 16).padding(.top, 6).padding(.bottom, 10)
         .background(KS.paper)
         .overlay(alignment: .top) { Rectangle().fill(KS.ink).frame(height: 2) }
+        .onDisappear { dictation.stop() }
+        .onChange(of: scenePhase) { _, phase in if phase != .active { dictation.stop() } }
+        .onChange(of: model.threadIsVisible) { _, visible in if !visible { dictation.stop() } }
 
     }
 
     private func send() {
         guard !sending else { return }
+        dictation.stop()
         let target = threadID
         editorFocused = true
         Task { _ = await model.sendDraft(threadID: target) }
 
+    }
+
+    private func choosePhotos() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.image]; panel.allowsMultipleSelection = true; panel.canChooseDirectories = false
+        guard panel.runModal() == .OK else { return }
+        let urls = Array(panel.urls.prefix(max(0, 2 - (model.photoDrafts[threadID]?.count ?? 0))))
+        preparingPhotos = true
+        mediaError = nil
+        Task {
+            defer { preparingPhotos = false }
+            for url in urls {
+                do {
+                    let data = try await Task.detached {
+                        guard (try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? Int.max) <= 25 * 1024 * 1024 else { throw ChatPhoto.MediaError.tooLarge }
+                        return try Data(contentsOf: url, options: .mappedIfSafe)
+                    }.value
+                    let photo = try await ChatPhoto.prepare(data: data, name: url.lastPathComponent)
+                    if (model.photoDrafts[threadID]?.count ?? 0) < 2 {
+                        model.photoDrafts[threadID, default: []].append(photo)
+                    }
+                } catch { mediaError = error.localizedDescription }
+            }
+        }
     }
 }
 

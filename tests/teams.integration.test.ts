@@ -56,6 +56,59 @@ describe('teams phase 1 service foundation', { skip: !connectionString, concurre
   const call = async (p: Principal, name: string, args: Record<string, unknown> = {}) =>
     await core.call(p, name, args) as Record<string, any>;
 
+  it('photos preserve retries, exact read authorization and bounded image context', async () => {
+    const user = await createPrincipal(randomUUID(), 'photo-owner');
+    const worker = await createPrincipal(user.tenantId, 'photo-worker', 'worker');
+    const otherScope = await createPrincipal(user.tenantId, 'other-scope', 'frontend', ['project:b']);
+    const otherTenant = await createPrincipal(randomUUID(), 'other-tenant');
+    const { thread } = await call(user, 'agent_create', { name: 'Photos', role: 'Assistant', instructions: 'Describe photos.', scope: 'project:a', runner: { provider: 'codex' } });
+    const { thread: another } = await call(user, 'agent_create', { name: 'Other', role: 'Assistant', instructions: 'Help.', scope: 'project:a', runner: { provider: 'codex' } });
+    const data = (await readFile(new URL('./fixtures/chat-photo.jpg', import.meta.url))).toString('base64');
+    const photo = { name: 'Photo.jpg', media_type: 'image/jpeg', data_base64: data };
+    const args = { thread_id: thread.id, body: '', idempotency_key: 'photo-1', attachments: [photo, { ...photo, name: 'Second.jpg' }] };
+    const posted = await call(user, 'thread_post', args);
+    assert.equal(posted.message.attachments.length, 2);
+    assert.ok(!JSON.stringify(posted).includes('data_base64'));
+    const retry = await call(user, 'thread_post', args);
+    assert.equal(retry.replayed, true);
+    assert.equal(retry.message.id, posted.message.id);
+    assert.deepEqual(retry.message.attachments, posted.message.attachments);
+    for (const changed of [{ body: 'new' }, { attachments: [photo] }, { attachments: [{ ...photo, name: 'Changed.jpg' }, args.attachments[1]] }]) {
+      await assert.rejects(call(user, 'thread_post', { ...args, ...changed }), { code: 'idempotency_conflict' });
+    }
+    const readArgs = { thread_id: thread.id, message_id: posted.message.id, attachment_id: posted.message.attachments[0].id };
+    const fetched = await call(user, 'thread_attachment_get', readArgs);
+    assert.equal(fetched.attachment.data_base64, data);
+    assert.equal(fetched.attachment.sha256, posted.message.attachments[0].sha256);
+    for (const unauthorized of [otherScope, otherTenant]) await assert.rejects(call(unauthorized, 'thread_attachment_get', readArgs), { code: 'not_found' });
+    await assert.rejects(call({ ...user, permissions: [] }, 'thread_attachment_get', readArgs), { code: 'forbidden' });
+    await assert.rejects(call(user, 'thread_attachment_get', { ...readArgs, thread_id: another.id }), { code: 'not_found' });
+    await assert.rejects(call(user, 'thread_attachment_get', { ...readArgs, attachment_id: randomUUID() }), { code: 'not_found' });
+    await assert.rejects(call(user, 'thread_post', { ...args, idempotency_key: 'invalid', attachments: [{ ...photo, media_type: 'image/png' }] }), { code: 'invalid_photo' });
+    const newer = await call(user, 'thread_post', { ...args, body: 'Compare these', idempotency_key: 'photo-2' });
+    await call(user, 'thread_post', { thread_id: thread.id, body: 'What changed?', idempotency_key: 'follow-up' });
+    for (const page of [{}, { after_seq: 0 }, { before_seq: 100 }]) {
+      const read = await call(user, 'thread_read', { thread_id: thread.id, ...page });
+      assert.equal(read.messages.length, 3);
+      assert.ok(!JSON.stringify(read).includes('data_base64'));
+      assert.equal(read.messages[0].attachments.length, 2);
+    }
+    const claim = await call(worker, 'task_claim', { scope: 'project:a', capabilities: ['codex.read'], kinds: ['turn'] });
+    const images = claim.task.thread_messages.flatMap((message: any) => message.attachments.filter((item: any) => item.data_base64));
+    assert.equal(images.length, 2);
+    assert.deepEqual(images.map((item: any) => item.id), newer.message.attachments.map((item: any) => item.id));
+    assert.ok(JSON.stringify(claim).length < 1024 * 1024);
+    const outbox = await pool.query('SELECT payload FROM events WHERE tenant_id=$1', [user.tenantId]);
+    assert.ok(!JSON.stringify(outbox.rows).includes('data_base64'));
+    const httpPost = await fetch(`${origin}/api/tools/thread_post`, { method: 'POST', headers: { authorization: `Bearer ${user.token}`, 'content-type': 'application/json' }, body: JSON.stringify({ ...args, idempotency_key: 'photo-http' }) });
+    assert.equal(httpPost.status, 200);
+    const httpMessage = ((await httpPost.json()) as any).result;
+    assert.ok(!JSON.stringify(httpMessage).includes('data_base64'));
+    const httpGet = await fetch(`${origin}/api/tools/thread_attachment_get`, { method: 'POST', headers: { authorization: `Bearer ${user.token}`, 'content-type': 'application/json' }, body: JSON.stringify({ thread_id: thread.id, message_id: httpMessage.message.id, attachment_id: httpMessage.message.attachments[0].id }) });
+    assert.equal(httpGet.status, 200);
+    assert.equal(((await httpGet.json()) as any).result.attachment.data_base64, data);
+  });
+
   async function createPrincipal(tenantId: string, name: string, role: Principal['role'] = 'frontend', scopes = ['project:a']) {
     const p: Principal = {
       id: randomUUID(),
