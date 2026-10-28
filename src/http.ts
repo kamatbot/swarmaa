@@ -615,7 +615,7 @@ export function createHttpHandler(dependencies: HttpDependencies): (request: Inc
         }
       };
 
-      const subscription = eventWakeup(dependencies.pool).subscribe(wake);
+      const subscription = eventWakeup(dependencies.pool).subscribe(wake, principal.tenantId);
       wake(); // Poll independently while LISTEN connects (or reconnects).
       unsubscribe = await subscription;
       if (!active || response.destroyed) unsubscribe();

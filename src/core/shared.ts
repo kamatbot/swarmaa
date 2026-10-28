@@ -87,7 +87,7 @@ export type EventType = 'task.updated' | 'memory.changed' | 'message.created' | 
 
 export async function event(db: Db, p: Principal, scope: string, name: EventType, subjectId: string, metadata: Record<string, unknown>): Promise<void> {
   await db.query('INSERT INTO events (id,tenant_id,scope,name,subject_id,payload) VALUES ($1,$2,$3,$4,$5,$6::jsonb)', [newId(), p.tenantId, scope, name, subjectId, JSON.stringify(metadata)]);
-  await db.query("SELECT pg_notify('swarmaa_events', '')");
+  await db.query("SELECT pg_notify('swarmaa_events', $1)", [p.tenantId]);
 }
 
 export async function scopeLock(db: PoolClient, namespace: string, p: Principal, scope: string, key = ''): Promise<void> {

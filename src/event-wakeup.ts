@@ -10,21 +10,23 @@ export function eventWakeup(pool: Pool): EventWakeup {
 }
 
 class EventWakeup {
-  private callbacks = new Set<() => void>();
+  private callbacks = new Map<() => void, string>();
   private client?: pg.Client;
   private connecting?: Promise<void>;
   private retry?: NodeJS.Timeout;
   private delay = 100;
   constructor(private pool: Pool) {}
 
-  async subscribe(wake: () => void): Promise<() => void> {
-    this.callbacks.add(wake);
+  async subscribe(wake: () => void, tenantId: string): Promise<() => void> {
+    this.callbacks.set(wake, tenantId);
     await this.connect();
     return () => {
       this.callbacks.delete(wake);
       if (!this.callbacks.size) {
         clearTimeout(this.retry);
         this.retry = undefined;
+        this.delay = 100;
+        this.connecting = undefined;
         const client = this.client;
         this.client = undefined;
         void client?.end().catch(() => {});
@@ -40,6 +42,7 @@ class EventWakeup {
     const disconnected = () => {
       if (this.client !== client) return;
       this.client = undefined;
+      this.connecting = undefined;
       void client.end().catch(() => {});
       if (this.callbacks.size && !this.retry) {
         this.retry = setTimeout(() => { this.retry = undefined; void this.connect(); }, this.delay);
@@ -50,17 +53,25 @@ class EventWakeup {
     client.on('error', disconnected);
     client.on('end', disconnected);
     client.on('notification', n => {
-      if (n.channel === 'swarmaa_events') for (const wake of this.callbacks) wake();
+      if (this.client === client && n.channel === 'swarmaa_events') {
+        for (const [wake, tenantId] of this.callbacks) if (n.payload === tenantId) wake();
+      }
     });
     this.connecting = (async () => {
       try {
         await client.connect();
+        if (this.client !== client) return;
         await client.query('LISTEN swarmaa_events');
+        if (this.client !== client) return;
         this.delay = 100;
-        for (const wake of this.callbacks) wake();
+        for (const wake of this.callbacks.keys()) wake();
       } catch { disconnected(); }
-      finally { this.connecting = undefined; }
     })();
-    return this.connecting;
+    const connecting = this.connecting;
+    // An abandoned attempt must not clear a replacement connection's promise.
+    void connecting.finally(() => {
+      if (this.connecting === connecting) this.connecting = undefined;
+    });
+    return connecting;
   }
 }
