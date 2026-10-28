@@ -44,6 +44,49 @@ struct TeamsRow: Identifiable, Equatable {
     let unread: Int
 }
 
+
+/// Consecutive working notes only; cards, answers and incomplete history stay visible.
+struct TeamsThreadRow: Identifiable {
+    let messages: [TeamsMessage]
+    var id: String { messages[0].id }
+    var folded: Bool { messages.count > 1 }
+    var label: String {
+        guard let first = messages[0].createdAt, let last = messages[messages.count - 1].createdAt else { return "Worked · \(messages.count) steps" }
+        let seconds = Int(max(0, last.timeIntervalSince(first)))
+        let duration = seconds < 60 ? "\(seconds)s" : "\(seconds / 60)m"
+        return "Worked for \(duration) · \(messages.count) steps"
+    }
+}
+
+func teamsThreadRows(_ messages: [TeamsMessage]) -> [TeamsThreadRow] {
+    // A loaded human message and a later final reply bound each fold. Do not hide a live tail.
+    var replyAhead = Array(repeating: false, count: messages.count)
+    var hasReply = false
+    for i in messages.indices.reversed() {
+        let message = messages[i]
+        if message.isHuman { hasReply = false }
+        else if message.kind.rawValue == "text" && message.author.kind == "agent" { hasReply = true }
+        replyAhead[i] = hasReply
+    }
+    var rows: [TeamsThreadRow] = [], pending: [TeamsMessage] = []
+    var hasHuman = false
+    func flush() {
+        if !pending.isEmpty { rows.append(TeamsThreadRow(messages: pending)); pending = [] }
+    }
+    for (i, message) in messages.enumerated() {
+        let kind = message.kind.rawValue
+        let note = !message.isHuman && (kind == "notice" || kind == "handoff" || (kind == "text" && message.author.kind == "system"))
+        if hasHuman && replyAhead[i] && note { pending.append(message) }
+        else {
+            flush()
+            rows.append(TeamsThreadRow(messages: [message]))
+        }
+        if message.isHuman { hasHuman = true }
+    }
+    flush()
+    return rows
+}
+
 @MainActor
 final class TeamsModel: ObservableObject {
     enum Phase: Equatable { case loading, ready, serviceTooOld, failed(String) }
@@ -51,6 +94,7 @@ final class TeamsModel: ObservableObject {
 
     @Published var phase: Phase = .loading
     @Published var pane: Pane = .bots { didSet { if pane == .bots { markSelectedRead() } } }
+    @Published var expandedWorkingNotes: [String: Set<String>] = [:]
     @Published var search = ""
     @Published private(set) var agents: [TeamsAgent] = []
     @Published private(set) var channels: [TeamsThread] = []

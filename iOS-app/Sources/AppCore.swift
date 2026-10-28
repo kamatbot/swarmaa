@@ -81,6 +81,54 @@ struct Message: Identifiable, Equatable, Sendable {
     }
 }
 
+
+/// Consecutive working notes only; cards, answers and incomplete history stay visible.
+struct ThreadRow: Identifiable {
+    let messages: [Message]
+    var id: String { messages[0].id }
+    var folded: Bool { messages.count > 1 }
+    var label: String {
+        func date(_ value: String) -> Date? {
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            return formatter.date(from: value) ?? ISO8601DateFormatter().date(from: value)
+        }
+        guard let first = date(messages[0].raw["created_at"].string), let last = date(messages[messages.count - 1].raw["created_at"].string) else { return "Worked · \(messages.count) steps" }
+        let seconds = Int(max(0, last.timeIntervalSince(first)))
+        let duration = seconds < 60 ? "\(seconds)s" : "\(seconds / 60)m"
+        return "Worked for \(duration) · \(messages.count) steps"
+    }
+}
+
+func threadRows(_ messages: [Message]) -> [ThreadRow] {
+    // A loaded human message and a later final reply bound each fold. Do not hide a live tail.
+    var replyAhead = Array(repeating: false, count: messages.count)
+    var hasReply = false
+    for i in messages.indices.reversed() {
+        let message = messages[i]
+        if message.human { hasReply = false }
+        else if message.kind == "text" && message.raw["author"]["kind"].string == "agent" { hasReply = true }
+        replyAhead[i] = hasReply
+    }
+    var rows: [ThreadRow] = [], pending: [Message] = []
+    var hasHuman = false
+    func flush() {
+        if !pending.isEmpty { rows.append(ThreadRow(messages: pending)); pending = [] }
+    }
+    for (i, message) in messages.enumerated() {
+        let kind = message.kind
+        let note = !message.human && (kind == "notice" || kind == "handoff" || (kind == "text" && message.raw["author"]["kind"].string == "system"))
+        if hasHuman && replyAhead[i] && note { pending.append(message) }
+        else {
+            flush()
+            rows.append(ThreadRow(messages: [message]))
+        }
+        if message.human { hasHuman = true }
+    }
+    flush()
+    return rows
+}
+
 struct NewBotDraft {
     var name = ""
     var job = ""
@@ -321,6 +369,7 @@ enum PushNotification {
 @MainActor @Observable final class AppModel {
     var service: (any HostService)?
     var bots: [Bot] = []
+    var expandedWorkingNotes: [String: Set<String>] = [:]
     var messages: [Message] = []
     /// Last messages seen per bot, so reopening a thread shows them at once while new ones load.
     private var threadCache: [String: [Message]] = [:]
@@ -623,6 +672,7 @@ enum PushNotification {
         streamTask?.cancel(); presenceTask?.cancel()
         if let service = service as? RelayService { await service.transport.disconnect() }
         service = nil; connected = false; online = false; openBot = nil
+        expandedWorkingNotes = [:]
         bots = []; messages = []; typing = []; tasks = []; attention = []; agents = []; status = .null; cursor = "now"
     }
 }
