@@ -1,14 +1,6 @@
 import XCTest
 
 @MainActor final class NavigationTests: XCTestCase {
-    func testSchemeURLReachesPairingHandlerAndRejectsBadLink() {
-        let app = XCUIApplication()
-        app.launchArguments = ["-demo"]
-        app.launch()
-        app.open(URL(string: "swarmaa://pair?host=invalid&code=invalid")!)
-        XCTAssertTrue(app.staticTexts["This pairing link or code is invalid. Scan or paste a fresh link from your Mac."].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.buttons["Paste link"].exists)
-    }
     func testDemoNavigationAndSingleStarredShortcut() {
         let app = XCUIApplication()
         app.launchArguments = ["-demo"]
@@ -60,11 +52,11 @@ import XCTest
         app.buttons["close-sheet"].tap()
         app.buttons["You"].tap()
         app.buttons.containing(.staticText, identifier: "Hosts and devices").firstMatch.tap()
-        XCTAssertTrue(app.buttons["Paste link"].waitForExistence(timeout: 3))
-        XCTAssertTrue(app.buttons["Scan QR code"].exists)
-        XCTAssertFalse(app.textFields["Host ID from your Mac"].exists)
-        app.buttons["Type the code instead"].tap()
-        XCTAssertTrue(app.textFields["Host ID from your Mac"].exists)
+        // Pairing is one 6-digit field: no QR, no link, no host ID.
+        XCTAssertTrue(app.textFields["6-digit pairing code"].waitForExistence(timeout: 3))
+        XCTAssertFalse(app.buttons["Scan QR code"].exists)
+        XCTAssertFalse(app.buttons["Paste link"].exists)
+        XCTAssertFalse(app.buttons["Connect"].isEnabled)
         app.buttons["Close"].tap()
         app.buttons["starred-shortcut"].tap()
         app.buttons["Answer question"].tap()

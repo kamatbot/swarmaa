@@ -5,6 +5,15 @@ export { HostRoom, PairIndex, type Env };
 
 const HOST_ID_REGEX = /^[a-z2-7]{26}$/;
 
+// A room is created near whoever reaches it first (normally its host). The hint only applies at
+// creation; "v2:" rooms replaced the first ones, which landed far from their host (750 ms pings).
+const HINTS: Record<string, DurableObjectLocationHint> = { AS: "apac", OC: "oc", EU: "weur", AF: "afr", SA: "sam", NA: "wnam" };
+function roomStub(env: Env, hostId: string, request: Request) {
+  const continent = (request.cf as { continent?: string } | undefined)?.continent ?? "";
+  const hint = HINTS[continent];
+  return env.HOST_ROOM.get(env.HOST_ROOM.idFromName(`v2:${hostId}`), hint ? { locationHint: hint } : undefined);
+}
+
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
@@ -38,8 +47,7 @@ export default {
       if (!HOST_ID_REGEX.test(hostId)) {
         return new Response("Not Found", { status: 404 });
       }
-      const id = env.HOST_ROOM.idFromName(hostId);
-      const stub = env.HOST_ROOM.get(id);
+      const stub = roomStub(env, hostId, request);
       return stub.fetch(request);
     }
 
@@ -52,8 +60,7 @@ export default {
       if (!HOST_ID_REGEX.test(hostId)) {
         return new Response("Not Found", { status: 404 });
       }
-      const id = env.HOST_ROOM.idFromName(hostId);
-      const stub = env.HOST_ROOM.get(id);
+      const stub = roomStub(env, hostId, request);
       return stub.fetch(request);
     }
 
@@ -66,8 +73,7 @@ export default {
       if (!HOST_ID_REGEX.test(hostId)) {
         return new Response("Not Found", { status: 404 });
       }
-      const id = env.HOST_ROOM.idFromName(hostId);
-      const stub = env.HOST_ROOM.get(id);
+      const stub = roomStub(env, hostId, request);
       return stub.fetch(request);
     }
 

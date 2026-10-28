@@ -304,6 +304,8 @@ struct EventParser {
     var service: (any HostService)?
     var bots: [Bot] = []
     var messages: [Message] = []
+    /// Last messages seen per bot, so reopening a thread shows them at once while new ones load.
+    private var threadCache: [String: [Message]] = [:]
     var typing: [JSON] = []
     var tasks: [JSON] = []
     var attention: [JSON] = []
@@ -425,6 +427,7 @@ struct EventParser {
             else { merged.append(message) }
         }
         messages = merged.sorted { $0.seq < $1.seq }; typing = page["typing"].array
+        threadCache[bot.id] = messages
         if let seq = messages.last?.seq {
             _ = try await service.call("thread_mark_read", ["thread_id": .string(bot.threadID), "seq": .number(Double(seq))])
         }
@@ -432,8 +435,14 @@ struct EventParser {
     func open(_ bot: Bot) async {
         openBot = bot
         if isDemo { return }
-        messages = []; typing = []
-        do { try await readThread(bot) } catch { self.error = safeError(error) }
+        typing = []
+        if let cached = threadCache[bot.id], !cached.isEmpty {
+            messages = cached  // shown at once; only what is new is fetched
+            do { try await readThread(bot, incremental: true) } catch { self.error = safeError(error) }
+        } else {
+            messages = []
+            do { try await readThread(bot) } catch { self.error = safeError(error) }
+        }
     }
     func olderMessages() async throws {
         guard let service, let bot = openBot, let first = messages.first else { return }

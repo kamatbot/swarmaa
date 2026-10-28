@@ -150,12 +150,12 @@ struct RootView: View {
                 if model.connected || model.isDemo {
                     switch screen {
                     case .home: home
-                    case .thread: thread
-                    case .tasks: tasks
-                    case .usage: usage
-                    case .connect: ConnectView(model: model) { screen = .home }
+                    case .thread: thread.swipeBack { screen = .home; model.openBot = nil }
+                    case .tasks: tasks.swipeBack { screen = .home }
+                    case .usage: usage.swipeBack { screen = .home }
+                    case .connect: ConnectView(model: model) { screen = .home }.swipeBack { screen = .home }
                     case .settings:
-                        if let bot = model.openBot ?? model.starred { SettingsView(model: model, bot: bot) { screen = .thread } }
+                        if let bot = model.openBot ?? model.starred { SettingsView(model: model, bot: bot) { screen = .thread }.swipeBack { screen = .thread } }
                         else { empty("Open a bot to change its settings.") }
                     }
                 } else { ConnectView(model: model) { screen = .home } }
@@ -187,13 +187,6 @@ struct RootView: View {
                 }
             } }
         }
-        .onOpenURL { url in
-            sheet = nil; screen = .connect
-            Task {
-                do { try await model.handlePairingURL(url); screen = .home }
-                catch { model.error = safeError(error) }
-            }
-        }
         .task {
             if !ProcessInfo.processInfo.arguments.contains("-demo"), ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil { return }
             if ProcessInfo.processInfo.arguments.contains("-demo") {
@@ -224,7 +217,8 @@ struct RootView: View {
             do { try await action() } catch { model.error = safeError(error) }
         }
     }
-    private func open(_ bot: Bot) { Task { await model.open(bot); screen = .thread } }
+    // Switch first, then load: the thread appears at once instead of after a relay round trip.
+    private func open(_ bot: Bot) { screen = .thread; Task { await model.open(bot) } }
     private func header(_ title: String, close: @escaping () -> Void) -> some View {
         VStack(alignment: .leading, spacing: 14) {
             CloseButton(action: close)
@@ -751,3 +745,32 @@ private extension AppModel {
         }), "routing": .object(["reason": .string("Antigravity → Claude → Codex"), "by_kind": .object(Dictionary(uniqueKeysWithValues: ["research", "patch", "review", "summary"].map { ($0, .object(["provider": .string($0 == "research" ? "claude" : "antigravity")])) }))])])
     }
 }
+
+/// The iOS back swipe for screens this app switches itself (no NavigationStack): drag from the
+/// left edge and the screen follows the finger; past a third of the width, or flicked, it goes back.
+struct SwipeBack: ViewModifier {
+    var action: () -> Void
+    @State private var offset: CGFloat = 0
+    func body(content: Content) -> some View {
+        GeometryReader { geo in
+            content
+                .offset(x: offset)
+                .simultaneousGesture(DragGesture(minimumDistance: 12, coordinateSpace: .global)
+                    .onChanged { value in
+                        guard value.startLocation.x < 28, value.translation.width > 0 else { return }
+                        offset = value.translation.width
+                    }
+                    .onEnded { value in
+                        guard value.startLocation.x < 28 else { return }
+                        if value.translation.width > geo.size.width / 3 || value.predictedEndTranslation.width > geo.size.width * 0.6 {
+                            withAnimation(.easeOut(duration: 0.18)) { offset = geo.size.width }
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) { action(); offset = 0 }
+                        } else {
+                            withAnimation(.spring(duration: 0.25)) { offset = 0 }
+                        }
+                    })
+        }
+    }
+}
+extension View { func swipeBack(_ action: @escaping () -> Void) -> some View { modifier(SwipeBack(action: action)) } }
+
