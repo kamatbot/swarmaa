@@ -1,3 +1,4 @@
+import { botTaskFinished, taskBotPolicy } from './bot-routing.js';
 import { advanceFlow, validateFlowCompletion } from './flows.js';
 import type { FlowTask } from './flow-definition.js';
 import { inboxSession, readTaskInbox, taskFinished, taskReroutedNotice } from './inbox.js';
@@ -30,8 +31,8 @@ type TaskKind = typeof TASK_KINDS[number] | 'check' | 'approve' | 'turn';
 export interface TaskRow {
   id:string; tenant_id:string; scope:string; kind:TaskKind; objective:string;
   flow_id:string|null; flow:FlowTask|null;
-  agent_id?:string|null; thread_id?:string|null; swarm_step_id?:string|null;
-  initiator_kind?: 'person' | 'handoff' | 'swarm' | 'answer' | 'flow';
+  bot_id?:string|null; agent_id?:string|null; thread_id?:string|null; swarm_step_id?:string|null;
+  initiator_kind?: 'person' | 'handoff' | 'swarm' | 'answer' | 'flow' | 'schedule' | 'bot_check';
   initiator_id?: string | null;
   resolved_at?: Date | null;
   constraints:string[]; acceptance_criteria:string[]; permission_envelope:Record<string,unknown>;
@@ -91,6 +92,7 @@ export function taskView(row:TaskRow):Record<string,unknown> {
     created_at:date(row.created_at),
     updated_at:date(row.updated_at), completed_at:date(row.completed_at),
     ...(row.flow_id ? {flow_id:row.flow_id,flow:row.flow} : {}),
+    ...(row.bot_id ? {bot_id:row.bot_id} : {}),
     ...(row.agent_id ? {agent_id:row.agent_id} : {}),
     ...(row.thread_id ? {thread_id:row.thread_id} : {}),
     ...(row.swarm_step_id ? {swarm_step_id:row.swarm_step_id} : {}),
@@ -119,7 +121,7 @@ export async function findTask(db:Db,p:Principal,id:string,lock=false):Promise<T
 async function lockedTask(db:PoolClient,p:Principal,id:string,teams=false):Promise<TaskRow> {
   const visible = await findTask(db,p,id);
   await scopeLock(db,'tasks',p,visible.scope);
-  if (teams && (visible.agent_id || visible.swarm_step_id)) await teamsLock(db,p.tenantId);
+  if (teams && (visible.agent_id || visible.swarm_step_id || visible.bot_id)) await teamsLock(db,p.tenantId);
   return findTask(db,p,id,true);
 }
 
@@ -426,14 +428,18 @@ export class TaskService {
       const {policy} = await getPolicy(db,p.tenantId);
       const usage = await scopeUsage(db,p.tenantId,scope);
       const decisions = capabilities.includes(AUTO_READ) || capabilities.includes(AUTO_PATCH) ? decideAll(policy,usage) : null;
-      const eligible = (row:TaskRow):boolean => {
+      const eligible = (row:TaskRow, taskPolicy=policy):boolean => {
         if (row.kind === 'check') return true;
         const exclusions = row.excluded_providers ?? [];
-        const policyForTask = exclusions.length ? { ...policy, providers: policy.providers.filter(x => !exclusions.includes(x.provider)) } : policy;
+        const policyForTask = {...taskPolicy, providers:taskPolicy.providers.filter(x => !exclusions.includes(x.provider))};
+        if (row.bot_id && row.required_capability.startsWith('auto.') && !policyForTask.providers.some(x => x.enabled && x.kinds.includes(effectiveRoutingKind(row)))) return false;
         const effectiveKind: RoutingKind = effectiveRoutingKind(row);
+        const allowsAuto = (provider:string,kind:RoutingKind) => row.bot_id
+          ? policyForTask.providers.some(x => x.provider===provider && x.enabled && x.kinds.includes(kind))
+          : policyAllows(policyForTask,provider,kind);
         if (row.required_capability === AUTO_PATCH) {
           const d = decide(policyForTask, 'patch', usage);
-          if (d.anyone) return servedPatch.some(s => policyAllows(policyForTask, s, 'patch') && !exclusions.includes(s));
+          if (d.anyone) return servedPatch.some(s => allowsAuto(s,'patch') && !exclusions.includes(s));
           return d.provider !== null && servedPatch.includes(d.provider) && !exclusions.includes(d.provider);
         }
         if (row.required_capability.endsWith('.patch')) {
@@ -443,12 +449,14 @@ export class TaskService {
         if (row.kind === 'patch') return true;
         if (row.required_capability === AUTO_READ) {
           const d = decide(policyForTask, effectiveKind, usage);
-          if (d.anyone) return !served.length || served.some(s => policyAllows(policyForTask, s, effectiveKind) && !exclusions.includes(s));
+          if (d.anyone) return !served.length || served.some(s => allowsAuto(s,effectiveKind) && !exclusions.includes(s));
           return d.provider !== null && served.includes(d.provider) && !exclusions.includes(d.provider);
         }
         const prov = row.required_capability.slice(0, -5);
         return !exclusions.includes(prov) && policyAllows(policy, prov, effectiveKind);
       };
+      // B2 bot hooks: acquire Teams before selecting bot task rows or writing bot threads.
+      if ((await db.query(`SELECT 1 FROM tasks WHERE tenant_id=$1 AND scope=$2 AND bot_id IS NOT NULL AND status IN ('queued','running') LIMIT 1`,[p.tenantId,scope])).rowCount) await teamsLock(db,p.tenantId);
       // Questions past their expiry are expired here and by question_answer, never by a read.
       const dueQuestion = await db.query(`SELECT 1 FROM questions WHERE tenant_id=$1 AND scope=$2 AND status='open'
         AND expires_at<=clock_timestamp() LIMIT 1`,[p.tenantId,scope]);
@@ -524,20 +532,22 @@ export class TaskService {
           AND r.scope=tasks.scope AND r.resource_key=tasks.resource_key AND r.expires_at>clock_timestamp()))
         ORDER BY created_at,id LIMIT 100 FOR UPDATE SKIP LOCKED`,[p.tenantId,scope,capabilities,kinds]);
       for (const row of candidates.rows) {
+        // B2 bot hook: same usage snapshot for eligibility and the execution-bound route.
+        const taskPolicy = await taskBotPolicy(db,p.tenantId,row,policy,usage);
         let flowProvider:string|undefined;
         if (row.flow && row.kind!=='check') {
           const other = row.flow.different_provider_than ? (await db.query<TaskRow>("SELECT * FROM tasks WHERE flow_id=$1 AND flow->>'step_id'=$2",[row.flow_id,row.flow.different_provider_than])).rows[0] : undefined;
           const otherServed = (other?.result as any)?.served?.provider ?? other?.flow?.provider;
           if (row.flow.different_provider_than && (!other || other.status!=='completed' || !otherServed)) continue;
           const excluded = otherServed;
-          const candidates = policy.providers.filter(x => x.enabled && x.kinds.includes(row.kind as RoutingKind) && x.provider!==excluded && !(row.excluded_providers || []).includes(x.provider));
+          const candidates = taskPolicy.providers.filter(x => x.enabled && x.kinds.includes(row.kind as RoutingKind) && x.provider!==excluded && !(row.excluded_providers || []).includes(x.provider));
           const auto = row.required_capability===AUTO_READ || row.required_capability===AUTO_PATCH;
           const d = decideAll({...policy,providers:candidates},usage)[row.kind as RoutingKind];
           const suffix = row.kind==='patch' ? 'patch' : 'read';
           const providers = auto ? (d.anyone ? candidates.map(x => x.provider) : d.provider ? [d.provider] : []) : [row.required_capability.split('.')[0]!];
           flowProvider = providers.find(provider => candidates.some(x => x.provider===provider) && capabilities.includes(`${provider}.${suffix}`));
           if (!flowProvider) continue;
-        } else if (!eligible(row)) continue;
+        } else if (!eligible(row,taskPolicy)) continue;
         const generation = row.lease_generation+1;
         if ((row.kind === 'patch' || row.kind === 'turn') && row.resource_key !== null) {
           const resource = await db.query(`INSERT INTO task_resource_leases
@@ -571,7 +581,7 @@ export class TaskService {
         // Bind the router's decision to execution: the bridge may only run what the policy allows for this kind.
         const auto = row.required_capability === AUTO_READ || row.required_capability === AUTO_PATCH;
         const exclusions = row.excluded_providers ?? [];
-        const policyForTask = exclusions.length ? { ...policy, providers: policy.providers.filter(x => !exclusions.includes(x.provider)) } : policy;
+        const policyForTask = {...taskPolicy,providers:taskPolicy.providers.filter(x => !exclusions.includes(x.provider))};
         const effKind = effectiveRoutingKind(row);
         const d = auto ? decide(policyForTask, effKind, usage) : undefined;
         const allowed = policyForTask.providers.filter(x => x.enabled && (x.kinds as string[]).includes(effKind)).map(x => x.provider);
@@ -823,8 +833,8 @@ export class TaskService {
         budget = { hop: typeof hop === 'number' ? hop : 0, queued: 0, threadId: targetThreadId, scope: row.scope,
           summary: (row.context_versions as any)?.summary === true };
         const threadRow = (await db.query('SELECT * FROM threads WHERE id=$1 AND tenant_id=$2', [targetThreadId, p.tenantId])).rows[0];
-        requireCondition(threadRow && (threadRow.agent_id === row.agent_id || threadRow.kind === 'channel') && threadRow.scope === row.scope, 403, 'turn_grant_forbidden', 'Turn grant refuses posting to another agent\'s thread.');
-        if (threadRow.kind === 'channel') {
+        requireCondition(threadRow && (threadRow.agent_id === row.agent_id || ['channel','bot'].includes(threadRow.kind)) && threadRow.scope === row.scope, 403, 'turn_grant_forbidden', 'Turn grant refuses posting to another agent\'s thread.');
+        if (['channel','bot'].includes(threadRow.kind)) {
           const isMember = (await db.query<{ count: string }>(
             'SELECT count(*)::int AS count FROM thread_members WHERE thread_id=$1 AND agent_id=$2',
             [targetThreadId, row.agent_id]
@@ -981,6 +991,8 @@ export class TaskService {
         await this.swarms.onStepTaskFinished(db, p, row.swarm_step_id, row.id, row.scope, outcome, replyMsgId, failureObj, budget);
       }
 
+      // B2 bot hook: follow-ups and check outcomes commit with the fenced result.
+      await botTaskFinished(db,p,next!);
       await taskChanged(db,p,next,'finished');
       return {task:await taskWithInstructions(db,next),replayed:false};
     });

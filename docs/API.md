@@ -643,3 +643,55 @@ Agent turns do not use a separate MCP server in worker CLIs. Instead:
 - **Heartbeat:** Sends `:keepalive` comment frames every 15 seconds. Uses TCP nodelay for low latency (< 1 s delivery).
 
 Streams share one LISTEN connection per service pool. Transactional `swarmaa_events` notifications wake all streams; full batches drain immediately, with a 2 s safety poll and listener reconnection backoff. The durable xmin/cursor visibility rules are unchanged.
+
+## Bot routing preview
+
+`bot_routing_preview {bot_id}` requires `agent:read` and access to the bot's exact tenant and
+scope. It returns `research`, `patch`, `review` and `summary`, each with
+`{runner, provider_now, reason}`. `provider_now` is null when no provider can currently be
+selected. `routingNow(db, tenantId, botRow)` supplies the same shape for `bot_get` integration.
+A `different_from_author` preview has no edit author yet; the actual review excludes the
+provider recorded on that edit's `result.served.provider`.
+
+### How bot routing decides
+
+Named runners retain their named provider and bypass the bot quota floor. Auto tasks use the
+same live, fresh usage snapshots and priority ordering as the global router, with the bot's
+`quota_floor_pct` applied to the most-used window. The bot floor only tightens the global
+5-hour and weekly limits; bot tasks wait when no eligible provider remains, while other queued
+tasks can still be claimed. A floor of zero allows 99% usage when the global limits are 100%.
+Missing quota readings follow the existing router fallback only with a zero floor.
+
+Completed bot edits with commit and branch provenance queue an idempotent review by default.
+A different-author review uses `auto.read` and excludes the edit provider. If no different
+provider is enabled, the thread receives a notice. `review_edits: false` disables this.
+`require_tests: true` also queues a pinned `bridge.check` flow task using the owner's configured
+`tests_pass` command, with the edit head and base commits. Bridge evidence is required for a
+passing completion; the edit receives `result.check = {status: 'passed'|'failed', task_id}`.
+Missing commit provenance produces a notice rather than an unpinned check. These follow-ups
+carry `bot_id` and `initiator_kind: 'bot_check'`.
+
+The service sweeps schedules every 30 seconds. Five-field cron supports `*`, lists, ranges and
+steps; Sunday is 0 or 7. Restricted day-of-month and weekday fields use POSIX OR semantics.
+`CRON_TZ=Area/City` selects an IANA time zone; the default is UTC. Evaluation follows real
+minutes through DST (missing local minutes are skipped; repeated minutes can run twice).
+A newly configured schedule first initializes `next_run_at`; a due schedule advances from
+current database time, posts “Scheduled run” and queues one lead turn. Missed intervals are
+coalesced. A busy lead skips the run and still advances. Scope and tenant Teams locks serialize
+concurrent sweeps and task claims. No service restart is needed when changing a schedule.
+
+B2 acceptance coverage (test names in `tests/bot-routing.integration.test.ts` unless noted):
+
+| Brief item | Named tests |
+|---|---|
+| 1. Claim floor | `floor skips a low provider only for bot tasks and claim proceeds to next queued task`; `zero floor permits 99 percent use under global 100 limits and global limits still block`; `named runners bypass the bot floor while preserving enabled-kind policy` |
+| 2. Reviews | `bot edit queues one review excluding author; completion replay is idempotent`; `review_edits false queues none and no different enabled reviewer posts a notice` |
+| 3. Tests | `require_tests queues an idempotent pinned tests_pass check; pass lands on edit result.check`; corresponding `failure lands on edit result.check` case (also rejects invented passing evidence) |
+| 4. Preview | `bot_routing_preview returns all kinds and enforces permission tenant and exact scope isolation`; unit `routingNow reasons cover named runner, floor, quota and different author` |
+| 5. Schedule | `schedule tick initializes, posts and queues once under concurrent ticks, skips busy lead and advances`; unit `cron steps, ranges, lists and Sunday alias`, `cron day-of-month and weekday use POSIX OR for restricted fields`, `cron CRON_TZ honours local offsets and DST missing and repeated hours`, `cron rejects invalid fields, steps, ranges and time zones` |
+| 6. API documentation | Preview shape and reason tests above match the documented response. |
+
+Unit cases live in `tests/bot-routing.test.ts`, including `bot floor uses most-used window,
+accepts exact floor and zero at 99, preserves global maxima`. Integration service fixtures
+include migration 027 alongside its prerequisites. The isolated migration-020 backfill test
+intentionally reconstructs its historical schema before applying migration 020.

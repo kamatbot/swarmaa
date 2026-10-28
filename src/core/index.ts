@@ -1,3 +1,4 @@
+import { botRoutingPreview } from './bot-routing.js';
 import type { Pool } from 'pg';
 import { transaction } from '../db.js';
 import { AppError, requireCondition } from '../errors.js';
@@ -104,6 +105,7 @@ export class CoreService implements ToolBackend {
       case 'lesson_list': return this.lessons.list(principal,input);
       case 'lesson_review': return this.lessons.review(principal,input);
       case 'lesson_search': return this.lessons.search(principal,input);
+      case 'bot_routing_preview': return botRoutingPreview(this.pool,principal,input);
       case 'routing_get': noExtraKeys(input,[]); return getPolicy(this.pool,principal.tenantId);
       case 'routing_set': noExtraKeys(input,['policy']); return transaction(this.pool,db => setPolicy(db,principal,input.policy));
       case 'swarm_status': return this.swarm.status(principal,input);

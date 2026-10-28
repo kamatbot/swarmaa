@@ -1,3 +1,4 @@
+import { tickBotSchedules } from './core/bot-routing.js';
 import { createServer } from 'node:http';
 import { AuthService } from './auth.js';
 import { loadConfig } from './config.js';
@@ -29,16 +30,27 @@ server.listen(config.port, config.host, () => {
   events?.start();
 });
 
+// B2 schedule tick: serialize sweeps and drain before closing the pool.
+let scheduleSweep:Promise<void>|undefined;
+const scheduleTimer = setInterval(() => {
+  if (!scheduleSweep) scheduleSweep = tickBotSchedules(pool).catch(() => {
+    process.stderr.write('Bot schedule sweep failed. Check schedule configuration and database health.\n');
+  }).finally(() => { scheduleSweep = undefined; });
+},30000);
+scheduleTimer.unref();
+
 let closing = false;
 async function shutdown(code: number): Promise<void> {
   if (closing) return;
   closing = true;
+  clearInterval(scheduleTimer);
   const deadline = setTimeout(() => { server.closeAllConnections(); process.exit(1); }, 20000);
   deadline.unref();
   await Promise.all([
     new Promise<void>(resolve => { server.close(() => resolve()); }),
     oauth?.stop() ?? Promise.resolve(),
     events?.stop() ?? Promise.resolve(),
+    scheduleSweep ?? Promise.resolve(),
   ]);
   await pool.end();
   clearTimeout(deadline);
