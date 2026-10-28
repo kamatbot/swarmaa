@@ -1,0 +1,37 @@
+Round 2 dd765573 validation receipt
+baseline: e0cc45c26ffd94066ba75fd7ff3ab9207dad793d
+node: v24.21.0 (/opt/homebrew/opt/node@24/bin first in PATH)
+simulator: pre-existing booted SE B2EE62FA-1CD0-4F71-8FCD-9FE73EA59B56; iOS 27.0; 375x667 pt
+no simulator created/booted; no larger iPhone available
+source SHA256:
+8804bb70c36679749ce059308264820088b85d7fa882af6610b1309c9299345f  iOS-app/Sources/AppCore.swift
+be999379f8fbf9f90e50125acdbbbefc603cd04ba2553cbf219a7f951bb449f0  iOS-app/Sources/SwarmaaApp.swift
+73b0416478a4ab3c3cbd7441b3266a97f31a541b3df8fd3e8e2cdf22cb527787  iOS-app/project.yml
+c78739a59afbeda78ff99296a32af3167dd2052b0a51b3c5f202ee353742f79d  iOS-app/Info.plist
+beb084d68f617e7e31d384f049f4044c0394b8f30be916314e5f0e0ed023c8f7  scripts/relay-pair.ts
+97119d21246d6e2e1cf57fbde0b89f155c9b18a89fea2575db82358800de2a36  tests/relay-agent.test.ts
+Node: 13/13 passed in relay-round2.log; final affected QR/CLI checks 2/2 in relay-round2-final.log.
+Exact requested Node env command could not start: .env.test absent. Empty /dev/null env file substituted; no database/production credentials loaded.
+Initial full iOS: 27 tests passed (14+12+1), test-round2.log.
+Intermediate iOS: units 26 passed; UI runtime crash/timeout; interrupted automatic retry; test-round2-final.log NOT green.
+Final fresh UI-only: 2/2 passed; ui-round2-recovery.log.
+No commit/push/merge/service writes/messages/publish/deploy/account changes performed.
+Final screenshots: each individually inspected; SHA256 and pixel dimensions:
+8a26cb59515e5e222c3201905c74d373a149136037812a1f296dd337d7af298d  design/launch-kit/screens-ios/01-bots-home.png  750x1334
+95f37e02dc33c3c7bf6722f64f976dc26117559d402fb704614cb91c677e795f  design/launch-kit/screens-ios/02-bot-thread.png  750x1334
+b435a8889f81b1cc2428ca82fa4e8d9987694b938c9cd873f6dfd5db55c30c72  design/launch-kit/screens-ios/03-tasks.png  750x1334
+66020379f94b90e6279c07f46af3c8df485abfd6bb5dab016b012c0e6d705372  design/launch-kit/screens-ios/04-usage.png  750x1334
+1b9cd29c9288f5f946477cbdbf87f56d0c735696eda1f7551e0e58073402f610  design/launch-kit/screens-ios/05-connect.png  750x1334
+dd0a95cf17f41c67f34e9a9899666aa70d69d79b63619433fce108835ca75c42  design/launch-kit/screens-ios/06-question.png  750x1334
+c5e727c88f044bfd9b4f063e90310cc1e110ed34359fa44afc786a217f6bc62d  design/launch-kit/screens-ios/07-new-bot.png  750x1334
+fbc06c44c1236ca847abe2ceba4997b3c005a2669d84d4244c91e7f20a427b33  design/launch-kit/screens-ios/08-bot-settings.png  750x1334
+e4de747dd8b05224d730771f5816caf0857f8df320f060ce19e9323fb35d000f  design/launch-kit/screens-ios/09-you.png  750x1334
+Final full iOS acceptance: EXIT 0 / TEST SUCCEEDED, 28 tests (14 app + 12 compatibility + 2 UI), zero failures.
+Xcode testing elapsed: 57.751 seconds. No hosted CI/Actions used.
+Commands:
+xcodegen --spec iOS-app/project.yml
+xcodebuild -project iOS-app/Swarmaa.xcodeproj -scheme Swarmaa -destination platform=iOS\ Simulator,id=B2EE62FA-1CD0-4F71-8FCD-9FE73EA59B56 -derivedDataPath iOS-app/DerivedData/Recovery -parallel-testing-enabled NO -test-timeouts-enabled YES -maximum-test-execution-time-allowance 60 test
+Log: iOS-app/acceptance-round2.log
+Result: iOS-app/DerivedData/Recovery/Logs/Test/Test-Swarmaa-2026.10.28_18-49-38-+0700.xcresult
+Remaining: physical-device camera/permission handling and live host pairing/paste smoke test; larger iPhone absent; native fonts approximate web design.
+Final diff whitespace check passed. Only task-allowed paths changed. Bridge must review/commit; worker did not commit or push.
