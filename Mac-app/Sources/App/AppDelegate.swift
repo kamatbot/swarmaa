@@ -1228,6 +1228,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
             .store(in: &cancellables)
+        // Before the first controller exists, so its panel is never put up when the notch is off.
+        fleet.apply(preferences.showsNotch ? preferences.notchVisibility : .hidden)
         fleet.apply(displayPreference: preferences.displayPreference)
         fleet.apply(alongOffset: preferences.offset(for: preferences.notchEdge))
         fleet.apply(scale: preferences.notchScale)
