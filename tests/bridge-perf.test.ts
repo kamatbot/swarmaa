@@ -527,3 +527,16 @@ test('a real Claude stream-json turn (with --include-partial-messages) yields it
   const req = buildInvocation(cfg.agents[0]!, cfg.projects[0]!, makeTurnTask({ kind: 'turn', required_capability: 'claude.read', permission_envelope: { local_patch: false } } as any), {}, cfg, new AbortController().signal);
   assert.ok(req.args.includes('--include-partial-messages'), 'without it the CLI emits no deltas');
 });
+
+test('a bot chat-reply runner: fast models get the hand-off instruction, Opus and off do not', () => {
+  const cfg = baseConfig();
+  const agent = cfg.agents[0]!;
+  const run = (runner: Record<string, unknown>) => {
+    const req = buildInvocation(agent, cfg.projects[0]!, makeTurnTask({ kind: 'turn', required_capability: 'claude.read', permission_envelope: { local_patch: false, runner } } as any), {}, cfg, new AbortController().signal);
+    const i = req.args.indexOf('--model');
+    return { model: i >= 0 ? req.args[i + 1] : undefined, fast: req.input.includes('DELEGATE: <one-line objective>') };
+  };
+  assert.deepEqual(run({ provider: 'claude', model: 'claude-haiku-5-5', fast: true }), { model: 'claude-haiku-5-5', fast: true });
+  assert.deepEqual(run({ provider: 'claude', model: 'claude-opus-5-5', fast: false }), { model: 'claude-opus-5-5', fast: false });
+  assert.deepEqual(run({ fast: false }), { model: agent.model, fast: false }, 'off: the full model, never turn_model');
+});

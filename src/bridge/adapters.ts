@@ -229,10 +229,13 @@ export function buildInvocation(agent: AgentConfig, project: ProjectConfig, task
   let fastMode = false;
 
   if (isNonEditTurn) {
+    // runner.fast (set by a bot's chat-reply choice) says whether this is a quick reply that may hand off.
+    const runnerFast = envelope?.runner?.fast;
     if (runnerModel) {
       effectiveModel = runnerModel;
       effectiveEffort = runnerEffort;
-    } else if (agent.turn_model && envelope?.runner?.delegated !== true) {
+      fastMode = runnerFast === true && envelope?.runner?.delegated !== true;
+    } else if (agent.turn_model && envelope?.runner?.delegated !== true && runnerFast !== false) {
       // A delegated turn is the full answer: never the fast model again.
       effectiveModel = agent.turn_model;
       effectiveEffort = agent.turn_effort;

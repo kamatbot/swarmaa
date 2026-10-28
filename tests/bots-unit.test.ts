@@ -73,7 +73,8 @@ describe('bots unit tests', () => {
         quota_floor_pct: 25,
         approve_public: false,
         review_edits: false,
-        require_tests: true
+        require_tests: true,
+        first_reply: 'claude-opus-5-5' as const
       };
       assert.deepEqual(validateRules(custom), custom);
     });
@@ -90,7 +91,8 @@ describe('bots unit tests', () => {
         quota_floor_pct: 30,
         approve_public: false,
         review_edits: true,
-        require_tests: true
+        require_tests: true,
+        first_reply: 'claude-haiku-5-5'
       });
     });
 

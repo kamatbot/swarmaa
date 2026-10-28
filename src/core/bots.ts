@@ -45,6 +45,35 @@ export interface BotRules {
   approve_public: boolean;
   review_edits: boolean;
   require_tests: boolean;
+  /**
+   * Model for a bot's chat replies. Haiku or Sonnet answer fast and may hand off to the full model;
+   * Opus thinks hard on every reply; 'off' uses the agent's own model with no quick reply.
+   */
+  first_reply: FirstReply;
+}
+
+/** Chat-reply models, the provider that runs each, and whether it is a quick reply that may hand off. */
+export const FIRST_REPLY_MODELS = {
+  'claude-haiku-5-5': { provider: 'claude', fast: true },
+  'claude-sonnet-5-5': { provider: 'claude', fast: true },
+  'claude-opus-5-5': { provider: 'claude', fast: false },
+  'gemini-3.8-flash-high': { provider: 'antigravity', fast: true }
+} as const;
+export type FirstReply = keyof typeof FIRST_REPLY_MODELS | 'off';
+export const DEFAULT_FIRST_REPLY: FirstReply = 'claude-haiku-5-5';
+
+/**
+ * The runner and capability for a bot's non-edit chat turn: the quick first-reply model with `fast: true`
+ * (the bridge adds the reply-now / DELEGATE instruction), or `fast: false` when the bot turned it off.
+ * Edit turns are untouched: they always run on the agent's full model.
+ */
+export function firstReplyRunner(rules: unknown, edits: boolean): { capability?: string; runner: Record<string, unknown> } | null {
+  if (edits) return null;
+  const raw = (rules && typeof rules === 'object' ? (rules as Record<string, unknown>).first_reply : undefined) ?? DEFAULT_FIRST_REPLY;
+  if (raw === 'off') return { runner: { fast: false } };
+  const choice = FIRST_REPLY_MODELS[raw as keyof typeof FIRST_REPLY_MODELS];
+  if (!choice) return null;
+  return { capability: `${choice.provider}.read`, runner: { provider: choice.provider, model: raw, fast: choice.fast } };
 }
 
 export const VALID_ROUTING_KINDS = ['research', 'patch', 'review', 'summary'] as const;
@@ -54,7 +83,8 @@ export const DEFAULT_BOT_RULES: BotRules = {
   quota_floor_pct: 0,
   approve_public: true,
   review_edits: true,
-  require_tests: false
+  require_tests: false,
+  first_reply: DEFAULT_FIRST_REPLY
 };
 
 export function validateRouting(raw: unknown): Record<string, unknown> {
@@ -113,12 +143,14 @@ export function validateRules(raw: unknown, existing?: Record<string, unknown>):
     quota_floor_pct: typeof existing.quota_floor_pct === 'number' ? existing.quota_floor_pct : DEFAULT_BOT_RULES.quota_floor_pct,
     approve_public: typeof existing.approve_public === 'boolean' ? existing.approve_public : DEFAULT_BOT_RULES.approve_public,
     review_edits: typeof existing.review_edits === 'boolean' ? existing.review_edits : DEFAULT_BOT_RULES.review_edits,
-    require_tests: typeof existing.require_tests === 'boolean' ? existing.require_tests : DEFAULT_BOT_RULES.require_tests
+    require_tests: typeof existing.require_tests === 'boolean' ? existing.require_tests : DEFAULT_BOT_RULES.require_tests,
+    first_reply: typeof existing.first_reply === 'string' && (existing.first_reply === 'off' || existing.first_reply in FIRST_REPLY_MODELS)
+      ? existing.first_reply as FirstReply : DEFAULT_FIRST_REPLY
   } : { ...DEFAULT_BOT_RULES };
 
   if (raw === undefined || raw === null) return base;
   const obj = object(raw);
-  noExtraKeys(obj, ['quota_floor_pct', 'approve_public', 'review_edits', 'require_tests']);
+  noExtraKeys(obj, ['quota_floor_pct', 'approve_public', 'review_edits', 'require_tests', 'first_reply']);
 
   if (obj.quota_floor_pct !== undefined) {
     base.quota_floor_pct = integer(obj.quota_floor_pct, 'quota_floor_pct', 0, 50);
@@ -131,6 +163,12 @@ export function validateRules(raw: unknown, existing?: Record<string, unknown>):
   }
   if (obj.require_tests !== undefined) {
     base.require_tests = booleanOption(obj.require_tests, 'require_tests');
+  }
+  if (obj.first_reply !== undefined) {
+    const v = string(obj.first_reply, 'first_reply', 60);
+    requireCondition(v === 'off' || v in FIRST_REPLY_MODELS, 400, 'invalid_arguments',
+      `first_reply must be one of ${[...Object.keys(FIRST_REPLY_MODELS), 'off'].join(', ')}`);
+    base.first_reply = v as FirstReply;
   }
   return base;
 }

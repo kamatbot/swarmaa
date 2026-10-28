@@ -323,6 +323,7 @@ describe('bots core service (Brief B1)', { skip: !connectionString, concurrency:
 
     const { bot, thread } = await call(user, 'bot_create', {
       name: 'PropBot',
+      rules: { first_reply: 'off' },
       job: 'Propagation test',
       scope: 'project:a',
       lead_agent_id: lead.id,
@@ -452,6 +453,7 @@ describe('bots core service (Brief B1)', { skip: !connectionString, concurrency:
 
     const { bot, thread } = await call(user, 'bot_create', {
       name: 'RoutingBot',
+      rules: { first_reply: 'off' },
       job: 'Routing test',
       scope: 'project:a',
       lead_agent_id: lead.id,
@@ -585,6 +587,31 @@ describe('bots core service (Brief B1)', { skip: !connectionString, concurrency:
     assert.equal(failedCard.body, 'Failed · quota_exhausted on Codex');
   });
 
+  it('first_reply picks the chat-reply model per bot: Haiku by default, Opus for heavy bots, or off', async () => {
+    const tenantId = randomUUID();
+    const user = await createPrincipal(tenantId, 'user-first-reply');
+    const lead = (await call(user, 'agent_create', { name: 'Chat', role: 'Chat', instructions: 'Chat', scope: 'project:a', runner: { mode: 'auto' } })).agent;
+    const turnFor = async (rules: Record<string, unknown> | undefined, key: string) => {
+      const made = await call(user, 'bot_create', { name: `FR-${key}`, job: 'Chat', scope: 'project:a', lead_agent_id: lead.id, member_agent_ids: [], ...(rules ? { rules } : {}) });
+      await call(user, 'thread_post', { thread_id: made.thread.id, body: 'Hello', idempotency_key: `fr-${key}` });
+      const row = (await pool.query("SELECT * FROM tasks WHERE thread_id=$1 AND kind='turn'", [made.thread.id])).rows[0];
+      await pool.query("UPDATE tasks SET status='cancelled' WHERE id=$1", [row.id]); // the lead stays free for the next bot
+      return { bot: made.bot, row };
+    };
+    const haiku = await turnFor(undefined, 'default');
+    assert.equal(haiku.bot.rules.first_reply, 'claude-haiku-5-5');
+    assert.equal(haiku.row.required_capability, 'claude.read');
+    assert.deepEqual(haiku.row.permission_envelope.runner, { provider: 'claude', model: 'claude-haiku-5-5', fast: true });
+    const opus = await turnFor({ first_reply: 'claude-opus-5-5' }, 'opus');
+    assert.deepEqual(opus.row.permission_envelope.runner, { provider: 'claude', model: 'claude-opus-5-5', fast: false }, 'Opus thinks on every reply, no hand-off');
+    const off = await turnFor({ first_reply: 'off' }, 'off');
+    assert.deepEqual(off.row.permission_envelope.runner, { fast: false });
+    assert.equal(off.row.required_capability, 'auto.read', 'off keeps the bot routing');
+    await assert.rejects(call(user, 'bot_create', { name: 'FR-bad', job: 'x', scope: 'project:a', lead_agent_id: lead.id, member_agent_ids: [], rules: { first_reply: 'gpt-9' } }), /first_reply must be one of/);
+    const updated = await call(user, 'bot_update', { bot_id: haiku.bot.id, expected_version: haiku.bot.version, rules: { first_reply: 'claude-opus-5-5' } });
+    assert.equal(updated.bot.rules.first_reply, 'claude-opus-5-5');
+  });
+
   it('thread_read embeds task', async () => {
     const tenantId = randomUUID();
     const user = await createPrincipal(tenantId, 'user-7');
@@ -665,13 +692,13 @@ describe('bots core service (Brief B1)', { skip: !connectionString, concurrency:
 
     // Create 3 bots
     const bot1 = (await call(user, 'bot_create', {
-      name: 'BotIdle', job: 'Idle bot', scope: 'project:a', lead_agent_id: lead1.id, member_agent_ids: []
+      name: 'BotIdle', rules: { first_reply: 'off' }, job: 'Idle bot', scope: 'project:a', lead_agent_id: lead1.id, member_agent_ids: []
     })).bot;
     const bot2 = (await call(user, 'bot_create', {
-      name: 'BotUnread', job: 'Unread bot', scope: 'project:a', lead_agent_id: lead2.id, member_agent_ids: []
+      name: 'BotUnread', rules: { first_reply: 'off' }, job: 'Unread bot', scope: 'project:a', lead_agent_id: lead2.id, member_agent_ids: []
     })).bot;
     const bot3 = (await call(user, 'bot_create', {
-      name: 'BotNeedsYou', job: 'Needs you bot', scope: 'project:a', lead_agent_id: lead3.id, member_agent_ids: []
+      name: 'BotNeedsYou', rules: { first_reply: 'off' }, job: 'Needs you bot', scope: 'project:a', lead_agent_id: lead3.id, member_agent_ids: []
     })).bot;
 
     // Post to bot2 -> unread > 0

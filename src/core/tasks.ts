@@ -1,5 +1,5 @@
 import { botTaskFinished, taskBotPolicy } from './bot-routing.js';
-import { botCapability, postBotTaskCard } from './bots.js';
+import { botCapability, firstReplyRunner, postBotTaskCard } from './bots.js';
 import { advanceFlow, validateFlowCompletion } from './flows.js';
 import type { FlowTask } from './flow-definition.js';
 import { inboxSession, readTaskInbox, taskFinished, taskReroutedNotice } from './inbox.js';
@@ -987,9 +987,12 @@ export class TaskService {
           if (!active || delegateObjective) {
             const botId = row.bot_id ?? null;
             let nextCap = runnerCapability(agentRow.runner, agentRow.edits);
+            let firstFollowUp: ReturnType<typeof firstReplyRunner> = null;
             if (botId) {
-              const bot = (await db.query<{ id: string; routing: Record<string, unknown> }>('SELECT id, routing FROM bots WHERE id=$1 AND tenant_id=$2 AND NOT archived', [botId, p.tenantId])).rows[0];
+              const bot = (await db.query<{ id: string; routing: Record<string, unknown>; rules: Record<string, unknown> }>('SELECT id, routing, rules FROM bots WHERE id=$1 AND tenant_id=$2 AND NOT archived', [botId, p.tenantId])).rows[0];
               if (bot) nextCap = botCapability(bot, agentRow.edits ? 'patch' : 'summary', agentRow.edits);
+              // A plain follow-up (more human messages) gets the bot's quick first reply too; a delegation never does.
+              if (bot && !delegateObjective) { firstFollowUp = firstReplyRunner(bot.rules, agentRow.edits); if (firstFollowUp?.capability) nextCap = firstFollowUp.capability; }
             }
             const followUpId = newId();
             // The full model must match the provider that runs it: a named non-Claude runner keeps its own model
@@ -1000,7 +1003,8 @@ export class TaskService {
             const envelope = {
               deploy: false, publish: false, purchase: false, local_patch: agentRow.edits,
               read_project: true, send_messages: false, permission_changes: false, external_side_effects: false,
-              ...(delegateObjective ? { runner: { ...agentRow.runner, ...(delegateModel ? { model: delegateModel } : {}), ...(pinnedProvider ? {} : { provider: 'claude', mode: undefined }), delegated: true } } : {})
+              ...(delegateObjective ? { runner: { ...agentRow.runner, ...(delegateModel ? { model: delegateModel } : {}), ...(pinnedProvider ? {} : { provider: 'claude', mode: undefined }), delegated: true } }
+                : firstFollowUp ? { runner: firstFollowUp.runner } : {})
             };
             // hop_depth carries over, so a handoff -> delegate -> handoff chain still reaches MAX_HANDOFF_HOPS.
             const ctxVersions = { message_seq: Number(pendingHuman?.seq ?? processedSeq), hop_depth: (row.context_versions as any)?.hop_depth ?? 0 };

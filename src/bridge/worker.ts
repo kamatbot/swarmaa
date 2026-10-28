@@ -598,7 +598,8 @@ export class BridgeWorker {
       const isTurn = task.kind === 'turn';
       const isEditTurn = isTurn && (isPatchWork || Boolean(envelope?.local_patch));
       // Same rule as buildInvocation: the fast model only for non-edit, non-delegated turns without a runner model.
-      const fastTurn = isTurn && !isEditTurn && !runnerModel && Boolean(agent.turn_model) && envelope?.runner?.delegated !== true;
+      const runnerFast = envelope?.runner?.fast, delegated = envelope?.runner?.delegated === true;
+      const fastTurn = isTurn && !isEditTurn && !delegated && (runnerModel ? runnerFast === true : Boolean(agent.turn_model) && runnerFast !== false);
       const askedModel = isTurn && !isEditTurn && runnerModel ? runnerModel : fastTurn ? agent.turn_model : agent.model;
       let served: ServedStamp = task.kind === 'check' ? { provider: 'bridge', model: null } : extractServed(agent.provider, result, askedModel);
       if (agent.provider === 'antigravity' && !served.model) {
