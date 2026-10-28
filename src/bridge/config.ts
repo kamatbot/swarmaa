@@ -3,6 +3,13 @@ import { access, readFile, realpath, stat } from 'node:fs/promises';
 import { isAbsolute } from 'node:path';
 import type { AgentConfig, BridgeConfig, ProjectConfig, Provider } from './types.js';
 
+declare module './types.js' {
+  interface AgentConfig {
+    turn_model?: string;
+    turn_effort?: string;
+  }
+}
+
 function record(value: unknown, field: string): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${field} must be an object`);
   return value as Record<string, unknown>;
@@ -48,11 +55,13 @@ export function parseBridgeConfig(value: unknown): BridgeConfig {
     const provider = text(a.provider, 'agent.provider') as Provider;
     if (!['claude', 'codex', 'antigravity'].includes(provider)) throw new Error(`Unsupported provider for ${id}`);
     const enable_patch = bool(a.enable_patch, 'agent.enable_patch');
+    const turn_model = a.turn_model === undefined ? undefined : text(a.turn_model, 'agent.turn_model', 200);
+    const turn_effort = a.turn_effort === undefined ? undefined : text(a.turn_effort, 'agent.turn_effort', 50);
     if (a.sandbox !== undefined && typeof a.sandbox !== 'boolean') throw new Error('agent.sandbox must be a boolean');
     const sandbox = a.sandbox !== false;
     // agy has no read-only enforcement of its own: the outer Seatbelt profile is its only file boundary.
     if (provider === 'antigravity' && !sandbox) throw new Error('Antigravity workers require sandbox:true (the Seatbelt profile is their read boundary)');
-    return { id, provider, sandbox, binary: absolute(a.binary, 'agent.binary'), model: a.model === undefined ? undefined : text(a.model, 'agent.model', 200), enable_patch };
+    return { id, provider, sandbox, binary: absolute(a.binary, 'agent.binary'), model: a.model === undefined ? undefined : text(a.model, 'agent.model', 200), turn_model, turn_effort, enable_patch };
   });
   if (new Set(agents.map(a => a.id)).size !== agents.length) throw new Error('Agent IDs must be unique');
   if (!Array.isArray(raw.projects) || raw.projects.length < 1 || raw.projects.length > 512) throw new Error('projects requires 1–512 entries');
