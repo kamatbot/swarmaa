@@ -253,7 +253,7 @@ export class TaskService {
   }
 
   async submit(p:Principal,input:Record<string,unknown>):Promise<unknown> {
-    noExtraKeys(input,['scope','kind','objective','idempotency_key','required_capability','resource_key','base_ref','constraints','acceptance_criteria','context_refs','max_attempts']);
+    noExtraKeys(input,['scope','kind','objective','idempotency_key','required_capability','resource_key','base_ref','constraints','acceptance_criteria','context_refs','max_attempts','model','effort']);
     const scope = scopeName(input.scope);
     assertKnownScope(p,scope);
     const kind = enumValue(input.kind,'kind',TASK_KINDS);
@@ -274,9 +274,13 @@ export class TaskService {
     const acceptance = input.acceptance_criteria === undefined ? [] : strings(input.acceptance_criteria,'acceptance_criteria',30,1000);
     const refs = uuidArray(input.context_refs,'context_refs');
     const attempts = input.max_attempts === undefined ? 3 : integer(input.max_attempts,'max_attempts',1,10);
+    const model = optionalString(input.model,'model',80) ?? null;
+    requireCondition(model === null || /^[A-Za-z0-9._:\/-]+$/u.test(model),400,'invalid_arguments','model must be a model name such as gpt-6-astra.');
+    const effort = input.effort === undefined ? null : enumValue(input.effort,'effort',['minimal','low','medium','high','xhigh','max'] as const);
+    const runner = model || effort ? { runner:{ ...(model ? {model} : {}), ...(effort ? {effort} : {}) } } : {};
     const envelope = { read_project:true, local_patch:kind === 'patch', external_side_effects:false,
-      deploy:false, publish:false, send_messages:false, purchase:false, permission_changes:false };
-    const requestHash = sha256(canonicalJson({scope,kind,objective,capability,resource,constraints,base_ref:baseRef,acceptance,refs,max_attempts:attempts}));
+      deploy:false, publish:false, send_messages:false, purchase:false, permission_changes:false, ...runner };
+    const requestHash = sha256(canonicalJson({scope,kind,objective,capability,resource,constraints,base_ref:baseRef,acceptance,refs,max_attempts:attempts,model,effort}));
     return transaction(this.pool,async db => {
       // The idempotency namespace spans scopes so moving a retry cannot duplicate work.
       await scopeLock(db,'submission',p,'',`${p.id}:${idempotency}`);

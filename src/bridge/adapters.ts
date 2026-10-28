@@ -243,6 +243,12 @@ export function buildInvocation(agent: AgentConfig, project: ProjectConfig, task
     }
   }
 
+  // A submitted research/review/patch task may name its own model and effort.
+  if (!isTurn) {
+    if (runnerModel) effectiveModel = runnerModel;
+    if (runnerEffort) effectiveEffort = runnerEffort;
+  }
+
   const lightChat = isNonEditTurn && envelope?.runner?.delegated !== true;
   let args: string[];
   if (agent.provider === 'claude') {
@@ -270,7 +276,9 @@ export function buildInvocation(agent: AgentConfig, project: ProjectConfig, task
     args = ['--output-format', 'json', '--print-timeout', `${config.task_timeout_seconds}s`, '--dangerously-skip-permissions'];
   }
   if (effectiveModel) args.push('--model', effectiveModel);
-  if (effectiveEffort) args.push('--effort', effectiveEffort);
+  // Codex has no --effort flag; its reasoning effort is a config override. agy has neither.
+  if (effectiveEffort && agent.provider === 'codex') args.push('-c', `model_reasoning_effort="${effectiveEffort}"`);
+  else if (effectiveEffort && agent.provider === 'claude') args.push('--effort', effectiveEffort);
   if (agent.provider === 'codex') args.push('-');
   const input = task.kind === 'turn'
     ? buildTurnPrompt(task, context, config.max_prompt_bytes, fastMode)

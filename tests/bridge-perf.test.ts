@@ -551,3 +551,19 @@ test('chat replies run the Claude CLI without user hooks, plugins or MCP; edits 
   assert.ok(!light(args({ kind: 'turn', required_capability: 'claude.patch', permission_envelope: { local_patch: true } })), 'edit turn');
   assert.ok(!light(args({ kind: 'turn', required_capability: 'claude.read', permission_envelope: { local_patch: false, runner: { delegated: true } } })), 'delegated full turn');
 });
+
+test('a submitted task can name its model and effort; codex gets effort as a config override', () => {
+  const cfg = parseBridgeConfig({
+    service_url: 'http://127.0.0.1:8080',
+    agents: [{ id: 'codex', provider: 'codex', binary: '/bin/codex', enable_patch: true, sandbox: false }],
+    projects: [{ scope: 'project:demo', root: '/projects/demo', agents: ['codex'], allow_patch: true }]
+  });
+  const task = makeTurnTask({ kind: 'patch', required_capability: 'codex.patch',
+    permission_envelope: { local_patch: true, runner: { model: 'gpt-6-astra', effort: 'medium' } } } as any);
+  const req = buildInvocation(cfg.agents[0]!, cfg.projects[0]!, task, {}, cfg, new AbortController().signal);
+  assert.equal(req.args[req.args.indexOf('--model') + 1], 'gpt-6-astra');
+  assert.equal(req.args[req.args.indexOf('-c') + 1], 'model_reasoning_effort="medium"');
+  assert.ok(!req.args.includes('--effort'), 'codex has no --effort flag');
+  const plain = buildInvocation(cfg.agents[0]!, cfg.projects[0]!, makeTurnTask({ kind: 'patch', required_capability: 'codex.patch', permission_envelope: { local_patch: true } } as any), {}, cfg, new AbortController().signal);
+  assert.ok(!plain.args.includes('-c') && !plain.args.includes('--model'), 'no override keeps the provider default');
+});
