@@ -104,12 +104,13 @@ struct KSButtonStyle: ButtonStyle {
     enum Kind { case primary, ink, paper, white }
     var kind: Kind = .white
     var compact = false
+    @Environment(\.isEnabled) private var isEnabled
 
     func makeBody(configuration: Configuration) -> some View {
-        let pressed = configuration.isPressed
+        let pressed = configuration.isPressed && isEnabled
         let fill: Color = switch kind { case .primary: KS.lime; case .ink: KS.ink; case .paper: KS.paper; case .white: KS.white }
         let fg: Color = kind == .ink ? KS.paper : KS.ink
-        let raised = kind == .primary && !pressed
+        let raised = kind == .primary && !pressed && isEnabled
         configuration.label
             .font(KS.body(compact ? 13 : 14, .semibold))
             .foregroundStyle(fg)
@@ -124,6 +125,7 @@ struct KSButtonStyle: ButtonStyle {
             .overlay(Capsule().stroke(KS.ink, lineWidth: 2))
             .offset(x: kind == .primary && pressed ? 3 : 0, y: kind == .primary && pressed ? 3 : 0)
             .contentShape(Capsule())
+            .opacity(isEnabled ? 1 : 0.45)  // a disabled button must look it
             .animation(.easeOut(duration: 0.12), value: pressed)
     }
 }

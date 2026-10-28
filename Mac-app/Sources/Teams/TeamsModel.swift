@@ -66,6 +66,8 @@ final class TeamsModel: ObservableObject {
     @Published private(set) var status: SwarmaStatus?
     @Published var detailSwarmID: String?
     @Published var error: String?
+    /// The New bot sheet's own error: the window's alert sits behind the sheet.
+    @Published var botError: String?
     /// "Needs you", newest first, as `attention_list` sends it.
     @Published private(set) var attention: [TeamsAttentionItem] = []
     @Published private(set) var workingTasks: [TeamsTask] = []
@@ -309,8 +311,12 @@ final class TeamsModel: ObservableObject {
     }
 
     /// A bot needs a lead: an existing agent, or a new one made for it from the bot's job.
-    func createBot(name: String, job: String, scope: String, leadAgentID: String?, memberAgentIDs: [String]) async -> Bool {
+    /// `onLeadCreated` hands back a lead made here, so a retry after a failed `bot_create` reuses it
+    /// instead of colliding with its name. Errors go to `botError`, shown in the sheet.
+    func createBot(name: String, job: String, scope: String, leadAgentID: String?, memberAgentIDs: [String],
+                   onLeadCreated: (String) -> Void = { _ in }) async -> Bool {
         savingBot = true
+        botError = nil
         defer { savingBot = false }
         do {
             var lead = leadAgentID
@@ -319,6 +325,7 @@ final class TeamsModel: ObservableObject {
                                                          scope: scope, runner: .auto, edits: false)
                 replace(agent)
                 lead = agent.id
+                onLeadCreated(agent.id)
             }
             guard botsSupported else {
                 await loadBots()
@@ -331,7 +338,7 @@ final class TeamsModel: ObservableObject {
             select(threadID: bot.threadID)
             return true
         } catch {
-            self.error = SwarmaTeamsClient.Failure.map(error).message
+            botError = SwarmaTeamsClient.Failure.map(error).message
             return false
         }
     }

@@ -488,4 +488,33 @@ extension TeamsUXRegressionTests {
         XCTAssertEqual(second.tasks.map(\.id), ["two"])
         XCTAssertNil(second.next)
     }
+
+    /// A failed `bot_create` after the lead was made: the error shows in the sheet,
+    /// and the retry reuses that lead instead of making a second one with its name.
+    @MainActor func testNewBotRetryReusesTheLeadItAlreadyMade() async throws {
+        let transport = UXTransport()
+        var botCalls = 0
+        transport.respond = { tool, _ in
+            switch tool {
+            case "agent_create":
+                return (200, #"{"result":{"agent":{"id":"lead-1","name":"Launch","role":"Lead","scope":"project:demo","main_thread_id":"m1","runner":{"mode":"auto"},"edits":false,"version":1}}}"#)
+            case "bot_create":
+                botCalls += 1
+                if botCalls == 1 { return (409, #"{"error":{"code":"name_taken","message":"A bot named Launch already exists in project:demo."}}"#) }
+                return (200, #"{"result":{"bot":{"id":"b1","scope":"project:demo","name":"Launch","job":"Ship it","thread_id":"t1","lead_agent_id":"lead-1","member_agent_ids":[],"routing":{},"rules":{},"version":1}}}"#)
+            default: return (200, #"{"result":{}}"#)
+            }
+        }
+        let model = TeamsModel(client: try transport.client(self))
+        var lead: String?
+        let first = await model.createBot(name: "Launch", job: "Ship it", scope: "project:demo", leadAgentID: nil, memberAgentIDs: [], onLeadCreated: { lead = $0 })
+        XCTAssertFalse(first)
+        XCTAssertEqual(lead, "lead-1")
+        XCTAssertNotNil(model.botError, "the sheet must show why nothing happened")
+        XCTAssertNil(model.error, "not the window alert hidden behind the sheet")
+        let second = await model.createBot(name: "Launch", job: "Ship it", scope: "project:demo", leadAgentID: lead, memberAgentIDs: [])
+        XCTAssertTrue(second)
+        XCTAssertNil(model.botError)
+        XCTAssertEqual(transport.requests.filter { $0.0 == "agent_create" }.count, 1)
+    }
 }

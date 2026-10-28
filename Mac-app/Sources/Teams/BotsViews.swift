@@ -493,10 +493,13 @@ struct NewBotSheet: View {
 
     private var scopes: [String] { (model.status?.scopes ?? []).map(\.scope) }
     private var agents: [TeamsAgent] { model.agents.filter { $0.scope == scope } }
-    private var ready: Bool {
-        !name.trimmingCharacters(in: .whitespaces).isEmpty && !job.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && !scope.isEmpty && !model.savingBot
+    private var missing: String? {
+        if name.trimmingCharacters(in: .whitespaces).isEmpty { return L10n.t("Give it a name.") }
+        if job.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return L10n.t("Say what it does.") }
+        if scope.isEmpty { return L10n.t("Pick a project.") }
+        return nil
     }
+    private var ready: Bool { missing == nil && !model.savingBot }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -520,14 +523,21 @@ struct NewBotSheet: View {
                     }.labelsHidden()
                 }
             }
+            if let message = model.botError ?? missing {
+                Text(verbatim: message).font(KS.body(14))
+                    .foregroundStyle(model.botError != nil ? KS.coral : KS.textMuted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             HStack {
+                if model.savingBot { ProgressView().controlSize(.small) }
                 Spacer()
                 Button(L10n.t("Cancel")) { dismiss() }.buttonStyle(.ks(.paper)).keyboardShortcut(.cancelAction)
                 Button(L10n.t("Make bot")) {
                     Task {
                         let ok = await model.createBot(name: name.trimmingCharacters(in: .whitespaces),
                                                        job: String(job.prefix(8192)), scope: scope,
-                                                       leadAgentID: leadID.isEmpty ? nil : leadID, memberAgentIDs: [])
+                                                       leadAgentID: leadID.isEmpty ? nil : leadID, memberAgentIDs: [],
+                                                       onLeadCreated: { leadID = $0 })
                         if ok { dismiss() }
                     }
                 }
@@ -536,7 +546,7 @@ struct NewBotSheet: View {
         }
         .padding(24).frame(width: 520).fixedSize(horizontal: false, vertical: true)
         .background(KS.paper).environment(\.colorScheme, .light)
-        .onAppear { if scope.isEmpty { scope = scopes.first ?? "" } }
+        .onAppear { model.botError = nil; if scope.isEmpty { scope = scopes.first ?? "" } }
         .onChange(of: scope) { _, _ in leadID = "" }
     }
 
