@@ -208,4 +208,23 @@ import XCTest
         XCTAssertTrue(app.staticTexts["WHICH CHANNELS SHOULD THE LAUNCH USE?"].exists)
         app.buttons["close-sheet"].tap()
     }
+
+    // Regression: tapping the mic trapped in Swift 6 when Apple's permission callback arrived off the main actor.
+    func testMicDoesNotCrash() {
+        let app = XCUIApplication()
+        app.launchArguments = ["-demo", "-screen", "thread"]
+        app.resetAuthorizationStatus(for: .microphone)
+        app.launch()
+        let mic = app.buttons["Dictate message"]
+        XCTAssertTrue(mic.waitForExistence(timeout: 10))
+        mic.tap()
+        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        for _ in 0..<2 {
+            let allow = springboard.buttons.matching(NSPredicate(format: "label IN {'OK', 'Allow'}")).firstMatch
+            if allow.waitForExistence(timeout: 5) { allow.tap() }
+        }
+        sleep(2)
+        XCTAssertEqual(app.state, .runningForeground)
+        XCTAssertTrue(app.buttons["Dictate message"].exists || app.buttons["Stop dictation"].exists)
+    }
 }

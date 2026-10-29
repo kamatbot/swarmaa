@@ -13,7 +13,7 @@ import XCTest
         XCTAssertFalse(app.staticTexts["Checking the launch brief"].exists)
         fold.tap()
         XCTAssertTrue(app.staticTexts["Checking the launch brief"].waitForExistence(timeout: 3))
-        app.buttons["Close"].tap()
+        app.buttons["Back to bots"].tap()
         app.buttons["starred-shortcut"].tap()
         scroll.swipeDown()
         XCTAssertTrue(app.staticTexts["Checking the launch brief"].exists)

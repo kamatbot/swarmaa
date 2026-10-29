@@ -54,10 +54,10 @@ struct ChatPhoto: Identifiable, Sendable, Equatable {
     func start(onUpdate: @escaping @MainActor (String) -> Void) async {
         stop()
         let token = UUID(); generation = token; error = nil
-        let speech = await withCheckedContinuation { continuation in SFSpeechRecognizer.requestAuthorization { continuation.resume(returning: $0) } }
+        let speech = await Self.speechAuthorization()
         guard token == generation else { return }
         guard speech == .authorized else { error = "Speech recognition permission is required."; return }
-        let mic = await withCheckedContinuation { continuation in AVCaptureDevice.requestAccess(for: .audio) { continuation.resume(returning: $0) } }
+        let mic = await Self.microphoneAccess()
         guard token == generation else { return }
         guard mic else { error = "Microphone permission is required."; return }
         guard let recognizer = SFSpeechRecognizer(), recognizer.isAvailable else { error = "Speech recognition is unavailable."; return }
@@ -75,17 +75,13 @@ struct ChatPhoto: Identifiable, Sendable, Equatable {
                 stop()
                 return
             }
-            input.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in request.append(buffer) }
+            Self.installTap(input, format: format, request: request)
             tapInstalled = true
             engine.prepare(); try engine.start(); isRecording = true
-            recognition = recognizer.recognitionTask(with: request) { [weak self] result, failure in
-                let transcript = result?.bestTranscription.formattedString
-                let final = result?.isFinal == true
-                Task { @MainActor [weak self] in
-                    guard let self, self.generation == token else { return }
-                    if let transcript { onUpdate(transcript) }
-                    if failure != nil || final { if failure != nil { self.error = "Dictation stopped. Please try again." }; self.stop() }
-                }
+            recognition = Self.recognize(recognizer, request: request) { [weak self] transcript, final, failed in
+                guard let self, self.generation == token else { return }
+                if let transcript { onUpdate(transcript) }
+                if failed || final { if failed { self.error = "Dictation stopped. Please try again." }; self.stop() }
             }
             timeout = Task { [weak self] in
                 try? await Task.sleep(nanoseconds: 60_000_000_000)
@@ -93,6 +89,24 @@ struct ChatPhoto: Identifiable, Sendable, Equatable {
                 self.stop()
             }
         } catch { self.error = "Could not start the microphone."; stop() }
+    }
+    // Apple calls these back on background queues. Closures formed inside this @MainActor class
+    // inherit main-actor isolation and trap under Swift 6, so they are built in nonisolated helpers.
+    nonisolated private static func speechAuthorization() async -> SFSpeechRecognizerAuthorizationStatus {
+        await withCheckedContinuation { continuation in SFSpeechRecognizer.requestAuthorization { continuation.resume(returning: $0) } }
+    }
+    nonisolated private static func microphoneAccess() async -> Bool {
+        await withCheckedContinuation { continuation in AVCaptureDevice.requestAccess(for: .audio) { continuation.resume(returning: $0) } }
+    }
+    nonisolated private static func installTap(_ input: AVAudioInputNode, format: AVAudioFormat, request: SFSpeechAudioBufferRecognitionRequest) {
+        nonisolated(unsafe) let request = request
+        input.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in request.append(buffer) }
+    }
+    nonisolated private static func recognize(_ recognizer: SFSpeechRecognizer, request: SFSpeechAudioBufferRecognitionRequest, update: @escaping @MainActor (String?, Bool, Bool) -> Void) -> SFSpeechRecognitionTask {
+        recognizer.recognitionTask(with: request) { result, failure in
+            let transcript = result?.bestTranscription.formattedString, final = result?.isFinal == true, failed = failure != nil
+            Task { @MainActor in update(transcript, final, failed) }
+        }
     }
     func stop() {
         generation = UUID(); timeout?.cancel(); timeout = nil
