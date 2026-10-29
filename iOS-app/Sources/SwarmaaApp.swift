@@ -205,18 +205,20 @@ struct Moji: View {
     var seed: String
     var size: CGFloat = 44
     var mark = false
+    var colorHex: UInt32?
     @Environment(\.homeRowPressed) private var rowPressed
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
-        let kinds = ["lead", "runner", "scout", "navigator", "clerk", "scribe", "badge-sun", "badge-peri", "badge-peach"]
-        let hash = seed.unicodeScalars.reduce(UInt32(5381)) { ($0 &* 33) &+ $1.value }
-        let name = "moji-" + (mark ? "mark" : kinds[Int(hash % UInt32(kinds.count))])
+        let name = "moji-" + (mark ? "mark" : mojiCharacter(seed))
         Group {
             // UIImage's named-image cache avoids disk reads and decoding on every live update.
             if let image = UIImage(named: name) {
                 Image(uiImage: image).resizable().scaledToFit()
             }
-        }.frame(width: size, height: size).accessibilityHidden(true)
+        }.frame(width: size, height: size)
+            .background {
+                if let colorHex { Circle().fill(Color(hex: colorHex)).frame(width: size * 1.2, height: size * 1.2) }
+            }.accessibilityHidden(true)
             .scaleEffect(x: rowPressed && !reduceMotion ? 1.08 : 1, y: rowPressed && !reduceMotion ? 0.92 : 1)
             .rotationEffect(.degrees(rowPressed && !reduceMotion ? -6 : 0))
             .animation(reduceMotion ? nil : .spring(duration: 0.3), value: rowPressed)
@@ -530,7 +532,7 @@ struct RootView: View {
                     .overlay(RoundedRectangle(cornerRadius: 24).strokeBorder(searchFocused ? KS.ink : .clear, lineWidth: 2).allowsHitTesting(false))
                 if let starred = model.starred {
                     Button { open(starred) } label: {
-                        Moji(seed: starred.raw["lead_agent_id"].string, size: 38).frame(width: 48, height: 48).card(.white, radius: 24, shadow: true)
+                        Moji(seed: starred.avatarSeed, size: 38, colorHex: starred.colorHex).frame(width: 48, height: 48).card(.white, radius: 24, shadow: true)
                             .overlay(alignment: .bottomLeading) { Image(systemName: "star.fill").font(.system(size: 10)).padding(5).background(KS.butter, in: Circle()).overlay(Circle().stroke(KS.ink, lineWidth: 2)) }
                     }.buttonStyle(PressStyle()).accessibilityLabel("Open starred bot").accessibilityIdentifier("starred-shortcut")
                 }
@@ -544,7 +546,7 @@ struct RootView: View {
     private func row(_ bot: Bot) -> some View {
                         Button { open(bot) } label: {
                             HStack(spacing: 12) {
-                                Moji(seed: bot.raw["lead_agent_id"].string, size: 48)
+                                Moji(seed: bot.avatarSeed, size: 48, colorHex: bot.colorHex)
                                 VStack(alignment: .leading, spacing: 6) {
                                     HStack {
                                         Text(bot.name).font(KS.body(17, .semibold)).lineLimit(2).layoutPriority(1)
@@ -566,7 +568,7 @@ struct RootView: View {
             HStack(spacing: 8) {
                 Button { screen = .home; model.openBot = nil } label: { Image(systemName: "chevron.left").font(.system(size: 15, weight: .medium)).frame(width: 34, height: 34).card(.white, radius: 17).frame(width: 44, height: 44).contentShape(Rectangle()) }.accessibilityLabel("Back to bots")
                 Spacer(minLength: 0)
-                HStack(spacing: 6) { Moji(seed: model.openBot?.raw["lead_agent_id"].string ?? "", size: 24); Text(model.openBot?.name ?? "Bot").font(KS.body(15, .semibold)).lineLimit(1) }.padding(.horizontal, 10).frame(minHeight: 34).card(.white, radius: 17)
+                HStack(spacing: 6) { Moji(seed: model.openBot?.avatarSeed ?? "", size: 24, colorHex: model.openBot?.colorHex); Text(model.openBot?.name ?? "Bot").font(KS.body(15, .semibold)).lineLimit(1) }.padding(.horizontal, 10).frame(minHeight: 34).card(.white, radius: 17)
                 Spacer(minLength: 0)
                 Menu {
                     Button("Earlier messages") { perform { try await model.olderMessages() } }
@@ -593,7 +595,9 @@ struct RootView: View {
                         ForEach(Array(model.typing.enumerated()), id: \.offset) { _, typing in
                             let agent = model.replyingAgent(typing)
                             HStack(alignment: .bottom, spacing: 8) {
-                                Moji(seed: agent.id, size: 22)
+                                if let bot = model.openBot, agent.id == bot.raw["lead_agent_id"].string {
+                                    Moji(seed: bot.avatarSeed, size: 22, colorHex: bot.colorHex)
+                                } else { Moji(seed: agent.id, size: 22) }
                                 VStack(alignment: .leading, spacing: 3) {
                                     HStack(alignment: .firstTextBaseline, spacing: 6) {
                                         Text(agent.name).font(KS.body(12, .semibold))
@@ -688,6 +692,9 @@ struct RootView: View {
         } else {
             HStack {
                 if message.human { Spacer(minLength: 24) }
+                if message.raw["author"]["kind"].string == "agent", let bot = model.openBot, bot.colorHex != nil {
+                    Moji(seed: bot.avatarSeed, size: 22, colorHex: bot.colorHex)
+                }
                 VStack(alignment: .leading, spacing: 3) {
                     if !message.human, !message.raw["author"]["name"].string.isEmpty { Text(message.raw["author"]["name"].string).font(KS.body(12, .semibold)) }
                     ForEach(Array(message.raw["attachments"].array.enumerated()), id: \.offset) { _, attachment in
@@ -1022,7 +1029,7 @@ struct SettingsView: View {
     var body: some View {
         GeometryReader { geo in
             VStack(alignment: .leading, spacing: 14) {
-                HStack { CloseButton(action: close); Moji(seed: draft.raw["lead_agent_id"].string, size: 40); Text(draft.name.uppercased() + ".").font(KS.display(30)) }
+                HStack { CloseButton(action: close); Moji(seed: draft.avatarSeed, size: 40, colorHex: draft.colorHex); Text(draft.name.uppercased() + ".").font(KS.display(30)) }
                     .fixedSize(horizontal: false, vertical: true)
                 ScrollView {
                   VStack(alignment: .leading, spacing: 12) {
@@ -1133,6 +1140,10 @@ private extension AppModel {
         guard ProcessInfo.processInfo.arguments.contains("-demo") else { return }
         isDemo = true; connected = true; online = true
         bots = [Demo.bot("launch", "Launch", "Which channels should we use?", needs: 1, star: true), Demo.bot("watch", "Competitor watch", "Pricing summary needs a retry", needs: 1), Demo.bot("pulse", "Pulse", "The calendar is ready", unread: 3), Demo.bot("forge", "Forge", "Drafted the pricing page"), Demo.bot("scout", "Scout", "Read the launch brief"), Demo.bot("notes", "Notes", "Everything is up to date")]
+        if ProcessInfo.processInfo.arguments.contains("-appearance-demo") {
+            bots[0].raw["avatar"] = .string("scout")
+            bots[0].raw["color"] = .string("peach")
+        }
         if ProcessInfo.processInfo.arguments.contains("-hidden-bot-demo") {
             bots[bots.count - 1].raw["archived"] = .bool(true)
         }

@@ -1,6 +1,23 @@
 import XCTest
 
 @MainActor final class NavigationTests: XCTestCase {
+    func testColouredBotAppearance() {
+        let app = XCUIApplication()
+        app.launchArguments = ["-demo", "-appearance-demo"]
+        app.launch()
+        let row = app.buttons["bot-launch"]
+        XCTAssertTrue(row.waitForExistence(timeout: 10))
+        let home = XCTAttachment(screenshot: app.screenshot())
+        home.name = "Bot appearance — peach Scout home"; home.lifetime = .keepAlways; add(home)
+        row.tap()
+        XCTAssertTrue(app.textFields["composer"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.staticTexts["Launch"].exists)
+        let thread = XCTAttachment(screenshot: app.screenshot())
+        thread.name = "Bot appearance — peach Scout thread"; thread.lifetime = .keepAlways; add(thread)
+        app.buttons["Back to bots"].tap()
+        XCTAssertTrue(row.waitForExistence(timeout: 3))
+    }
+
     func testHomeRowOpensBot() {
         let app = XCUIApplication()
         app.launchArguments = ["-demo"]

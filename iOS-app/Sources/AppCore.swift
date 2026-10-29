@@ -39,6 +39,13 @@ indirect enum JSON: Codable, Equatable, Hashable, Sendable {
     static func parse(_ text: String) throws -> JSON { try JSONDecoder().decode(JSON.self, from: Data(text.utf8)) }
 }
 
+func mojiCharacter(_ seed: String) -> String {
+    let kinds = ["lead", "runner", "scout", "navigator", "clerk", "scribe", "badge-sun", "badge-peri", "badge-peach"]
+    if kinds.contains(seed) { return seed }
+    let hash = seed.unicodeScalars.reduce(UInt32(5381)) { ($0 &* 33) &+ $1.value }
+    return kinds[Int(hash % UInt32(kinds.count))]
+}
+
 struct Bot: Identifiable, Equatable, Sendable {
     var raw: JSON
     var id: String { raw["id"].string }
@@ -46,6 +53,20 @@ struct Bot: Identifiable, Equatable, Sendable {
     var job: String { raw["job"].string }
     var scope: String { raw["scope"].string }
     var threadID: String { raw["thread_id"].string }
+    var avatarSeed: String { raw["avatar"].string.isEmpty ? raw["lead_agent_id"].string : raw["avatar"].string }
+    var colorHex: UInt32? {
+        switch raw["color"].string {
+        case "blue": 0x9CC8FF
+        case "butter": 0xFFE08A
+        case "peach": 0xFFC4A8
+        case "lilac": 0xD6C2FF
+        case "pink": 0xFFB8D9
+        case "lime": 0xC9F26B
+        case "sky": 0xA8E6FF
+        case "orchid": 0xF2C4FF
+        default: nil
+        }
+    }
     var archived: Bool { raw["archived"].bool }
     var starred: Bool { raw["starred"].bool } // Absent before I1: false.
     var needsYou: Int { raw["badges"]["needs_you"].int }
@@ -506,7 +527,10 @@ enum PushNotification {
             async let swarm = service.call("swarm_status", [:])
             async let agentRows = allPages(service, "agent_list", ["limit": .number(100)], key: "agents")
             (bots, status, agents) = try await (botRows.map { Bot(raw: $0) }, swarm, agentRows)
-            if let bot = openBot, !bots.contains(where: { $0.id == bot.id }) { removeBot(bot.id) }
+            if let bot = openBot {
+                if let updated = bots.first(where: { $0.id == bot.id }) { openBot = updated }
+                else { removeBot(bot.id) }
+            }
             error = nil
             if !didLoadBots, connected, !signingOut {
                 didLoadBots = true
@@ -597,6 +621,7 @@ enum PushNotification {
         }
         if name.hasPrefix("bot.") || name == "message.created" || name.hasPrefix("question.") {
             bots = try await allPages(service, "bot_list", ["limit": .number(100), "include_archived": .bool(true)], key: "bots").map { Bot(raw: $0) }
+            if let id = openBot?.id, let updated = bots.first(where: { $0.id == id }) { openBot = updated }
         }
     }
     func startStream() {
