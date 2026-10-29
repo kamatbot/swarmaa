@@ -509,7 +509,8 @@ struct RootView: View {
                 Button { screen = .usage } label: { Image(systemName: "chart.pie").font(.system(size: 20, weight: .medium)).frame(width: 44, height: 44) }.accessibilityLabel("Usage")
                 // New users get the big card in the list instead; this is the quick way for everyone else.
                 if !model.sortedBots.isEmpty || !model.hiddenBots.isEmpty {
-                    Button { sheet = .newBot } label: { Image(systemName: "plus").font(.system(size: 20, weight: .semibold)).frame(width: 44, height: 44) }
+                    // The one filled icon in the header: making a bot is the primary action here.
+                    Button { sheet = .newBot } label: { Image(systemName: "plus").font(.system(size: 18, weight: .bold)).frame(width: 36, height: 36).background(KS.lime, in: Circle()).frame(width: 44, height: 44) }
                         .accessibilityLabel("New bot").accessibilityIdentifier("new-bot-header")
                 }
             }.buttonStyle(PressStyle(icon: true)).padding(.horizontal, 20).padding(.top, 6)
