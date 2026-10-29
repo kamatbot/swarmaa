@@ -49,7 +49,7 @@ struct ThreadView: View {
                                     MessageRow(model: model, message: message).id(message.id)
                                 }
                             }
-                            ForEach(model.liveTyping(threadID)) { TypingBubble(model: model, typing: $0).id("typing:" + $0.id) }
+                            ForEach(model.liveTyping(threadID)) { TypingBubble(model: model, typing: $0, threadID: threadID).id("typing:" + $0.id) }
                         }
                         .padding(.horizontal, 16).padding(.vertical, 12)
                     }
@@ -296,13 +296,14 @@ struct TypingDotsIndicator: View {
 struct TypingBubble: View {
     @ObservedObject var model: TeamsModel
     let typing: TeamsTyping
+    var threadID: String? = nil
 
     private var agent: TeamsAgent? { model.agent(id: typing.agentID) }
     private var name: String { agent?.name ?? L10n.t("Agent") }
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
-            TeamsAvatar(seed: agent?.avatar ?? typing.agentID, name: name, size: 30)
+            BotMessageAvatar(model: model, threadID: threadID, agentID: typing.agentID)
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
                     Text(verbatim: name).font(KS.body(14, .bold))
@@ -327,6 +328,23 @@ struct TypingBubble: View {
     }
 }
 
+/// Only the lead speaks as the bot; other crew members keep their own faces.
+struct BotMessageAvatar: View {
+    @ObservedObject var model: TeamsModel
+    let threadID: String?
+    let agentID: String
+
+    var body: some View {
+        let agentSeed = model.agent(id: agentID)?.avatar ?? agentID
+        let bot = model.bot(threadID: threadID)
+        if let bot, bot.leadAgentID == agentID {
+            KSMoji(seed: bot.avatar ?? agentSeed, size: 30, color: bot.color)
+        } else {
+            KSMoji(seed: agentSeed, size: 30)
+        }
+    }
+}
+
 struct TextBubble: View {
     @ObservedObject var model: TeamsModel
     let message: TeamsMessage
@@ -342,7 +360,7 @@ struct TextBubble: View {
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
             if message.isHuman { Spacer(minLength: 60) } else if let id = message.author.id {
-                TeamsAvatar(seed: model.agent(id: id)?.avatar ?? id, name: author, size: 30)
+                BotMessageAvatar(model: model, threadID: message.threadID, agentID: id)
             }
             VStack(alignment: message.isHuman ? .trailing : .leading, spacing: 3) {
                 if !message.isHuman {

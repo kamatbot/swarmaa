@@ -240,6 +240,33 @@ final class TeamsSnapshotRender: XCTestCase {
         try rep.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: dir).appendingPathComponent("0-window-chrome.png"))
     }
 
+    func testRenderBotAppearance() throws {
+        let model = try fixture()
+        var bot = try XCTUnwrap(model.bot(id: "1"))
+        bot.avatar = "scout"
+        bot.color = "peach"
+        model.setBotsForTesting([bot])
+        let message = try XCTUnwrap(model.messages[bot.threadID]?.first { $0.author.id == bot.leadAgentID })
+        for width: CGFloat in [460, 1000] {
+            try render(VStack(spacing: 20) {
+                BotThreadHeader(model: model, bot: bot)
+                BotRow(model: model, bot: bot).frame(width: 300)
+                TextBubble(model: model, message: message).padding(.horizontal, 16)
+                TypingBubble(model: model, typing: TeamsTyping(taskID: "preview", agentID: bot.leadAgentID,
+                             text: "Now wearing peach.", updatedAt: nil), threadID: bot.threadID).padding(.horizontal, 16)
+            }.padding(.vertical, 12).background(KS.paper).environment(\.accessibilityReduceMotion, true),
+                       "bot-appearance-\(Int(width))", size: CGSize(width: width, height: 360))
+        }
+        bot.color = nil
+        model.setBotsForTesting([bot])
+        try render(VStack(spacing: 20) {
+            BotThreadHeader(model: model, bot: bot)
+            BotRow(model: model, bot: bot).frame(width: 300)
+            TextBubble(model: model, message: message).padding(.horizontal, 16)
+        }.background(KS.paper).environment(\.accessibilityReduceMotion, true),
+                   "bot-appearance-no-color", size: CGSize(width: 460, height: 280))
+    }
+
     func testRenderBotRowHover() throws {
         let model = try fixture()
         let bot = try XCTUnwrap(model.bot(id: "1"))

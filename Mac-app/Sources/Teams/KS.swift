@@ -158,13 +158,29 @@ struct KSMoji: View {
     let seed: String
     var size: CGFloat = 40
     var kind: Kind? = nil
+    var color: String? = nil
 
     /// The faces agents draw from; `mark` is the app's own.
     private static let agentKinds: [Kind] = [.lead, .runner, .scout, .navigator, .clerk, .scribe, .badgeSun, .badgePeri, .badgePeach]
     private static var cache: [Kind: NSImage] = [:]
 
     static func kind(for seed: String) -> Kind {
-        agentKinds[Int(seed.unicodeScalars.reduce(UInt32(5381)) { ($0 &* 33) &+ $1.value } % UInt32(agentKinds.count))]
+        if let named = Kind(rawValue: seed), named != .mark { return named }
+        return agentKinds[Int(seed.unicodeScalars.reduce(UInt32(5381)) { ($0 &* 33) &+ $1.value } % UInt32(agentKinds.count))]
+    }
+
+    static func backgroundColor(_ name: String?) -> Color? {
+        switch name {
+        case "blue": return Color(hex: 0x9CC8FF)
+        case "butter": return Color(hex: 0xFFE08A)
+        case "peach": return Color(hex: 0xFFC4A8)
+        case "lilac": return Color(hex: 0xD6C2FF)
+        case "pink": return Color(hex: 0xFFB8D9)
+        case "lime": return Color(hex: 0xC9F26B)
+        case "sky": return Color(hex: 0xA8E6FF)
+        case "orchid": return Color(hex: 0xF2C4FF)
+        default: return nil
+        }
     }
 
     static func image(_ kind: Kind) -> NSImage? {
@@ -186,6 +202,11 @@ struct KSMoji: View {
             }
         }
         .frame(width: size, height: size)
+        .background {
+            if let fill = Self.backgroundColor(color) {
+                Circle().fill(fill).frame(width: size * 1.2, height: size * 1.2)
+            }
+        }
         .accessibilityHidden(true)
     }
 }

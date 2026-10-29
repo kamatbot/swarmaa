@@ -31,6 +31,7 @@ struct TeamsBot: Decodable, Equatable, Identifiable {
     var name: String
     var job: String
     var avatar: String?
+    var color: String? = nil
     var threadID: String
     var leadAgentID: String
     var memberAgentIDs: [String]
@@ -50,7 +51,7 @@ struct TeamsBot: Decodable, Equatable, Identifiable {
     var crewIDs: [String] { [leadAgentID] + memberAgentIDs.filter { $0 != leadAgentID } }
 
     private enum CodingKeys: String, CodingKey {
-        case id, scope, name, job, avatar, routing, rules, schedule, archived, starred, version, badges
+        case id, scope, name, job, avatar, color, routing, rules, schedule, archived, starred, version, badges
         case threadID = "thread_id", leadAgentID = "lead_agent_id", memberAgentIDs = "member_agent_ids"
         case updatedAt = "updated_at", routingNow = "routing_now"
     }
@@ -62,6 +63,7 @@ struct TeamsBot: Decodable, Equatable, Identifiable {
         name = c.opt(String.self, .name) ?? ""
         job = c.opt(String.self, .job) ?? ""
         avatar = c.opt(String.self, .avatar)
+        color = c.opt(String.self, .color)
         threadID = try c.decode(String.self, forKey: .threadID)
         leadAgentID = c.opt(String.self, .leadAgentID) ?? ""
         memberAgentIDs = c.list(.memberAgentIDs)
