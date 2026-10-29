@@ -369,6 +369,41 @@ export function providerSucceeded(provider: string, result: ProcessResult): bool
   return false;
 }
 
+export interface TokenUsage {
+  input_tokens: number;
+  cached_input_tokens?: number;
+  output_tokens: number;
+}
+
+/** Sum terminal-event counters only; incomplete or malformed usage must not become a partial total. */
+export function extractUsage(provider: string, stdout: string): TokenUsage | undefined {
+  if (provider !== 'codex' && provider !== 'claude') return undefined;
+  const count = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+  try {
+    let events: unknown[];
+    try { events = [JSON.parse(stdout)]; }
+    catch { events = stdout.split('\n').filter(line => line.trim()).map(line => JSON.parse(line)); }
+    let total: TokenUsage | undefined;
+    for (const event of events) {
+      if (!event || typeof event !== 'object' || Array.isArray(event)) return undefined;
+      const e = event as Record<string, unknown>;
+      if (e.type !== (provider === 'codex' ? 'turn.completed' : 'result')) continue;
+      if (!e.usage || typeof e.usage !== 'object' || Array.isArray(e.usage)) return undefined;
+      const usage = e.usage as Record<string, unknown>;
+      const input = usage.input_tokens, output = usage.output_tokens;
+      const cached = usage[provider === 'claude' ? 'cache_read_input_tokens' : 'cached_input_tokens'];
+      const creation = provider === 'claude' ? usage.cache_creation_input_tokens : undefined;
+      if (!count(input) || !count(output) || (cached !== undefined && !count(cached)) || (creation !== undefined && !count(creation))) return undefined;
+      total ??= { input_tokens: 0, output_tokens: 0 };
+      total.input_tokens += input + (creation ?? 0);
+      total.output_tokens += output;
+      if (cached !== undefined) total.cached_input_tokens = (total.cached_input_tokens ?? 0) + cached;
+      if (!count(total.input_tokens) || !count(total.output_tokens) || (total.cached_input_tokens !== undefined && !count(total.cached_input_tokens))) return undefined;
+    }
+    return total;
+  } catch { return undefined; }
+}
+
 /** The agent's final answer from provider output (Codex JSON events or Claude's JSON result), or '' when absent. */
 export function finalAnswer(provider: string, stdout: string): string {
   if (provider === 'claude') {
