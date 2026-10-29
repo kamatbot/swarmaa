@@ -162,7 +162,8 @@ private extension EnvironmentValues {
 private struct HomeRowStyle: ButtonStyle {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label.environment(\.homeRowPressed, configuration.isPressed && !reduceMotion)
+        // Keep the usual press feedback; the avatar's squash rides on top of it.
+        PressStyle().makeBody(configuration: configuration).environment(\.homeRowPressed, configuration.isPressed && !reduceMotion)
     }
 }
 

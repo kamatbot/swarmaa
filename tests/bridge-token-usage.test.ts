@@ -35,11 +35,12 @@ test('token usage preserves zero and optional cache counters, and omits unsuppor
   assert.equal(extractUsage('codex', ''), undefined);
 });
 
-test('malformed usage or JSON drops the total, including valid events followed by bad counters', () => {
+test('malformed usage drops the total, including valid events followed by bad counters', () => {
   for (const bad of [null, [], {}, { input_tokens: '1', output_tokens: 2 }, { input_tokens: -1, output_tokens: 2 }, { input_tokens: 1, output_tokens: 0.5 }, { input_tokens: 1, output_tokens: 2, cached_input_tokens: null }, { input_tokens: 1e100, output_tokens: 2 }]) {
     assert.equal(extractUsage('codex', codex + JSON.stringify({ type: 'turn.completed', usage: bad })), undefined);
   }
-  assert.equal(extractUsage('codex', codex + '{broken'), undefined);
+  // A stray non-JSON line (a provider warning) is skipped; the real usage events still count.
+  assert.deepEqual(extractUsage('codex', 'warning: slow network\n' + codex + '{broken'), extractUsage('codex', codex));
   assert.equal(extractUsage('codex', codex + '{"type":"turn.completed"}'), undefined);
   assert.equal(extractUsage('codex', codex + JSON.stringify({ type: 'turn.completed', usage: { input_tokens: Number.MAX_SAFE_INTEGER, output_tokens: 0 } })), undefined);
   assert.equal(extractUsage('claude', '{"type":"result","usage":{"input_tokens":1,"output_tokens":2,"cache_creation_input_tokens":"3"}}'), undefined);

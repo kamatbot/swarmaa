@@ -382,7 +382,10 @@ export function extractUsage(provider: string, stdout: string): TokenUsage | und
   try {
     let events: unknown[];
     try { events = [JSON.parse(stdout)]; }
-    catch { events = stdout.split('\n').filter(line => line.trim()).map(line => JSON.parse(line)); }
+    catch {
+      // Providers can print non-JSON lines (warnings) between events: skip those, judge only usage events.
+      events = stdout.split('\n').flatMap(line => { try { return line.trim() ? [JSON.parse(line)] : []; } catch { return []; } });
+    }
     let total: TokenUsage | undefined;
     for (const event of events) {
       if (!event || typeof event !== 'object' || Array.isArray(event)) return undefined;

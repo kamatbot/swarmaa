@@ -356,7 +356,7 @@ struct TaskDetailPanel: View {
         }.background(KS.white)
     }
 
-    private func field(_ label: String, _ value: String?) -> some View {
+    private func field(_ label: String.LocalizationValue, _ value: String?) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(verbatim: L10n.t(label)).font(KS.body(11, .bold)).foregroundStyle(KS.textSoft)
             Text(verbatim: value ?? L10n.t("Not recorded")).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
