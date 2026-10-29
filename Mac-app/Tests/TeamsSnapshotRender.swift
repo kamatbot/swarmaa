@@ -254,7 +254,7 @@ final class TeamsSnapshotRender: XCTestCase {
                 TextBubble(model: model, message: message).padding(.horizontal, 16)
                 TypingBubble(model: model, typing: TeamsTyping(taskID: "preview", agentID: bot.leadAgentID,
                              text: "Now wearing peach.", updatedAt: nil), threadID: bot.threadID).padding(.horizontal, 16)
-            }.padding(.vertical, 12).background(KS.paper).environment(\.accessibilityReduceMotion, true),
+            }.padding(.vertical, 12).background(KS.paper),
                        "bot-appearance-\(Int(width))", size: CGSize(width: width, height: 360))
         }
         bot.color = nil
@@ -263,7 +263,7 @@ final class TeamsSnapshotRender: XCTestCase {
             BotThreadHeader(model: model, bot: bot)
             BotRow(model: model, bot: bot).frame(width: 300)
             TextBubble(model: model, message: message).padding(.horizontal, 16)
-        }.background(KS.paper).environment(\.accessibilityReduceMotion, true),
+        }.background(KS.paper),
                    "bot-appearance-no-color", size: CGSize(width: 460, height: 280))
     }
 

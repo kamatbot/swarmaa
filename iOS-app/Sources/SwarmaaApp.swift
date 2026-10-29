@@ -347,7 +347,9 @@ struct RootView: View {
                 let args = ProcessInfo.processInfo.arguments
                 if let i = args.firstIndex(of: "-screen"), args.indices.contains(i + 1) {
                     let name = args[i + 1]
-                    screen = Screen(rawValue: name) ?? (name == "question" ? .thread : .home)
+                    // Opening straight onto a screen at launch has nothing to slide in from.
+                    var instant = Transaction(); instant.disablesAnimations = true
+                    withTransaction(instant) { screen = Screen(rawValue: name) ?? (name == "question" ? .thread : .home) }
                     if ["you", "question", "newBot"].contains(name) {
                         try? await Task.sleep(for: .milliseconds(200))
                         sheet = name == "question" ? .question(Demo.question) : name == "you" ? .you : .newBot
