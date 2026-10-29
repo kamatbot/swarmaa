@@ -150,10 +150,56 @@ struct PressStyle: ButtonStyle {
             .animation(reduceMotion ? nil : .easeOut(duration: 0.14), value: configuration.isPressed)
     }
 }
+private struct HomeRowPressedKey: EnvironmentKey {
+    static let defaultValue = false
+}
+private extension EnvironmentValues {
+    var homeRowPressed: Bool {
+        get { self[HomeRowPressedKey.self] }
+        set { self[HomeRowPressedKey.self] = newValue }
+    }
+}
+private struct HomeRowStyle: ButtonStyle {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label.environment(\.homeRowPressed, configuration.isPressed && !reduceMotion)
+    }
+}
+
+/// Each count is independent: a needs-you badge can appear while unread decreases.
+func shouldPopHomeBadge(oldUnread: Int, oldNeedsYou: Int, unread: Int, needsYou: Int) -> Bool {
+    (unread > 0 && unread > oldUnread) || (needsYou > 0 && needsYou > oldNeedsYou)
+}
+private struct HomeBadge: View {
+    var unread: Int
+    var needsYou: Int
+    @State private var pop = 0
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    var body: some View {
+        Group {
+            if needsYou > 0 || unread > 0 {
+                Text(needsYou > 0 ? "!" : "\(unread)").font(KS.mono()).padding(.horizontal, 8)
+                    .frame(minWidth: 24, minHeight: 24).card(needsYou > 0 ? KS.coral : KS.lime, radius: 14)
+                    .accessibilityLabel(needsYou > 0 ? "Needs you" : "\(unread) unread")
+            }
+        }
+        .keyframeAnimator(initialValue: CGFloat(1), trigger: pop) { content, scale in
+            content.scaleEffect(reduceMotion ? 1 : scale)
+        } keyframes: { _ in
+            SpringKeyframe(1.25, duration: 0.12)
+            SpringKeyframe(1, duration: 0.18)
+        }
+        .onChange(of: [unread, needsYou]) { old, new in
+            if !reduceMotion && shouldPopHomeBadge(oldUnread: old[0], oldNeedsYou: old[1], unread: new[0], needsYou: new[1]) { pop += 1 }
+        }
+    }
+}
 struct Moji: View {
     var seed: String
     var size: CGFloat = 44
     var mark = false
+    @Environment(\.homeRowPressed) private var rowPressed
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
         let kinds = ["lead", "runner", "scout", "navigator", "clerk", "scribe", "badge-sun", "badge-peri", "badge-peach"]
         let hash = seed.unicodeScalars.reduce(UInt32(5381)) { ($0 &* 33) &+ $1.value }
@@ -164,6 +210,9 @@ struct Moji: View {
                 Image(uiImage: image).resizable().scaledToFit()
             }
         }.frame(width: size, height: size).accessibilityHidden(true)
+            .scaleEffect(x: rowPressed && !reduceMotion ? 1.08 : 1, y: rowPressed && !reduceMotion ? 0.92 : 1)
+            .rotationEffect(.degrees(rowPressed && !reduceMotion ? -6 : 0))
+            .animation(reduceMotion ? nil : .spring(duration: 0.3), value: rowPressed)
     }
 }
 struct Eyebrow: View {
@@ -206,6 +255,7 @@ struct RootView: View {
     @Bindable var model: AppModel
     @State private var screen: Screen = .home
     @State private var sheet: Sheet?
+    @State private var homeAppeared = false
     @State private var search = ""
     @State private var composer = ""
     @State private var photos: [ChatPhoto] = []
@@ -390,8 +440,11 @@ struct RootView: View {
             if model.loading { ProgressView("Loading your bots").padding() }
             ScrollView {
                 LazyVStack(spacing: 0) {
-                    ForEach(bots) { bot in
+                    ForEach(Array(bots.enumerated()), id: \.element.id) { index, bot in
                         row(bot)
+                            .opacity(reduceMotion || homeAppeared || index >= 10 ? 1 : 0)
+                            .offset(y: reduceMotion || homeAppeared || index >= 10 ? 0 : 8)
+                            .animation(reduceMotion || index >= 10 ? nil : .easeOut(duration: 0.3).delay(Double(index) * 0.035), value: homeAppeared)
                         Divider().overlay(KS.ink.opacity(0.12))
                     }
                     if !hidden.isEmpty {
@@ -415,6 +468,10 @@ struct RootView: View {
                     }
                 }.padding(.horizontal, 20).padding(.bottom, 6)
             }.scrollDismissesKeyboard(.interactively)
+                .task(id: bots.isEmpty) {
+                    // Root state survives navigation; refresh and search never replay this entrance.
+                    if !bots.isEmpty && !homeAppeared { homeAppeared = true }
+                }
             HStack(spacing: 12) {
                 HStack(spacing: 10) {
                     Image(systemName: "magnifyingglass").font(.system(size: 18, weight: .medium)).foregroundStyle(KS.muted)
@@ -443,8 +500,8 @@ struct RootView: View {
     private func row(_ bot: Bot) -> some View {
                         Button { open(bot) } label: {
                             HStack(spacing: 12) {
-                                Moji(seed: bot.raw["lead_agent_id"].string, size: 42)
-                                VStack(alignment: .leading, spacing: 4) {
+                                Moji(seed: bot.raw["lead_agent_id"].string, size: 48)
+                                VStack(alignment: .leading, spacing: 6) {
                                     HStack {
                                         Text(bot.name).font(KS.body(17, .semibold)).lineLimit(2).layoutPriority(1)
                                         if bot.starred { Image(systemName: "star.fill").font(.system(size: 10, weight: .semibold)).accessibilityLabel("Starred") }
@@ -452,16 +509,13 @@ struct RootView: View {
                                         if !textSize.isAccessibilitySize { Text(time(bot.activity)).font(KS.mono(10)).foregroundStyle(KS.muted).fixedSize() }
                                     }
                                     HStack {
-                                        Text(bot.line.isEmpty ? bot.job : bot.line).lineLimit(textSize.isAccessibilitySize ? 2 : 1).font(KS.body(14)).foregroundStyle(KS.soft)
+                                        Text(bot.line.isEmpty ? bot.job : bot.line).lineLimit(textSize.isAccessibilitySize ? 3 : 2).font(KS.body(14)).foregroundStyle(KS.soft)
                                         Spacer()
-                                        if bot.needsYou > 0 || bot.unread > 0 {
-                                            Text(bot.needsYou > 0 ? "!" : "\(bot.unread)").font(KS.mono()).padding(.horizontal, 8).frame(minWidth: 24, minHeight: 24).card(bot.needsYou > 0 ? KS.coral : KS.lime, radius: 14)
-                                                .accessibilityLabel(bot.needsYou > 0 ? "Needs you" : "\(bot.unread) unread")
-                                        }
+                                        HomeBadge(unread: bot.unread, needsYou: bot.needsYou)
                                     }
                                 }
-                            }.padding(.vertical, 14).contentShape(Rectangle())
-                        }.buttonStyle(PressStyle()).opacity(bot.archived ? 0.55 : 1).accessibilityIdentifier("bot-" + bot.id)
+                            }.padding(.vertical, 18).contentShape(Rectangle())
+                        }.buttonStyle(HomeRowStyle()).opacity(bot.archived ? 0.55 : 1).accessibilityIdentifier("bot-" + bot.id)
     }
     private var thread: some View {
         VStack(spacing: 0) {

@@ -1,6 +1,24 @@
 import XCTest
 
 @MainActor final class NavigationTests: XCTestCase {
+    func testHomeRowOpensBot() {
+        let app = XCUIApplication()
+        app.launchArguments = ["-demo"]
+        app.launch()
+        let row = app.buttons["bot-watch"]
+        XCTAssertTrue(row.waitForExistence(timeout: 10))
+        XCTAssertTrue(row.isHittable)
+        let capture = XCTAttachment(screenshot: app.screenshot())
+        capture.name = "Home — playful bot rows"
+        capture.lifetime = .keepAlways
+        add(capture)
+        row.tap()
+        XCTAssertTrue(app.textFields["composer"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.staticTexts["Competitor watch"].exists)
+        app.buttons["Back to bots"].tap()
+        XCTAssertTrue(app.buttons["bot-watch"].waitForExistence(timeout: 3))
+    }
+
     func testSearchAndUsageWithLargerText() {
         let app = XCUIApplication()
         app.launchArguments = ["-demo", "-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityL"]
