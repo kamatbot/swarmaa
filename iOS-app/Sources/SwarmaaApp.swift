@@ -381,11 +381,11 @@ struct RootView: View {
                         }
                 }.accessibilityLabel("Tasks")
                 Button { screen = .usage } label: { Image(systemName: "chart.pie").font(.system(size: 20, weight: .medium)).frame(width: 44, height: 44).card(.white, radius: 24) }.accessibilityLabel("Usage")
-            }.buttonStyle(PressStyle()).padding(.horizontal, 16).padding(.top, 4)
+            }.buttonStyle(PressStyle()).padding(.horizontal, 20).padding(.top, 6)
             (textSize.isAccessibilitySize ? AnyLayout(VStackLayout(alignment: .leading, spacing: 6)) : AnyLayout(HStackLayout(alignment: .firstTextBaseline, spacing: 12))) {
-                Text("BOTS.").font(KS.display(30))
-                Text(needsYou == 0 ? "All caught up" : "\(needsYou) need you").font(KS.body(13)).foregroundStyle(KS.soft)
-            }.frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 16).padding(.vertical, 8)
+                Text("BOTS.").font(KS.display(38))
+                Text(needsYou == 0 ? "All caught up" : "\(needsYou) need you").font(KS.body(14)).foregroundStyle(KS.soft)
+            }.frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 20).padding(.vertical, 14)
             Rectangle().fill(KS.ink.opacity(0.15)).frame(height: 1)
             if model.loading { ProgressView("Loading your bots").padding() }
             ScrollView {
@@ -413,7 +413,7 @@ struct RootView: View {
                     if bots.isEmpty && hidden.isEmpty && !model.loading {
                         empty(search.isEmpty ? "No bots yet. Open You to make your first bot." : "No bots match “\(search)”. Try another name or job.")
                     }
-                }.padding(.horizontal, 16).padding(.bottom, 4)
+                }.padding(.horizontal, 20).padding(.bottom, 6)
             }.scrollDismissesKeyboard(.interactively)
             HStack(spacing: 12) {
                 HStack(spacing: 10) {
@@ -425,15 +425,15 @@ struct RootView: View {
                             .buttonStyle(PressStyle()).accessibilityLabel("Clear search")
                     }
                 }
-                    .padding(.horizontal, 12).frame(minHeight: 44).card(.white, radius: 22)
-                    .overlay(RoundedRectangle(cornerRadius: 22).strokeBorder(searchFocused ? KS.ink : .clear, lineWidth: 2).allowsHitTesting(false))
+                    .padding(.horizontal, 14).frame(minHeight: 48).card(.white, radius: 24)
+                    .overlay(RoundedRectangle(cornerRadius: 24).strokeBorder(searchFocused ? KS.ink : .clear, lineWidth: 2).allowsHitTesting(false))
                 if let starred = model.starred {
                     Button { open(starred) } label: {
-                        Moji(seed: starred.raw["lead_agent_id"].string, size: 32).frame(width: 44, height: 44).card(.white, radius: 22, shadow: true)
+                        Moji(seed: starred.raw["lead_agent_id"].string, size: 38).frame(width: 48, height: 48).card(.white, radius: 24, shadow: true)
                             .overlay(alignment: .bottomLeading) { Image(systemName: "star.fill").font(.system(size: 10)).padding(5).background(KS.butter, in: Circle()).overlay(Circle().stroke(KS.ink, lineWidth: 2)) }
                     }.buttonStyle(PressStyle()).accessibilityLabel("Open starred bot").accessibilityIdentifier("starred-shortcut")
                 }
-            }.padding(.horizontal, 16).padding(.vertical, 10).background(KS.paper)
+            }.padding(.horizontal, 20).padding(.vertical, 14).background(KS.paper)
                 .overlay(alignment: .top) { Rectangle().fill(KS.ink.opacity(0.1)).frame(height: 1) }
         }
     }
@@ -442,17 +442,17 @@ struct RootView: View {
     }
     private func row(_ bot: Bot) -> some View {
                         Button { open(bot) } label: {
-                            HStack(spacing: 10) {
-                                Moji(seed: bot.raw["lead_agent_id"].string, size: 36)
-                                VStack(alignment: .leading, spacing: 2) {
+                            HStack(spacing: 12) {
+                                Moji(seed: bot.raw["lead_agent_id"].string, size: 42)
+                                VStack(alignment: .leading, spacing: 4) {
                                     HStack {
-                                        Text(bot.name).font(KS.body(16, .semibold)).lineLimit(2).layoutPriority(1)
+                                        Text(bot.name).font(KS.body(17, .semibold)).lineLimit(2).layoutPriority(1)
                                         if bot.starred { Image(systemName: "star.fill").font(.system(size: 10, weight: .semibold)).accessibilityLabel("Starred") }
                                         Spacer()
                                         if !textSize.isAccessibilitySize { Text(time(bot.activity)).font(KS.mono(10)).foregroundStyle(KS.muted).fixedSize() }
                                     }
                                     HStack {
-                                        Text(bot.line.isEmpty ? bot.job : bot.line).lineLimit(textSize.isAccessibilitySize ? 2 : 1).font(KS.body(13)).foregroundStyle(KS.soft)
+                                        Text(bot.line.isEmpty ? bot.job : bot.line).lineLimit(textSize.isAccessibilitySize ? 2 : 1).font(KS.body(14)).foregroundStyle(KS.soft)
                                         Spacer()
                                         if bot.needsYou > 0 || bot.unread > 0 {
                                             Text(bot.needsYou > 0 ? "!" : "\(bot.unread)").font(KS.mono()).padding(.horizontal, 8).frame(minWidth: 24, minHeight: 24).card(bot.needsYou > 0 ? KS.coral : KS.lime, radius: 14)
@@ -460,7 +460,7 @@ struct RootView: View {
                                         }
                                     }
                                 }
-                            }.padding(.vertical, 10).contentShape(Rectangle())
+                            }.padding(.vertical, 14).contentShape(Rectangle())
                         }.buttonStyle(PressStyle()).opacity(bot.archived ? 0.55 : 1).accessibilityIdentifier("bot-" + bot.id)
     }
     private var thread: some View {
