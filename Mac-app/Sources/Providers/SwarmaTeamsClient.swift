@@ -679,6 +679,12 @@ actor SwarmaTeamsClient {
                        as: BotWrapper.self).bot
     }
 
+    /// Only the named fields change: a rename or star never resends routing or rules.
+    func botPatch(id: String, expectedVersion: Int, _ fields: [String: Any]) async throws -> TeamsBot {
+        try await call("bot_update", fields.merging(["bot_id": id, "expected_version": expectedVersion]) { $1 },
+                       as: BotWrapper.self).bot
+    }
+
     func botArchive(id: String) async throws -> TeamsBot {
         try await call("bot_archive", ["bot_id": id], as: BotWrapper.self).bot
     }

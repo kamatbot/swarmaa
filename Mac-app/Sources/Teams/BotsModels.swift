@@ -38,6 +38,7 @@ struct TeamsBot: Decodable, Equatable, Identifiable {
     var rules: TeamsBotRules
     var schedule: String?
     var archived: Bool
+    var starred = false
     var version: Int?
     var updatedAt: Date?
     var badges: Badges
@@ -49,7 +50,7 @@ struct TeamsBot: Decodable, Equatable, Identifiable {
     var crewIDs: [String] { [leadAgentID] + memberAgentIDs.filter { $0 != leadAgentID } }
 
     private enum CodingKeys: String, CodingKey {
-        case id, scope, name, job, avatar, routing, rules, schedule, archived, version, badges
+        case id, scope, name, job, avatar, routing, rules, schedule, archived, starred, version, badges
         case threadID = "thread_id", leadAgentID = "lead_agent_id", memberAgentIDs = "member_agent_ids"
         case updatedAt = "updated_at", routingNow = "routing_now"
     }
@@ -68,6 +69,7 @@ struct TeamsBot: Decodable, Equatable, Identifiable {
         rules = c.opt(TeamsBotRules.self, .rules) ?? TeamsBotRules()
         schedule = c.opt(String.self, .schedule)
         archived = c.opt(Bool.self, .archived) ?? false
+        starred = c.opt(Bool.self, .starred) ?? false
         version = c.opt(Int.self, .version)
         updatedAt = c.opt(Date.self, .updatedAt)
         badges = c.opt(Badges.self, .badges) ?? Badges()

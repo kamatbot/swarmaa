@@ -213,7 +213,6 @@ struct TeamsRail: View {
             KSMoji(seed: "swarmaa", size: 42, kind: .mark).padding(.top, KS.topBarHeight + 14).padding(.bottom, 8)
             item("person.2.fill", L10n.t("Bots"), .bots, badge: model.botsWithUpdates)
             item("checklist", L10n.t("Tasks"), .tasks, badge: 0)
-            item("chart.bar.fill", L10n.t("Usage"), .usage, badge: 0)
             Spacer(minLength: 12)
             if case let usage = model.allUsage, !usage.isEmpty {
                 Text(verbatim: L10n.t("USAGE")).font(KS.mono(9)).tracking(1).foregroundStyle(KS.onInkMuted)
@@ -269,13 +268,12 @@ struct UsageRingButton: View {
     @ObservedObject var model: TeamsModel
     let usage: SwarmaStatus.Usage
     @State private var hovering = false
-    @State private var pinned = false
 
     private var name: String { SwarmaCells.vendorName(usage.provider) }
     private var left: Double? { usage.headroom.map { min(max($0, 0), 100) } }
 
     var body: some View {
-        Button { pinned.toggle() } label: {
+        Button { hovering = false; model.pane = .usage } label: {
             ZStack {
                 Circle().stroke(KS.inkLine, lineWidth: 4.5)
                 if let left {
@@ -289,12 +287,12 @@ struct UsageRingButton: View {
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
-        .popover(isPresented: Binding(get: { hovering || pinned }, set: { if !$0 { hovering = false; pinned = false } }),
+        .popover(isPresented: Binding(get: { hovering }, set: { if !$0 { hovering = false } }),
                  arrowEdge: .trailing) {
             UsageCard(model: model, usage: usage).environment(\.colorScheme, .light)
         }
         .accessibilityLabel(name + ", " + (left.map { L10n.t("\(Int($0)) percent left") } ?? L10n.t("no reading")))
-        .accessibilityHint(L10n.t("Shows usage"))
+        .accessibilityHint(L10n.t("Opens Usage"))
     }
 }
 
