@@ -154,30 +154,125 @@ struct BotRow: View {
 
 // MARK: - Bot thread header
 
+// TODO(task A): remove this placeholder when TeamsWindow.swift supplies the live indicator.
+struct TeamsConnectionStatus: View {
+    @ObservedObject var model: TeamsModel
+    var body: some View { EmptyView() }
+}
+
 struct BotThreadHeader: View {
     @ObservedObject var model: TeamsModel
     let bot: TeamsBot
+    @State private var renaming = false
+    @State private var name = ""
+
+    private var settingsOpen: Bool { model.editingBotID == bot.id }
+    private var starred: Bool { model.botStars[bot.id] == true }
+    private var starLabel: String { L10n.t(starred ? "Unstar" : "Star") }
+    private var activeTasks: Int { model.botActiveTaskCount(bot) }
+    private var statusLabel: String {
+        activeTasks > 0 ? L10n.t("WORKING · \(activeTasks) TASKS") : L10n.t("IDLE")
+    }
+    private var firstQuestionID: String? {
+        model.messages[bot.threadID]?.first { $0.question?.status == "open" }?.question?.id
+    }
 
     var body: some View {
-        HStack(spacing: 8) {
-            KSMoji(seed: bot.avatar ?? bot.leadAgentID, size: 26)
-            Text(verbatim: bot.name).font(KS.body(15, .semibold)).lineLimit(1)
+        KSTopBar {
+            GeometryReader { geometry in
+                row(compact: geometry.size.width < 650)
+                    .frame(width: geometry.size.width, height: KS.topBarHeight)
+            }
+            .frame(height: KS.topBarHeight)
         }
-        .padding(.horizontal, 10).padding(.vertical, 4)
-        .background(Capsule().fill(KS.white))
-        .overlay(Capsule().strokeBorder(KS.ink, lineWidth: 1.5))
+        .task(id: bot.version) { await model.loadBotStar(bot) }
+        .alert(L10n.t("Rename bot"), isPresented: $renaming) {
+            TextField(L10n.t("Name"), text: $name)
+            Button(L10n.t("Cancel"), role: .cancel) { }
+            Button(L10n.t("Rename")) {
+                Task { await model.renameBot(bot, name: name.trimmingCharacters(in: .whitespacesAndNewlines)) }
+            }
+            .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || model.savingBot)
+        }
+    }
+
+    private func row(compact: Bool) -> some View {
+        HStack(spacing: 10) {
+            if settingsOpen {
+                KSBarButton(symbol: "chevron.left", label: L10n.t("Back to thread")) { model.editingBotID = nil }
+                Text(verbatim: bot.name + " / " + L10n.t("Settings"))
+                    .font(KS.body(14, .semibold)).lineLimit(1)
+            } else {
+                botMenu
+                HStack(spacing: 6) {
+                    Circle().fill(activeTasks > 0 ? Color.green : KS.textMuted).frame(width: 8, height: 8)
+                    if !compact { Text(verbatim: statusLabel).font(KS.mono(11)).tracking(0.5).fixedSize() }
+                }
+                .foregroundStyle(KS.textMuted)
+                .accessibilityElement(children: .ignore).accessibilityLabel(statusLabel)
+            }
+            TeamsConnectionStatus(model: model)
+            Spacer(minLength: 0)
+            if !settingsOpen, model.botNeedsYou(bot) > 0 { needsYou(compact: compact) }
+            if !settingsOpen {
+                KSBarButton(symbol: starred ? "star.fill" : "star", label: starLabel, on: starred) {
+                    Task { await model.setBotStarred(bot, starred: !starred) }
+                }
+                .disabled(model.savingBot || bot.isLegacyAgent || bot.archived || model.botStars[bot.id] == nil)
+            }
+            KSBarButton(symbol: "slider.horizontal.3", label: L10n.t("Bot settings"), on: settingsOpen) {
+                model.editingBotID = settingsOpen ? nil : bot.id
+            }
+        }
+        .foregroundStyle(KS.ink)
+    }
+
+    private var botMenu: some View {
+        Menu {
+            Button(L10n.t("Bot settings")) { model.editingBotID = bot.id }.keyboardShortcut(",", modifiers: .command)
+            Button(L10n.t("Rename…")) { name = bot.name; renaming = true }
+                .disabled(bot.isLegacyAgent || model.savingBot)
+            Button(starLabel) { Task { await model.setBotStarred(bot, starred: !starred) } }
+                .disabled(model.savingBot || bot.isLegacyAgent || bot.archived || model.botStars[bot.id] == nil)
+            Button(L10n.t("Earlier messages")) { Task { await model.loadOlder(bot.threadID) } }
+                .disabled(model.hasOlder[bot.threadID] != true || model.loadingThreads.contains(bot.threadID))
+            Divider()
+            Button(L10n.t("Hide bot"), role: .destructive) { Task { await model.setBotHidden(bot, hidden: true) } }
+                .foregroundStyle(KS.danger).disabled(bot.isLegacyAgent || bot.archived || model.savingBot)
+        } label: {
+            HStack(spacing: 7) {
+                KSMoji(seed: bot.avatar ?? bot.leadAgentID, size: 24)
+                Text(verbatim: bot.name).font(KS.body(14, .semibold)).lineLimit(1)
+                Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold))
+            }
+            .padding(.horizontal, 9).frame(height: 32)
+            .background(Capsule().fill(KS.white))
+            .overlay(Capsule().strokeBorder(KS.ink, lineWidth: 1.5))
+        }
+        .menuStyle(.borderlessButton).menuIndicator(.hidden)
         .frame(maxWidth: 240)
-        .frame(maxWidth: .infinity)
-        .overlay(alignment: .trailing) {
-            Button { model.editingBotID = bot.id } label: { Image(systemName: "slider.horizontal.3") }
-                .buttonStyle(.ks(.paper, compact: true))
-                .accessibilityLabel(L10n.t("Bot settings"))
-                .help(L10n.t("Bot settings"))
-                .padding(.trailing, 16)
+        .accessibilityLabel(bot.name)
+    }
+
+    @ViewBuilder private func needsYou(compact: Bool) -> some View {
+        if let question = firstQuestionID {
+            Button { model.targetQuestionID = question } label: { needsYouLabel(compact: compact) }
+                .buttonStyle(.plain)
+        } else {
+            // Review cards do not yet expose a scroll target in ThreadView.
+            needsYouLabel(compact: compact)
         }
-        .padding(.vertical, 5)
-        .background(KS.paper)
-        .overlay(alignment: .bottom) { Rectangle().fill(KS.ink).frame(height: 1.5) }
+    }
+
+    private func needsYouLabel(compact: Bool) -> some View {
+        Text(verbatim: compact ? "\(model.botNeedsYou(bot))" : L10n.t("\(model.botNeedsYou(bot)) needs you"))
+            .font(KS.mono(11, .semibold)).lineLimit(1)
+            .padding(.horizontal, compact ? 0 : 10)
+            .frame(minWidth: 32, minHeight: 32)
+            .background(Capsule().fill(KS.coral))
+            .overlay(Capsule().strokeBorder(KS.ink, lineWidth: 1.5))
+            .fixedSize()
+            .accessibilityLabel(L10n.t("\(model.botNeedsYou(bot)) needs you"))
     }
 }
 
@@ -257,18 +352,7 @@ struct BotSettingsPane: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 14) {
-                Button { model.editingBotID = nil } label: { Label(bot.name, systemImage: "chevron.left") }.buttonStyle(.ks(.paper))
-                KSMoji(seed: bot.avatar ?? bot.leadAgentID, size: 40)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(verbatim: (name.isEmpty ? bot.name : name).uppercased() + L10n.t(" BOT.")).font(KS.display(28))
-                    Text(verbatim: L10n.t("A persistent swarm. These settings apply to everything it runs, and override the global Swarmaa defaults."))
-                        .font(KS.body(14)).foregroundStyle(KS.textSoft)
-                }
-                Spacer()
-            }
-            .padding(.horizontal, 20).padding(.vertical, 10)
-            .overlay(alignment: .bottom) { Rectangle().fill(KS.ink).frame(height: 2.5) }
+            BotThreadHeader(model: model, bot: bot)
 
             ScrollView {
                 if bot.isLegacyAgent {

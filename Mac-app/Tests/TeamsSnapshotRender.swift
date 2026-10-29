@@ -113,6 +113,27 @@ final class TeamsSnapshotRender: XCTestCase {
         try render(UsageCard(model: model, usage: model.status!.usage[1]), "5-usage-hover-card", size: CGSize(width: 290, height: 300))
     }
 
+    func testRenderThreadBars() throws {
+        if let dir = ProcessInfo.processInfo.environment["SWARMAA_SNAPSHOT_DIR"] {
+            try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        }
+        let model = try fixture()
+        let bot = try XCTUnwrap(model.bot(id: "1"))
+        var messages = model.messages[bot.threadID] ?? []
+        messages.append(try dec(TeamsMessage.self, """
+        {"id":"active","thread_id":"t1","seq":8,"author":{"kind":"system"},"kind":"task",
+         "task":{"id":"active-task","title":"Prepare launch","status":"running","resolved":false}}
+        """))
+        model.loadFixture(agents: model.agents, bots: model.bots, messages: [bot.threadID: messages],
+                          status: model.status, select: bot.threadID)
+        XCTAssertEqual(model.botActiveTaskCount(bot), 1)
+        XCTAssertEqual(model.botNeedsYou(bot), 1)
+        try render(BotThreadHeader(model: model, bot: bot), "thread-bar-default", size: CGSize(width: 1000, height: KS.topBarHeight))
+        try render(BotThreadHeader(model: model, bot: bot), "thread-bar-narrow", size: CGSize(width: 460, height: KS.topBarHeight))
+        model.editingBotID = bot.id
+        try render(BotThreadHeader(model: model, bot: bot), "thread-bar-settings-open", size: CGSize(width: 1000, height: KS.topBarHeight))
+    }
+
     func testRenderPhotoComposer() throws {
         let model = try fixture()
         let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 80, pixelsHigh: 60, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!

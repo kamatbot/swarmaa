@@ -178,6 +178,11 @@ final class TeamsModel: ObservableObject {
     /// False while the service has no `bot_list`: agents stand in as one-member bots.
     @Published private(set) var botsSupported = true
     @Published private(set) var savingBot = false
+    /// ponytail: header-only star metadata until BotsModels and SwarmaTeamsClient
+    /// can expose the service field together in a broader native-model change.
+    @Published private(set) var botStars: [String: Bool] = [:]
+    private let botHeaderClient: SwarmaClient
+
     struct PendingSend: Equatable {
         let body: String
         let key: String
@@ -201,7 +206,10 @@ final class TeamsModel: ObservableObject {
     private var loadingOlder: Set<String> = []
     private var markedSeq: [String: Int] = [:]
 
-    init(client: SwarmaTeamsClient = .shared) { self.client = client }
+    init(client: SwarmaTeamsClient = .shared, botHeaderClient: SwarmaClient = .shared) {
+        self.client = client
+        self.botHeaderClient = botHeaderClient
+    }
 
     // MARK: Reading
 
@@ -322,6 +330,84 @@ final class TeamsModel: ObservableObject {
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
+    /// Only count tasks linked to this thread, never all tasks in its scope.
+    /// ponytail: unlinked queued tasks need bot_id/thread_id on TeamsTask before
+    /// the bar can count them; do not attribute unrelated scope tasks to this bot.
+    func botActiveTaskCount(_ bot: TeamsBot) -> Int {
+        let list = messages[bot.threadID] ?? []
+        var states: [String: String] = [:]
+        for message in list {
+            if let card = message.task, let status = card.status { states[card.id] = status }
+        }
+        var threadSwarms = Dictionary(list.compactMap(\.swarm).map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
+        for swarm in openSwarms where swarm.threadID == bot.threadID { threadSwarms[swarm.id] = swarm }
+        for swarm in swarms.values where swarm.threadID == bot.threadID { threadSwarms[swarm.id] = swarm }
+        for swarm in threadSwarms.values {
+            for step in swarm.steps {
+                if let id = step.taskID { states[id] = step.status }
+            }
+        }
+        for task in typing[bot.threadID] ?? [] { states[task.taskID] = "running" }
+        for task in workingTasks where states[task.id] != nil { states[task.id] = task.status }
+        return states.values.filter { ["running", "queued"].contains($0) }.count
+    }
+
+    private struct HeaderBot: Decodable {
+        let bot: TeamsBot
+        let starred: Bool
+        init(from decoder: Decoder) throws {
+            bot = try TeamsBot(from: decoder)
+            enum Key: String, CodingKey { case starred }
+            starred = try decoder.container(keyedBy: Key.self).decodeIfPresent(Bool.self, forKey: .starred) ?? false
+        }
+    }
+    private struct HeaderBotResponse: Decodable {
+        struct Result: Decodable { let bot: HeaderBot }
+        let result: Result
+    }
+
+    private func updateHeaderBot(tool: String, input: [String: Any]) async throws {
+        let data = try await botHeaderClient.fetchRaw(tool: tool, body: JSONSerialization.data(withJSONObject: input))
+        let fresh = try SwarmaClient.decoder.decode(HeaderBotResponse.self, from: data).result.bot
+        // A slower read must not undo a newer mutation.
+        guard let current = bot(id: fresh.bot.id),
+              (current.version ?? 0) <= (fresh.bot.version ?? 0) else { return }
+        botStars[fresh.bot.id] = fresh.starred
+        replaceBot(fresh.bot)
+    }
+
+    func loadBotStar(_ bot: TeamsBot) async {
+        guard !bot.isLegacyAgent, !savingBot else { return }
+        #if DEBUG
+        if isSnapshotFixture { return }
+        #endif
+        do { try await updateHeaderBot(tool: "bot_get", input: ["bot_id": bot.id]) }
+        catch { if !Task.isCancelled { self.error = SwarmaTeamsClient.Failure.map(error).message } }
+    }
+
+    func setBotStarred(_ bot: TeamsBot, starred: Bool) async {
+        guard !bot.isLegacyAgent, !bot.archived, !savingBot, let version = bot.version else { return }
+        savingBot = true
+        defer { savingBot = false }
+        do {
+            try await updateHeaderBot(tool: "bot_update", input: ["bot_id": bot.id, "expected_version": version, "starred": starred])
+            // The service permits one star; refresh versions changed by clearing the previous one.
+            if starred { for id in botStars.keys where id != bot.id { botStars[id] = false } }
+            await loadBots()
+        } catch { self.error = SwarmaTeamsClient.Failure.map(error).message }
+    }
+
+    func renameBot(_ bot: TeamsBot, name: String) async {
+        guard !name.isEmpty, !bot.isLegacyAgent, !savingBot, let version = bot.version else { return }
+        savingBot = true
+        defer { savingBot = false }
+        do {
+            // A rename must not overwrite routing/settings absent from bot_list.
+            try await updateHeaderBot(tool: "bot_update", input: ["bot_id": bot.id, "expected_version": version, "name": name])
+            botListGeneration += 1
+        } catch { self.error = SwarmaTeamsClient.Failure.map(error).message }
+    }
+
     func botUnread(_ bot: TeamsBot) -> Int { max(badges.count(bot.threadID), bot.badges.unread) }
     func botNeedsYou(_ bot: TeamsBot) -> Int { bot.badges.needsYou }
     func botHasUpdates(_ bot: TeamsBot) -> Bool { botNeedsYou(bot) > 0 || botUnread(bot) > 0 }
@@ -359,12 +445,15 @@ final class TeamsModel: ObservableObject {
     }
 
     #if DEBUG
+    private var isSnapshotFixture = false
     func setBotsForTesting(_ bots: [TeamsBot]) { self.bots = bots }
     /// Snapshot renders and previews: example data, no service.
     func loadFixture(agents: [TeamsAgent], bots: [TeamsBot], messages: [String: [TeamsMessage]],
                      status: SwarmaStatus?, attention: [TeamsAttentionItem] = [], select threadID: String?) {
         self.agents = agents; self.bots = bots; self.messages = messages; self.status = status
         self.attention = attention
+        isSnapshotFixture = true
+        botStars = Dictionary(uniqueKeysWithValues: bots.map { ($0.id, false) })
         for (t, list) in messages { if let last = list.last { previews[t] = TeamsPreview(body: last.preview, createdAt: last.createdAt) } }
         selectedThreadID = threadID
         streamState = "Live"
