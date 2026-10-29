@@ -89,6 +89,14 @@ final class TeamsSnapshotRender: XCTestCase {
         try rep.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: dir).appendingPathComponent(name + ".png"))
     }
 
+    func testRenderBotsSidebarBar() throws {
+        let model = try fixture()
+        model.setBotsForTesting(Array(model.bots.prefix(2)))
+        XCTAssertEqual(model.bots.count, 2)
+        XCTAssertTrue(model.search.isEmpty)
+        try render(BotsSidebar(model: model), "1f-bots-sidebar-bar", size: CGSize(width: 300, height: 500))
+    }
+
     func testRenderScreens() throws {
         let model = try fixture()
         try render(TeamsRootView(model: model), "1-bots-home", size: CGSize(width: 1440, height: 900))

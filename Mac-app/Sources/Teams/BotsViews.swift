@@ -42,13 +42,28 @@ struct BotsHome: View {
 
 struct BotsSidebar: View {
     @ObservedObject var model: TeamsModel
+    @FocusState private var searchFocused: Bool
 
     var body: some View {
         let bots = model.sortedBots
         let updates = bots.filter { model.botHasUpdates($0) }
         let rest = bots.filter { !model.botHasUpdates($0) }
         VStack(spacing: 0) {
-            KSSearchField(prompt: L10n.t("Search bots"), text: $model.search).padding(10)
+            KSTopBar {
+                KSSearchField(prompt: L10n.t("Search bots"), text: $model.search, height: 32)
+                    .focused($searchFocused)
+                    .frame(maxWidth: .infinity)
+                    .overlay(alignment: .trailing) {
+                        if model.search.isEmpty && !searchFocused {
+                            Text(verbatim: "⌘K").font(KS.mono(11)).foregroundStyle(KS.textMuted)
+                                .padding(.trailing, 14).allowsHitTesting(false)
+                                .accessibilityHidden(true)
+                        }
+                    }
+                KSBarButton(symbol: "plus", label: L10n.t("New bot"), fill: KS.lime) {
+                    model.creatingBot = true
+                }
+            }
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 4) {
                     if !updates.isEmpty {
@@ -82,12 +97,14 @@ struct BotsSidebar: View {
                 }
                 .padding(.horizontal, 12).padding(.bottom, 12)
             }
-            KSBottomBar {
-                Button { model.creatingBot = true } label: { Label(L10n.t("New bot"), systemImage: "plus").frame(maxWidth: .infinity) }
-                    .buttonStyle(.ks(.white))
-            }
         }
         .background(KS.paper)
+        .background {
+            Button(L10n.t("Search bots")) { searchFocused = true }
+                .keyboardShortcut("k", modifiers: .command)
+                .hidden()
+                .accessibilityHidden(true)
+        }
     }
 }
 
