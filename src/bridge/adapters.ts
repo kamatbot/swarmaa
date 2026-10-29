@@ -166,7 +166,7 @@ export function buildTurnPrompt(
     '- {type:\'question_ask\', prompt, options, multi, free_text, swarm_step_id?}',
     '- {type:\'channel_post\', channel_id, body}',
     ...(botTurn ? [
-      "- {type:'bot_appearance', avatar?, color?}: change only this bot; provide at least one field.",
+      "- {type:'bot_appearance', avatar?, color?}: change only this bot; provide at least one field. Allowed in every turn, read-only ones included: listing it in the actions block is the whole change, the service applies it, and you call nothing. When the owner asks for a new look, include it; never say you can't change your appearance.",
       'Characters: lead (violet, big eyes, rosy cheeks); runner (blue, sunglasses, thumbs-up); scout (peach/pink, magnifying glass).',
       'navigator (yellow, star wand); clerk (lilac/pink, X eye); scribe (blue, simple smile).',
       'badge-sun (yellow, open smile); badge-peri (periwinkle, small eyes); badge-peach (peach/pink, straight mouth). Never use mark.',

@@ -169,18 +169,15 @@ struct KSMoji: View {
         return agentKinds[Int(seed.unicodeScalars.reduce(UInt32(5381)) { ($0 &* 33) &+ $1.value } % UInt32(agentKinds.count))]
     }
 
-    static func backgroundColor(_ name: String?) -> Color? {
-        switch name {
-        case "blue": return Color(hex: 0x9CC8FF)
-        case "butter": return Color(hex: 0xFFE08A)
-        case "peach": return Color(hex: 0xFFC4A8)
-        case "lilac": return Color(hex: 0xD6C2FF)
-        case "pink": return Color(hex: 0xFFB8D9)
-        case "lime": return Color(hex: 0xC9F26B)
-        case "sky": return Color(hex: 0xA8E6FF)
-        case "orchid": return Color(hex: 0xF2C4FF)
-        default: return nil
-        }
+    /// Each character's body hue, measured from its image. A bot's colour rotates the body to that
+    /// colour's hue; eyes and outlines are neutral, so they stay as they are. No colour, no change.
+    private static let baseHue: [Kind: Double] = [.lead: 251, .runner: 248, .scout: 352, .navigator: 38, .clerk: 273,
+                                                  .scribe: 246, .badgeSun: 39, .badgePeri: 247, .badgePeach: 360]
+    private static let colorHue: [String: Double] = ["blue": 213, "butter": 45, "peach": 19, "lilac": 260,
+                                                      "pink": 332, "lime": 78, "sky": 197, "orchid": 288]
+    static func hueShift(_ kind: Kind, color: String?) -> Double {
+        guard let color, let target = colorHue[color], let base = baseHue[kind] else { return 0 }
+        return target - base
     }
 
     static func image(_ kind: Kind) -> NSImage? {
@@ -202,11 +199,7 @@ struct KSMoji: View {
             }
         }
         .frame(width: size, height: size)
-        .background {
-            if let fill = Self.backgroundColor(color) {
-                Circle().fill(fill).frame(width: size * 1.2, height: size * 1.2)
-            }
-        }
+        .hueRotation(.degrees(Self.hueShift(kind ?? Self.kind(for: seed), color: color)))
         .accessibilityHidden(true)
     }
 }

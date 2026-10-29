@@ -209,16 +209,14 @@ struct Moji: View {
     @Environment(\.homeRowPressed) private var rowPressed
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
-        let name = "moji-" + (mark ? "mark" : mojiCharacter(seed))
+        let character = mark ? "mark" : mojiCharacter(seed)
         Group {
             // UIImage's named-image cache avoids disk reads and decoding on every live update.
-            if let image = UIImage(named: name) {
+            if let image = UIImage(named: "moji-" + character) {
                 Image(uiImage: image).resizable().scaledToFit()
+                    .hueRotation(.degrees(colorHex.map { mojiHueShift(character, toHex: $0) } ?? 0))
             }
-        }.frame(width: size, height: size)
-            .background {
-                if let colorHex { Circle().fill(Color(hex: colorHex)).frame(width: size * 1.2, height: size * 1.2) }
-            }.accessibilityHidden(true)
+        }.frame(width: size, height: size).accessibilityHidden(true)
             .scaleEffect(x: rowPressed && !reduceMotion ? 1.08 : 1, y: rowPressed && !reduceMotion ? 0.92 : 1)
             .rotationEffect(.degrees(rowPressed && !reduceMotion ? -6 : 0))
             .animation(reduceMotion ? nil : .spring(duration: 0.3), value: rowPressed)

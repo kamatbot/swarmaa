@@ -35,11 +35,11 @@ final class TeamsBotsTests: XCTestCase {
             let bot = try decode(TeamsBot.self, json)
             XCTAssertEqual(bot.color, color)
             XCTAssertEqual(bot.avatar, "scout")
-            XCTAssertNotNil(KSMoji.backgroundColor(bot.color))
+            XCTAssertNotEqual(KSMoji.hueShift(.lead, color: bot.color), 0, "every colour recolours the character")
         }
         XCTAssertNil(try decode(TeamsBot.self, botJSON.replacingOccurrences(of: "\"avatar\":null", with: "\"color\":null")).color)
-        XCTAssertNil(KSMoji.backgroundColor(nil))
-        XCTAssertNil(KSMoji.backgroundColor("orange"))
+        XCTAssertEqual(KSMoji.hueShift(.lead, color: nil), 0, "no colour, no change")
+        XCTAssertEqual(KSMoji.hueShift(.lead, color: "orange"), 0, "unknown names are ignored")
     }
 
     func testDecodesTheBotsShape() throws {

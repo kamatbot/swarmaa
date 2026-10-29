@@ -22,7 +22,10 @@ struct ThreadView: View {
             ScrollViewReader { proxy in
                 ZStack(alignment: .bottom) {
                     ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 7) {
+                        // Not lazy: a lazy stack guesses unrendered rows' heights, and pinned to the bottom it
+                        // kept re-correcting as long markdown rows settled, so the chat bounced. A thread holds
+                        // a page or two of messages, so exact heights are cheap.
+                        VStack(alignment: .leading, spacing: 7) {
                             if model.hasOlder[threadID] == true, !messages.isEmpty {
                                 ProgressView().controlSize(.small).frame(maxWidth: .infinity)
                                     .onAppear { Task { await model.loadOlder(threadID) } }
@@ -53,7 +56,10 @@ struct ThreadView: View {
                         }
                         .padding(.horizontal, 16).padding(.vertical, 12)
                     }
-                    .defaultScrollAnchor(.bottom)
+                    .defaultScrollAnchor(.bottom, for: .initialOffset)
+                    // At the bottom, stay pinned there while messages grow (markdown renders after a
+                    // message lands, typing text streams in); reading older messages, keep your place.
+                    .defaultScrollAnchor(nearBottom ? .bottom : .top, for: .sizeChanges)
                     .onScrollGeometryChange(for: Bool.self) { geometry in
                         geometry.contentOffset.y + geometry.containerSize.height >= geometry.contentSize.height - 80
                     } action: { _, value in nearBottom = value }
@@ -67,7 +73,9 @@ struct ThreadView: View {
                         proxy.scrollTo("typing:" + last.id, anchor: .bottom)
                     }
                     .onChange(of: messages.last?.id) { _, last in
-                        guard let last, nearBottom else { return }
+                        // Your own message always brings you to the latest.
+                        guard let last, nearBottom || messages.last?.isHuman == true else { return }
+                        nearBottom = true
                         withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) { proxy.scrollTo(last, anchor: .bottom) }
                         model.markSelectedRead()
                     }

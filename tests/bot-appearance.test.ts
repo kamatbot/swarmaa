@@ -21,6 +21,8 @@ test('only bot task prompts advertise appearance and all contract names', () => 
   const task = { kind: 'turn', objective: 'Help', bot_id: 'bot-id' } as unknown as Task;
   const prompt = buildTurnPrompt(task, {});
   assert.match(prompt, /bot_appearance/);
+  // Bots refused in read-only turns, thinking the change was a service write they couldn't make.
+  assert.match(prompt, /read-only ones included/);
   for (const name of [...BOT_AVATARS, ...BOT_COLORS]) assert.ok(prompt.includes(name));
   assert.match(prompt, /runner \(blue, sunglasses/);
   assert.match(prompt, /orange maps to peach, green to lime/);

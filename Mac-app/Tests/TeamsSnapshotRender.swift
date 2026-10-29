@@ -276,6 +276,36 @@ final class TeamsSnapshotRender: XCTestCase {
         }.padding(12).background(KS.paperDeep), "1g-bot-row-hover", size: CGSize(width: 300, height: 190))
     }
 
+    /// The chat must sit still once it has settled: a bottom-pinned thread re-correcting for changing
+    /// row heights bounced up and down every frame in a real window.
+    func testThreadScrollPositionSettles() throws {
+        let model = try fixture()
+        // Like a real bot thread: several long markdown replies, whose heights change once rendered.
+        let threadID = try XCTUnwrap(model.selectedThreadID)
+        var messages = model.messages[threadID] ?? []
+        let long = (1...40).map { i in i % 8 == 0 ? "## Section \(i)" : "- **Item \(i):** `value` with some *formatting* and a longer explanation that wraps across the bubble." }.joined(separator: "\\n")
+        for i in 0..<8 {
+            messages.append(try dec(TeamsMessage.self, """
+            {"id":"long\(i)","thread_id":"\(threadID)","seq":\(100 + i),"author":{"kind":"agent","id":"a1"},"kind":"text","body":"\(long)"}
+            """))
+        }
+        model.loadFixture(agents: model.agents, bots: model.bots, messages: [threadID: messages], status: model.status, select: threadID)
+        let controller = TeamsWindowController(model: model)
+        controller.show(connect: false)
+        let window = try XCTUnwrap(controller.window)
+        defer { window.close() }
+        window.setContentSize(NSSize(width: 1280, height: 820))
+        RunLoop.main.run(until: Date().addingTimeInterval(1.5))
+        func scrollViews(_ view: NSView) -> [NSScrollView] { ((view as? NSScrollView).map { [$0] } ?? []) + view.subviews.flatMap(scrollViews) }
+        let thread = try XCTUnwrap(scrollViews(try XCTUnwrap(window.contentView)).max { $0.frame.width < $1.frame.width })
+        var offsets: [CGFloat] = []
+        for _ in 0..<20 {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+            offsets.append(thread.contentView.bounds.origin.y)
+        }
+        XCTAssertLessThan((offsets.max() ?? 0) - (offsets.min() ?? 0), 1, "thread kept moving: \(offsets)")
+    }
+
     func testRenderPhotoComposer() throws {
         let model = try fixture()
         let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 80, pixelsHigh: 60, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
