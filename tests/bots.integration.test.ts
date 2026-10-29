@@ -83,6 +83,76 @@ describe('bots core service (Brief B1)', { skip: !connectionString, concurrency:
     try { return { value: await fn(), sql }; } finally { pool.query = original; }
   }
 
+  it('validates appearance updates, preserves legacy avatars and exposes color in views', async () => {
+    const user = await createPrincipal(randomUUID(), 'appearance-owner');
+    const lead = (await call(user, 'agent_create', {
+      name: 'Lead', role: 'Lead', instructions: 'Help', scope: 'project:a', runner: { provider: 'codex' }
+    })).agent;
+    let bot = (await call(user, 'bot_create', {
+      name: 'Appearance', job: 'Help', scope: 'project:a', lead_agent_id: lead.id, member_agent_ids: []
+    })).bot;
+    assert.equal(bot.color, null);
+    await pool.query('UPDATE bots SET avatar=$2 WHERE id=$1', [bot.id, 'legacy free text']);
+    bot = (await call(user, 'bot_update', { bot_id: bot.id, expected_version: bot.version, color: 'blue' })).bot;
+    assert.equal(bot.avatar, 'legacy free text');
+    for (const fields of [{ avatar: 'mark' }, { avatar: 'unknown' }, { avatar: '' }, { avatar: 42 },
+      { color: 'orange' }, { color: 'green' }, { color: 'unknown' }, { color: false }]) {
+      await assert.rejects(call(user, 'bot_update', { bot_id: bot.id, expected_version: bot.version, ...fields }),
+        (e: unknown) => e instanceof AppError && e.status === 400 && e.code === 'invalid_arguments');
+    }
+    for (const [avatar, color] of [['lead', 'blue'], ['runner', 'butter'], ['scout', 'peach'], ['navigator', 'lilac'],
+      ['clerk', 'pink'], ['scribe', 'lime'], ['badge-sun', 'sky'], ['badge-peri', 'orchid'], ['badge-peach', null], [null, null]]) {
+      bot = (await call(user, 'bot_update', { bot_id: bot.id, expected_version: bot.version, avatar, color })).bot;
+      assert.equal(bot.avatar, avatar);
+      assert.equal(bot.color, color);
+      assert.equal((await call(user, 'bot_get', { bot_id: bot.id })).bot.color, color);
+      assert.equal((await call(user, 'bot_list', { scope: 'project:a' })).bots[0].color, color);
+    }
+    await assert.rejects(pool.query('UPDATE bots SET color=$2 WHERE id=$1', [bot.id, 'orange']), { code: '23514' });
+  });
+
+  it('applies bot appearance on completion once, audits it, and rejects invalid or non-bot actions', async () => {
+    const user = await createPrincipal(randomUUID(), 'appearance-turn-owner');
+    const worker = await createPrincipal(user.tenantId, 'appearance-worker', 'worker');
+    const made = await call(user, 'agent_create', {
+      name: 'Lead', role: 'Lead', instructions: 'Help', scope: 'project:a', runner: { provider: 'codex' }
+    });
+    const { bot, thread } = await call(user, 'bot_create', {
+      name: 'Appearance', job: 'Help', scope: 'project:a', lead_agent_id: made.agent.id, member_agent_ids: [], rules: { first_reply: 'off' }, routing: { summary: { provider: 'codex' } }
+    });
+    async function finish(threadId: string, action: Record<string, unknown>) {
+      await call(user, 'thread_post', { thread_id: threadId, body: 'Change appearance', idempotency_key: randomUUID() });
+      const claim = await call(worker, 'task_claim', { scope: 'project:a', capabilities: ['codex.read'], kinds: ['turn'] });
+      assert.ok(claim.task);
+      const args = { task_id: claim.task.id, lease_token: claim.lease_token, lease_generation: claim.lease_generation,
+        outcome: 'completed', result: { answer: 'Done\n\n```swarmaa-actions\n' + JSON.stringify([action]) + '\n```' } };
+      await call(worker, 'task_finish', args);
+      return args;
+    }
+    const args = await finish(thread.id, { type: 'bot_appearance', avatar: 'scout', color: 'peach' });
+    await call(worker, 'task_finish', args);
+    let updated = (await call(user, 'bot_get', { bot_id: bot.id })).bot;
+    assert.equal(updated.version, bot.version + 1);
+    assert.equal(updated.avatar, 'scout');
+    assert.equal(updated.color, 'peach');
+    assert.equal((await pool.query("SELECT 1 FROM events WHERE subject_id=$1 AND name='bot.updated' AND payload->>'reason'='appearance'", [bot.id])).rowCount, 1);
+    assert.equal((await pool.query("SELECT 1 FROM audit_log WHERE subject_id=$1 AND operation='bot.update' AND details->>'reason'='appearance'", [bot.id])).rowCount, 1);
+    for (const fields of [{ avatar: 'mark' }, { avatar: 'unknown' }, { color: 'unknown' }]) {
+      await finish(thread.id, { type: 'bot_appearance', ...fields });
+      const messages = (await call(user, 'thread_read', { thread_id: thread.id })).messages;
+      assert.match(messages.at(-1).body, /Turn action rejected/);
+      assert.equal((await call(user, 'bot_get', { bot_id: bot.id })).bot.version, updated.version);
+    }
+    await finish(made.thread.id, { type: 'bot_appearance', avatar: 'runner' });
+    const messages = (await call(user, 'thread_read', { thread_id: made.thread.id })).messages;
+    assert.match(messages.at(-1).body, /bot_appearance requires a bot turn/);
+    assert.equal((await call(user, 'bot_get', { bot_id: bot.id })).bot.version, updated.version);
+    await finish(thread.id, { type: 'bot_appearance', color: null });
+    updated = (await call(user, 'bot_get', { bot_id: bot.id })).bot;
+    assert.equal(updated.avatar, 'scout');
+    assert.equal(updated.color, null);
+  });
+
   it('create, update and archive, with versions, idempotency and name_taken', async () => {
     const tenantId = randomUUID();
     const user = await createPrincipal(tenantId, 'user-1');

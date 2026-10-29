@@ -13,6 +13,16 @@ import { AUTO_PATCH, AUTO_READ } from './swarm.js';
 import type { RunnerConfig } from '../bridge/adapters.js';
 import { nextCronRun, routingNow, syncScheduleCard, type BotRoutingRow } from './bot-routing.js';
 
+export const BOT_AVATARS = ['lead', 'runner', 'scout', 'navigator', 'clerk', 'scribe', 'badge-sun', 'badge-peri', 'badge-peach'] as const;
+export const BOT_COLORS = ['blue', 'butter', 'peach', 'lilac', 'pink', 'lime', 'sky', 'orchid'] as const;
+
+export function validateBotAppearance(value: unknown, field: 'avatar' | 'color'): string | null {
+  const names: readonly string[] = field === 'avatar' ? BOT_AVATARS : BOT_COLORS;
+  requireCondition(value === null || (typeof value === 'string' && names.includes(value)),
+    400, 'invalid_arguments', `${field} must be one of ${names.join(', ')} or null`);
+  return value as string | null;
+}
+
 export interface BotRow {
   id: string;
   tenant_id: string;
@@ -20,6 +30,7 @@ export interface BotRow {
   name: string;
   job: string;
   avatar: string | null;
+  color: string | null;
   thread_id: string;
   lead_agent_id: string;
   routing: Record<string, unknown>;
@@ -273,6 +284,7 @@ export function botView(
     name: row.name,
     job: row.job,
     avatar: row.avatar,
+    color: row.color,
     thread_id: row.thread_id,
     lead_agent_id: row.lead_agent_id,
     member_agent_ids: memberAgentIds,
@@ -651,7 +663,7 @@ export class BotService {
   }
 
   async botUpdate(p: Principal, input: Record<string, unknown>): Promise<unknown> {
-    noExtraKeys(input, ['bot_id', 'expected_version', 'name', 'job', 'avatar', 'lead_agent_id', 'member_agent_ids', 'routing', 'rules', 'schedule', 'starred']);
+    noExtraKeys(input, ['bot_id', 'expected_version', 'name', 'job', 'avatar', 'color', 'lead_agent_id', 'member_agent_ids', 'routing', 'rules', 'schedule', 'starred']);
     requirePermission(p, 'agent:manage');
 
     const botId = uuid(input.bot_id, 'bot_id');
@@ -681,7 +693,8 @@ export class BotService {
         nextJob = rawJob;
       }
 
-      const nextAvatar = input.avatar !== undefined ? (input.avatar === null ? null : string(input.avatar, 'avatar', 200)) : existing.avatar;
+      const nextAvatar = input.avatar !== undefined ? validateBotAppearance(input.avatar, 'avatar') : existing.avatar;
+      const nextColor = input.color !== undefined ? validateBotAppearance(input.color, 'color') : existing.color;
       const nextLeadId = input.lead_agent_id !== undefined ? uuid(input.lead_agent_id, 'lead_agent_id') : existing.lead_agent_id;
 
       const currentMemberIds = (await db.query<{ agent_id: string }>(
@@ -778,10 +791,10 @@ export class BotService {
       const updated = (await db.query<BotRow>(
         `UPDATE bots
          SET name=$1, job=$2, avatar=$3, lead_agent_id=$4, routing=$5::jsonb, rules=$6::jsonb, schedule=$7, starred=$9,
-             next_run_at=$10,
+             next_run_at=$10, color=$11,
              version=version+1, updated_at=clock_timestamp()
          WHERE id=$8 RETURNING *`,
-        [nextName, nextJob, nextAvatar, nextLeadId, JSON.stringify(nextRouting), JSON.stringify(nextRules), nextSchedule, botId, nextStarred, nextRun]
+        [nextName, nextJob, nextAvatar, nextLeadId, JSON.stringify(nextRouting), JSON.stringify(nextRules), nextSchedule, botId, nextStarred, nextRun, nextColor]
       )).rows[0]!;
 
       if (scheduleChanged) await syncScheduleCard(db, p, updated, now);

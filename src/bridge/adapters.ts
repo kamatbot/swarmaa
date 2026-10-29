@@ -73,6 +73,7 @@ export function buildTurnPrompt(
   let newSet: Set<string | number> | undefined;
   let fastMode = Boolean(fastModeArg);
   let delegatedObjective = '';
+  const botTurn = Boolean((inputOrTask as Task & { bot_id?: string }).bot_id);
 
   let agents: Array<{ id: string; name: string; role?: string }> = [];
 
@@ -164,6 +165,13 @@ export function buildTurnPrompt(
     '- {type:\'swarm_update\', swarm_id, ops:[...]}',
     '- {type:\'question_ask\', prompt, options, multi, free_text, swarm_step_id?}',
     '- {type:\'channel_post\', channel_id, body}',
+    ...(botTurn ? [
+      "- {type:'bot_appearance', avatar?, color?}: change only this bot; provide at least one field.",
+      'Characters: lead (violet, big eyes, rosy cheeks); runner (blue, sunglasses, thumbs-up); scout (peach/pink, magnifying glass).',
+      'navigator (yellow, star wand); clerk (lilac/pink, X eye); scribe (blue, simple smile).',
+      'badge-sun (yellow, open smile); badge-peri (periwinkle, small eyes); badge-peach (peach/pink, straight mouth). Never use mark.',
+      'Colours: blue, butter, peach, lilac, pink, lime, sky, orchid, or null to clear; orange maps to peach, green to lime.'
+    ] : []),
     'The actions block must be the very last element in your response.'
   ].join('\n');
 

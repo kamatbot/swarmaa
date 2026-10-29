@@ -742,8 +742,13 @@ A bot's `starred` boolean is returned by create, update, get and list. At most o
 - **Arguments:**
   - `bot_id`: UUID
   - `expected_version`: integer (>= 1)
-  - Any of: `name`, `job`, `avatar`, `lead_agent_id`, `member_agent_ids`, `routing`, `rules`, `schedule`, `starred`
+  - Any of: `name`, `job`, `avatar`, `color`, `lead_agent_id`, `member_agent_ids`, `routing`, `rules`, `schedule`, `starred`
 - **Returns:** `{ bot }`. Optimistically versioned. A routing or crew change posts an explanatory `notice` message into the bot thread and emits `bot.updated`.
+
+`avatar` accepts exactly `lead`, `runner`, `scout`, `navigator`, `clerk`, `scribe`, `badge-sun`, `badge-peri`, `badge-peach`, or null. `mark` and unknown names return `400 invalid_arguments`. Existing free-text avatars remain readable and unchanged when omitted.
+`color` accepts exactly `blue`, `butter`, `peach`, `lilac`, `pink`, `lime`, `sky`, `orchid`, or null (clear). All bot views include `color: string | null`.
+
+A bot turn may end with a `swarmaa-actions` block containing `{"type":"bot_appearance","avatar":"scout","color":"peach"}`. At least one of `avatar` (a character name) or `color` (a colour name or null) is required; unknown fields/names are rejected using the usual action notice. Only tasks with `bot_id` can use it, and it changes only that active bot in the task's tenant and scope. Completion increments its version, emits `bot.updated`, and audits `bot.update` with `reason: 'appearance'`. Summary turns remain reply-only. The bot-turn prompt lists the character descriptions and colour names; non-bot prompts do not advertise this action.
 
 #### `bot_get`
 - **Permission:** `agent:read`

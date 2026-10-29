@@ -1,3 +1,4 @@
+import { BOT_AVATARS, BOT_COLORS } from './bots.js';
 import { AppError } from '../errors.js';
 import { redactSecrets } from '../safety/redact.js';
 import { validateStepGraph } from './swarms.js';
@@ -50,7 +51,14 @@ export interface TurnActionChannelPost {
   body: string;
 }
 
+export interface TurnActionBotAppearance {
+  type: 'bot_appearance';
+  avatar?: string;
+  color?: string | null;
+}
+
 export type TurnAction =
+  | TurnActionBotAppearance
   | TurnActionHandoff
   | TurnActionSwarmStart
   | TurnActionSwarmUpdate
@@ -179,7 +187,21 @@ export function extractActionsBlock(text: string): ExtractedActions {
       return { cleanText, rawBlock, error: 'action missing type field', rejectedAction: item };
     }
 
-    if (type === 'handoff') {
+    if (type === 'bot_appearance') {
+      const extra = Object.keys(act).find(k => !['type', 'avatar', 'color'].includes(k));
+      if (extra) return { cleanText, rawBlock, error: `unknown field '${extra}' in bot_appearance action`, rejectedAction: item };
+      if (act.avatar === undefined && act.color === undefined) {
+        return { cleanText, rawBlock, error: 'bot_appearance requires avatar or color', rejectedAction: item };
+      }
+      if (act.avatar !== undefined && (typeof act.avatar !== 'string' || !(BOT_AVATARS as readonly string[]).includes(act.avatar))) {
+        return { cleanText, rawBlock, error: 'invalid avatar in bot_appearance', rejectedAction: item };
+      }
+      if (act.color !== undefined && act.color !== null && (typeof act.color !== 'string' || !(BOT_COLORS as readonly string[]).includes(act.color))) {
+        return { cleanText, rawBlock, error: 'invalid color in bot_appearance', rejectedAction: item };
+      }
+      actions.push({ type, ...(act.avatar !== undefined ? { avatar: act.avatar as string } : {}),
+        ...(act.color !== undefined ? { color: act.color as string | null } : {}) });
+    } else if (type === 'handoff') {
       const allowed = new Set(['type', 'to_agent', 'body', 'swarm_step_id']);
       for (const k of Object.keys(act)) {
         if (!allowed.has(k)) {
@@ -361,7 +383,14 @@ export async function validateTurnGrant(
   actions: TurnAction[]
 ): Promise<{ valid: true } | { valid: false; reason: string; action: TurnAction }> {
   for (const act of actions) {
-    if (act.type === 'handoff') {
+    if (act.type === 'bot_appearance') {
+      if (!ctx.botId) return { valid: false, reason: 'bot_appearance requires a bot turn', action: act };
+      const bot = (await db.query(
+        'SELECT id FROM bots WHERE id=$1 AND tenant_id=$2 AND scope=$3 AND NOT archived FOR UPDATE',
+        [ctx.botId, ctx.tenantId, ctx.scope]
+      )).rows[0];
+      if (!bot) return { valid: false, reason: 'bot not found or archived in this scope', action: act };
+    } else if (act.type === 'handoff') {
       // Find target agent in same tenant and scope
       const res = await db.query<AgentRow>(
         'SELECT * FROM agents WHERE tenant_id=$1 AND scope=$2 AND (id::text=$3 OR name=$3) AND NOT archived',

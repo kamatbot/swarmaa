@@ -958,7 +958,22 @@ export class TaskService {
                   author: { kind: 'system', id: 'service' }
                 });
               } else {
-                await this.swarms.applyTurnActions(db, p, turnCtx, extracted.actions, budget);
+                // Summary turns remain reply-only. Appearance targets are locked by validateTurnGrant.
+                await this.swarms.applyTurnActions(db, p, turnCtx,
+                  budget.summary ? extracted.actions : extracted.actions.filter(a => a.type !== 'bot_appearance'), budget);
+                if (!budget.summary) for (const act of extracted.actions) {
+                  if (act.type !== 'bot_appearance') continue;
+                  const updated = (await db.query<{ version: number }>(
+                    `UPDATE bots SET avatar=CASE WHEN $4 THEN $5 ELSE avatar END,
+                       color=CASE WHEN $6 THEN $7 ELSE color END,
+                       version=version+1, updated_at=clock_timestamp()
+                     WHERE id=$1 AND tenant_id=$2 AND scope=$3 RETURNING version`,
+                    [row.bot_id, p.tenantId, row.scope, act.avatar !== undefined, act.avatar ?? null,
+                     act.color !== undefined, act.color ?? null]
+                  )).rows[0]!;
+                  await audit(db, p, row.scope, 'bot.update', row.bot_id!, { reason: 'appearance', version: updated.version });
+                  await event(db, p, row.scope, 'bot.updated', row.bot_id!, { bot_id: row.bot_id, reason: 'appearance' });
+                }
               }
             }
           }
