@@ -224,6 +224,15 @@ final class TeamsSnapshotRender: XCTestCase {
         try rep.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: dir).appendingPathComponent("0-window-chrome.png"))
     }
 
+    func testRenderBotRowHover() throws {
+        let model = try fixture()
+        let bot = try XCTUnwrap(model.bot(id: "1"))
+        try render(VStack(spacing: 6) {
+            BotRow(model: model, bot: bot)
+            BotRow(model: model, bot: bot, hovered: true)
+        }.padding(12).background(KS.paperDeep), "1g-bot-row-hover", size: CGSize(width: 300, height: 190))
+    }
+
     func testRenderPhotoComposer() throws {
         let model = try fixture()
         let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 80, pixelsHigh: 60, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!

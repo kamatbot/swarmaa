@@ -132,7 +132,7 @@ struct KSButtonStyle: ButtonStyle {
             .offset(x: kind == .primary && pressed && !reduceMotion ? 2 : 0, y: kind == .primary && pressed && !reduceMotion ? 2 : 0)
             .contentShape(Capsule())
             .opacity(isEnabled ? 1 : 0.45)  // a disabled button must look it
-            .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: pressed)
+            .animation(reduceMotion ? nil : .spring(response: 0.16, dampingFraction: 0.75), value: pressed)
     }
 }
 

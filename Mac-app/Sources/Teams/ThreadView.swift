@@ -20,60 +20,92 @@ struct ThreadView: View {
             if let bot = model.bot(threadID: threadID) { BotThreadHeader(model: model, bot: bot) }
             else { ThreadHeader(model: model, threadID: threadID) }
             ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 7) {
-                        if model.hasOlder[threadID] == true, !messages.isEmpty {
-                            ProgressView().controlSize(.small).frame(maxWidth: .infinity)
-                                .onAppear { Task { await model.loadOlder(threadID) } }
-                        }
-                        if model.loadingThreads.contains(threadID) { ProgressView("Loading messages") }
-                        if let error = model.threadErrors[threadID] {
-                            Text(error)
-                        }
-                        if model.messages[threadID]?.isEmpty == true, !model.loadingThreads.contains(threadID),
-                           !model.staleThreads.contains(threadID), model.threadErrors[threadID] == nil {
-                            Text(verbatim: L10n.t("No messages yet. Say hello below."))
-                                .foregroundStyle(Palette.textSecondary).frame(maxWidth: .infinity).padding(.top, 40)
-                        }
-                        ForEach(teamsThreadRows(messages)) { row in
-                            if row.folded {
-                                DisclosureGroup(isExpanded: Binding(
-                                    get: { model.expandedWorkingNotes[threadID, default: []].contains(row.id) },
-                                    set: { if $0 { model.expandedWorkingNotes[threadID, default: []].insert(row.id) }
-                                           else { model.expandedWorkingNotes[threadID]?.remove(row.id) } }
-                                )) {
-                                    ForEach(row.messages) { MessageRow(model: model, message: $0).id($0.id) }
-                                } label: { Text(row.label).font(KS.mono(11)).foregroundStyle(KS.textMuted) }
-                            } else if let message = row.messages.first {
-                                MessageRow(model: model, message: message).id(message.id)
+                ZStack(alignment: .bottom) {
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 7) {
+                            if model.hasOlder[threadID] == true, !messages.isEmpty {
+                                ProgressView().controlSize(.small).frame(maxWidth: .infinity)
+                                    .onAppear { Task { await model.loadOlder(threadID) } }
                             }
+                            if model.loadingThreads.contains(threadID) { ProgressView("Loading messages") }
+                            if let error = model.threadErrors[threadID] {
+                                Text(error)
+                            }
+                            if model.messages[threadID]?.isEmpty == true, !model.loadingThreads.contains(threadID),
+                               !model.staleThreads.contains(threadID), model.threadErrors[threadID] == nil {
+                                Text(verbatim: L10n.t("No messages yet. Say hello below."))
+                                    .foregroundStyle(Palette.textSecondary).frame(maxWidth: .infinity).padding(.top, 40)
+                            }
+                            ForEach(teamsThreadRows(messages)) { row in
+                                if row.folded {
+                                    DisclosureGroup(isExpanded: Binding(
+                                        get: { model.expandedWorkingNotes[threadID, default: []].contains(row.id) },
+                                        set: { if $0 { model.expandedWorkingNotes[threadID, default: []].insert(row.id) }
+                                               else { model.expandedWorkingNotes[threadID]?.remove(row.id) } }
+                                    )) {
+                                        ForEach(row.messages) { MessageRow(model: model, message: $0).id($0.id) }
+                                    } label: { Text(row.label).font(KS.mono(11)).foregroundStyle(KS.textMuted) }
+                                } else if let message = row.messages.first {
+                                    MessageRow(model: model, message: message).id(message.id)
+                                }
+                            }
+                            ForEach(model.liveTyping(threadID)) { TypingBubble(model: model, typing: $0).id("typing:" + $0.id) }
                         }
-                        ForEach(model.liveTyping(threadID)) { TypingBubble(model: model, typing: $0).id("typing:" + $0.id) }
+                        .padding(.horizontal, 16).padding(.vertical, 12)
                     }
-                    .padding(.horizontal, 16).padding(.vertical, 12)
-                }
-                .defaultScrollAnchor(.bottom)
-                .onScrollGeometryChange(for: Bool.self) { geometry in
-                    geometry.contentOffset.y + geometry.containerSize.height >= geometry.contentSize.height - 80
-                } action: { _, value in nearBottom = value }
-                .onChange(of: model.targetQuestionID) { _, target in
-                    if let target, let message = messages.first(where: { $0.question?.id == target || $0.ref?.questionID == target }) {
-                        proxy.scrollTo(message.id, anchor: .center)
+                    .defaultScrollAnchor(.bottom)
+                    .onScrollGeometryChange(for: Bool.self) { geometry in
+                        geometry.contentOffset.y + geometry.containerSize.height >= geometry.contentSize.height - 80
+                    } action: { _, value in nearBottom = value }
+                    .onChange(of: model.targetQuestionID) { _, target in
+                        if let target, let message = messages.first(where: { $0.question?.id == target || $0.ref?.questionID == target }) {
+                            proxy.scrollTo(message.id, anchor: .center)
+                        }
                     }
-                }
-                .onChange(of: model.liveTyping(threadID).last?.text) { _, text in
-                    guard text != nil, nearBottom, let last = model.liveTyping(threadID).last else { return }
-                    proxy.scrollTo("typing:" + last.id, anchor: .bottom)
-                }
-                .onChange(of: messages.last?.id) { _, last in
-                    guard let last, nearBottom else { return }
-                    withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) { proxy.scrollTo(last, anchor: .bottom) }
-                    model.markSelectedRead()
-                }
-                .task(id: "\(threadID):\(model.targetQuestionID ?? "")") {
-                    if let message = await model.findTargetQuestion(in: threadID) {
-                        proxy.scrollTo(message.id, anchor: .center)
-                        if message.question?.status == "open" { answeringQuestion = message.question }
+                    .onChange(of: model.liveTyping(threadID).last?.text) { _, text in
+                        guard text != nil, nearBottom, let last = model.liveTyping(threadID).last else { return }
+                        proxy.scrollTo("typing:" + last.id, anchor: .bottom)
+                    }
+                    .onChange(of: messages.last?.id) { _, last in
+                        guard let last, nearBottom else { return }
+                        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) { proxy.scrollTo(last, anchor: .bottom) }
+                        model.markSelectedRead()
+                    }
+                    .task(id: "\(threadID):\(model.targetQuestionID ?? "")") {
+                        if let message = await model.findTargetQuestion(in: threadID) {
+                            proxy.scrollTo(message.id, anchor: .center)
+                            if message.question?.status == "open" { answeringQuestion = message.question }
+                        }
+                    }
+
+                    // Subframe Motion: answer-stream jump-to-latest pill
+                    if !nearBottom {
+                        Button {
+                            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.22)) {
+                                if let lastTyping = model.liveTyping(threadID).last {
+                                    proxy.scrollTo("typing:" + lastTyping.id, anchor: .bottom)
+                                } else if let last = messages.last {
+                                    proxy.scrollTo(last.id, anchor: .bottom)
+                                }
+                            }
+                            nearBottom = true
+                        } label: {
+                            HStack(spacing: 5) {
+                                Text(verbatim: L10n.t("Latest response"))
+                                Image(systemName: "arrow.down").font(.system(size: 10, weight: .bold))
+                            }
+                            .font(KS.mono(11, .semibold))
+                            .foregroundStyle(KS.ink)
+                            .padding(.horizontal, 12).padding(.vertical, 6)
+                            .background(Capsule().fill(KS.white))
+                            .shadow(color: KS.ink.opacity(0.14), radius: 6, y: 2)
+                            .offset(y: -8)
+                        }
+                        .buttonStyle(.plain)
+                        .transition(reduceMotion ? .identity : .asymmetric(
+                            insertion: .opacity.combined(with: .move(edge: .bottom)),
+                            removal: .opacity
+                        ))
                     }
                 }
             }
@@ -234,7 +266,32 @@ struct MessageRow: View {
     }
 }
 
-/// A running turn's reply so far: an agent bubble with a quiet "typing" mark.
+/// Pulsing indicator for live responses (Subframe Motion `answer-stream` feedback).
+struct TypingDotsIndicator: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var pulse = false
+
+    var body: some View {
+        HStack(spacing: 3) {
+            ForEach(0..<3) { index in
+                Circle()
+                    .fill(KS.ink)
+                    .frame(width: 4, height: 4)
+                    .opacity(pulse ? (index == 1 ? 1.0 : 0.35) : (index == 1 ? 0.35 : 1.0))
+                    .scaleEffect(pulse ? (index == 1 ? 1.2 : 0.85) : (index == 1 ? 0.85 : 1.2))
+            }
+        }
+        .onAppear {
+            guard !reduceMotion else { return }
+            withAnimation(.easeInOut(duration: 0.55).repeatForever(autoreverses: true)) {
+                pulse = true
+            }
+        }
+        .accessibilityHidden(true)
+    }
+}
+
+/// A running turn's reply so far: an agent bubble with an animated typing mark.
 /// Plain text (it is partial and untrusted), replaced by the real message when it lands.
 struct TypingBubble: View {
     @ObservedObject var model: TeamsModel
@@ -249,7 +306,7 @@ struct TypingBubble: View {
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
                     Text(verbatim: name).font(KS.body(14, .bold))
-                    Image(systemName: "ellipsis").font(.system(size: 11, weight: .bold)).foregroundStyle(KS.textMuted)
+                    TypingDotsIndicator()
                     Text(verbatim: L10n.t("typing")).font(KS.mono(10)).foregroundStyle(KS.textMuted)
                 }
                 Text(verbatim: typing.text).textSelection(.enabled)

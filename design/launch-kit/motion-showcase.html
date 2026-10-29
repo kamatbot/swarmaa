@@ -1,0 +1,685 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Swarmaa — Subframe Motion Showcase</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500;600&family=IBM+Plex+Sans+Condensed:wght@400;500;600;700&family=Stardos+Stencil:wght@400;700&display=swap">
+<style>
+:root {
+  --ks-ink: #15111F;
+  --ks-paper: #F4EFE6;
+  --ks-paper-deep: #EBE4D7;
+  --ks-white: #FFFFFF;
+  --ks-lime: #CFE08A;
+  --ks-coral: #E8836B;
+  --ks-coral-tint: #FBEFE7;
+  --ks-sage: #D6E3A6;
+  --ks-sage-tint: #F1F5E2;
+  --ks-sky: #B7CCE8;
+  --ks-butter: #EAD9A6;
+  --ks-lilac: #D9CDEE;
+  --ks-text-soft: #3A3347;
+  --ks-text-muted: #5A5168;
+  --ks-border: 2px solid var(--ks-ink);
+  --ks-shadow-hard: 3px 3px 0 var(--ks-ink);
+  --ks-ease-spring: cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  background: var(--ks-paper);
+  color: var(--ks-ink);
+  font-family: "IBM Plex Sans Condensed", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  padding: 40px 24px 80px;
+  line-height: 1.45;
+}
+
+header {
+  max-width: 1040px;
+  margin: 0 auto 36px;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  border-bottom: 2px solid var(--ks-ink);
+  padding-bottom: 20px;
+}
+
+h1 {
+  font-family: "Stardos Stencil", "IBM Plex Sans Condensed", serif;
+  font-size: 38px;
+  letter-spacing: -0.02em;
+  text-transform: uppercase;
+}
+
+.lede {
+  color: var(--ks-text-soft);
+  font-size: 16px;
+  margin-top: 6px;
+}
+
+.controls-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.toggle-label {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--ks-text-muted);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.grid {
+  max-width: 1040px;
+  margin: 0 auto;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(460px, 1fr));
+  gap: 28px;
+}
+
+.card {
+  background: var(--ks-white);
+  border: var(--ks-border);
+  box-shadow: var(--ks-shadow-hard);
+  border-radius: 20px;
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+}
+
+.card-header {
+  margin-bottom: 18px;
+  border-bottom: 1px solid rgba(21, 17, 31, 0.12);
+  padding-bottom: 12px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.card-title {
+  font-size: 18px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pattern-tag {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  background: var(--ks-paper);
+  border: 1.5px solid var(--ks-ink);
+  border-radius: 999px;
+  padding: 2px 8px;
+}
+
+.card-desc {
+  font-size: 13px;
+  color: var(--ks-text-soft);
+  margin-bottom: 20px;
+}
+
+.stage {
+  background: var(--ks-paper);
+  border: 1.5px dashed rgba(21, 17, 31, 0.25);
+  border-radius: 14px;
+  padding: 24px;
+  min-height: 180px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  position: relative;
+  overflow: hidden;
+}
+
+/* 1. press-depth */
+.btn-press {
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  padding: 10px 22px;
+  border-radius: 999px;
+  border: var(--ks-border);
+  background: var(--ks-white);
+  color: var(--ks-ink);
+  cursor: pointer;
+  box-shadow: 2px 2px 0 var(--ks-ink);
+  transform: translateY(0);
+  transition: transform 100ms var(--ks-ease-spring), box-shadow 100ms var(--ks-ease-spring);
+  outline: none;
+  user-select: none;
+}
+.btn-press.primary {
+  background: var(--ks-lime);
+  box-shadow: 3px 3px 0 var(--ks-ink);
+}
+.btn-press:hover {
+  transform: translateY(-2px);
+  box-shadow: 4px 4px 0 var(--ks-ink);
+}
+.btn-press:active {
+  transform: translateY(2px);
+  box-shadow: 0 0 0 var(--ks-ink);
+}
+
+/* 2. presence-pile */
+.presence-wrapper {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+.presence-row {
+  display: flex;
+  align-items: center;
+}
+.presence-avatar {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: 2px solid var(--ks-ink);
+  background: var(--ks-white);
+  margin-left: -12px;
+  position: relative;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 13px;
+  transition: transform 240ms var(--ks-ease-spring), box-shadow 180ms;
+  box-shadow: inset 0 -3px 6px rgba(21,17,31,0.08);
+}
+.presence-avatar:first-child { margin-left: 0; }
+.presence-avatar .online-pip {
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 1.5px solid var(--ks-white);
+  bottom: 0;
+  right: 0;
+}
+.presence-row.expanded .presence-avatar {
+  margin-left: 8px;
+}
+.presence-card {
+  background: var(--ks-white);
+  border: 1.5px solid var(--ks-ink);
+  box-shadow: 2px 2px 0 var(--ks-ink);
+  border-radius: 8px;
+  padding: 6px 12px;
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  opacity: 0;
+  transform: translateY(-4px);
+  transition: opacity 180ms, transform 180ms;
+  pointer-events: none;
+}
+.presence-card.visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+/* 3. tool-call-stack */
+.tool-stack {
+  width: 100%;
+  max-width: 380px;
+  background: var(--ks-white);
+  border: var(--ks-border);
+  border-radius: 14px;
+  overflow: hidden;
+  box-shadow: 2px 2px 0 var(--ks-ink);
+}
+.tool-step {
+  border-bottom: 1px solid rgba(21, 17, 31, 0.1);
+}
+.tool-step:last-child { border-bottom: none; }
+.tool-step-header {
+  padding: 10px 14px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  user-select: none;
+}
+.tool-node {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 1.5px solid var(--ks-ink);
+  display: grid;
+  place-items: center;
+  font-size: 11px;
+}
+.tool-node.done { background: var(--ks-lime); color: var(--ks-ink); }
+.tool-node.running { background: var(--ks-sky); animation: pulse 1s infinite alternate; }
+.tool-chevron {
+  margin-left: auto;
+  font-size: 14px;
+  transition: transform 180ms var(--ks-ease-spring);
+}
+.tool-step.open .tool-chevron { transform: rotate(90deg); }
+.tool-detail {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 220ms var(--ks-ease-spring);
+  background: var(--ks-paper);
+}
+.tool-step.open .tool-detail { grid-template-rows: 1fr; }
+.tool-detail-inner {
+  overflow: hidden;
+  padding: 0 14px;
+}
+.tool-step.open .tool-detail-inner { padding: 8px 14px 10px 44px; }
+.tool-code {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 11px;
+  color: var(--ks-text-soft);
+  word-break: break-all;
+}
+
+/* 4. answer-stream */
+.stream-box {
+  width: 100%;
+  max-width: 380px;
+  height: 190px;
+  background: var(--ks-white);
+  border: var(--ks-border);
+  border-radius: 14px;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  overflow: hidden;
+  box-shadow: 2px 2px 0 var(--ks-ink);
+}
+.stream-viewport {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px 14px;
+  font-size: 13px;
+  scroll-behavior: smooth;
+}
+.stream-pill {
+  position: absolute;
+  bottom: 12px;
+  left: 50%;
+  transform: translateX(-50%) translateY(0);
+  background: var(--ks-white);
+  border: var(--ks-border);
+  box-shadow: 2px 2px 0 var(--ks-ink);
+  border-radius: 999px;
+  padding: 5px 12px;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  display: none;
+}
+.stream-pill.active { display: block; animation: fadeUp 160ms var(--ks-ease-spring); }
+
+/* 5. activity-capsule */
+.capsule {
+  background: var(--ks-white);
+  border: var(--ks-border);
+  box-shadow: 2px 2px 0 var(--ks-ink);
+  border-radius: 16px;
+  width: 320px;
+  overflow: hidden;
+  transition: width 250ms var(--ks-ease-spring), border-radius 250ms;
+}
+.capsule.collapsed {
+  width: 220px;
+  border-radius: 24px;
+}
+.capsule-bar {
+  padding: 10px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: pointer;
+  user-select: none;
+  font-size: 13px;
+  font-weight: 700;
+}
+.capsule-details {
+  padding: 0 14px 12px;
+  animation: fadeIn 180ms ease-out;
+}
+.capsule.collapsed .capsule-details { display: none; }
+.segments {
+  display: flex;
+  gap: 3px;
+  margin: 8px 0;
+}
+.segment {
+  flex: 1;
+  height: 8px;
+  background: rgba(21, 17, 31, 0.1);
+  border-radius: 2px;
+  transition: background 160ms;
+}
+.segment.filled { background: var(--ks-lime); }
+
+/* 6. review-disclosure */
+.review-box {
+  width: 100%;
+  max-width: 380px;
+  background: var(--ks-white);
+  border: var(--ks-border);
+  box-shadow: 2px 2px 0 var(--ks-ink);
+  border-radius: 14px;
+  padding: 14px;
+}
+.review-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 700;
+  user-select: none;
+}
+.review-items {
+  display: grid;
+  grid-template-rows: 1fr;
+  transition: grid-template-rows 200ms var(--ks-ease-spring);
+  margin-top: 8px;
+}
+.review-box.closed .review-items { grid-template-rows: 0fr; margin-top: 0; }
+.review-items-inner { overflow: hidden; display: flex; flex-direction: column; gap: 6px; }
+.review-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 11px;
+}
+
+@keyframes pulse { from { opacity: 0.6; } to { opacity: 1; } }
+@keyframes fadeUp { from { opacity: 0; transform: translateX(-50%) translateY(6px); } to { opacity: 1; transform: translateX(-50%) translateY(0); } }
+@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+
+/* Reduced motion simulation */
+body.reduced-motion * {
+  animation: none !important;
+  transition: none !important;
+  scroll-behavior: auto !important;
+}
+</style>
+</head>
+<body>
+
+<header>
+  <div>
+    <h1>Subframe Motion for Swarmaa</h1>
+    <p class="lede">Interactive review of 6 purposeful animation patterns adapted to Muted Kind Swarm</p>
+  </div>
+  <div class="controls-bar">
+    <label class="toggle-label">
+      <input type="checkbox" id="reduceToggle" onchange="document.body.classList.toggle('reduced-motion', this.checked)">
+      Simulate Reduced Motion
+    </label>
+  </div>
+</header>
+
+<div class="grid">
+
+  <!-- 1. press-depth -->
+  <div class="card">
+    <div class="card-header">
+      <div class="card-title">1. Tactile Button Press</div>
+      <span class="pattern-tag">press-depth</span>
+    </div>
+    <p class="card-desc">Lifts 2px on hover, compresses flat onto paper ground on click within 100ms, collapsing shadow with snappy spring return.</p>
+    <div class="stage">
+      <div style="display:flex; gap:14px;">
+        <button class="btn-press primary">Launch Swarm</button>
+        <button class="btn-press">Review Diff</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 2. presence-pile -->
+  <div class="card">
+    <div class="card-header">
+      <div class="card-title">2. Crew Avatar Fan-Out</div>
+      <span class="pattern-tag">presence-pile</span>
+    </div>
+    <p class="card-desc">Compact resting stack fans apart smoothly (240ms ease-out spring) on toggle, popping up active agent identity card.</p>
+    <div class="stage">
+      <div class="presence-wrapper">
+        <div class="presence-row" id="presenceRow">
+          <div class="presence-avatar" style="background:#CFE08A;" onclick="selectAgent('Atlas', 'Team Lead', '#CFE08A')">
+            A<span class="online-pip" style="background:#CFE08A;"></span>
+          </div>
+          <div class="presence-avatar" style="background:#B7CCE8;" onclick="selectAgent('Scout', 'Research', '#B7CCE8')">
+            S<span class="online-pip" style="background:#B7CCE8;"></span>
+          </div>
+          <div class="presence-avatar" style="background:#E8836B;" onclick="selectAgent('Forge', 'Builder', '#E8836B')">
+            F<span class="online-pip" style="background:#E8836B;"></span>
+          </div>
+          <div class="presence-avatar" style="background:#D9CDEE;" onclick="selectAgent('Pulse', 'Signals', '#D9CDEE')">
+            P<span class="online-pip" style="background:#D9CDEE;"></span>
+          </div>
+          <button class="btn-press" style="margin-left: 8px; padding: 6px 12px; font-size:12px;" onclick="toggleCrew()">± Crew</button>
+        </div>
+        <div class="presence-card" id="agentCard">
+          <span id="agentDot" style="width:8px; height:8px; border-radius:50%; background:#CFE08A;"></span>
+          <strong id="agentName">Atlas</strong>
+          <span id="agentRole" style="color:var(--ks-text-muted);">Team Lead</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 3. tool-call-stack -->
+  <div class="card">
+    <div class="card-header">
+      <div class="card-title">3. Tool Call Stack</div>
+      <span class="pattern-tag">tool-call-stack</span>
+    </div>
+    <p class="card-desc">Agent tool executions with animated status nodes, 90° rotating chevrons, and smooth CSS grid row expansion.</p>
+    <div class="stage">
+      <div class="tool-stack">
+        <div class="tool-step open" onclick="this.classList.toggle('open')">
+          <div class="tool-step-header">
+            <span class="tool-node done">✓</span>
+            <span>Check provider quota</span>
+            <span class="tool-chevron">›</span>
+          </div>
+          <div class="tool-detail">
+            <div class="tool-detail-inner">
+              <code class="tool-code">routing_get({ provider: "claude" })</code>
+            </div>
+          </div>
+        </div>
+        <div class="tool-step open" onclick="this.classList.toggle('open')">
+          <div class="tool-step-header">
+            <span class="tool-node running">◌</span>
+            <span>Run worktree patch</span>
+            <span class="tool-chevron">›</span>
+          </div>
+          <div class="tool-detail">
+            <div class="tool-detail-inner">
+              <code class="tool-code">task_submit({ kind: "patch", repo: "swarmaa" })</code>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 4. answer-stream -->
+  <div class="card">
+    <div class="card-header">
+      <div class="card-title">4. Live Answer Stream</div>
+      <span class="pattern-tag">answer-stream</span>
+    </div>
+    <p class="card-desc">Streaming autoscrolls to bottom until user scrolls up, revealing a floating jump-to-latest pill button.</p>
+    <div class="stage">
+      <div class="stream-box">
+        <div class="stream-viewport" id="streamViewport" onscroll="checkStreamScroll()">
+          <p><strong>Atlas:</strong> Launch plan ready. I have divided tasks across Scout, Forge, and Pulse.</p>
+          <p style="margin-top:8px;">1. Scout verified zero competitor clashes on Friday.</p>
+          <p style="margin-top:8px;">2. Forge created 3 design variants and updated test coverage.</p>
+          <p style="margin-top:8px;">3. Pulse verified weekly quota headroom is 83%.</p>
+          <p style="margin-top:8px;" id="streamTail">Streaming output logs...</p>
+        </div>
+        <button class="stream-pill" id="streamPill" onclick="jumpToTail()">Latest response ↓</button>
+      </div>
+      <button class="btn-press" style="margin-top:10px; font-size:12px; padding:6px 14px;" onclick="addStreamLine()">Stream Line</button>
+    </div>
+  </div>
+
+  <!-- 5. activity-capsule -->
+  <div class="card">
+    <div class="card-header">
+      <div class="card-title">5. Task Activity Capsule</div>
+      <span class="pattern-tag">activity-capsule</span>
+    </div>
+    <p class="card-desc">Background task card collapses into a compact persistent pill; 16 segments smoothly illuminate as work progresses.</p>
+    <div class="stage">
+      <div class="capsule" id="taskCapsule">
+        <div class="capsule-bar" onclick="toggleCapsule()">
+          <span>↻ Friday Launch Swarm</span>
+          <span id="capsuleToggleIcon">−</span>
+        </div>
+        <div class="capsule-details">
+          <div class="segments" id="segments"></div>
+          <div style="display:flex; justify-content:space-between; font-size:11px; color:var(--ks-text-muted);">
+            <span id="progressText">10 of 16 steps (62%)</span>
+            <button class="btn-press" style="padding:2px 8px; font-size:10px;" onclick="advanceCapsule()">Advance</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 6. review-disclosure -->
+  <div class="card">
+    <div class="card-header">
+      <div class="card-title">6. Approval Review Disclosure</div>
+      <span class="pattern-tag">review-disclosure</span>
+    </div>
+    <p class="card-desc">Expandable checklist for unverified worktree patches; approval button dynamically counts checked verification criteria.</p>
+    <div class="stage">
+      <div class="review-box" id="reviewBox">
+        <div class="review-header" onclick="document.getElementById('reviewBox').classList.toggle('closed')">
+          <span>Review Patch: swarmaa/claude/4f1e</span>
+          <span>›</span>
+        </div>
+        <div class="review-items">
+          <div class="review-items-inner">
+            <label class="review-row">
+              <input type="checkbox" checked onchange="updateReviewCount()">
+              <span>CoreService.swift (tests pass)</span>
+            </label>
+            <label class="review-row">
+              <input type="checkbox" checked onchange="updateReviewCount()">
+              <span>ThreadView.swift (autoscroll)</span>
+            </label>
+            <label class="review-row">
+              <input type="checkbox" checked onchange="updateReviewCount()">
+              <span>TasksViews.swift (capsule)</span>
+            </label>
+          </div>
+        </div>
+        <div style="margin-top:12px; display:flex; justify-content:flex-end;">
+          <button class="btn-press primary" id="approveBtn" style="padding:6px 14px; font-size:12px;">Approve 3 of 3 items</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+// Crew toggle & selection
+function toggleCrew() {
+  document.getElementById('presenceRow').classList.toggle('expanded');
+}
+function selectAgent(name, role, color) {
+  const card = document.getElementById('agentCard');
+  document.getElementById('agentName').textContent = name;
+  document.getElementById('agentRole').textContent = role;
+  document.getElementById('agentDot').style.background = color;
+  card.classList.add('visible');
+}
+
+// Stream scrolling
+const vp = document.getElementById('streamViewport');
+const pill = document.getElementById('streamPill');
+function checkStreamScroll() {
+  const nearBottom = vp.scrollHeight - vp.clientHeight - vp.scrollTop < 25;
+  pill.classList.toggle('active', !nearBottom);
+}
+function jumpToTail() {
+  vp.scrollTo({ top: vp.scrollHeight, behavior: 'smooth' });
+  pill.classList.remove('active');
+}
+let lineCount = 4;
+function addStreamLine() {
+  lineCount++;
+  const p = document.createElement('p');
+  p.style.marginTop = '8px';
+  p.textContent = `${lineCount}. Verified step ${lineCount} in isolated git worktree.`;
+  vp.appendChild(p);
+  const nearBottom = vp.scrollHeight - vp.clientHeight - vp.scrollTop < 60;
+  if (nearBottom) {
+    jumpToTail();
+  } else {
+    checkStreamScroll();
+  }
+}
+
+// Activity capsule
+let progressStep = 10;
+const totalSteps = 16;
+const segContainer = document.getElementById('segments');
+function renderSegments() {
+  segContainer.innerHTML = '';
+  for (let i = 0; i < totalSteps; i++) {
+    const s = document.createElement('div');
+    s.className = 'segment' + (i < progressStep ? ' filled' : '');
+    segContainer.appendChild(s);
+  }
+  document.getElementById('progressText').textContent = `${progressStep} of ${totalSteps} steps (${Math.round((progressStep/totalSteps)*100)}%)`;
+}
+renderSegments();
+function toggleCapsule() {
+  const cap = document.getElementById('taskCapsule');
+  cap.classList.toggle('collapsed');
+  document.getElementById('capsuleToggleIcon').textContent = cap.classList.contains('collapsed') ? '＋' : '−';
+}
+function advanceCapsule() {
+  progressStep = (progressStep % totalSteps) + 1;
+  renderSegments();
+}
+
+// Review disclosure
+function updateReviewCount() {
+  const boxes = document.querySelectorAll('.review-row input[type=checkbox]');
+  const checked = Array.from(boxes).filter(b => b.checked).length;
+  const btn = document.getElementById('approveBtn');
+  btn.textContent = checked > 0 ? `Approve ${checked} of ${boxes.length} items` : 'Select items to approve';
+  btn.disabled = checked === 0;
+}
+</script>
+</body>
+</html>

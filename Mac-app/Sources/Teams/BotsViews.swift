@@ -64,16 +64,16 @@ struct BotsSidebar: View {
                 }
             }
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 4) {
+                LazyVStack(alignment: .leading, spacing: 6) {
                     if !updates.isEmpty {
                         HStack(spacing: 8) { KSLabel(L10n.t("01 — Updates")); KSBadge(count: updates.count) }
                             .padding(.horizontal, 8).padding(.top, 2)
-                        ForEach(updates) { BotRow(model: model, bot: $0) }
+                        ForEach(Array(updates.enumerated()), id: \.element.id) { BotRow(model: model, bot: $1, order: $0) }
                     }
                     if !rest.isEmpty {
                         KSLabel(updates.isEmpty ? L10n.t("01 — All bots") : L10n.t("02 — All bots"))
                             .padding(.horizontal, 8).padding(.top, updates.isEmpty ? 2 : 10)
-                        ForEach(rest) { BotRow(model: model, bot: $0) }
+                        ForEach(Array(rest.enumerated()), id: \.element.id) { BotRow(model: model, bot: $1, order: updates.count + $0) }
                     }
                     let hidden = model.hiddenBots
                     if !hidden.isEmpty {
@@ -110,7 +110,18 @@ struct BotsSidebar: View {
 struct BotRow: View {
     @ObservedObject var model: TeamsModel
     let bot: TeamsBot
+    /// Position in the list, for the staggered entrance.
+    var order = 0
     @State private var hovered = false
+    @State private var shown = BotRow.entered
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// Rows ease in once per launch, not on every pane switch or refresh.
+    private static var entered = false
+
+    init(model: TeamsModel, bot: TeamsBot, order: Int = 0, hovered: Bool = false) {
+        self.model = model; self.bot = bot; self.order = order
+        _hovered = State(initialValue: hovered)
+    }
 
     private var selected: Bool { model.selectedThreadID == bot.threadID }
 
@@ -127,7 +138,12 @@ struct BotRow: View {
         let latest = model.botLatest(bot)
         Button { model.select(threadID: bot.threadID) } label: {
             HStack(spacing: 11) {
-                KSMoji(seed: bot.avatar ?? bot.leadAgentID, size: 34)
+                // Hover wakes the avatar: a small hop and tilt that springs back.
+                KSMoji(seed: bot.avatar ?? bot.leadAgentID, size: 40)
+                    .scaleEffect(hovered && !reduceMotion ? 1.08 : 1)
+                    .rotationEffect(.degrees(hovered && !reduceMotion ? -6 : 0))
+                    .offset(y: hovered && !reduceMotion ? -2 : 0)
+                    .animation(reduceMotion ? nil : .spring(response: 0.32, dampingFraction: 0.5), value: hovered)
                 VStack(alignment: .leading, spacing: 5) {
                     HStack(spacing: 6) {
                         Text(verbatim: bot.name).font(KS.body(14, .bold)).lineLimit(1)
@@ -138,14 +154,14 @@ struct BotRow: View {
                                 .font(KS.mono(10)).foregroundStyle(KS.textMuted).lineLimit(1)
                         }
                     }
-                    HStack(spacing: 6) {
-                        Text(verbatim: tag.uppercased()).font(KS.mono(10, .semibold)).tracking(0.3).foregroundStyle(KS.textMuted).lineLimit(1)
-                        Text(verbatim: latest?.line ?? bot.job).font(KS.body(13)).foregroundStyle(KS.textSoft).lineLimit(1)
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Text(verbatim: tag.uppercased()).font(KS.mono(10, .semibold)).tracking(0.3).foregroundStyle(KS.textMuted).lineLimit(1).fixedSize()
+                        Text(verbatim: latest?.line ?? bot.job).font(KS.body(13)).foregroundStyle(KS.textSoft).lineLimit(2)
                     }
                     if needs > 0 { KSChip(L10n.t("Needs you"), fill: KS.coral) }
                 }
             }
-            .padding(.horizontal, 10).padding(.vertical, 12)
+            .padding(.horizontal, 10).padding(.vertical, 14)
             .background {
                 RoundedRectangle(cornerRadius: 12).fill(selected ? KS.paper : hovered ? KS.paper.opacity(0.6) : .clear)
             }
@@ -154,6 +170,14 @@ struct BotRow: View {
         .buttonStyle(.plain)
         .onHover { hovered = $0 }
         .opacity(bot.archived ? 0.55 : 1)
+        .opacity(shown ? 1 : 0).offset(y: shown ? 0 : 8)
+        .onAppear {
+            guard !shown else { return }
+            if reduceMotion { shown = true } else {
+                withAnimation(.spring(response: 0.42, dampingFraction: 0.82).delay(Double(min(order, 9)) * 0.035)) { shown = true }
+            }
+            DispatchQueue.main.async { BotRow.entered = true }
+        }
         .contextMenu {
             Button(L10n.t("Bot settings")) { model.editingBotID = bot.id }
             if bot.archived, !bot.isLegacyAgent {
