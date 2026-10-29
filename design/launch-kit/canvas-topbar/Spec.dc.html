@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Swarmaa top bar, build spec</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+body{margin:0}
+a{color:#15111F}a:hover{color:#3A3347}
+</style>
+</helmet>
+<div style="width: 720px; height: 1300px; box-sizing: border-box; background: #F4EFE6; padding: 44px 48px; display: flex; flex-direction: column; gap: 26px; font-family: -apple-system, 'SF Pro Text', 'Helvetica Neue', sans-serif; color: #15111F;">
+  <div style="display: flex; flex-direction: column; gap: 8px;">
+    <div style="font-family: ui-monospace, Menlo, monospace; font-size: 12px; letter-spacing: 0.16em; color: #5A5168;">00 — BUILD SPEC</div>
+    <h1 style="margin: 0; font-size: 44px; font-weight: 900; font-stretch: condensed; line-height: 0.95;">ONE ROW. EVERYTHING ON IT.</h1>
+    <p style="margin: 0; font-size: 15px; line-height: 1.5; color: #3A3347;">The system title bar goes. Content runs to the top edge, and a 52 pt row carries the traffic lights, search, the open bot and its actions. Empty parts of the row drag the window.</p>
+  </div>
+
+  <div style="display: flex; flex-direction: column; gap: 10px;">
+    <div style="font-family: ui-monospace, Menlo, monospace; font-size: 12px; letter-spacing: 0.16em; color: #5A5168;">01 — COLUMNS, LEFT TO RIGHT</div>
+    <div style="display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 0; border: 1.5px solid #15111F; border-radius: 14px; overflow: hidden; background: #FFFFFF; font-size: 14px; line-height: 1.45;">
+      <div style="padding: 12px 14px; font-weight: 600; border-bottom: 1px solid rgba(21,17,31,0.15); background: #15111F; color: #F4EFE6;">Rail · 72</div>
+      <div style="padding: 12px 14px; border-bottom: 1px solid rgba(21,17,31,0.15);">Ink. Its top 52 pt holds the traffic lights, centred in the row. Mark and items move down below them.</div>
+      <div style="padding: 12px 14px; font-weight: 600; border-bottom: 1px solid rgba(21,17,31,0.15);">List · 300</div>
+      <div style="padding: 12px 14px; border-bottom: 1px solid rgba(21,17,31,0.15);">Search field, 32 pt, fills the width; ⌘K hint. Lime + New bot, 32 pt circle, replaces the bottom New bot bar.</div>
+      <div style="padding: 12px 14px; font-weight: 600;">Thread · fill</div>
+      <div style="padding: 12px 14px;">Bot pill (menu) → status → connection state → spacer → “N needs you” → star → settings.</div>
+    </div>
+  </div>
+
+  <div style="display: flex; flex-direction: column; gap: 10px;">
+    <div style="font-family: ui-monospace, Menlo, monospace; font-size: 12px; letter-spacing: 0.16em; color: #5A5168;">02 — MEASUREMENTS</div>
+    <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; font-size: 14px;">
+      <div style="border: 1.5px solid #15111F; border-radius: 14px; padding: 12px 14px; background: #FFFFFF;"><b>Row</b> 52 pt · paper · 2 pt ink rule below</div>
+      <div style="border: 1.5px solid #15111F; border-radius: 14px; padding: 12px 14px; background: #FFFFFF;"><b>Controls</b> 32 pt · 1.5 pt ink outline · pill</div>
+      <div style="border: 1.5px solid #15111F; border-radius: 14px; padding: 12px 14px; background: #FFFFFF;"><b>Padding</b> 12 pt sides · 10 pt between</div>
+      <div style="border: 1.5px solid #15111F; border-radius: 14px; padding: 12px 14px; background: #FFFFFF;"><b>Column rule</b> 2 pt ink, runs through the row</div>
+      <div style="border: 1.5px solid #15111F; border-radius: 14px; padding: 12px 14px; background: #FFFFFF;"><b>Bot name</b> 14 pt semibold · moji 24</div>
+      <div style="border: 1.5px solid #15111F; border-radius: 14px; padding: 12px 14px; background: #FFFFFF;"><b>Status</b> mono 11 pt · tracked · 8 pt dot</div>
+    </div>
+  </div>
+
+  <div style="display: flex; flex-direction: column; gap: 10px;">
+    <div style="font-family: ui-monospace, Menlo, monospace; font-size: 12px; letter-spacing: 0.16em; color: #5A5168;">03 — FILLS</div>
+    <div style="display: flex; flex-direction: column; gap: 8px; font-size: 14px;">
+      <div style="display: flex; align-items: center; gap: 12px;"><span style="width: 32px; height: 32px; border-radius: 16px; background: #D4FF3A; border: 1.5px solid #15111F; box-sizing: border-box;"></span>Lime: New bot, a toggle that is on, the bot pill while its menu is open.</div>
+      <div style="display: flex; align-items: center; gap: 12px;"><span style="width: 32px; height: 32px; border-radius: 16px; background: #FF5A3C; border: 1.5px solid #15111F; box-sizing: border-box;"></span>Flame: “needs you”, ink text on it. Never flame text.</div>
+      <div style="display: flex; align-items: center; gap: 12px;"><span style="width: 32px; height: 32px; border-radius: 16px; background: #EAD9A6; border: 1.5px solid #15111F; box-sizing: border-box;"></span>Butter: reconnecting. Coral chip for offline.</div>
+      <div style="display: flex; align-items: center; gap: 12px;"><span style="width: 32px; height: 32px; border-radius: 16px; background: #F4EFE6; border: 1.5px solid #15111F; box-sizing: border-box;"></span>Paper: every other icon button. White: search and the bot pill.</div>
+    </div>
+  </div>
+
+  <div style="display: flex; flex-direction: column; gap: 10px;">
+    <div style="font-family: ui-monospace, Menlo, monospace; font-size: 12px; letter-spacing: 0.16em; color: #5A5168;">04 — BEHAVIOUR</div>
+    <ul style="margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 6px; font-size: 14px; line-height: 1.45;">
+      <li>Empty row areas drag the window; double-click zooms, following the Mac’s title-bar setting.</li>
+      <li>Every control in the row takes clicks. Traffic lights stay centred through resize and full screen.</li>
+      <li>Bot menu: Bot settings ⌘, · Rename… · Star/Unstar · Earlier messages · Hide bot.</li>
+      <li>Settings open: back · “Name / Settings” · settings button on.</li>
+      <li>Not live: the bottom strip moves into the row as a chip, “updated N min ago” and Retry.</li>
+      <li>Tight width: status text hides (dot stays, labelled), “N needs you” becomes a count.</li>
+      <li>Tasks and Usage: display title, one-line summary, their existing search on the right.</li>
+    </ul>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":720,"height":1300}}'>
+class Component extends DCLogic {
+renderVals() { return {}; }
+}
+</script>
+</body>
+</html>
