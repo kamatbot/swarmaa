@@ -565,6 +565,63 @@ struct SSEParser {
     }
 }
 
+/// Full task payload, kept separate from the compact list model.
+struct TeamsTaskDetails: Decodable {
+    struct Usage: Decodable {
+        let input_tokens: Int
+        let cached_input_tokens: Int?
+        let output_tokens: Int
+    }
+    struct Result: Decodable {
+        var agent: String?
+        var summary: String?
+        var branch: String?
+        var durationMS: Int?
+        var files: [String] = []
+        var fileCount: Int?
+        var usage: Usage?
+        enum CodingKeys: String, CodingKey {
+            case agent, summary, branch, usage, durationMS = "duration_ms", files = "changed_files"
+        }
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            agent = c.opt(String.self, .agent); summary = c.opt(String.self, .summary)
+            branch = c.opt(String.self, .branch); durationMS = c.opt(Int.self, .durationMS)
+            files = c.list(.files); fileCount = c.opt(Int.self, .files)
+            usage = c.opt(Usage.self, .usage)
+            if let u = usage, u.input_tokens < 0 || u.output_tokens < 0 || (u.cached_input_tokens ?? 0) < 0 { usage = nil }
+        }
+    }
+    struct Served: Decodable { var provider: String?; var model: String? }
+    struct Run: Decodable {
+        var worker_id: String?
+        var status: String?
+        var started_at: Date?
+        var ended_at: Date?
+        var provider: String?
+        var model: String?
+    }
+    struct Envelope: Decodable {
+        // Unlike an agent runner, a task runner need not specify a provider.
+        struct Runner: Decodable { var model: String?; var effort: String? }
+        var runner: Runner?
+    }
+    let task: TeamsTask
+    var result: Result?
+    var served: Served?
+    var runs: [Run]
+    var permission: Envelope?
+    var resolved: Bool
+    enum CodingKeys: String, CodingKey { case result, served, runs, resolved, permission = "permission_envelope" }
+    init(from decoder: Decoder) throws {
+        task = try TeamsTask(from: decoder)
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        result = c.opt(Result.self, .result); served = c.opt(Served.self, .served)
+        runs = c.list(.runs); permission = c.opt(Envelope.self, .permission)
+        resolved = c.opt(Bool.self, .resolved) ?? false
+    }
+}
+
 // MARK: - Client
 
 /// The TEAMS.md §4 tools over the same transport and token handling as
@@ -786,6 +843,11 @@ actor SwarmaTeamsClient {
 
     func taskGet(id: String) async throws -> TeamsTask {
         try await call("task_get", ["task_id": id], as: TaskWrapper.self).task
+    }
+
+    func taskDetails(id: String) async throws -> TeamsTaskDetails {
+        struct Wrapper: Decodable { let task: TeamsTaskDetails }
+        return try await call("task_get", ["task_id": id], as: Wrapper.self).task
     }
 
     /// One page of a scope's tasks; `task_list` needs a scope.

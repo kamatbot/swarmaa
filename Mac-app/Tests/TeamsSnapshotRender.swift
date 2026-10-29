@@ -90,6 +90,22 @@ final class TeamsSnapshotRender: XCTestCase {
         try rep.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: dir).appendingPathComponent(name + ".png"))
     }
 
+    func testRenderTaskSelectionAndDetails() throws {
+        let model = try fixture()
+        let items = (1...3).map { TeamsAttentionItem(kind: "task", id: "selected-\($0)", title: "Review launch task \($0)", state: "completed", nextStep: "Ready for review") }
+        model.loadFixture(agents: model.agents, bots: model.bots, messages: model.messages, status: model.status,
+                          attention: items + [TeamsAttentionItem(kind: "task", id: "running", title: "Prepare launch", state: "running", nextStep: "Working")], select: nil)
+        model.pane = .tasks; model.selectingTasks = true; model.taskSelection = Set(items.map(\.id))
+        try render(TasksPane(model: model), "task-selection-three", size: CGSize(width: 1000, height: 650))
+        model.selectingTasks = false; model.taskSelection = []
+        model.taskDetailID = "detail"
+        model.taskDetail = try TaskDetailsTests.detail()
+        try render(TasksPane(model: model), "task-detail-usage", size: CGSize(width: 1100, height: 1600))
+        model.taskDetail = try TaskDetailsTests.detail(usage: false)
+        try render(TasksPane(model: model), "task-detail-no-usage", size: CGSize(width: 1100, height: 1600))
+        try render(TasksPane(model: model), "task-detail-compact", size: CGSize(width: 900, height: 650))
+    }
+
     func testRenderBotsSidebarBar() throws {
         let model = try fixture()
         model.setBotsForTesting(Array(model.bots.prefix(2)))
