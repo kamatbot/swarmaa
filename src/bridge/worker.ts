@@ -1,6 +1,6 @@
 import { runFlowCheck } from './checks.js';
 import { setTimeout as delay } from 'node:timers/promises';
-import { AUTO_PATCH, AUTO_READ, buildInvocation, withTurnImages, capability, antigravityLogModel, classifyFailure, deniedActions, extractDelegate, extractPartialText, extractServed, finalAnswer, projectCapabilities, providerSucceeded } from './adapters.js';
+import { AUTO_PATCH, AUTO_READ, buildInvocation, withTurnImages, capability, antigravityLogModel, classifyFailure, deniedActions, extractDelegate, extractPartialText, extractServed, extractUsage, finalAnswer, projectCapabilities, providerSucceeded } from './adapters.js';
 import { collectUsage, headroom } from '../usage/index.js';
 import { windowsForModel } from '../usage/antigravity.js';
 import type { UsageProviderId, UsageSnapshot } from '../usage/types.js';
@@ -612,12 +612,14 @@ export class BridgeWorker {
       }
       const rawAnswer = task.kind === 'check' ? checkFact!.output_tail : finalAnswer(agent.provider, result.stdout);
       const { cleanAnswer, delegate } = extractDelegate(rawAnswer, !fastTurn);
+      const usage = task.kind === 'check' ? undefined : extractUsage(agent.provider, result.stdout);
       const completion = {
         ...lease, outcome, artifact_ids: [artifact.artifact.id, ...(diffArtifact ? [diffArtifact.artifact.id] : [])], result: {
           agent: agent.id, provider: task.kind==='check' ? 'bridge' : agent.provider, execution_completed: outcome === 'completed',
           acceptance_criteria_verified: false, review_required: true,
           exit_code: result.exit_code, stop_reason: result.stop_reason,
           duration_ms: result.duration_ms,
+          ...(usage ? { usage } : {}),
           served,
           ...(failure ? { failure } : {}),
           // The agent's own answer, so callers can read it with task_get; untrusted provider output.
