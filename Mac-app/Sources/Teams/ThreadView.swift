@@ -9,6 +9,8 @@ struct ThreadView: View {
     let threadID: String
 
     @State private var nearBottom = true
+    /// False while a freshly opened (or freshly loaded) thread lays out; it fades in already in place.
+    @State private var settled = false
     @State private var answeringQuestion: TeamsQuestion?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -55,6 +57,14 @@ struct ThreadView: View {
                             ForEach(model.liveTyping(threadID)) { TypingBubble(model: model, typing: $0, threadID: threadID).id("typing:" + $0.id) }
                         }
                         .padding(.horizontal, 16).padding(.vertical, 12)
+                    }
+                    .opacity(settled ? 1 : 0)
+                    // Opening a bot, or its messages first arriving, lays out rows, photos and the bottom anchor
+                    // over a few frames; showing that read as the thread jumping. Reveal it once it has settled.
+                    .task(id: "\(threadID):\(messages.isEmpty)") {
+                        settled = false
+                        try? await Task.sleep(for: .milliseconds(reduceMotion ? 60 : 120))
+                        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.14)) { settled = true }
                     }
                     .defaultScrollAnchor(.bottom, for: .initialOffset)
                     // At the bottom, stay pinned there while messages grow (markdown renders after a
@@ -363,7 +373,6 @@ struct TextBubble: View {
 
     /// Agent bodies are untrusted text: shown, never acted on. Inline
     /// Markdown only, so nothing renders as more than styled text and links.
-    @State private var rendered: (body: String, text: AttributedString)?
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
@@ -381,7 +390,7 @@ struct TextBubble: View {
                     ThreadPhoto(attachment: attachment, threadID: message.threadID, messageID: message.id)
                 }
                 if !(message.body ?? "").isEmpty {
-                Text(rendered?.body == (message.body ?? "") ? rendered!.text : AttributedString(message.body ?? "")).textSelection(.enabled)
+                Text(MarkdownCache.text(message.body ?? "")).textSelection(.enabled)
                     .font(KS.body(14)).lineSpacing(1)
                     .padding(.horizontal, 12).padding(.vertical, 7)
                     .background(UnevenRoundedRectangle(topLeadingRadius: message.isHuman ? 18 : 5, bottomLeadingRadius: 18,
@@ -395,14 +404,20 @@ struct TextBubble: View {
             if !message.isHuman { Spacer(minLength: 60) }
         }
         .frame(maxWidth: .infinity, alignment: message.isHuman ? .trailing : .leading)
-        .task(id: message.body) {
-            let body = message.body ?? ""
-            let parsed = await Task.detached(priority: .userInitiated) {
-                (try? AttributedString(markdown: body, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(body)
-            }.value
-            guard !Task.isCancelled else { return }
-            rendered = (body, parsed)
-        }
+    }
+}
+
+/// Markdown parsed once per body and kept. Parsing later on a background task made each bubble draw as
+/// plain text, then resize when its formatting landed, so the thread jumped every time a bot opened.
+/// Inline parsing is cheap (well under a millisecond for a long reply), so it runs on first draw.
+@MainActor enum MarkdownCache {
+    private final class Box { let text: AttributedString; init(_ text: AttributedString) { self.text = text } }
+    private static let cache: NSCache<NSString, Box> = { let c = NSCache<NSString, Box>(); c.countLimit = 2000; return c }()
+    static func text(_ body: String) -> AttributedString {
+        if let hit = cache.object(forKey: body as NSString) { return hit.text }
+        let parsed = (try? AttributedString(markdown: body, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(body)
+        cache.setObject(Box(parsed), forKey: body as NSString)
+        return parsed
     }
 }
 
@@ -422,9 +437,10 @@ private struct ThreadPhoto: View {
 
     var body: some View {
         Group {
-            if let image { Image(nsImage: image).resizable().scaledToFit().frame(maxWidth: 240, maxHeight: 200).clipShape(RoundedRectangle(cornerRadius: 14)) }
-            else if failed { Text(verbatim: L10n.t("Photo unavailable")).font(KS.body(13)).foregroundStyle(KS.textMuted) }
-            else { ProgressView().frame(width: 80, height: 60) }
+            // One footprint while loading and once loaded, so a photo arriving doesn't push the thread around.
+            if let image { Image(nsImage: image).resizable().scaledToFit().clipShape(RoundedRectangle(cornerRadius: 14)).frame(width: 240, height: 180, alignment: .leading) }
+            else if failed { Text(verbatim: L10n.t("Photo unavailable")).font(KS.body(13)).foregroundStyle(KS.textMuted).frame(width: 240, height: 180, alignment: .leading) }
+            else { ProgressView().frame(width: 240, height: 180) }
         }
         .accessibilityLabel(attachment.name)
         .task(id: attachment.id) {

@@ -330,6 +330,37 @@ final class TeamsSnapshotRender: XCTestCase {
         }.padding(24).background(KS.paper), "soft-surface-states", size: CGSize(width: 560, height: 250))
     }
 
+    /// Switching to a bot must land its thread where it stays: the thread drew plain text first and
+    /// re-laid out when markdown arrived, so it jumped on every switch.
+    func testSwitchingBotsDoesNotJump() throws {
+        let model = try fixture()
+        let first = try XCTUnwrap(model.selectedThreadID)
+        let other = try XCTUnwrap(model.bots.map(\.threadID).first { $0 != first })
+        let long = (1...30).map { i in i % 6 == 0 ? "## Part \(i)" : "- **Step \(i):** `run` the *check* and write a longer line that wraps across the bubble." }.joined(separator: "\\n")
+        var messages = model.messages
+        messages[other] = try (0..<6).map { i in try dec(TeamsMessage.self, """
+            {"id":"sw\(i)","thread_id":"\(other)","seq":\(10 + i),"author":{"kind":"agent","id":"a1"},"kind":"text","body":"\(long)"}
+            """) }
+        model.loadFixture(agents: model.agents, bots: model.bots, messages: messages, status: model.status, select: first)
+        let controller = TeamsWindowController(model: model)
+        controller.show(connect: false)
+        let window = try XCTUnwrap(controller.window)
+        defer { window.close() }
+        window.setContentSize(NSSize(width: 1280, height: 820))
+        RunLoop.main.run(until: Date().addingTimeInterval(1.0))
+        model.select(threadID: other)
+        func scrollViews(_ view: NSView) -> [NSScrollView] { ((view as? NSScrollView).map { [$0] } ?? []) + view.subviews.flatMap(scrollViews) }
+        var offsets: [CGFloat] = []
+        for _ in 0..<20 {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+            if let thread = scrollViews(try XCTUnwrap(window.contentView)).max(by: { $0.frame.width < $1.frame.width }) {
+                offsets.append(thread.contentView.bounds.origin.y)
+            }
+        }
+        let settled = Array(offsets.dropFirst(2))
+        XCTAssertLessThan((settled.max() ?? 0) - (settled.min() ?? 0), 1, "thread moved after the switch: \(offsets)")
+    }
+
     func testRenderPhotoComposer() throws {
         let model = try fixture()
         let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 80, pixelsHigh: 60, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
