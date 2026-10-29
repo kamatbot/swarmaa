@@ -98,12 +98,21 @@ struct TasksPane: View {
     var body: some View {
         let sections = TeamsTaskGrouping.sections(model.taskRows, search: model.taskSearch, sort: model.taskSort)
         VStack(spacing: 0) {
+            KSTopBar {
+                Text(verbatim: L10n.t("TASKS.")).font(KS.display(24)).fixedSize()
+                Text(verbatim: L10n.t("Everything your bots are doing, done or stuck on."))
+                    .font(KS.body(13)).foregroundStyle(KS.textSoft).lineLimit(1)
+                Spacer(minLength: 0)
+                TeamsConnectionStatus(model: model)
+                KSSearchField(prompt: L10n.t("Search tasks"), text: $model.taskSearch, height: 32).frame(minWidth: 120, maxWidth: 220)
+                Picker(L10n.t("Sort"), selection: $model.taskSort) {
+                    Text(verbatim: L10n.t("By state")).tag(TeamsTaskSort.state)
+                    Text(verbatim: L10n.t("Newest")).tag(TeamsTaskSort.newest)
+                }
+                .pickerStyle(.segmented).fixedSize().labelsHidden()
+            }
             ScrollView {
                 VStack(alignment: .leading, spacing: 22) {
-                    HStack(alignment: .lastTextBaseline, spacing: 14) {
-                        Text(verbatim: L10n.t("TASKS.")).font(KS.display(52))
-                        Text(verbatim: L10n.t("Everything your bots are doing, done or stuck on.")).font(KS.body(16)).foregroundStyle(KS.textSoft)
-                    }
                     if sections.isEmpty {
                         TeamsEmptyState(symbol: "checklist", title: model.taskSearch.isEmpty ? L10n.t("No tasks") : L10n.t("No matches"),
                                         detail: model.taskSearch.isEmpty ? L10n.t("Tasks your bots run show up here.") : nil, action: nil)
@@ -137,12 +146,6 @@ struct TasksPane: View {
                 .padding(28)
             }
             KSBottomBar {
-                KSSearchField(prompt: L10n.t("Search tasks"), text: $model.taskSearch).frame(maxWidth: 320)
-                Picker(L10n.t("Sort"), selection: $model.taskSort) {
-                    Text(verbatim: L10n.t("By state")).tag(TeamsTaskSort.state)
-                    Text(verbatim: L10n.t("Newest")).tag(TeamsTaskSort.newest)
-                }
-                .pickerStyle(.segmented).fixedSize().labelsHidden()
                 Spacer()
                 if let row = model.taskRows.first(where: { $0.id == selectedID }) { TaskActions(model: model, row: row) }
             }

@@ -76,6 +76,7 @@ final class TeamsSnapshotRender: XCTestCase {
 
     private func render<V: View>(_ view: V, _ name: String, size: CGSize) throws {
         guard let dir = ProcessInfo.processInfo.environment["SWARMAA_SNAPSHOT_DIR"] else { throw XCTSkip("set SWARMAA_SNAPSHOT_DIR") }
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
         let host = NSHostingView(rootView: view.frame(width: size.width, height: size.height).environment(\.colorScheme, .light))
         host.frame = NSRect(origin: .zero, size: size)
         host.appearance = NSAppearance(named: .aqua)
@@ -111,6 +112,71 @@ final class TeamsSnapshotRender: XCTestCase {
         try render(TeamsRootView(model: model), "4-usage", size: CGSize(width: 1440, height: 900))
         try render(TeamsRootView(model: model), "4b-usage-compact", size: CGSize(width: 900, height: 650))
         try render(UsageCard(model: model, usage: model.status!.usage[1]), "5-usage-hover-card", size: CGSize(width: 290, height: 300))
+    }
+
+    func testRenderTasksTopBar() throws {
+        let model = try fixture()
+        model.pane = .tasks
+        try render(TeamsRootView(model: model), "6-tasks-top-bar", size: CGSize(width: 1280, height: 820))
+        model.taskSearch = "launch"
+        try render(TeamsRootView(model: model), "6b-tasks-top-bar-search", size: CGSize(width: 900, height: 650))
+        let reconnecting = TeamsModel()
+        reconnecting.phase = .ready
+        reconnecting.pane = .tasks
+        try render(TeamsRootView(model: reconnecting), "6c-tasks-reconnecting", size: CGSize(width: 900, height: 650))
+        reconnecting.pane = .usage
+        try render(TeamsRootView(model: reconnecting), "6d-usage-reconnecting", size: CGSize(width: 900, height: 650))
+    }
+
+    /// Dispatch through a real titled window: a borderless render cannot detect
+    /// titlebar interception. Probe the shared responder in all three columns.
+    func testTopRowReceivesClicks() throws {
+        let controller = TeamsWindowController(model: try fixture())
+        controller.show(connect: false)
+        let window = try XCTUnwrap(controller.window)
+        defer { window.close() }
+        XCTAssertTrue(window.styleMask.contains(.fullSizeContentView))
+        XCTAssertTrue(window.titlebarAppearsTransparent)
+        XCTAssertEqual(window.titleVisibility, .hidden)
+        let content = try XCTUnwrap(window.contentView)
+        for kind in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
+            let button = try XCTUnwrap(window.standardWindowButton(kind))
+            let rect = content.convert(button.bounds, from: button)
+            let top = content.isFlipped ? rect.midY : content.bounds.height - rect.midY
+            XCTAssertEqual(top, KS.topBarHeight / 2, accuracy: 1)
+        }
+        var clicks = [0, 0, 0]
+        let probe = TeamsHostingView(rootView: HStack(spacing: 0) {
+            ForEach(0..<3) { column in
+                KSTopBar {
+                    KSBarButton(symbol: "plus", label: "Probe") { clicks[column] += 1 }
+                    Spacer()
+                    TextField("Search", text: .constant("")).textFieldStyle(.plain).frame(width: 100)
+                }.frame(width: 240)
+            }
+        })
+        probe.safeAreaRegions = []
+        let originY = content.isFlipped ? 0 : content.bounds.height - KS.topBarHeight
+        probe.frame = NSRect(x: 72, y: originY, width: 720, height: KS.topBarHeight)
+        content.addSubview(probe)
+        defer { probe.removeFromSuperview() }
+        probe.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        func click(_ point: NSPoint) throws {
+            for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+                let event = try XCTUnwrap(NSEvent.mouseEvent(with: type, location: point, modifierFlags: [],
+                    timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                    context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
+                window.sendEvent(event)
+            }
+            RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        }
+        for column in 0..<3 {
+            try click(probe.convert(NSPoint(x: CGFloat(column) * 240 + 28, y: 26), to: nil))
+            XCTAssertEqual(clicks[column], 1, "Column \(column) button must receive titlebar-region clicks")
+            try click(probe.convert(NSPoint(x: CGFloat(column) * 240 + 180, y: 26), to: nil))
+            XCTAssertTrue(window.firstResponder is NSTextView, "Search must become the field editor")
+        }
     }
 
     func testRenderPhotoComposer() throws {

@@ -7,22 +7,29 @@ import SwiftUI
 final class TeamsWindowController: NSObject, NSWindowDelegate {
     private(set) var window: NSWindow?
     let model: TeamsModel
+    private var trafficLightHomes: [NSWindow.ButtonType: (NSView, NSRect)] = [:]
+    private var inFullScreen = false
     init(model: TeamsModel? = nil) { self.model = model ?? TeamsModel(); super.init() }
 
     /// `threadID` opens straight onto that thread (a notch swarm or question).
     func show(threadID: String? = nil, connect: Bool = true) {
         if window == nil {
             let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1280, height: 820),
-                                  styleMask: [.titled, .closable, .miniaturizable, .resizable],
+                                  styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
                                   backing: .buffered, defer: false)
             window.title = "Swarmaa"
+            window.titlebarAppearsTransparent = true
+            window.titleVisibility = .hidden
+            window.isMovableByWindowBackground = false
             window.setAccessibilityElement(true)
             window.setAccessibilityRole(.window)
             window.setAccessibilityLabel("Swarmaa")
             window.minSize = NSSize(width: 900, height: 560)
             // Kind Swarm has one theme, paper; keep the window in it whatever the Mac's appearance.
             window.appearance = NSAppearance(named: .aqua)
-            window.contentView = NSHostingView(rootView: TeamsRootView(model: model))
+            let host = TeamsHostingView(rootView: TeamsRootView(model: model))
+            host.safeAreaRegions = []
+            window.contentView = host
             window.isReleasedWhenClosed = false
             window.delegate = self
             window.setFrameAutosaveName("SwarmaaTeamsWindow")
@@ -36,11 +43,48 @@ final class TeamsWindowController: NSObject, NSWindowDelegate {
         }
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
+        positionTrafficLights()
         model.isVisible = true
         if let threadID { model.select(threadID: threadID) }
         if connect { Task { await model.refresh() } }
     }
 
+    // Position in content coordinates, including after AppKit rebuilds full-screen chrome.
+    private func positionTrafficLights() {
+        guard !inFullScreen, let window, !window.styleMask.contains(.fullScreen), let content = window.contentView else { return }
+        for (index, kind) in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton].enumerated() {
+            guard let button = window.standardWindowButton(kind) else { continue }
+            // Keep native buttons above the content without a titlebar container
+            // clipping their new position or covering the other columns.
+            if button.superview !== content {
+                if let parent = button.superview { trafficLightHomes[kind] = (parent, button.frame) }
+                content.addSubview(button)
+            }
+            button.isHidden = false
+            let top = content.isFlipped ? KS.topBarHeight / 2 : content.bounds.height - KS.topBarHeight / 2
+            let centre = NSPoint(x: 16 + CGFloat(index) * 20, y: top)
+            button.setFrameOrigin(NSPoint(x: centre.x - button.frame.width / 2, y: centre.y - button.frame.height / 2))
+        }
+    }
+
+    func windowDidResize(_ notification: Notification) { positionTrafficLights() }
+    func windowWillEnterFullScreen(_ notification: Notification) {
+        inFullScreen = true
+        // Return the buttons to AppKit for its full-screen, auto-hiding chrome.
+        for (kind, home) in trafficLightHomes {
+            guard let button = window?.standardWindowButton(kind) else { continue }
+            home.0.addSubview(button)
+            button.frame = home.1
+        }
+    }
+    func windowDidExitFullScreen(_ notification: Notification) {
+        inFullScreen = false
+        positionTrafficLights()
+    }
+    func windowDidFailToEnterFullScreen(_ window: NSWindow) {
+        inFullScreen = false
+        positionTrafficLights()
+    }
     func windowDidBecomeKey(_ notification: Notification) { model.isVisible = true }
     func windowDidResignKey(_ notification: Notification) { model.isVisible = false }
     func windowDidMiniaturize(_ notification: Notification) { model.isVisible = false }
@@ -51,33 +95,75 @@ final class TeamsWindowController: NSObject, NSWindowDelegate {
     }
 }
 
+/// Do not let AppKit turn content controls into window-drag targets.
+final class TeamsHostingView<Content: View>: NSHostingView<Content> {
+    override var mouseDownCanMoveWindow: Bool { false }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+}
+
+/// A background only: foreground SwiftUI controls keep their own hit testing.
+private struct TeamsTitlebarBackground: NSViewRepresentable {
+    func makeNSView(context: Context) -> TeamsTitlebarDragView { TeamsTitlebarDragView() }
+    func updateNSView(_ view: TeamsTitlebarDragView, context: Context) {}
+}
+
+private final class TeamsTitlebarDragView: NSView {
+    override var mouseDownCanMoveWindow: Bool { false }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    override func mouseDown(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        let distanceFromTop = isFlipped ? point.y : bounds.height - point.y
+        guard distanceFromTop >= 0, distanceFromTop < KS.topBarHeight, let window else {
+            super.mouseDown(with: event)
+            return
+        }
+        if event.clickCount == 2 {
+            switch UserDefaults.standard.string(forKey: "AppleActionOnDoubleClick") {
+            case "Minimize": window.performMiniaturize(nil)
+            case "None": break
+            default: window.performZoom(nil)
+            }
+        } else {
+            window.performDrag(with: event)
+        }
+    }
+}
+
+struct TeamsConnectionStatus: View {
+    @ObservedObject var model: TeamsModel
+
+    var body: some View {
+        if model.staleError != nil || model.streamState != "Live" {
+            HStack(spacing: 8) {
+                KSChip(model.staleError == nil ? L10n.t("Reconnecting") : L10n.t("Offline"),
+                       fill: model.staleError == nil ? KS.butter : KS.coral)
+                if let date = model.lastUpdated {
+                    TimelineView(.periodic(from: .now, by: 60)) { context in
+                        Text(verbatim: L10n.t("updated \(max(0, Int(context.date.timeIntervalSince(date) / 60))) min ago"))
+                            .font(KS.body(13)).foregroundStyle(KS.textMuted).lineLimit(1)
+                    }
+                }
+                Button(L10n.t("Retry")) { Task { await model.retryConnection() } }
+                    .buttonStyle(.ks(.white, compact: true))
+            }
+            .fixedSize()
+            .help(model.staleError ?? model.streamState)
+        }
+    }
+}
+
 struct TeamsRootView: View {
     @ObservedObject var model: TeamsModel
 
     var body: some View {
         HStack(spacing: 0) {
             TeamsRail(model: model)
-            VStack(spacing: 0) {
-                content
-                if model.staleError != nil || model.streamState != "Live" {
-                    HStack(spacing: 10) {
-                        KSChip(model.staleError == nil ? L10n.t("Reconnecting") : L10n.t("Offline"),
-                               fill: model.staleError == nil ? KS.butter : KS.coral)
-                        Text(verbatim: model.staleError ?? model.streamState).font(KS.body(14)).foregroundStyle(KS.textSoft).lineLimit(1)
-                        if let date = model.lastUpdated {
-                            Text("· updated \(date, style: .relative) ago").font(KS.body(13)).foregroundStyle(KS.textMuted)
-                        }
-                        Spacer()
-                        Button(L10n.t("Retry")) { Task { await model.retryConnection() } }.buttonStyle(.ks(.white, compact: true))
-                    }
-                    .padding(.horizontal, 16).padding(.vertical, 8)
-                    .background(KS.white)
-                    .overlay(alignment: .top) { Rectangle().fill(KS.ink).frame(height: 2) }
-                }
-            }
+            content
         }
         .frame(minWidth: 900, minHeight: 560)
+        .background(alignment: .top) { TeamsTitlebarBackground().frame(height: KS.topBarHeight) }
         .background(KS.paper)
+        .ignoresSafeArea(.container, edges: .top)
         .foregroundStyle(KS.ink)
         .tint(KS.ink)
         .environment(\.colorScheme, .light)
@@ -124,7 +210,7 @@ struct TeamsRail: View {
 
     var body: some View {
         VStack(spacing: 8) {
-            KSMoji(seed: "swarmaa", size: 42, kind: .mark).padding(.top, 14).padding(.bottom, 8)
+            KSMoji(seed: "swarmaa", size: 42, kind: .mark).padding(.top, KS.topBarHeight + 14).padding(.bottom, 8)
             item("person.2.fill", L10n.t("Bots"), .bots, badge: model.botsWithUpdates)
             item("checklist", L10n.t("Tasks"), .tasks, badge: 0)
             item("chart.bar.fill", L10n.t("Usage"), .usage, badge: 0)
@@ -321,13 +407,15 @@ struct UsagePane: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            KSTopBar {
+                Text(verbatim: L10n.t("USAGE.")).font(KS.display(24)).fixedSize()
+                Text(verbatim: L10n.t("What each subscription has left, and where auto routing sends work next."))
+                    .font(KS.body(13)).foregroundStyle(KS.textSoft).lineLimit(1)
+                Spacer(minLength: 0)
+                TeamsConnectionStatus(model: model)
+            }
             ScrollView {
                 VStack(alignment: .leading, spacing: 22) {
-                    HStack(alignment: .lastTextBaseline, spacing: 14) {
-                        Text(verbatim: L10n.t("USAGE.")).font(KS.display(52))
-                        Text(verbatim: L10n.t("What each subscription has left, and where auto routing sends work next."))
-                            .font(KS.body(16)).foregroundStyle(KS.textSoft)
-                    }
                     if case let usage = model.allUsage, !usage.isEmpty {
                         LazyVGrid(columns: [GridItem(.adaptive(minimum: 280), spacing: 22, alignment: .top)], alignment: .leading, spacing: 22) {
                             ForEach(usage, id: \.provider) { u in UsageProviderCard(usage: u) }
