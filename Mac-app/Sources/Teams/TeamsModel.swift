@@ -144,6 +144,13 @@ final class TeamsModel: ObservableObject {
     @Published private(set) var setupRows: [TeamsSetupRow] = []
     @Published private(set) var checkingSetup = false
     @Published var showSetup = false
+    @Published var taskSelection = Set<String>()
+    @Published var selectingTasks = false
+    @Published var taskDetailID: String?
+    @Published var taskDetail: TeamsTaskDetails?
+    @Published var taskDetailError: String?
+    @Published private(set) var bulkTaskMessage: String?
+    @Published private(set) var bulkTasksBusy = false
     @Published var taskSearch = ""
     @Published var taskSort = TeamsTaskSort.newest
     @Published var drafts: [String: String] = [:]
@@ -522,6 +529,75 @@ final class TeamsModel: ObservableObject {
 
     var taskRows: [TeamsTaskRow] {
         TeamsTaskGrouping.rows(attention: attention, working: workingTasks, resolved: resolvedTasks)
+    }
+
+    func openTaskDetail(_ id: String) async {
+        taskDetailID = id; taskDetail = nil; taskDetailError = nil
+        do {
+            let detail = try await client.taskDetails(id: id)
+            guard taskDetailID == id else { return }
+            taskDetail = detail
+        } catch {
+            guard taskDetailID == id else { return }
+            taskDetailError = SwarmaTeamsClient.Failure.map(error).message
+        }
+    }
+
+    func taskContext(_ id: String) -> [String] {
+        let swarm = swarms.values.first { $0.steps.contains { $0.taskID == id } }
+        let step = swarm?.steps.first { $0.taskID == id }
+        let thread = swarm?.threadID ?? attention.first { $0.id == id }?.threadID
+            ?? messages.first { $0.value.contains { $0.task?.id == id || $0.ref?.taskID == id || $0.ref?.taskIDs.contains(id) == true } }?.key
+        return [bot(threadID: thread)?.name, swarm?.title, agent(id: step?.assigneeAgentID)?.name].compactMap { $0 }
+    }
+
+    func taskCanApply(_ row: TeamsTaskRow, resolved: Bool) -> Bool {
+        let state = workingTasks.first { $0.id == row.id }?.status
+            ?? resolvedTasks.first { $0.id == row.id }?.status
+            ?? attention.first { $0.id == row.id }?.state
+        return TeamsTaskBulk.canApply(row, resolved: resolved, status: state)
+    }
+
+    func taskSelectable(_ row: TeamsTaskRow) -> Bool {
+        taskCanApply(row, resolved: true) || taskCanApply(row, resolved: false)
+    }
+
+    func bulkResolve(_ resolved: Bool) async {
+        guard !bulkTasksBusy, !answeringBlocked else { return }
+        let rows = taskRows.filter { taskSelection.contains($0.id) && taskCanApply($0, resolved: resolved) && !busyTasks.contains($0.id) }
+        guard !rows.isEmpty else { return }
+        bulkTasksBusy = true; bulkTaskMessage = nil
+        let ids = Set(rows.map(\.id))
+        busyTasks.formUnion(ids)
+        defer { bulkTasksBusy = false; busyTasks.subtract(ids) }
+        let client = self.client
+        var succeeded = 0, conflicts = 0
+        await withTaskGroup(of: SwarmaTeamsClient.Failure?.self) { group in
+            var pending = rows[...]
+            func add(_ row: TeamsTaskRow) {
+                group.addTask {
+                    do {
+                        let task = try await client.taskGet(id: row.id)
+                        guard ["completed", "failed", "cancelled"].contains(task.status), let version = task.version else {
+                            return .service(.serviceCode("task_active"))
+                        }
+                        try await client.taskResolve(id: row.id, resolved: resolved, expectedVersion: version)
+                        return nil
+                    } catch { return SwarmaTeamsClient.Failure.map(error) }
+                }
+            }
+            for _ in 0..<4 { if let row = pending.popFirst() { add(row) } }
+            for await failure in group {
+                if let row = pending.popFirst() { add(row) }
+                if failure == nil { succeeded += 1 }
+                if failure == .service(.serviceCode("version_conflict")) || failure == .service(.serviceCode("task_active")) { conflicts += 1 }
+                if failure == .service(.serviceCode("owner_required")) { answeringBlocked = true }
+            }
+        }
+        bulkTaskMessage = TeamsTaskBulk.message(resolved: resolved, succeeded: succeeded, total: rows.count, conflicts: conflicts)
+        taskSelection.removeAll()
+        await loadTasks()
+        if loadingTasks { scheduleTaskRefresh(scope: nil) }
     }
 
     /// `attention_list`, plus each scope's running and resolved tasks
@@ -1047,5 +1123,23 @@ final class TeamsModel: ObservableObject {
             break
         default: break
         }
+    }
+}
+
+/// Pure rules shared by controls and the mutation boundary.
+enum TeamsTaskBulk {
+    static func canApply(_ row: TeamsTaskRow, resolved: Bool, status: String? = nil) -> Bool {
+        row.resolvable && (status.map { ["completed", "failed", "cancelled"].contains($0) } ?? true) && (row.section == .resolved) != resolved
+    }
+    static func message(resolved: Bool, succeeded: Int, total: Int, conflicts: Int) -> String {
+        var text = resolved ? L10n.t("Resolved \(succeeded) of \(total).") : L10n.t("Unresolved \(succeeded) of \(total).")
+        if conflicts > 0 { text += " " + L10n.t("\(conflicts) changed since you loaded it; try again.") }
+        let other = total - succeeded - conflicts
+        if other > 0 { text += " " + L10n.t("\(other) could not be updated; refresh and try again.") }
+        return text
+    }
+    static func tokens(_ value: Int) -> String {
+        if value < 1000 { return String(value) }
+        return String(format: "%.1fk", locale: Locale(identifier: "en_US_POSIX"), Double(value) / 1000)
     }
 }

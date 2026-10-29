@@ -93,7 +93,7 @@ struct TaskStateLine: View {
 struct TasksPane: View {
     @ObservedObject var model: TeamsModel
     @State private var showResolved = false
-    @State private var selectedID: String?
+    @State private var selectionAnchor: String?
 
     var body: some View {
         let sections = TeamsTaskGrouping.sections(model.taskRows, search: model.taskSearch, sort: model.taskSort)
@@ -103,6 +103,9 @@ struct TasksPane: View {
                 Text(verbatim: L10n.t("Everything your bots are doing, done or stuck on."))
                     .font(KS.body(13)).foregroundStyle(KS.textSoft).lineLimit(1)
                 Spacer(minLength: 0)
+                Button(L10n.t(model.selectingTasks ? "Cancel" : "Select")) {
+                    model.selectingTasks.toggle(); model.taskSelection.removeAll(); model.taskDetailID = nil
+                }.buttonStyle(.ks(.paper)).disabled(model.bulkTasksBusy)
                 TeamsConnectionStatus(model: model)
                 KSSearchField(prompt: L10n.t("Search tasks"), text: $model.taskSearch, height: 32).frame(minWidth: 120, maxWidth: 220)
                 Picker(L10n.t("Sort"), selection: $model.taskSort) {
@@ -111,6 +114,7 @@ struct TasksPane: View {
                 }
                 .pickerStyle(.segmented).fixedSize().labelsHidden()
             }
+            HStack(spacing: 0) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 22) {
                     if sections.isEmpty {
@@ -145,12 +149,38 @@ struct TasksPane: View {
                 }
                 .padding(28)
             }
+            if model.taskDetailID != nil {
+                TaskDetailPanel(model: model).frame(minWidth: 290, idealWidth: 350, maxWidth: 390)
+            }
+            }
+            if let message = model.bulkTaskMessage {
+                Text(verbatim: message).font(KS.body(13)).frame(maxWidth: .infinity, alignment: .leading).padding(12)
+                    .background(KS.sageTint).accessibilityLabel(message)
+            }
             KSBottomBar {
-                Spacer()
-                if let row = model.taskRows.first(where: { $0.id == selectedID }) { TaskActions(model: model, row: row) }
+                if !model.taskSelection.isEmpty {
+                    Text(verbatim: L10n.t("\(model.taskSelection.count) selected")).font(KS.body(14, .bold))
+                    Spacer()
+                    ForEach([true, false], id: \.self) { resolved in
+                        Button(L10n.t(resolved ? "Resolve" : "Unresolve")) { Task { await model.bulkResolve(resolved) } }
+                            .buttonStyle(.ks(resolved ? .primary : .paper))
+                            .disabled(model.bulkTasksBusy || model.answeringBlocked || !model.taskRows.contains {
+                                model.taskSelection.contains($0.id) && model.taskCanApply($0, resolved: resolved)
+                            })
+                    }
+                    Button(L10n.t("Cancel")) { model.taskSelection.removeAll(); model.selectingTasks = false }
+                        .disabled(model.bulkTasksBusy)
+                } else {
+                    Spacer()
+                    if let row = model.taskRows.first(where: { $0.id == model.taskDetailID }) { TaskActions(model: model, row: row) }
+                }
             }
         }
         .background(KS.paper)
+        .onExitCommand { model.taskDetailID = nil; model.taskSelection.removeAll(); model.selectingTasks = false }
+        .onChange(of: model.taskRows) { _, rows in
+            model.taskSelection.formIntersection(rows.filter(model.taskSelectable).map(\.id))
+        }
     }
 
     static func tint(_ section: TeamsTaskSection) -> Color {
@@ -163,15 +193,44 @@ struct TasksPane: View {
         }
     }
 
+    private func activate(_ row: TeamsTaskRow) {
+        let flags = NSEvent.modifierFlags
+        if model.selectingTasks || flags.contains(.command) || flags.contains(.shift) {
+            guard model.taskSelectable(row) else { return }
+            model.selectingTasks = true; model.taskDetailID = nil
+            let sections = TeamsTaskGrouping.sections(model.taskRows, search: model.taskSearch, sort: model.taskSort)
+            let rows = model.taskSort == .newest
+                ? sections.flatMap(\.rows).sorted { ($0.at ?? .distantPast) > ($1.at ?? .distantPast) }
+                : sections.filter { $0.section != .resolved || showResolved }.flatMap(\.rows)
+            if flags.contains(.shift), let anchor = selectionAnchor,
+               let start = rows.firstIndex(where: { $0.id == anchor }), let end = rows.firstIndex(where: { $0.id == row.id }) {
+                model.taskSelection.formUnion(rows[min(start, end)...max(start, end)].filter(model.taskSelectable).map(\.id))
+            } else {
+                if !model.taskSelection.insert(row.id).inserted { model.taskSelection.remove(row.id) }
+                selectionAnchor = row.id
+            }
+        } else if row.kind == "task" {
+            Task { await model.openTaskDetail(row.id) }
+        } else if let item = model.attention.first(where: { $0.id == row.id }) {
+            Task { await model.open(item) }
+        }
+    }
+
     private func panel(_ rows: [TeamsTaskRow], shadow: Bool) -> some View {
         VStack(spacing: 0) {
             ForEach(Array(rows.enumerated()), id: \.element.id) { i, row in
-                Button { selectedID = selectedID == row.id ? nil : row.id } label: {
-                    TaskRowView(model: model, row: row, selected: selectedID == row.id)
+                Button { activate(row) } label: {
+                    HStack(spacing: 0) {
+                        if model.selectingTasks {
+                            Image(systemName: model.taskSelection.contains(row.id) ? "checkmark.square.fill" : "square")
+                                .foregroundStyle(model.taskSelectable(row) ? KS.ink : KS.textMuted)
+                                .padding(.leading, 14).accessibilityLabel(L10n.t(model.taskSelectable(row) ? "Select task" : "Task cannot be selected"))
+                        }
+                        TaskRowView(model: model, row: row, selected: model.taskSelection.contains(row.id) || model.taskDetailID == row.id)
+                    }
                 }
-                .buttonStyle(.plain)
-                .overlay(alignment: .bottom) { if i < rows.count - 1 { Rectangle().fill(KS.hairline).frame(height: 1) } }
-                .accessibilityAddTraits(selectedID == row.id ? .isSelected : [])
+                .buttonStyle(.plain).disabled(model.bulkTasksBusy || (model.selectingTasks && !model.taskSelectable(row)))
+                .accessibilityAddTraits(model.taskSelection.contains(row.id) ? .isSelected : [])
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: 20))
@@ -234,6 +293,73 @@ struct TaskActions: View {
                 .accessibilityLabel((row.section == .resolved ? "Unresolve: " : "Resolve: ") + row.title)
                 .disabled(model.busyTasks.contains(row.id))
             }
+        }
+    }
+}
+
+struct TaskDetailPanel: View {
+    @ObservedObject var model: TeamsModel
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                HStack {
+                    KSLabel(L10n.t("TASK DETAILS"))
+                    Spacer()
+                    Button { model.taskDetailID = nil } label: { Image(systemName: "xmark") }
+                        .buttonStyle(.plain).accessibilityLabel(L10n.t("Close task details"))
+                }
+                if let d = model.taskDetail, d.task.id == model.taskDetailID {
+                    Text(verbatim: d.task.objective).font(KS.body(18, .bold)).textSelection(.enabled)
+                    field("State", d.resolved ? L10n.t("Resolved") : d.task.status)
+                    let context = model.taskContext(d.task.id)
+                    if !context.isEmpty { field("Team", context.joined(separator: " · ")) }
+                    field("Agent", d.result?.agent)
+                    field("Service", d.served?.provider)
+                    field("Model", d.served?.model)
+                    if d.served?.model == nil { field("Requested model", d.permission?.runner?.model) }
+                    field("Effort", d.permission?.runner?.effort)
+                    field("Duration", d.result?.durationMS.map(TeamsRun.duration))
+                    VStack(alignment: .leading, spacing: 10) {
+                        KSLabel(L10n.t("RUNS") + " · \(d.runs.count)")
+                        if d.runs.isEmpty { Text(verbatim: L10n.t("Not recorded")) }
+                        ForEach(Array(d.runs.enumerated()), id: \.offset) { index, run in
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text(verbatim: L10n.t("Attempt \(index + 1)")).font(KS.body(14, .bold))
+                                field("Worker", run.worker_id)
+                                field("Provider", run.provider)
+                                field("Model", run.model)
+                                field("Start", run.started_at?.formatted(date: .abbreviated, time: .shortened))
+                                field("End", run.ended_at?.formatted(date: .abbreviated, time: .shortened))
+                                field("Outcome", run.status)
+                            }.padding(12).frame(maxWidth: .infinity, alignment: .leading).background(KS.paper, in: RoundedRectangle(cornerRadius: 12))
+                        }
+                    }
+                    field("Branch", d.result?.branch)
+                    field("Changed files", d.result.map { result in
+                        !result.files.isEmpty ? result.files.joined(separator: "\n") : result.fileCount.map { L10n.t("\($0) files (names not recorded)") } ?? L10n.t("Not recorded")
+                    })
+                    field("Summary", d.result?.summary)
+                    VStack(alignment: .leading, spacing: 8) {
+                        KSLabel(L10n.t("TOKENS"))
+                        if let usage = d.result?.usage {
+                            field("Input", TeamsTaskBulk.tokens(usage.input_tokens))
+                            field("Cached input", usage.cached_input_tokens.map(TeamsTaskBulk.tokens))
+                            field("Output", TeamsTaskBulk.tokens(usage.output_tokens))
+                        } else { Text(verbatim: L10n.t("Not recorded")) }
+                    }
+                } else if let error = model.taskDetailError {
+                    Text(verbatim: error)
+                    Button(L10n.t("Try again")) { if let id = model.taskDetailID { Task { await model.openTaskDetail(id) } } }
+                } else { ProgressView(L10n.t("Loading task…")) }
+            }.font(KS.body(13)).foregroundStyle(KS.ink).padding(20).frame(maxWidth: .infinity, alignment: .leading)
+        }.background(KS.white)
+    }
+
+    private func field(_ label: String, _ value: String?) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(verbatim: L10n.t(label)).font(KS.body(11, .bold)).foregroundStyle(KS.textSoft)
+            Text(verbatim: value ?? L10n.t("Not recorded")).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
         }
     }
 }
