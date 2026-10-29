@@ -170,7 +170,7 @@ struct TasksPane: View {
                     TaskRowView(model: model, row: row, selected: selectedID == row.id)
                 }
                 .buttonStyle(.plain)
-                .overlay(alignment: .bottom) { if i < rows.count - 1 { Rectangle().fill(KS.ink).frame(height: 2) } }
+                .overlay(alignment: .bottom) { if i < rows.count - 1 { Rectangle().fill(KS.hairline).frame(height: 1) } }
                 .accessibilityAddTraits(selectedID == row.id ? .isSelected : [])
             }
         }

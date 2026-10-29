@@ -210,8 +210,8 @@ struct TeamsRail: View {
 
     var body: some View {
         VStack(spacing: 8) {
-            KSMoji(seed: "swarmaa", size: 42, kind: .mark).padding(.top, KS.topBarHeight + 14).padding(.bottom, 8)
-            item("person.2.fill", L10n.t("Bots"), .bots, badge: model.botsWithUpdates)
+            // The Swarmaa mark is the Bots button: it looked clickable, so it is.
+            item(nil, L10n.t("Bots"), .bots, badge: model.botsWithUpdates).padding(.top, KS.topBarHeight + 6)
             item("checklist", L10n.t("Tasks"), .tasks, badge: 0)
             Spacer(minLength: 12)
             if case let usage = model.allUsage, !usage.isEmpty {
@@ -230,10 +230,14 @@ struct TeamsRail: View {
         .background(KS.ink)
     }
 
-    private func item(_ symbol: String, _ title: String, _ pane: TeamsModel.Pane, badge: Int) -> some View {
+    /// `symbol` nil draws the Swarmaa mark.
+    private func item(_ symbol: String?, _ title: String, _ pane: TeamsModel.Pane, badge: Int) -> some View {
         let on = model.pane == pane
         return Button { model.pane = pane } label: {
-            Image(systemName: symbol).font(.system(size: 17, weight: .semibold))
+            Group {
+                if let symbol { Image(systemName: symbol).font(.system(size: 17, weight: .semibold)) }
+                else { KSMoji(seed: "swarmaa", size: 34, kind: .mark) }
+            }
                 .frame(width: 46, height: 46)
                 .background(Circle().fill(on ? KS.lime : .clear))
                 .foregroundStyle(on ? KS.ink : KS.onInkSoft)
@@ -393,8 +397,7 @@ struct KSBottomBar<Content: View>: View {
     var body: some View {
         HStack(spacing: 10) { content }
             .padding(.horizontal, 20).padding(.vertical, 12)
-            .background(KS.white)
-            .overlay(alignment: .top) { Rectangle().fill(KS.ink).frame(height: 2.5) }
+            .background(KS.paper)
     }
 }
 

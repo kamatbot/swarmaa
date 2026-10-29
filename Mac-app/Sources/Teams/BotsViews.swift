@@ -23,7 +23,6 @@ struct BotsHome: View {
             } else {
                 HStack(spacing: 0) {
                     BotsSidebar(model: model).frame(width: 300)
-                    Rectangle().fill(KS.ink).frame(width: 2)
                     Group {
                         if let id = model.editingBotID, let bot = model.bot(id: id) {
                             BotSettingsPane(model: model, bot: bot).id(id)
@@ -49,7 +48,7 @@ struct BotsSidebar: View {
         let updates = bots.filter { model.botHasUpdates($0) }
         let rest = bots.filter { !model.botHasUpdates($0) }
         VStack(spacing: 0) {
-            KSTopBar {
+            KSTopBar(fill: KS.paperDeep) {
                 KSSearchField(prompt: L10n.t("Search bots"), text: $model.search, height: 32)
                     .focused($searchFocused)
                     .frame(maxWidth: .infinity)
@@ -98,7 +97,7 @@ struct BotsSidebar: View {
                 .padding(.horizontal, 12).padding(.bottom, 12)
             }
         }
-        .background(KS.paper)
+        .background(KS.paperDeep)
         .background {
             Button(L10n.t("Search bots")) { searchFocused = true }
                 .keyboardShortcut("k", modifiers: .command)
@@ -129,7 +128,7 @@ struct BotRow: View {
         Button { model.select(threadID: bot.threadID) } label: {
             HStack(spacing: 11) {
                 KSMoji(seed: bot.avatar ?? bot.leadAgentID, size: 34)
-                VStack(alignment: .leading, spacing: 3) {
+                VStack(alignment: .leading, spacing: 5) {
                     HStack(spacing: 6) {
                         Text(verbatim: bot.name).font(KS.body(14, .bold)).lineLimit(1)
                         Spacer(minLength: 2)
@@ -146,12 +145,10 @@ struct BotRow: View {
                     if needs > 0 { KSChip(L10n.t("Needs you"), fill: KS.coral) }
                 }
             }
-            .padding(.horizontal, 9).padding(.vertical, 6)
+            .padding(.horizontal, 10).padding(.vertical, 12)
             .background {
-                if selected { RoundedRectangle(cornerRadius: 12).fill(KS.ink).offset(x: 2, y: 2) }
-                RoundedRectangle(cornerRadius: 12).fill(selected ? KS.white : hovered ? KS.sageTint : .clear)
+                RoundedRectangle(cornerRadius: 12).fill(selected ? KS.paper : hovered ? KS.paper.opacity(0.6) : .clear)
             }
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(selected ? KS.ink : .clear, lineWidth: 2))
             .contentShape(RoundedRectangle(cornerRadius: 12))
         }
         .buttonStyle(.plain)
@@ -206,14 +203,24 @@ struct BotThreadHeader: View {
         }
     }
 
+    /// The bot's name sits centred in the bar; status and actions sit at the two ends.
     private func row(compact: Bool) -> some View {
+        ZStack {
+            sides(compact: compact)
+            if settingsOpen {
+                Text(verbatim: bot.name + " / " + L10n.t("Settings"))
+                    .font(KS.body(14, .semibold)).lineLimit(1).frame(maxWidth: 320)
+            } else {
+                botMenu
+            }
+        }
+    }
+
+    private func sides(compact: Bool) -> some View {
         HStack(spacing: 10) {
             if settingsOpen {
                 KSBarButton(symbol: "chevron.left", label: L10n.t("Back to thread")) { model.editingBotID = nil }
-                Text(verbatim: bot.name + " / " + L10n.t("Settings"))
-                    .font(KS.body(14, .semibold)).lineLimit(1)
             } else {
-                botMenu
                 HStack(spacing: 6) {
                     Circle().fill(activeTasks > 0 ? Color.green : KS.textMuted).frame(width: 8, height: 8)
                     if !compact { Text(verbatim: statusLabel).font(KS.mono(11)).tracking(0.5).fixedSize() }
@@ -470,7 +477,7 @@ struct BotSettingsPane: View {
                         }
                     }
                     .padding(.horizontal, 16).padding(.vertical, 11)
-                    .overlay(alignment: .bottom) { if i < members.filter({ $0 != leadID }).count { Rectangle().fill(KS.ink).frame(height: 2) } }
+                    .overlay(alignment: .bottom) { if i < members.filter({ $0 != leadID }).count { Rectangle().fill(KS.hairline).frame(height: 1) } }
                 }
             }
             .ksCard(radius: 22)
@@ -502,7 +509,7 @@ struct BotSettingsPane: View {
                         runnerMenu(kind)
                     }
                     .padding(.horizontal, 16).padding(.vertical, 12)
-                    .overlay(alignment: .bottom) { if i < 3 { Rectangle().fill(KS.ink).frame(height: 2) } }
+                    .overlay(alignment: .bottom) { if i < 3 { Rectangle().fill(KS.hairline).frame(height: 1) } }
                 }
             }
             .ksCard(radius: 22, shadow: true)
@@ -584,7 +591,7 @@ struct BotSettingsPane: View {
     private func ruleRow<C: View>(_ title: String, _ detail: String, @ViewBuilder _ control: () -> C) -> some View {
         ruleContent(title, detail, control)
             .padding(.horizontal, 16).padding(.vertical, 12)
-            .overlay(alignment: .bottom) { Rectangle().fill(KS.ink).frame(height: 2) }
+            .overlay(alignment: .bottom) { Rectangle().fill(KS.hairline).frame(height: 1) }
     }
 
     private func ruleContent<C: View>(_ title: String, _ detail: String, @ViewBuilder _ control: () -> C) -> some View {

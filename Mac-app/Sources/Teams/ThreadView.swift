@@ -148,7 +148,6 @@ struct ThreadHeader: View {
         }
         .padding(.horizontal, 20).padding(.vertical, 12)
         .background(KS.paper)
-        .overlay(alignment: .bottom) { Rectangle().fill(KS.ink).frame(height: 2) }
     }
 
     static func status(_ status: String?) -> String {
@@ -714,7 +713,6 @@ struct Composer: View {
         .ksCard(radius: 16, shadow: true)
         .padding(.horizontal, 16).padding(.top, 6).padding(.bottom, 10)
         .background(KS.paper)
-        .overlay(alignment: .top) { Rectangle().fill(KS.ink).frame(height: 2) }
         .onDisappear { dictation.stop() }
         .onChange(of: scenePhase) { _, phase in if phase != .active { dictation.stop() } }
         .onChange(of: model.threadIsVisible) { _, visible in if !visible { dictation.stop() } }

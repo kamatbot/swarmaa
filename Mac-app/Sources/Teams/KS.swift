@@ -8,6 +8,10 @@ import SwiftUI
 enum KS {
     static let ink = Color(hex: 0x15111F)
     static let paper = Color(hex: 0xF4EFE6)
+    /// The bot list and other side columns: a shade darker than paper, so columns part by tone, not a rule.
+    static let paperDeep = Color(hex: 0xEBE4D7)
+    /// A soft separator between rows inside a card.
+    static let hairline = Color(hex: 0x15111F).opacity(0.10)
     static let white = Color.white
     static let lime = Color(hex: 0xCFE08A)
     static let coral = Color(hex: 0xE8836B)
@@ -213,13 +217,13 @@ struct KSSearchField: View {
 extension KS { static let topBarHeight: CGFloat = 52 }
 
 struct KSTopBar<Content: View>: View {
+    var fill: Color = KS.paper
     @ViewBuilder var content: Content
     var body: some View {
         HStack(spacing: 10) { content }
             .padding(.horizontal, 12)
             .frame(maxWidth: .infinity, minHeight: KS.topBarHeight, maxHeight: KS.topBarHeight)
-            .background(KS.paper)
-            .overlay(alignment: .bottom) { Rectangle().fill(KS.ink).frame(height: 2) }
+            .background(fill)
     }
 }
 
