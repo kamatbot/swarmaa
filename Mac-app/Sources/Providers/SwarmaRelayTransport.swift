@@ -737,10 +737,9 @@ public final class SwarmaRelayTransport: @unchecked Sendable {
                     let json = try frame.encode()
                     try await self.sendRaw(json)
                 } catch {
-                    self.withLock {
-                        _ = self.inFlightSend.removeValue(forKey: sid)
-                    }
-                    continuation.resume(throwing: error)
+                    // Whoever removes the pending send resumes it: a disconnect may already have.
+                    let pending = self.withLock { self.inFlightSend.removeValue(forKey: sid) }
+                    pending?.continuation.resume(throwing: error)
                 }
             }
         }
@@ -889,10 +888,8 @@ public final class SwarmaRelayTransport: @unchecked Sendable {
                     let json = try frame.encode()
                     try await self.sendRaw(json)
                 } catch {
-                    self.withLock {
-                        _ = self.inFlightPair.removeValue(forKey: rid)
-                    }
-                    continuation.resume(throwing: error)
+                    let pending = self.withLock { self.inFlightPair.removeValue(forKey: rid) }
+                    pending?.resume(throwing: error)
                 }
             }
         }

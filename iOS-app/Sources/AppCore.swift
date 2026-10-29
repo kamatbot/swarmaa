@@ -253,6 +253,17 @@ func safeError(_ error: Error) -> String {
         return request
     }
     func call(_ tool: String, _ input: [String: JSON] = [:]) async throws -> JSON {
+        do { return try await callOnce(tool, input) }
+        catch SwarmaRelayTransport.Failure.closed where Self.retriesOnClosed(tool) {
+            // The OS closes the socket while the app is in the background; the first read after that fails
+            // as closed. Reads are safe to resend once on a fresh connection; writes are never resent here.
+            return try await callOnce(tool, input)
+        }
+    }
+    nonisolated static func retriesOnClosed(_ tool: String) -> Bool {
+        tool.hasSuffix("_list") || tool.hasSuffix("_get") || tool.hasSuffix("_read") || tool == "swarm_status"
+    }
+    private func callOnce(_ tool: String, _ input: [String: JSON]) async throws -> JSON {
         try Task.checkCancellation()
         var request = request("/api/tools/" + tool)
         request.httpMethod = "POST"

@@ -369,4 +369,9 @@ actor IOSRelaySocket: SwarmaRelayTransport.SwarmaWebSocket {
         XCTAssertTrue(calls.isEmpty)
         await service.transport.disconnect()
     }
+
+    func testOnlyReadsAreResentAfterAClosedSocket() {
+        for tool in ["bot_list", "thread_read", "task_get", "swarm_status"] { XCTAssertTrue(RelayService.retriesOnClosed(tool), tool) }
+        for tool in ["thread_post", "bot_update", "task_resolve", "push_register", "bot_delete"] { XCTAssertFalse(RelayService.retriesOnClosed(tool), tool) }
+    }
 }

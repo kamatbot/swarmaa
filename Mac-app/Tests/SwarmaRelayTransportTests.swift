@@ -11,6 +11,9 @@ final class FakeWebSocket: SwarmaRelayTransport.SwarmaWebSocket, @unchecked Send
     private var receiveQueue: [Result<String, Error>] = []
     private var receiveContinuations: [CheckedContinuation<String, Error>] = []
     private var isClosed = false
+    /// When set, `send` records the frame, then waits for `releaseHeldSends()` and fails.
+    var holdSends = false
+    private var heldSends: [CheckedContinuation<Void, Error>] = []
 
     private func withLock<T>(_ body: () throws -> T) rethrows -> T {
         lock.lock()
@@ -19,10 +22,17 @@ final class FakeWebSocket: SwarmaRelayTransport.SwarmaWebSocket, @unchecked Send
     }
 
     func send(_ text: String) async throws {
-        try withLock {
+        let hold = try withLock { () -> Bool in
             if isClosed { throw SwarmaRelayTransport.Failure.closed }
             sentMessages.append(text)
+            return holdSends
         }
+        if hold { try await withCheckedThrowingContinuation { c in withLock { heldSends.append(c) } } }
+    }
+
+    func releaseHeldSends() {
+        let held = withLock { () -> [CheckedContinuation<Void, Error>] in let h = heldSends; heldSends.removeAll(); return h }
+        for c in held { c.resume(throwing: SwarmaRelayTransport.Failure.closed) }
     }
 
     func receive() async throws -> String {
@@ -607,6 +617,29 @@ final class SwarmaRelayTransportTests: XCTestCase {
         } catch let failure as SwarmaRelayTransport.Failure {
             XCTAssertEqual(failure, .closed)
         }
+    }
+
+    /// The phone crashed here: a send whose write fails after a disconnect already
+    /// failed it must not resume the request a second time.
+    func testSendFailingAfterDisconnectResumesOnce() async throws {
+        let fake = FakeWebSocket()
+        fake.holdSends = true
+        let transport = SwarmaRelayTransport(hostID: "host123", socket: fake, autoReconnect: false)
+        let req = URLRequest(url: URL(string: "https://relay.swarmaa.com/api/tools/run")!)
+        let sendTask = Task { try await transport.send(req) }
+        let pairTask = Task { try await transport.pair(code: "one two three four five six", deviceName: "Test Device") }
+        _ = try await fake.waitForSentFrame { if case .req = $0 { return true }; return false }
+        _ = try await fake.waitForSentFrame { if case .pairRedeem = $0 { return true }; return false }
+
+        fake.simulateDrop()
+        do { _ = try await sendTask.value; XCTFail("Expected .closed") }
+        catch let failure as SwarmaRelayTransport.Failure { XCTAssertEqual(failure, .closed) }
+        do { _ = try await pairTask.value; XCTFail("Expected .closed") }
+        catch let failure as SwarmaRelayTransport.Failure { XCTAssertEqual(failure, .closed) }
+
+        // The writes now fail too; before the fix this resumed each continuation again and trapped.
+        fake.releaseHeldSends()
+        try await Task.sleep(nanoseconds: 100_000_000)
     }
 
     // MARK: 9. Presence updates

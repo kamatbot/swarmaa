@@ -287,21 +287,32 @@ struct RootView: View {
         GeometryReader { geo in
             VStack(spacing: 0) {
                 if model.connected || model.isDemo {
-                    switch screen {
-                    case .home: home
-                    case .thread: thread.swipeBack { screen = .home; model.openBot = nil }
-                    case .tasks: tasks.swipeBack { screen = .home }
-                    case .usage: usage.swipeBack { screen = .home }
-                    case .connect: ConnectView(model: model) { screen = .home }.swipeBack { screen = .home }
-                    case .settings:
-                        if let bot = model.openBot ?? model.starred { SettingsView(model: model, bot: bot) { screen = model.openBot == nil ? .home : .thread }.swipeBack { screen = .thread } }
-                        else { empty("Open a bot to change its settings.") }
+                    // A stack, like a navigation controller: home stays put underneath, deeper screens
+                    // slide in from the right over it and slide back out, so going back reveals home.
+                    ZStack {
+                        home.accessibilityHidden(screen != .home)
+                        if screen == .thread || (screen == .settings && model.openBot != nil) {
+                            thread.swipeBack { screen = .home; model.openBot = nil }
+                                .background(KS.paper).transition(.move(edge: .trailing))
+                                .accessibilityHidden(screen != .thread)
+                        }
+                        if screen == .tasks { tasks.swipeBack { screen = .home }.background(KS.paper).transition(.move(edge: .trailing)) }
+                        if screen == .usage { usage.swipeBack { screen = .home }.background(KS.paper).transition(.move(edge: .trailing)) }
+                        if screen == .connect {
+                            ConnectView(model: model) { screen = .home }.swipeBack { screen = .home }.background(KS.paper).transition(.move(edge: .trailing))
+                        }
+                        if screen == .settings {
+                            Group {
+                                if let bot = model.openBot ?? model.starred { SettingsView(model: model, bot: bot) { screen = model.openBot == nil ? .home : .thread }.swipeBack { screen = model.openBot == nil ? .home : .thread } }
+                                else { empty("Open a bot to change its settings.") }
+                            }.background(KS.paper).transition(.move(edge: .trailing))
+                        }
                     }
                 } else { ConnectView(model: model) { screen = .home } }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity).background(KS.paper).foregroundStyle(KS.ink)
             .font(KS.body()).tint(KS.ink)
-            .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: screen)
+            .animation(reduceMotion ? nil : .spring(response: 0.34, dampingFraction: 0.9), value: screen)
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 if let error = model.error {
                     HStack { Text(error).font(KS.body(14)); Button("Dismiss") { model.error = nil }.frame(minHeight: 44) }
