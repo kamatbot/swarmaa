@@ -65,16 +65,27 @@ struct SwarmaaShortcuts: AppShortcutsProvider {
     func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
         Task { await Runtime.model.registerPushToken(deviceToken) }
     }
-    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
+    // Completion-handler forms, answered on the main thread. The async forms return on a background
+    // executor, and UIKit's tap handling then asserts it is off the main thread: tapping a push crashed.
+    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification,
+                                            withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
         let id = PushNotification.botID(notification.request.content.userInfo)
-        return await MainActor.run {
-            id != nil && id == Runtime.model.visibleThreadBotID ? [] : [.banner, .sound, .badge]
+        nonisolated(unsafe) let done = completionHandler
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated { done(id != nil && id == Runtime.model.visibleThreadBotID ? [] : [.banner, .sound, .badge]) }
         }
     }
-    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
-        guard response.actionIdentifier == UNNotificationDefaultActionIdentifier else { return }
-        guard let id = PushNotification.botID(response.notification.request.content.userInfo) else { return }
-        await MainActor.run { Runtime.model.receivePushTap(["bot_id": id]) }
+    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
+                                            withCompletionHandler completionHandler: @escaping () -> Void) {
+        let tapped = response.actionIdentifier == UNNotificationDefaultActionIdentifier
+        let id = PushNotification.botID(response.notification.request.content.userInfo)
+        nonisolated(unsafe) let done = completionHandler
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated {
+                if tapped, let id { Runtime.model.receivePushTap(["bot_id": id]) }
+                done()
+            }
+        }
     }
 }
 
@@ -1148,6 +1159,8 @@ private extension AppModel {
             bots[bots.count - 1].raw["archived"] = .bool(true)
         }
         if ProcessInfo.processInfo.arguments.contains("-new-user-demo") { bots = []; return }
+        // UI tests of push taps: ask for notification permission the way a real first bot list does.
+        if ProcessInfo.processInfo.arguments.contains("-push-demo") { didLoadBots = true; Task { await onFirstBotList?() } }
         openBot = bots[0]
         agents = [JSON.object(["id": .string("launch"), "name": .string("Atlas"), "scope": .string("project:swarma")]), .object(["id": .string("scout"), "name": .string("Scout"), "scope": .string("project:swarma")]), .object(["id": .string("forge"), "name": .string("Forge"), "scope": .string("project:swarma")])]
         tasks = [Demo.task("banner", "Draft the launch banner", "completed", "claude"), Demo.task("pricing", "Summarise competitor pricing", "failed", "codex"), Demo.task("calendar", "Check the launch calendar", "running", "antigravity"), Demo.task("limits", "Fix the plan limits on the pricing page", "running", "claude")]

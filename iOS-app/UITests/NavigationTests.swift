@@ -286,6 +286,24 @@ import XCTest
         XCTAssertTrue(returning.buttons["close-sheet"].waitForExistence(timeout: 5), "The + opens the new bot sheet")
     }
 
+    /// Tapping a push used to abort the app: the async delegate answered iOS off the main thread.
+    /// The host sends the push with `simctl push` while this waits (see scripts/ios-push-tap-test.sh).
+    func testTappingAPushDoesNotCrash() {
+        let app = XCUIApplication()
+        app.launchArguments = ["-demo", "-push-demo"]
+        app.launch()
+        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        let allow = springboard.buttons["Allow"]
+        if allow.waitForExistence(timeout: 8) { allow.tap() }
+        XCUIDevice.shared.press(.home)
+        let banner = springboard.staticTexts["Replied"]
+        guard banner.waitForExistence(timeout: 90) else { return XCTFail("no notification arrived") }
+        banner.tap()
+        XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
+        RunLoop.current.run(until: Date().addingTimeInterval(3))
+        XCTAssertEqual(app.state, .runningForeground, "the app must survive the tap")
+    }
+
     /// Screens slide in over home; wait for the slide to settle before asking whether a control can be tapped.
     private func hittable(_ element: XCUIElement, timeout: TimeInterval = 2) -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
