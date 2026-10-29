@@ -146,7 +146,7 @@ struct BotRow: View {
         Button { model.select(threadID: bot.threadID) } label: {
             HStack(spacing: 11) {
                 // Hover wakes the avatar: a small hop and tilt that springs back.
-                KSMoji(seed: bot.avatar ?? bot.leadAgentID, size: 40)
+                KSMoji(seed: bot.avatar ?? bot.leadAgentID, size: 40, color: bot.color)
                     .scaleEffect(hovered && !reduceMotion ? 1.08 : 1)
                     .rotationEffect(.degrees(hovered && !reduceMotion ? -6 : 0))
                     .offset(y: hovered && !reduceMotion ? -2 : 0)
@@ -291,7 +291,7 @@ struct BotThreadHeader: View {
                 .foregroundStyle(KS.danger).disabled(bot.isLegacyAgent || bot.archived || model.savingBot)
         } label: {
             HStack(spacing: 7) {
-                KSMoji(seed: bot.avatar ?? bot.leadAgentID, size: 24)
+                KSMoji(seed: bot.avatar ?? bot.leadAgentID, size: 24, color: bot.color)
                 Text(verbatim: bot.name).font(KS.body(14, .semibold)).lineLimit(1).frame(maxWidth: 180)
                 Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold))
             }

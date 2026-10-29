@@ -19,6 +19,29 @@ final class TeamsBotsTests: XCTestCase {
      "routing_now":{"research":{"runner":{"mode":"auto"},"provider_now":"antigravity","reason":"most quota left"}}}
     """
 
+    func testNamedCharactersAndLegacySeeds() {
+        let faces: [KSMoji.Kind] = [.lead, .runner, .scout, .navigator, .clerk, .scribe, .badgeSun, .badgePeri, .badgePeach]
+        for face in faces { XCTAssertEqual(KSMoji.kind(for: face.rawValue), face) }
+        for seed in ["", "a1", "old free text", "Scout", " scout", "mark", "🦊"] {
+            let hash = seed.unicodeScalars.reduce(UInt32(5381)) { ($0 &* 33) &+ $1.value }
+            XCTAssertEqual(KSMoji.kind(for: seed), faces[Int(hash % UInt32(faces.count))], seed)
+        }
+    }
+
+    func testBotColorDecodingAndLegacyDefault() throws {
+        XCTAssertNil(try decode(TeamsBot.self, botJSON).color)
+        for color in ["blue", "butter", "peach", "lilac", "pink", "lime", "sky", "orchid"] {
+            let json = botJSON.replacingOccurrences(of: "\"avatar\":null", with: "\"avatar\":\"scout\",\"color\":\"\(color)\"")
+            let bot = try decode(TeamsBot.self, json)
+            XCTAssertEqual(bot.color, color)
+            XCTAssertEqual(bot.avatar, "scout")
+            XCTAssertNotNil(KSMoji.backgroundColor(bot.color))
+        }
+        XCTAssertNil(try decode(TeamsBot.self, botJSON.replacingOccurrences(of: "\"avatar\":null", with: "\"color\":null")).color)
+        XCTAssertNil(KSMoji.backgroundColor(nil))
+        XCTAssertNil(KSMoji.backgroundColor("orange"))
+    }
+
     func testDecodesTheBotsShape() throws {
         let bot = try decode(TeamsBot.self, botJSON)
         XCTAssertEqual(bot.threadID, "t1")
