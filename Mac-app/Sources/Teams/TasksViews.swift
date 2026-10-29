@@ -135,7 +135,7 @@ struct TasksPane: View {
                                 VStack(alignment: .leading, spacing: 10) {
                                     HStack(spacing: 8) {
                                         KSLabel(number + " — " + entry.section.title)
-                                        KSChip("\(entry.rows.count)", fill: Self.tint(entry.section), ink: entry.section == .failed ? KS.paper : KS.ink)
+                                        KSChip("\(entry.rows.count)", fill: Self.tint(entry.section), ink: entry.section == .failed ? KS.failedText : entry.section == .needsInput ? KS.needsYouText : [.review, .resolved].contains(entry.section) ? KS.readyText : KS.textSoft)
                                     }
                                     panel(entry.rows, shadow: i == 0)
                                 }
@@ -185,11 +185,11 @@ struct TasksPane: View {
 
     static func tint(_ section: TeamsTaskSection) -> Color {
         switch section {
-        case .needsInput: return KS.coral
-        case .review: return KS.sage
-        case .working: return KS.sky
-        case .failed: return KS.ink
-        case .resolved: return KS.white
+        case .needsInput: return KS.needsYouTint
+        case .review: return KS.sageTint
+        case .working: return KS.neutralTint
+        case .failed: return KS.failedTint
+        case .resolved: return KS.sageTint
         }
     }
 
@@ -233,8 +233,8 @@ struct TasksPane: View {
                 .accessibilityAddTraits(model.taskSelection.contains(row.id) ? .isSelected : [])
             }
         }
-        .clipShape(RoundedRectangle(cornerRadius: 20))
-        .ksCard(fill: .clear, radius: 20, shadow: shadow)
+        .clipShape(RoundedRectangle(cornerRadius: 16))
+        .ksCard(radius: 16, shadow: shadow)
     }
 }
 
@@ -246,8 +246,7 @@ struct TaskRowView: View {
     var body: some View {
         HStack(spacing: 14) {
             ZStack {
-                Circle().fill(row.section == .resolved ? KS.lime : row.section == .working ? KS.sky : KS.white)
-                Circle().stroke(KS.ink, lineWidth: 2.5)
+                Circle().fill(TasksPane.tint(row.section))
                 if row.section == .resolved { Image(systemName: "checkmark").font(.system(size: 12, weight: .heavy)) }
             }
             .frame(width: 26, height: 26).accessibilityLabel(row.section.title)
@@ -263,7 +262,7 @@ struct TaskRowView: View {
             }
         }
         .padding(.horizontal, 16).padding(.vertical, 12)
-        .background(selected ? KS.sageTint : row.section == .needsInput ? KS.coralTint : KS.white)
+        .background(selected ? KS.sageTint : (row.section == .needsInput || row.section == .failed) ? KS.coralTint : KS.white)
         .contentShape(Rectangle())
     }
 }

@@ -314,19 +314,19 @@ struct TypingBubble: View {
             BotMessageAvatar(model: model, threadID: threadID, agentID: typing.agentID)
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
-                    Text(verbatim: name).font(KS.body(14, .bold))
+                    Text(verbatim: name).font(KS.body(12, .semibold))
                     TypingDotsIndicator()
                     Text(verbatim: L10n.t("typing")).font(KS.mono(10)).foregroundStyle(KS.textMuted)
                 }
                 Text(verbatim: typing.text).textSelection(.enabled)
                     .font(KS.body(14)).lineSpacing(1)
                     .padding(.horizontal, 12).padding(.vertical, 7)
-                    .background(UnevenRoundedRectangle(topLeadingRadius: 20, bottomLeadingRadius: 6,
-                                                       bottomTrailingRadius: 20, topTrailingRadius: 20).fill(KS.white))
-                    .overlay(UnevenRoundedRectangle(topLeadingRadius: 20, bottomLeadingRadius: 6,
-                                                    bottomTrailingRadius: 20, topTrailingRadius: 20)
-                        .stroke(KS.ink, style: StrokeStyle(lineWidth: 2, dash: [5, 4])))
+                    .background(UnevenRoundedRectangle(topLeadingRadius: 5, bottomLeadingRadius: 18,
+                                                       bottomTrailingRadius: 18, topTrailingRadius: 18).fill(KS.white)
+                        .shadow(color: KS.ink.opacity(0.06), radius: 1, y: 1)
+                        .shadow(color: KS.ink.opacity(0.05), radius: 7, y: 4))
                     .foregroundStyle(KS.ink)
+                    .opacity(0.7)
             }
             Spacer(minLength: 60)
         }
@@ -373,7 +373,7 @@ struct TextBubble: View {
             VStack(alignment: message.isHuman ? .trailing : .leading, spacing: 3) {
                 if !message.isHuman {
                     HStack(spacing: 6) {
-                        Text(verbatim: author).font(KS.body(14, .bold))
+                        Text(verbatim: author).font(KS.body(12, .semibold))
                         if let date = message.createdAt { Text(date, style: .time).font(KS.mono(10)).foregroundStyle(KS.textMuted) }
                     }
                 }
@@ -384,12 +384,11 @@ struct TextBubble: View {
                 Text(rendered?.body == (message.body ?? "") ? rendered!.text : AttributedString(message.body ?? "")).textSelection(.enabled)
                     .font(KS.body(14)).lineSpacing(1)
                     .padding(.horizontal, 12).padding(.vertical, 7)
-                    .background(UnevenRoundedRectangle(topLeadingRadius: 20, bottomLeadingRadius: message.isHuman ? 20 : 6,
-                                                       bottomTrailingRadius: message.isHuman ? 6 : 20, topTrailingRadius: 20)
-                        .fill(message.isHuman ? KS.ink : KS.white))
-                    .overlay(UnevenRoundedRectangle(topLeadingRadius: 20, bottomLeadingRadius: message.isHuman ? 20 : 6,
-                                                    bottomTrailingRadius: message.isHuman ? 6 : 20, topTrailingRadius: 20)
-                        .stroke(KS.ink, lineWidth: message.isHuman ? 0 : 2))
+                    .background(UnevenRoundedRectangle(topLeadingRadius: message.isHuman ? 18 : 5, bottomLeadingRadius: 18,
+                                                       bottomTrailingRadius: message.isHuman ? 5 : 18, topTrailingRadius: 18)
+                        .fill(message.isHuman ? KS.ink : KS.white)
+                        .shadow(color: KS.ink.opacity(message.isHuman ? 0 : 0.06), radius: 1, y: 1)
+                        .shadow(color: KS.ink.opacity(message.isHuman ? 0 : 0.05), radius: 7, y: 4))
                     .foregroundStyle(message.isHuman ? KS.paper : KS.ink)
                 }
             }
@@ -446,7 +445,7 @@ struct AnswerBubble: View {
         Text(verbatim: parts.joined(separator: " · "))
             .font(KS.body(14))
             .padding(.horizontal, 12).padding(.vertical, 7)
-            .background(RoundedRectangle(cornerRadius: 20).fill(KS.ink))
+            .background(UnevenRoundedRectangle(topLeadingRadius: 18, bottomLeadingRadius: 18, bottomTrailingRadius: 5, topTrailingRadius: 18).fill(KS.ink))
             .foregroundStyle(KS.paper)
             .frame(maxWidth: .infinity, alignment: .trailing)
     }
@@ -469,12 +468,13 @@ typealias HandoffLine = ServiceLine
 typealias NoticeLine = ServiceLine
 
 private struct CardBox<Content: View>: View {
+    var fill: Color = KS.white
     @ViewBuilder let content: Content
     var body: some View {
         VStack(alignment: .leading, spacing: 7) { content }
             .padding(12)
             .frame(maxWidth: 640, alignment: .leading)
-            .ksCard(radius: 16, shadow: true)
+            .ksCard(fill: fill, radius: 16, shadow: true)
     }
 }
 
@@ -487,7 +487,7 @@ struct SwarmCard: View {
     }
 
     var body: some View {
-        CardBox {
+        CardBox(fill: ["waiting_on_you", "failed"].contains(swarm?.status ?? "") ? KS.coralTint : KS.white) {
             if let swarm {
                 HStack(spacing: 8) {
                     VStack(alignment: .leading, spacing: 2) {
@@ -599,7 +599,7 @@ struct QuestionCard: View {
     }
 
     private var card: some View {
-        CardBox {
+        CardBox(fill: question.status == "open" ? KS.coralTint : KS.white) {
             if question.status == "answered" {
                 Label(L10n.t("Answers sent"), systemImage: "checkmark.circle.fill")
                     .font(.callout.weight(.semibold)).foregroundStyle(Palette.ample)
@@ -612,7 +612,7 @@ struct QuestionCard: View {
                 Text(verbatim: question.prompt).font(.body)
                 Text(verbatim: L10n.t("This question expired")).font(.callout).foregroundStyle(Palette.textSecondary)
             } else if !interactive {
-                HStack { KSLabel(L10n.t("Question")); Spacer(); KSChip(L10n.t("Needs you"), fill: KS.coral) }
+                HStack { KSLabel(L10n.t("Question")); Spacer(); KSChip(L10n.t("Needs you"), fill: KS.needsYouTint, ink: KS.needsYouText) }
                 Text(question.prompt).font(KS.body(15, .bold)).textSelection(.enabled)
                 if !question.options.isEmpty {
                     ChipFlow(options: question.options, selected: []) { _ in model.targetQuestionID = question.id }
@@ -621,7 +621,7 @@ struct QuestionCard: View {
                 HStack {
                     KSLabel(question.multi ? L10n.t("Pick any") : L10n.t("Pick one"))
                     Spacer()
-                    KSChip(L10n.t("Needs you"), fill: KS.coral)
+                    KSChip(L10n.t("Needs you"), fill: KS.needsYouTint, ink: KS.needsYouText)
                 }
                 Text(verbatim: question.prompt).font(KS.body(15, .bold))
                 ChipFlow(options: question.options, selected: choices) { toggle($0) }
@@ -663,7 +663,10 @@ struct ChipFlow: View {
                     Text(verbatim: option).font(KS.body(13, .semibold))
                         .padding(.horizontal, 11).padding(.vertical, 5)
                         .background(Capsule().fill(on ? KS.lime : KS.white))
-                        .overlay(Capsule().stroke(KS.ink, lineWidth: 2))
+                        .overlay(Capsule().strokeBorder(on ? .clear : KS.optionLine, lineWidth: 1))
+                        .overlay(alignment: .trailing) {
+                            if on { Image(systemName: "checkmark").font(.system(size: 8, weight: .bold)).padding(.trailing, 3).accessibilityHidden(true) }
+                        }
                         .foregroundStyle(KS.ink)
                 }
                 .buttonStyle(.plain)
@@ -752,7 +755,7 @@ struct Composer: View {
                             }
                             .frame(width: 52, height: 52).background(KS.paper).clipped()
                             .clipShape(RoundedRectangle(cornerRadius: 7))
-                            .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(KS.ink, lineWidth: 1))
+                            .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(KS.hairline, lineWidth: 1))
                             Button { model.photoDrafts[threadID]?.removeAll { $0.id == photo.id } } label: { Image(systemName: "xmark.circle.fill") }
                                 .buttonStyle(.plain).accessibilityLabel(L10n.t("Remove photo"))
                                 .foregroundStyle(KS.ink).background(Circle().fill(KS.white))
@@ -764,7 +767,7 @@ struct Composer: View {
             }
             HStack(alignment: .bottom, spacing: 8) {
             Button(action: choosePhotos) { Image(systemName: "photo") }
-                .buttonStyle(.ks(.paper, compact: true)).disabled(preparingPhotos || startingDictation || dictation.isRecording || (model.photoDrafts[threadID]?.count ?? 0) >= 2)
+                .buttonStyle(KSBarButtonStyle()).disabled(preparingPhotos || startingDictation || dictation.isRecording || (model.photoDrafts[threadID]?.count ?? 0) >= 2)
                 .help(L10n.t("Add photos")).accessibilityLabel(L10n.t("Add photos"))
             Button {
                 if dictation.isRecording { dictation.stop() }
@@ -777,7 +780,7 @@ struct Composer: View {
                     }
                 }
             } label: { Image(systemName: dictation.isRecording ? "stop.fill" : "mic.fill") }
-                .buttonStyle(.ks(.paper, compact: true)).disabled(startingDictation || preparingPhotos).help(L10n.t("Dictation"))
+                .buttonStyle(KSBarButtonStyle(on: dictation.isRecording)).disabled(startingDictation || preparingPhotos).help(L10n.t("Dictation"))
                 .accessibilityLabel(dictation.isRecording ? L10n.t("Stop dictation") : L10n.t("Start dictation"))
             ZStack(alignment: .topLeading) {
                 if text.wrappedValue.isEmpty {
@@ -798,14 +801,16 @@ struct Composer: View {
                         return .handled
                     }
             }
-            Button(action: send) { Label(L10n.t("Send"), systemImage: "arrow.right") }
-                .buttonStyle(.ks(.ink))
+            Button(action: send) { Image(systemName: "arrow.up").font(.system(size: 14, weight: .semibold)) }
+                .buttonStyle(KSBarButtonStyle(send: true))
                 .disabled(sending || preparingPhotos || (model.pendingSends[threadID] == nil && text.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && (model.photoDrafts[threadID]?.isEmpty ?? true)))
                 .padding(.bottom, 5).help(L10n.t("Send")).accessibilityLabel(model.pendingSends[threadID] == nil ? "Send message" : "Retry previous message")
         }
             }
         .padding(.horizontal, 12).padding(.vertical, 4)
-        .ksCard(radius: 16, shadow: true)
+        .background(RoundedRectangle(cornerRadius: 22).fill(KS.white)
+            .shadow(color: KS.ink.opacity(0.06), radius: 1, y: 1)
+            .shadow(color: KS.ink.opacity(0.07), radius: 10, y: 6))
         .padding(.horizontal, 16).padding(.top, 6).padding(.bottom, 10)
         .background(KS.paper)
         .onDisappear { dictation.stop() }

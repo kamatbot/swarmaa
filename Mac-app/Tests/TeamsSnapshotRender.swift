@@ -306,6 +306,30 @@ final class TeamsSnapshotRender: XCTestCase {
         XCTAssertLessThan((offsets.max() ?? 0) - (offsets.min() ?? 0), 1, "thread kept moving: \(offsets)")
     }
 
+    func testRenderSoftSurfaceStates() throws {
+        try render(VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                KSChip("Needs you", fill: KS.needsYouTint, ink: KS.needsYouText)
+                KSChip("Ready for review", fill: KS.sageTint, ink: KS.readyText)
+                KSChip("Failed", fill: KS.failedTint, ink: KS.failedText)
+                KSChip("Scheduled")
+            }
+            ChipFlow(options: ["Blog and changelog", "X", "LinkedIn"], selected: ["Blog and changelog", "X"]) { _ in }
+            HStack {
+                Button("Primary") {}.buttonStyle(.ks(.primary))
+                Button("Secondary") {}.buttonStyle(.ks(.paper))
+                Button("Delete") {}.buttonStyle(.ks(.danger))
+                Button("Disabled") {}.buttonStyle(.ks(.primary)).disabled(true)
+            }
+            HStack {
+                KSBarButton(symbol: "star.fill", label: "Starred", on: true) {}
+                KSBarButton(symbol: "photo", label: "Photo") {}
+                Button {} label: { Image(systemName: "arrow.up") }.buttonStyle(KSBarButtonStyle(send: true))
+                Button {} label: { Image(systemName: "arrow.up") }.buttonStyle(KSBarButtonStyle(send: true)).disabled(true)
+            }
+        }.padding(24).background(KS.paper), "soft-surface-states", size: CGSize(width: 560, height: 250))
+    }
+
     func testRenderPhotoComposer() throws {
         let model = try fixture()
         let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 80, pixelsHigh: 60, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!

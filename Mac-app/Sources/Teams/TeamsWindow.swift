@@ -241,7 +241,7 @@ struct TeamsRail: View {
                 .frame(width: 46, height: 46)
                 .background(Circle().fill(on ? KS.lime : .clear))
                 .foregroundStyle(on ? KS.ink : KS.onInkSoft)
-                .overlay(alignment: .topTrailing) { if badge > 0 { KSBadge(count: badge).offset(x: 6, y: -4) } }
+                .overlay(alignment: .topTrailing) { if badge > 0 { KSBadge(count: badge, outlined: true).offset(x: 6, y: -4) } }
                 .contentShape(Circle())
         }
         .buttonStyle(RailButtonStyle())
@@ -467,7 +467,6 @@ struct UsageProviderCard: View {
                             Capsule().fill(KS.providerTint(usage.provider))
                                 .frame(width: g.size.width * min(max((w.usedPercent ?? 0) / 100, 0), 1))
                         }
-                        .overlay(Capsule().stroke(KS.ink, lineWidth: 2))
                     }.frame(height: 10)
                     if let reset = w.resetsAt {
                         Text("Resets \(reset, format: .relative(presentation: .named))").font(KS.body(12)).foregroundStyle(KS.textMuted)
@@ -475,7 +474,7 @@ struct UsageProviderCard: View {
                 }
             }
         }
-        .padding(18).ksCard(radius: 22)
+        .padding(18).ksCard(radius: 16)
     }
 }
 

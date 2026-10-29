@@ -165,7 +165,7 @@ struct BotRow: View {
                         Text(verbatim: tag.uppercased()).font(KS.mono(10, .semibold)).tracking(0.3).foregroundStyle(KS.textMuted).lineLimit(1).fixedSize()
                         Text(verbatim: latest?.line ?? bot.job).font(KS.body(13)).foregroundStyle(KS.textSoft).lineLimit(2)
                     }
-                    if needs > 0 { KSChip(L10n.t("Needs you"), fill: KS.coral) }
+                    if needs > 0 { KSChip(L10n.t("Needs you"), fill: KS.needsYouTint, ink: KS.needsYouText) }
                 }
             }
             .padding(.horizontal, 10).padding(.vertical, 14)
@@ -297,7 +297,7 @@ struct BotThreadHeader: View {
             }
             .padding(.horizontal, 9).frame(height: 32)
             .background(Capsule().fill(KS.white))
-            .overlay(Capsule().strokeBorder(KS.ink, lineWidth: 1.5))
+            .shadow(color: KS.ink.opacity(0.08), radius: 1, y: 1)
         }
         // `.button` + plain keeps the label as drawn; `.borderlessButton` flattens it to an NSMenu title and image.
         .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize()
@@ -316,11 +316,11 @@ struct BotThreadHeader: View {
 
     private func needsYouLabel(compact: Bool) -> some View {
         Text(verbatim: compact ? "\(model.botNeedsYou(bot))" : L10n.t("\(model.botNeedsYou(bot)) needs you"))
-            .font(KS.mono(11, .semibold)).lineLimit(1)
+            .font(KS.body(11.5, .semibold)).lineLimit(1)
             .padding(.horizontal, compact ? 0 : 10)
             .frame(minWidth: 32, minHeight: 32)
-            .background(Capsule().fill(KS.coral))
-            .overlay(Capsule().strokeBorder(KS.ink, lineWidth: 1.5))
+            .background(Capsule().fill(KS.needsYouTint).frame(height: 22))
+            .foregroundStyle(KS.needsYouText)
             .fixedSize()
             .accessibilityLabel(L10n.t("\(model.botNeedsYou(bot)) needs you"))
     }
@@ -363,7 +363,7 @@ struct TaskCardView: View {
                         Button(L10n.t("Mark resolved")) { Task { await model.resolve(task.id, true) } }
                             .buttonStyle(.ks(.white, compact: true)).disabled(model.busyTasks.contains(task.id))
                     }
-                    if task.resolved { KSChip(L10n.t("Resolved"), fill: KS.sage) }
+                    if task.resolved { KSChip(L10n.t("Resolved"), fill: KS.sageTint, ink: KS.readyText) }
                 }
             }
         }
@@ -372,11 +372,11 @@ struct TaskCardView: View {
     }
 
     static func state(_ t: TeamsTaskCard) -> (String, Color, Color) {
-        if t.check?.status == "failed" { return (L10n.t("Check failed"), KS.ink, KS.paper) }
-        if t.status == "failed" { return (L10n.t("Failed"), KS.ink, KS.paper) }
-        if t.resolved { return (L10n.t("Resolved"), KS.sage, KS.ink) }
-        if t.branch != nil { return (L10n.t("Ready for review"), KS.sage, KS.ink) }
-        return (TeamsCopy.swarmStatus(t.status ?? ""), KS.white, KS.ink)
+        if t.check?.status == "failed" { return (L10n.t("Check failed"), KS.failedTint, KS.failedText) }
+        if t.status == "failed" { return (L10n.t("Failed"), KS.failedTint, KS.failedText) }
+        if t.resolved { return (L10n.t("Resolved"), KS.sageTint, KS.readyText) }
+        if t.branch != nil { return (L10n.t("Ready for review"), KS.sageTint, KS.readyText) }
+        return (TeamsCopy.swarmStatus(t.status ?? ""), KS.neutralTint, KS.textSoft)
     }
 }
 
@@ -473,7 +473,7 @@ struct BotSettingsPane: View {
                 }
                 HStack { Text(verbatim: L10n.t("Project")).font(KS.body(15, .semibold)); Spacer(); KSChip(bot.scope) }
             }
-            .padding(18).ksCard(radius: 22)
+            .padding(18).ksCard(radius: 16)
         }
     }
 
@@ -482,7 +482,7 @@ struct BotSettingsPane: View {
             Text(verbatim: title).font(KS.body(15, .semibold))
             content().padding(.horizontal, 12).padding(.vertical, 9)
                 .background(RoundedRectangle(cornerRadius: 14).fill(KS.white))
-                .overlay(RoundedRectangle(cornerRadius: 14).stroke(KS.ink, lineWidth: 2))
+                .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(KS.hairline, lineWidth: 1))
         }
     }
 
@@ -501,7 +501,7 @@ struct BotSettingsPane: View {
                                 .compactMap { $0 }.joined(separator: " · ")).font(KS.body(13)).foregroundStyle(KS.textMuted)
                         }
                         Spacer()
-                        if id == leadID { KSChip(L10n.t("Lead"), fill: KS.ink, ink: KS.paper) }
+                        if id == leadID { KSChip(L10n.t("Lead")) }
                         else {
                             Button(L10n.t("Make lead")) { members.append(leadID); leadID = id; members.removeAll { $0 == id } }
                                 .buttonStyle(.ks(.paper, compact: true))
@@ -513,7 +513,7 @@ struct BotSettingsPane: View {
                     .overlay(alignment: .bottom) { if i < members.filter({ $0 != leadID }).count { Rectangle().fill(KS.hairline).frame(height: 1) } }
                 }
             }
-            .ksCard(radius: 22)
+            .ksCard(radius: 16)
             let candidates = scopeAgents.filter { $0.id != leadID && !members.contains($0.id) }
             Menu {
                 ForEach(candidates) { a in Button(a.name + (a.role.map { " · " + $0 } ?? "")) { members.append(a.id) } }
@@ -545,7 +545,7 @@ struct BotSettingsPane: View {
                     .overlay(alignment: .bottom) { if i < 3 { Rectangle().fill(KS.hairline).frame(height: 1) } }
                 }
             }
-            .ksCard(radius: 22, shadow: true)
+            .ksCard(radius: 16, shadow: true)
         }
     }
 
@@ -611,13 +611,13 @@ struct BotSettingsPane: View {
                         TextField(L10n.t("Cron, e.g. 0 9 * * 1-5"), text: $schedule).textFieldStyle(.plain).font(KS.mono(13))
                             .padding(.horizontal, 12).padding(.vertical, 8)
                             .background(RoundedRectangle(cornerRadius: 12).fill(KS.paper))
-                            .overlay(RoundedRectangle(cornerRadius: 12).stroke(KS.ink, lineWidth: 2))
+                            .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(KS.hairline, lineWidth: 1))
                             .accessibilityLabel(L10n.t("Schedule, as cron"))
                     }
                 }
                 .padding(.horizontal, 16).padding(.vertical, 12)
             }
-            .ksCard(radius: 22)
+            .ksCard(radius: 16)
         }
     }
 
@@ -750,7 +750,7 @@ struct NewBotSheet: View {
             Text(verbatim: title).font(KS.body(15, .semibold))
             content().padding(.horizontal, 12).padding(.vertical, 9).frame(maxWidth: .infinity, alignment: .leading)
                 .background(RoundedRectangle(cornerRadius: 14).fill(KS.white))
-                .overlay(RoundedRectangle(cornerRadius: 14).stroke(KS.ink, lineWidth: 2))
+                .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(KS.hairline, lineWidth: 1))
         }
     }
 }
@@ -788,6 +788,6 @@ struct ScheduleCardView: View {
                     }
                 }
             } else { Text(verbatim: message.body ?? "Schedule") }
-        }.padding(16).frame(maxWidth: 640, alignment: .leading).ksCard(radius: 20)
+        }.padding(16).frame(maxWidth: 640, alignment: .leading).ksCard(radius: 16)
     }
 }
