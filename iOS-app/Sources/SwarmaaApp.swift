@@ -101,6 +101,10 @@ enum KS {
     static let ink = Color(hex: 0x15111F), paper = Color(hex: 0xF4EFE6), lime = Color(hex: 0xCFE08A)
     static let coral = Color(hex: 0xE8836B), sage = Color(hex: 0xF1F5E2), coralTint = Color(hex: 0xFBEFE7)
     static let danger = Color(hex: 0xC8452F)
+    static let attentionSurface = Color(hex: 0xFDF5F0), neutralTint = ink.opacity(0.06)
+    static let needsTint = Color(hex: 0xFBE3DA), needsText = Color(hex: 0x9B3A22)
+    static let readyText = Color(hex: 0x4A5A12)
+    static let failedTint = Color(hex: 0xF6DDD6), failedText = Color(hex: 0x8A2410)
     static let sky = Color(hex: 0xB7CCE8), butter = Color(hex: 0xEAD9A6), lilac = Color(hex: 0xD9CDEE)
     static let soft = Color(hex: 0x3A3347), muted = Color(hex: 0x5A5168)
     // Semantic styles respond to the reader's text size, including accessibility sizes.
@@ -123,45 +127,70 @@ extension Color {
     init(hex: UInt32) { self.init(.sRGB, red: Double((hex >> 16) & 255) / 255, green: Double((hex >> 8) & 255) / 255, blue: Double(hex & 255) / 255, opacity: 1) }
 }
 extension View {
-    func card(_ color: Color = .white, radius: CGFloat = 12, shadow: Bool = false) -> some View {
+    func card(_ color: Color = .white, radius: CGFloat = 16, shadow: Bool = true) -> some View {
         background {
-            ZStack {
-                if shadow { RoundedRectangle(cornerRadius: radius, style: .continuous).fill(KS.ink).offset(x: 2, y: 3) }
-                RoundedRectangle(cornerRadius: radius, style: .continuous).fill(color)
-            }
-        }.overlay(RoundedRectangle(cornerRadius: radius, style: .continuous).strokeBorder(KS.ink, lineWidth: 1).allowsHitTesting(false))
+            RoundedRectangle(cornerRadius: radius, style: .continuous).fill(color)
+                .shadow(color: KS.ink.opacity(shadow ? 0.06 : 0), radius: 1, y: 1)
+                .shadow(color: KS.ink.opacity(shadow ? 0.05 : 0), radius: 7, y: 4)
+        }
+    }
+    func bubble(human: Bool = false) -> some View {
+        background {
+            UnevenRoundedRectangle(topLeadingRadius: human ? 18 : 5, bottomLeadingRadius: 18,
+                                   bottomTrailingRadius: human ? 5 : 18, topTrailingRadius: 18)
+                .fill(human ? KS.ink : .white)
+                .shadow(color: KS.ink.opacity(human ? 0 : 0.06), radius: 1, y: 1)
+                .shadow(color: KS.ink.opacity(human ? 0 : 0.05), radius: 7, y: 4)
+        }
+    }
+}
+struct StatusChip: View {
+    var text: String
+    @ScaledMetric(relativeTo: .caption) private var labelSize: CGFloat = 11.5
+    init(_ text: String) { self.text = text }
+    private var needs: Bool { text.lowercased().hasPrefix("needs") || text == "open" }
+    private var ready: Bool { ["ready for review", "resolved", "completed", "done"].contains(text.lowercased()) }
+    var body: some View {
+        Text(text.prefix(1).uppercased() + text.dropFirst())
+            .font(.system(size: labelSize, weight: .semibold))
+            .foregroundStyle(text == "failed" ? KS.failedText : needs ? KS.needsText : ready ? KS.readyText : KS.soft)
+            .padding(.horizontal, 8).frame(minHeight: 20)
+            .background(text == "failed" ? KS.failedTint : needs ? KS.needsTint : ready ? KS.sage : KS.neutralTint, in: Capsule())
+            .fixedSize(horizontal: false, vertical: true)
     }
 }
 struct Pill: ButtonStyle {
-    var fill: Color = .white
+    var fill: Color = KS.neutralTint
     var primary = false
-    /// Hide and delete: red text and outline.
+    /// Hide and delete use the destructive tint.
     var danger = false
+    var answerOption = false
     @Environment(\.isEnabled) var enabled
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ScaledMetric(relativeTo: .subheadline) private var labelSize: CGFloat = 14
     func makeBody(configuration: Configuration) -> some View {
         let pressed = enabled && configuration.isPressed
-        configuration.label.font(.system(size: labelSize, weight: .semibold)).foregroundStyle(danger ? KS.danger : KS.ink)
+        configuration.label.font(.system(size: labelSize, weight: .semibold)).foregroundStyle(danger ? KS.failedText : KS.ink)
             .padding(.horizontal, 12).padding(.vertical, 6).frame(minHeight: primary ? 44 : 32)
             .frame(maxWidth: primary || danger ? .infinity : nil)
-            .card(fill, radius: 20, shadow: primary && enabled && !pressed)
-            .overlay { if danger { RoundedRectangle(cornerRadius: 20).strokeBorder(KS.danger, lineWidth: 1.5).allowsHitTesting(false) } }
+            .background(danger ? KS.failedTint : primary ? KS.lime : fill, in: RoundedRectangle(cornerRadius: 20))
+            .overlay { if answerOption { RoundedRectangle(cornerRadius: 20).strokeBorder(KS.ink.opacity(0.12), lineWidth: 1).allowsHitTesting(false) } }
             .frame(minHeight: 44)
             .contentShape(Rectangle())
             .opacity(enabled ? 1 : 0.45)
-            .offset(y: pressed && !reduceMotion ? 2 : 0)
             .scaleEffect(pressed && !reduceMotion ? 0.985 : 1)
             .animation(reduceMotion ? nil : KS.settle, value: pressed)
     }
 }
 /// Feedback for rows and icon controls without adding a second visual container.
 struct PressStyle: ButtonStyle {
+    var icon = false
     @Environment(\.isEnabled) private var enabled
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     func makeBody(configuration: Configuration) -> some View {
         let pressed = enabled && configuration.isPressed
         configuration.label
+            .background { if icon && pressed { Circle().fill(KS.neutralTint).frame(width: 32, height: 32) } }
             .opacity(pressed ? 0.8 : 1)
             .scaleEffect(pressed && !reduceMotion ? 0.985 : 1)
             .animation(reduceMotion ? nil : KS.settle, value: pressed)
@@ -196,8 +225,8 @@ private struct HomeBadge: View {
     var body: some View {
         Group {
             if needsYou > 0 || unread > 0 {
-                Text(needsYou > 0 ? "!" : "\(unread)").font(KS.mono()).padding(.horizontal, 8)
-                    .frame(minWidth: 24, minHeight: 24).card(needsYou > 0 ? KS.coral : KS.lime, radius: 14)
+                Text(needsYou > 0 ? "!" : "\(unread)").font(KS.body(11.5, .semibold)).foregroundStyle(needsYou > 0 ? KS.needsText : KS.readyText).padding(.horizontal, 8)
+                    .frame(minWidth: 24, minHeight: 24).background(needsYou > 0 ? KS.needsTint : KS.sage, in: Capsule())
                     .accessibilityLabel(needsYou > 0 ? "Needs you" : "\(unread) unread")
             }
         }
@@ -241,8 +270,8 @@ struct Eyebrow: View {
 struct CloseButton: View {
     var action: () -> Void
     var body: some View {
-        Button(action: action) { Image(systemName: "xmark").font(.system(size: 14, weight: .semibold)).frame(width: 34, height: 34).card(.white, radius: 17).frame(width: 44, height: 44).contentShape(Rectangle()) }
-            .buttonStyle(PressStyle()).fixedSize().accessibilityLabel("Close")
+        Button(action: action) { Image(systemName: "xmark").font(.system(size: 14, weight: .semibold)).frame(width: 34, height: 34).frame(width: 44, height: 44).contentShape(Rectangle()) }
+            .buttonStyle(PressStyle(icon: true)).fixedSize().accessibilityLabel("Close")
     }
 }
 struct ContentSheet<Content: View>: View {
@@ -470,20 +499,20 @@ struct RootView: View {
                     if !model.online { Text(model.lastSeen.map { "Seen " + $0.formatted(.relative(presentation: .numeric)) } ?? "Offline").font(KS.body(11)) }
                 }.frame(maxWidth: .infinity, alignment: .leading)
                 Button { screen = .tasks; perform { try await model.loadTasks() } } label: {
-                    Image(systemName: "list.bullet").font(.system(size: 20, weight: .medium)).frame(width: 44, height: 44).card(.white, radius: 24)
+                    Image(systemName: "list.bullet").font(.system(size: 20, weight: .medium)).frame(width: 44, height: 44)
                         .overlay(alignment: .topTrailing) {
                             if model.sortedBots.reduce(0, { $0 + $1.needsYou }) > 0 {
                                 Text("\(model.sortedBots.reduce(0, { $0 + $1.needsYou }))").font(.system(size: 11, weight: .semibold, design: .rounded)).padding(4).background(KS.coral, in: Circle())
                             }
                         }
                 }.accessibilityLabel("Tasks")
-                Button { screen = .usage } label: { Image(systemName: "chart.pie").font(.system(size: 20, weight: .medium)).frame(width: 44, height: 44).card(.white, radius: 24) }.accessibilityLabel("Usage")
+                Button { screen = .usage } label: { Image(systemName: "chart.pie").font(.system(size: 20, weight: .medium)).frame(width: 44, height: 44) }.accessibilityLabel("Usage")
                 // New users get the big card in the list instead; this is the quick way for everyone else.
                 if !model.sortedBots.isEmpty || !model.hiddenBots.isEmpty {
-                    Button { sheet = .newBot } label: { Image(systemName: "plus").font(.system(size: 20, weight: .semibold)).frame(width: 44, height: 44).card(KS.lime, radius: 24) }
+                    Button { sheet = .newBot } label: { Image(systemName: "plus").font(.system(size: 20, weight: .semibold)).frame(width: 44, height: 44) }
                         .accessibilityLabel("New bot").accessibilityIdentifier("new-bot-header")
                 }
-            }.buttonStyle(PressStyle()).padding(.horizontal, 20).padding(.top, 6)
+            }.buttonStyle(PressStyle(icon: true)).padding(.horizontal, 20).padding(.top, 6)
             (textSize.isAccessibilitySize ? AnyLayout(VStackLayout(alignment: .leading, spacing: 6)) : AnyLayout(HStackLayout(alignment: .firstTextBaseline, spacing: 12))) {
                 Text("BOTS.").font(KS.display(38))
                 Text(needsYou == 0 ? "All caught up" : "\(needsYou) need you").font(KS.body(14)).foregroundStyle(KS.soft)
@@ -539,12 +568,12 @@ struct RootView: View {
                             .buttonStyle(PressStyle()).accessibilityLabel("Clear search")
                     }
                 }
-                    .padding(.horizontal, 14).frame(minHeight: 48).card(.white, radius: 24)
-                    .overlay(RoundedRectangle(cornerRadius: 24).strokeBorder(searchFocused ? KS.ink : .clear, lineWidth: 2).allowsHitTesting(false))
+                    .padding(.horizontal, 14).frame(minHeight: 48).card(.white, radius: 24, shadow: false)
+                    .overlay(RoundedRectangle(cornerRadius: 24).strokeBorder(searchFocused ? KS.lime : KS.ink.opacity(0.06), lineWidth: searchFocused ? 2 : 1).allowsHitTesting(false))
                 if let starred = model.starred {
                     Button { open(starred) } label: {
                         Moji(seed: starred.avatarSeed, size: 38, colorHex: starred.colorHex).frame(width: 48, height: 48).card(.white, radius: 24, shadow: true)
-                            .overlay(alignment: .bottomLeading) { Image(systemName: "star.fill").font(.system(size: 10)).padding(5).background(KS.butter, in: Circle()).overlay(Circle().stroke(KS.ink, lineWidth: 2)) }
+                            .overlay(alignment: .bottomLeading) { Image(systemName: "star.fill").font(.system(size: 10)).padding(5).background(KS.butter, in: Circle()) }
                     }.buttonStyle(PressStyle()).accessibilityLabel("Open starred bot").accessibilityIdentifier("starred-shortcut")
                 }
             }.padding(.horizontal, 20).padding(.vertical, 14).background(KS.paper)
@@ -577,15 +606,15 @@ struct RootView: View {
     private var thread: some View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
-                Button { screen = .home; model.openBot = nil } label: { Image(systemName: "chevron.left").font(.system(size: 15, weight: .medium)).frame(width: 34, height: 34).card(.white, radius: 17).frame(width: 44, height: 44).contentShape(Rectangle()) }.accessibilityLabel("Back to bots")
+                Button { screen = .home; model.openBot = nil } label: { Image(systemName: "chevron.left").font(.system(size: 15, weight: .medium)).frame(width: 34, height: 34).frame(width: 44, height: 44).contentShape(Rectangle()) }.accessibilityLabel("Back to bots")
                 Spacer(minLength: 0)
-                HStack(spacing: 6) { Moji(seed: model.openBot?.avatarSeed ?? "", size: 24, colorHex: model.openBot?.colorHex); Text(model.openBot?.name ?? "Bot").font(KS.body(15, .semibold)).lineLimit(1) }.padding(.horizontal, 10).frame(minHeight: 34).card(.white, radius: 17)
+                HStack(spacing: 6) { Moji(seed: model.openBot?.avatarSeed ?? "", size: 24, colorHex: model.openBot?.colorHex); Text(model.openBot?.name ?? "Bot").font(KS.body(15, .semibold)).lineLimit(1) }.padding(.horizontal, 10).frame(minHeight: 34).card(.white, radius: 17, shadow: false).shadow(color: KS.ink.opacity(0.08), radius: 1, y: 1)
                 Spacer(minLength: 0)
                 Menu {
                     Button("Earlier messages") { perform { try await model.olderMessages() } }
                     Button("Bot settings") { screen = .settings }
-                } label: { Image(systemName: "ellipsis").frame(width: 34, height: 34).card(.white, radius: 17).frame(width: 44, height: 44).contentShape(Rectangle()) }.accessibilityLabel("Chat options").accessibilityIdentifier("chat-options")
-            }.padding(.horizontal, 8).padding(.vertical, 2)
+                } label: { Image(systemName: "ellipsis").frame(width: 34, height: 34).frame(width: 44, height: 44).contentShape(Rectangle()) }.accessibilityLabel("Chat options").accessibilityIdentifier("chat-options")
+            }.buttonStyle(PressStyle(icon: true)).padding(.horizontal, 8).padding(.vertical, 2)
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 8) {
@@ -615,8 +644,7 @@ struct RootView: View {
                                         Eyebrow("Replying live")
                                     }
                                     Text(typing["text"].string.isEmpty ? "Thinking…" : typing["text"].string).font(KS.body(15)).lineSpacing(1).fixedSize(horizontal: false, vertical: true)
-                                }.padding(10).background(.white, in: RoundedRectangle(cornerRadius: 12))
-                                    .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(KS.ink.opacity(0.5), style: StrokeStyle(lineWidth: 1, dash: [4, 4])))
+                                }.padding(10).bubble().opacity(0.7)
                             }
                         }
                         Color.clear.frame(height: 1).id("bottom")
@@ -649,13 +677,18 @@ struct RootView: View {
                     Button {
                         if dictation.isRecording || dictationStarting { dictation.stop(); dictationToken = UUID(); dictationStarting = false }
                         else { composerFocused = false; dictationStarting = true; let token = UUID(); dictationToken = token; let prefix = composer.isEmpty ? "" : composer + " "; Task { await dictation.start { utterance in composer = prefix + utterance }; if dictationToken == token { dictationStarting = false } } }
-                    } label: { Image(systemName: (dictation.isRecording || dictationStarting) ? "stop.fill" : "mic").frame(width: 44, height: 44) }.accessibilityLabel((dictation.isRecording || dictationStarting) ? "Stop dictation" : "Dictate message")
+                    } label: { Image(systemName: (dictation.isRecording || dictationStarting) ? "stop.fill" : "mic").background { if dictation.isRecording || dictationStarting { Circle().fill(KS.lime).frame(width: 32, height: 32) } }.frame(width: 44, height: 44) }.accessibilityLabel((dictation.isRecording || dictationStarting) ? "Stop dictation" : "Dictate message")
                     Button {
                         dictation.stop(); dictationToken = UUID(); dictationStarting = false
                         let text = composer, selected = photos, thread = model.openBot?.threadID, botID = model.openBot?.id
                         perform { try await model.post(text, photos: selected); if let botID, let draft = drafts[botID], draft.text == text && draft.photos == selected { drafts[botID] = nil }; if model.openBot?.threadID == thread && composer == text && photos == selected { composer = ""; photos = [] } }
-                    } label: { Image(systemName: "arrow.up").font(.system(size: 16, weight: .semibold)).frame(width: 34, height: 34).background(KS.lime, in: Circle()).frame(width: 44, height: 44).contentShape(Rectangle()) }.disabled((composer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && photos.isEmpty) || model.busy || preparingPhotos).accessibilityLabel("Send message")
-                }.padding(.horizontal, 2).card(.white, radius: 23)
+                    } label: { Image(systemName: "arrow.up").font(.system(size: 16, weight: .semibold)).foregroundStyle(KS.paper).frame(width: 36, height: 36).background(KS.ink.opacity(composer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && photos.isEmpty ? 0.25 : 1), in: Circle()).frame(width: 44, height: 44).contentShape(Rectangle()) }.disabled((composer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && photos.isEmpty) || model.busy || preparingPhotos).accessibilityLabel("Send message")
+                }.buttonStyle(PressStyle(icon: true)).padding(.horizontal, 2)
+                    .background {
+                        RoundedRectangle(cornerRadius: 22).fill(.white)
+                            .shadow(color: KS.ink.opacity(0.06), radius: 1, y: 1)
+                            .shadow(color: KS.ink.opacity(0.07), radius: 10, y: 6)
+                    }
                 if let error = dictation.error { Text(error).font(KS.body(13)).foregroundStyle(KS.soft) }
             }.padding(.horizontal, 12).padding(.top, 4).padding(.bottom, 6)
 
@@ -667,7 +700,7 @@ struct RootView: View {
         } else if message.kind == "task" {
             let task = message.raw["task"]
             VStack(alignment: .leading, spacing: 5) {
-                Eyebrow(task["resolved"].bool ? "Resolved" : task["status"].string == "completed" ? "Ready for review" : task["status"].string)
+                StatusChip(task["resolved"].bool ? "Resolved" : task["status"].string == "completed" ? "Ready for review" : task["status"].string)
                 Text(task["title"].string).font(KS.body(15, .semibold))
                 Text(task["served"]["provider"].string + " · " + task["branch"].string).font(KS.mono(11))
                 (textSize.isAccessibilitySize ? AnyLayout(VStackLayout(alignment: .leading, spacing: 10)) : AnyLayout(HStackLayout(spacing: 10))) {
@@ -693,13 +726,13 @@ struct RootView: View {
                         }
                     }.buttonStyle(Pill())
                 }
-            }.padding(.horizontal, 12).padding(.vertical, 10).frame(maxWidth: .infinity, alignment: .leading).card(KS.sage)
+            }.padding(.horizontal, 12).padding(.vertical, 10).frame(maxWidth: .infinity, alignment: .leading).card(task["status"].string == "failed" ? KS.attentionSurface : .white)
         } else if message.kind == "question" {
             VStack(alignment: .leading, spacing: 5) {
-                Eyebrow("Needs your input")
+                StatusChip("Needs your input")
                 Text(message.question["prompt"].string).font(KS.body(15, .semibold))
-                Button("Answer question") { sheet = .question(message.question) }.buttonStyle(Pill(fill: KS.coralTint)).disabled(message.question["status"].string != "open")
-            }.padding(.horizontal, 12).padding(.vertical, 10).frame(maxWidth: .infinity, alignment: .leading).card(KS.coralTint)
+                Button("Answer question") { sheet = .question(message.question) }.buttonStyle(Pill()).disabled(message.question["status"].string != "open")
+            }.padding(.horizontal, 12).padding(.vertical, 10).frame(maxWidth: .infinity, alignment: .leading).card(message.question["status"].string == "open" ? KS.attentionSurface : .white)
         } else {
             HStack {
                 if message.human { Spacer(minLength: 24) }
@@ -713,7 +746,7 @@ struct RootView: View {
                     }
                     if !message.text.isEmpty || message.raw["attachments"].array.isEmpty { Text(message.text.isEmpty ? (message.kind == "answer" ? "Answer sent" : message.kind.capitalized) : message.text)
                         .font(KS.body(15)).lineSpacing(1).fixedSize(horizontal: false, vertical: true).textSelection(.enabled) }
-                }.padding(.horizontal, 12).padding(.vertical, 9).foregroundStyle(message.human ? KS.paper : KS.ink).card(message.human ? KS.ink : .white)
+                }.padding(.horizontal, 12).padding(.vertical, 9).foregroundStyle(message.human ? KS.paper : KS.ink).bubble(human: message.human)
                 if !message.human { Spacer(minLength: 16) }
             }
         }
@@ -734,10 +767,10 @@ struct RootView: View {
                             else { sheet = .changes(row["objective"].string + "\n\n" + row["status"].string + "\n" + row["next_step"].string) }
                         } label: {
                             VStack(alignment: .leading, spacing: 4) {
-                                Eyebrow(row["status"].string.isEmpty ? row["label"].string : row["status"].string)
+                                StatusChip(row["status"].string.isEmpty ? row["label"].string : row["status"].string)
                                 Text(row["objective"].string.isEmpty ? row["title"].string : row["objective"].string).font(KS.body(15, .semibold))
                                 Text(taskDetail(row)).font(KS.body(13)).foregroundStyle(KS.soft)
-                            }.frame(maxWidth: .infinity, alignment: .leading).padding(10).card(.white)
+                            }.frame(maxWidth: .infinity, alignment: .leading).padding(10).card(["failed", "open"].contains(row["status"].string) ? KS.attentionSurface : .white)
                         }.buttonStyle(PressStyle())
                     }
                     if filteredTasks.isEmpty { empty("Nothing here right now.") }
@@ -999,7 +1032,7 @@ struct AnswerView: View {
                             if choices.contains(option) { choices.remove(option) }
                             else { if !question["multi"].bool { choices = [] }; choices.insert(option) }
                         } label: { HStack { Text(option); Spacer(); Image(systemName: choices.contains(option) ? "checkmark.circle.fill" : "circle") } }
-                            .buttonStyle(Pill(fill: choices.contains(option) ? KS.lime : .white))
+                            .buttonStyle(Pill(fill: choices.contains(option) ? KS.lime : .white, answerOption: true))
                     }
                     if question["free_text"].bool { field("Anything else", text: $text, prompt: "e.g. skip X this time") }
                 }.padding(3)
@@ -1070,7 +1103,7 @@ struct SettingsView: View {
                                 Text("Claude").tag("claude"); Text("Codex").tag("codex"); Text("Antigravity").tag("antigravity")
                             }.frame(minHeight: 44)
                         }
-                        Eyebrow("Schedule")
+                        StatusChip("Schedule")
                         TextField("Cron, e.g. 0 9 * * 1-5", text: Binding(get: { draft.raw["schedule"].string }, set: {
                             draft.raw["schedule"] = $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? .null : .string($0)
                         })).textInputAutocapitalization(.never).autocorrectionDisabled().padding(12).card(.white, radius: 14)
@@ -1223,7 +1256,7 @@ struct ScheduleCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
-            Eyebrow("Schedule")
+            StatusChip("Schedule")
             Text(card["description"].string.isEmpty ? message.text : card["description"].string).font(KS.body(15, .semibold))
             Text(card["timezone"].string).font(KS.mono(12))
             if card["paused"].bool { Text("Paused") }
