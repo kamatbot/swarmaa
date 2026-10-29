@@ -184,6 +184,7 @@ struct KSMoji: View {
 struct KSSearchField: View {
     let prompt: String
     @Binding var text: String
+    var height: CGFloat = 38
     @FocusState private var focused: Bool
     var body: some View {
         HStack(spacing: 8) {
@@ -198,9 +199,45 @@ struct KSSearchField: View {
                 .help(L10n.t("Clear search"))
             }
         }
-        .padding(.horizontal, 14).frame(height: 38)
+        .padding(.horizontal, 14).frame(height: height)
         .background(Capsule().fill(KS.white))
         .overlay(Capsule().strokeBorder(KS.ink, lineWidth: 2))
         .overlay(Capsule().strokeBorder(KS.lime, lineWidth: focused ? 3 : 0).padding(3))
+    }
+}
+
+// MARK: - Top bar
+
+/// The unified window top bar (docs/briefs/mac-top-bar.md). Every column's bar is
+/// this tall, so the traffic lights, search, bot name and actions share one row.
+extension KS { static let topBarHeight: CGFloat = 52 }
+
+struct KSTopBar<Content: View>: View {
+    @ViewBuilder var content: Content
+    var body: some View {
+        HStack(spacing: 10) { content }
+            .padding(.horizontal, 12)
+            .frame(maxWidth: .infinity, minHeight: KS.topBarHeight, maxHeight: KS.topBarHeight)
+            .background(KS.paper)
+            .overlay(alignment: .bottom) { Rectangle().fill(KS.ink).frame(height: 2) }
+    }
+}
+
+/// 32pt round icon button for the top bar. `on` fills it lime: a toggle that is on.
+struct KSBarButton: View {
+    let symbol: String
+    let label: String
+    var on = false
+    var fill: Color = KS.paper
+    let action: () -> Void
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: symbol).font(.system(size: 13, weight: .semibold)).frame(width: 32, height: 32)
+                .background(Circle().fill(on ? KS.lime : fill))
+                .overlay(Circle().strokeBorder(KS.ink, lineWidth: 1.5))
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain).foregroundStyle(KS.ink)
+        .accessibilityLabel(label).help(label)
     }
 }
