@@ -208,6 +208,22 @@ final class TeamsSnapshotRender: XCTestCase {
         try render(BotThreadHeader(model: model, bot: bot), "thread-bar-settings-open", size: CGSize(width: 1000, height: KS.topBarHeight))
     }
 
+    /// The real titled window, title bar included: the borderless renders above draw no traffic lights.
+    func testRenderWindowChrome() throws {
+        guard let dir = ProcessInfo.processInfo.environment["SWARMAA_SNAPSHOT_DIR"] else { throw XCTSkip("set SWARMAA_SNAPSHOT_DIR") }
+        let controller = TeamsWindowController(model: try fixture())
+        controller.show(connect: false)
+        let window = try XCTUnwrap(controller.window)
+        defer { window.close() }
+        window.setContentSize(NSSize(width: 1280, height: 820))
+        RunLoop.main.run(until: Date().addingTimeInterval(0.8))
+        let frame = try XCTUnwrap(window.contentView?.superview)
+        frame.layoutSubtreeIfNeeded()
+        let rep = try XCTUnwrap(frame.bitmapImageRepForCachingDisplay(in: frame.bounds))
+        frame.cacheDisplay(in: frame.bounds, to: rep)
+        try rep.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: dir).appendingPathComponent("0-window-chrome.png"))
+    }
+
     func testRenderPhotoComposer() throws {
         let model = try fixture()
         let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 80, pixelsHigh: 60, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
