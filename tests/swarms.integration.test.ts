@@ -1208,7 +1208,8 @@ describe('teams phase 2 swarms and coordination', { skip: !connectionString, con
       await Promise.all([
         finishTurn(t.worker, cx, 'X done'),
         finishTurn(t.worker2, cy, 'Y done'),
-        jitter(i).then(() => call(t.user, 'question_answer', { question_id: question, choices: ['a'] }))
+        // A blank note, as older phone builds send it, is no note (it was a 400).
+        jitter(i).then(() => call(t.user, 'question_answer', { question_id: question, choices: ['a'], text: '' }))
       ]);
       const sw = (await call(t.user, 'swarm_get', { swarm_id: swarm.id })).swarm;
       assert.equal(stepOf(sw, 'X').status, 'done', `iteration ${i}`);

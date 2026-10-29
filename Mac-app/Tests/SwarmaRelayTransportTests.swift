@@ -11,7 +11,8 @@ final class FakeWebSocket: SwarmaRelayTransport.SwarmaWebSocket, @unchecked Send
     private var receiveQueue: [Result<String, Error>] = []
     private var receiveContinuations: [CheckedContinuation<String, Error>] = []
     private var isClosed = false
-    /// When set, `send` records the frame, then waits for `releaseHeldSends()` and fails.
+    /// When set, `send` records request and pairing frames, then waits for `releaseHeldSends()` and fails.
+    /// Other frames (the connection's own) go straight through.
     var holdSends = false
     private var heldSends: [CheckedContinuation<Void, Error>] = []
 
@@ -25,7 +26,8 @@ final class FakeWebSocket: SwarmaRelayTransport.SwarmaWebSocket, @unchecked Send
         let hold = try withLock { () -> Bool in
             if isClosed { throw SwarmaRelayTransport.Failure.closed }
             sentMessages.append(text)
-            return holdSends
+            guard holdSends, let frame = SwarmaRelayTransport.RelayFrame.decode(from: text) else { return false }
+            switch frame { case .req, .pairRedeem: return true; default: return false }
         }
         if hold { try await withCheckedThrowingContinuation { c in withLock { heldSends.append(c) } } }
     }

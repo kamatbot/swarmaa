@@ -387,6 +387,14 @@ private struct ThreadPhoto: View {
     let messageID: String
     @State private var image: NSImage?
     @State private var failed = false
+    /// Photos never change (keyed by sha256): each is fetched once per launch, not on every reopen.
+    private static let cache = NSCache<NSString, NSImage>()
+
+    init(attachment: TeamsAttachment, threadID: String, messageID: String) {
+        self.attachment = attachment; self.threadID = threadID; self.messageID = messageID
+        _image = State(initialValue: Self.cache.object(forKey: attachment.sha256 as NSString))
+    }
+
     var body: some View {
         Group {
             if let image { Image(nsImage: image).resizable().scaledToFit().frame(maxWidth: 240, maxHeight: 200).clipShape(RoundedRectangle(cornerRadius: 14)) }
@@ -395,8 +403,12 @@ private struct ThreadPhoto: View {
         }
         .accessibilityLabel(attachment.name)
         .task(id: attachment.id) {
-            do { image = NSImage(data: try await SwarmaTeamsClient.shared.threadAttachment(threadID: threadID, messageID: messageID, attachmentID: attachment.id)); failed = image == nil }
-            catch { failed = true }
+            guard image == nil else { return }
+            do {
+                image = NSImage(data: try await SwarmaTeamsClient.shared.threadAttachment(threadID: threadID, messageID: messageID, attachmentID: attachment.id))
+                failed = image == nil
+                if let image { Self.cache.setObject(image, forKey: attachment.sha256 as NSString) }
+            } catch { failed = true }
         }
     }
 }

@@ -743,7 +743,31 @@ enum PushNotification {
         service = nil; connected = false; online = false; openBot = nil
         expandedWorkingNotes = [:]; pendingPosts = [:]
         bots = []; messages = []; typing = []; tasks = []; attention = []; agents = []; status = .null; cursor = "now"
+        threadCache = [:]; PhotoCache.clear()
     }
+}
+
+/// Chat photos never change (their sha256 is their identity), so each is fetched once: memory first,
+/// then the app's private Caches folder, which iOS may purge under storage pressure.
+enum PhotoCache {
+    nonisolated(unsafe) private static let memory: NSCache<NSString, NSData> = { let c = NSCache<NSString, NSData>(); c.totalCostLimit = 24 * 1024 * 1024; return c }()
+    private static var folder: URL { FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("chat-photos", isDirectory: true) }
+    /// Only a 64-character hex digest names a file: nothing from the service becomes a path otherwise.
+    static func key(_ sha256: String) -> String? { sha256.count == 64 && sha256.allSatisfy(\.isHexDigit) ? sha256.lowercased() : nil }
+    static func data(_ sha256: String) -> Data? {
+        guard let key = key(sha256) else { return nil }
+        if let hit = memory.object(forKey: key as NSString) { return hit as Data }
+        guard let disk = try? Data(contentsOf: folder.appendingPathComponent(key)) else { return nil }
+        memory.setObject(disk as NSData, forKey: key as NSString, cost: disk.count)
+        return disk
+    }
+    static func store(_ data: Data, sha256: String) {
+        guard let key = key(sha256) else { return }
+        memory.setObject(data as NSData, forKey: key as NSString, cost: data.count)
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try? data.write(to: folder.appendingPathComponent(key), options: [.atomic, .completeFileProtection])
+    }
+    static func clear() { memory.removeAllObjects(); try? FileManager.default.removeItem(at: folder) }
 }
 
 @MainActor enum AskStarredBot {

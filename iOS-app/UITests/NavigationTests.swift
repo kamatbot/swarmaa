@@ -35,7 +35,7 @@ import XCTest
         let refresh = app.buttons["Refresh usage"]
         for _ in 0..<8 {
             if refresh.isHittable { break }
-            app.scrollViews.firstMatch.swipeUp()
+            app.swipeUp()
         }
         XCTAssertTrue(refresh.isHittable, "Routing and refresh remain reachable with larger text")
         let capture = XCTAttachment(screenshot: app.screenshot())
@@ -73,12 +73,12 @@ import XCTest
         app.launchArguments = ["-demo", "-screen", "settings", "-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityL"]
         app.launch()
         XCTAssertTrue(app.buttons["Close"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.buttons["Close"].isHittable)
+        XCTAssertTrue(hittable(app.buttons["Close"]))
         app.buttons["Close"].tap()
         XCTAssertTrue(app.textFields["composer"].waitForExistence(timeout: 3))
-        XCTAssertTrue(app.buttons["chat-options"].isHittable)
-        XCTAssertTrue(app.buttons["Add photo"].isHittable)
-        XCTAssertTrue(app.buttons["Dictate message"].isHittable)
+        XCTAssertTrue(hittable(app.buttons["chat-options"]))
+        XCTAssertTrue(hittable(app.buttons["Add photo"]))
+        XCTAssertTrue(hittable(app.buttons["Dictate message"]))
         let chatCapture = XCTAttachment(screenshot: app.screenshot())
         chatCapture.name = "Chat — accessibility text"
         chatCapture.lifetime = .keepAlways
@@ -174,8 +174,8 @@ import XCTest
         app.buttons["Close"].tap()
         app.buttons["starred-shortcut"].tap()
         XCTAssertTrue(app.textFields["composer"].waitForExistence(timeout: 3))
-        XCTAssertTrue(app.buttons["Add photo"].isHittable)
-        XCTAssertTrue(app.buttons["Dictate message"].isHittable)
+        XCTAssertTrue(hittable(app.buttons["Add photo"]))
+        XCTAssertTrue(hittable(app.buttons["Dictate message"]))
         XCTAssertGreaterThanOrEqual(app.buttons["chat-options"].frame.width, 44)
         XCTAssertTrue(app.staticTexts["Scout"].exists)
         app.scrollViews.firstMatch.swipeDown()
@@ -244,5 +244,35 @@ import XCTest
         sleep(2)
         XCTAssertEqual(app.state, .runningForeground)
         XCTAssertTrue(app.buttons["Dictate message"].exists || app.buttons["Stop dictation"].exists)
+    }
+
+    /// A new user sees one big "Make your first bot" item; anyone with bots gets a + in the header instead.
+    func testNewBotEntryPoints() {
+        let fresh = XCUIApplication()
+        fresh.launchArguments = ["-demo", "-new-user-demo"]
+        fresh.launch()
+        let card = fresh.buttons["new-bot-card"]
+        XCTAssertTrue(card.waitForExistence(timeout: 10))
+        XCTAssertFalse(fresh.buttons["new-bot-header"].exists)
+        let capture = XCTAttachment(screenshot: fresh.screenshot()); capture.name = "New user — first bot card"; capture.lifetime = .keepAlways; add(capture)
+        card.tap()
+        XCTAssertTrue(fresh.buttons["close-sheet"].waitForExistence(timeout: 5), "The card opens the new bot sheet")
+        fresh.terminate()
+
+        let returning = XCUIApplication()
+        returning.launchArguments = ["-demo"]
+        returning.launch()
+        let plus = returning.buttons["new-bot-header"]
+        XCTAssertTrue(plus.waitForExistence(timeout: 10))
+        XCTAssertFalse(returning.buttons["new-bot-card"].exists)
+        plus.tap()
+        XCTAssertTrue(returning.buttons["close-sheet"].waitForExistence(timeout: 5), "The + opens the new bot sheet")
+    }
+
+    /// Screens slide in over home; wait for the slide to settle before asking whether a control can be tapped.
+    private func hittable(_ element: XCUIElement, timeout: TimeInterval = 2) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline { if element.exists && element.isHittable { return true }; RunLoop.current.run(until: Date().addingTimeInterval(0.1)) }
+        return element.isHittable
     }
 }

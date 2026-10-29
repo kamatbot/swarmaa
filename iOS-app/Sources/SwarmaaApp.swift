@@ -290,7 +290,7 @@ struct RootView: View {
                     // A stack, like a navigation controller: home stays put underneath, deeper screens
                     // slide in from the right over it and slide back out, so going back reveals home.
                     ZStack {
-                        home.accessibilityHidden(screen != .home)
+                        home.accessibilityHidden(screen != .home).allowsHitTesting(screen == .home)
                         if screen == .thread || (screen == .settings && model.openBot != nil) {
                             thread.swipeBack { screen = .home; model.openBot = nil }
                                 .background(KS.paper).transition(.move(edge: .trailing))
@@ -358,7 +358,7 @@ struct RootView: View {
         .onChange(of: model.pendingPushBotID) { _, _ in openPushBot() }
         .onChange(of: model.didLoadBots) { _, _ in openPushBot() }
         .onChange(of: model.bots) { _, _ in openPushBot() }
-        .onChange(of: screen) { _, value in if value != .thread { dictation.stop(); dictationToken = UUID(); dictationStarting = false }; updateVisibleThread() }
+        .onChange(of: screen) { _, value in if value != .home { searchFocused = false }; if value != .thread { dictation.stop(); dictationToken = UUID(); dictationStarting = false }; updateVisibleThread() }
         .onChange(of: sheet?.id) { _, _ in updateVisibleThread() }
         .onChange(of: model.openBot?.id) { oldID, id in
             dictation.stop(); dictationToken = UUID(); dictationStarting = false; draftGeneration = UUID()
@@ -424,6 +424,20 @@ struct RootView: View {
             Text(title.uppercased() + ".").font(KS.display(28)).minimumScaleFactor(0.7).lineLimit(1)
         }.frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 12).padding(.vertical, 4)
     }
+    /// A new user's list: one big item that starts their first bot chat.
+    private var firstBotCard: some View {
+        Button { sheet = .newBot } label: {
+            HStack(spacing: 14) {
+                Image(systemName: "plus").font(.system(size: 26, weight: .bold)).frame(width: 56, height: 56).card(.white, radius: 28)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Make your first bot").font(KS.body(18, .bold))
+                    Text("A bot keeps one chat for one job, like research, a launch or your releases.").font(KS.body(14)).foregroundStyle(KS.soft)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
+            }.padding(18).frame(maxWidth: .infinity, alignment: .leading).card(KS.lime, radius: 18, shadow: true)
+        }.buttonStyle(PressStyle()).padding(.top, 12).accessibilityIdentifier("new-bot-card")
+    }
     private func empty(_ text: String) -> some View {
         VStack(spacing: 12) {
             Image(systemName: "tray").font(.system(size: 28, weight: .light)).accessibilityHidden(true)
@@ -451,6 +465,11 @@ struct RootView: View {
                         }
                 }.accessibilityLabel("Tasks")
                 Button { screen = .usage } label: { Image(systemName: "chart.pie").font(.system(size: 20, weight: .medium)).frame(width: 44, height: 44).card(.white, radius: 24) }.accessibilityLabel("Usage")
+                // New users get the big card in the list instead; this is the quick way for everyone else.
+                if !model.sortedBots.isEmpty || !model.hiddenBots.isEmpty {
+                    Button { sheet = .newBot } label: { Image(systemName: "plus").font(.system(size: 20, weight: .semibold)).frame(width: 44, height: 44).card(KS.lime, radius: 24) }
+                        .accessibilityLabel("New bot").accessibilityIdentifier("new-bot-header")
+                }
             }.buttonStyle(PressStyle()).padding(.horizontal, 20).padding(.top, 6)
             (textSize.isAccessibilitySize ? AnyLayout(VStackLayout(alignment: .leading, spacing: 6)) : AnyLayout(HStackLayout(alignment: .firstTextBaseline, spacing: 12))) {
                 Text("BOTS.").font(KS.display(38))
@@ -488,7 +507,8 @@ struct RootView: View {
                         }
                     }
                     if bots.isEmpty && hidden.isEmpty && !model.loading {
-                        empty(search.isEmpty ? "No bots yet. Open You to make your first bot." : "No bots match “\(search)”. Try another name or job.")
+                        if search.isEmpty && model.sortedBots.isEmpty && model.hiddenBots.isEmpty { firstBotCard }
+                        else { empty("No bots match “\(search)”. Try another name or job.") }
                     }
                 }.padding(.horizontal, 20).padding(.bottom, 6)
             }.scrollDismissesKeyboard(.interactively)
@@ -972,7 +992,11 @@ struct AnswerView: View {
                     defer { saving = false }
                     do {
                         guard let service = model.service else { return }
-                        _ = try await service.call("question_answer", ["question_id": question["id"], "choices": .strings(choices.sorted()), "text": .string(text), "idempotency_key": .string(requestID)])
+                        var input: [String: JSON] = ["question_id": question["id"], "choices": .strings(choices.sorted()), "idempotency_key": .string(requestID)]
+                        // The service refuses an empty string: a blank note is no note.
+                        let note = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if !note.isEmpty { input["text"] = .string(note) }
+                        _ = try await service.call("question_answer", input)
                         if let bot = model.openBot { try await model.readThread(bot) }
                         close()
                     } catch { self.error = safeError(error) }
@@ -1112,6 +1136,7 @@ private extension AppModel {
         if ProcessInfo.processInfo.arguments.contains("-hidden-bot-demo") {
             bots[bots.count - 1].raw["archived"] = .bool(true)
         }
+        if ProcessInfo.processInfo.arguments.contains("-new-user-demo") { bots = []; return }
         openBot = bots[0]
         agents = [JSON.object(["id": .string("launch"), "name": .string("Atlas"), "scope": .string("project:swarma")]), .object(["id": .string("scout"), "name": .string("Scout"), "scope": .string("project:swarma")]), .object(["id": .string("forge"), "name": .string("Forge"), "scope": .string("project:swarma")])]
         tasks = [Demo.task("banner", "Draft the launch banner", "completed", "claude"), Demo.task("pricing", "Summarise competitor pricing", "failed", "codex"), Demo.task("calendar", "Check the launch calendar", "running", "antigravity"), Demo.task("limits", "Fix the plan limits on the pricing page", "running", "claude")]
@@ -1212,6 +1237,11 @@ private struct ChatAttachmentView: View {
     let attachment: JSON
     @State private var image: UIImage?
     @State private var failed = false
+    init(service: (any HostService)?, threadID: String, messageID: String, attachment: JSON) {
+        self.service = service; self.threadID = threadID; self.messageID = messageID; self.attachment = attachment
+        // A cached photo shows in the first frame: no spinner flash when a chat reopens.
+        _image = State(initialValue: PhotoCache.data(attachment["sha256"].string).flatMap(UIImage.init(data:)))
+    }
     var body: some View {
         Group {
             if let image { Image(uiImage: image).resizable().scaledToFit().frame(maxWidth: 230, maxHeight: 260).clipShape(RoundedRectangle(cornerRadius: 10)).accessibilityLabel(attachment["name"].string) }
@@ -1220,11 +1250,14 @@ private struct ChatAttachmentView: View {
         }.task { await load() }
     }
     private func load() async {
+        let sha = attachment["sha256"].string
+        if let data = PhotoCache.data(sha), let cached = UIImage(data: data) { image = cached; failed = false; return }
         do {
             guard let service else { throw AppFailure.invalidResponse }
             let result = try await service.call("thread_attachment_get", ["thread_id": .string(threadID), "message_id": .string(messageID), "attachment_id": attachment["id"]])
             guard let data = Data(base64Encoded: result["attachment"]["data_base64"].string), data.count <= 160 * 1024, let decoded = UIImage(data: data) else { throw AppFailure.invalidResponse }
             image = decoded; failed = false
+            PhotoCache.store(data, sha256: sha)
         } catch { failed = true }
     }
 }

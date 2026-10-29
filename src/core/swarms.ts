@@ -844,7 +844,8 @@ export class SwarmsService {
     const rawChoices = input.choices !== undefined ? input.choices : [];
     if (!Array.isArray(rawChoices)) throw new AppError(400, 'invalid_arguments', 'choices must be an array of strings.');
     const choices = rawChoices.map(c => string(c, 'choice', 80));
-    const text = input.text !== undefined ? string(input.text, 'text', 16384) : null;
+    // A blank note is no note: older phone builds send "" when the field is left empty.
+    const text = input.text === undefined || (typeof input.text === 'string' && input.text.trim() === '') ? null : string(input.text, 'text', 16384);
     const idempotency = input.idempotency_key !== undefined ? string(input.idempotency_key, 'idempotency_key', 200) : null;
 
     // Expire due questions in their own transaction, so the expiry persists when this answer is refused.

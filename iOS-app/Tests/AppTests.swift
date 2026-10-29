@@ -374,4 +374,14 @@ actor IOSRelaySocket: SwarmaRelayTransport.SwarmaWebSocket {
         for tool in ["bot_list", "thread_read", "task_get", "swarm_status"] { XCTAssertTrue(RelayService.retriesOnClosed(tool), tool) }
         for tool in ["thread_post", "bot_update", "task_resolve", "push_register", "bot_delete"] { XCTAssertFalse(RelayService.retriesOnClosed(tool), tool) }
     }
+
+    func testPhotoCacheKeysOnlyByDigestAndRoundTrips() {
+        XCTAssertNil(PhotoCache.key("../../etc/passwd"))
+        XCTAssertNil(PhotoCache.key(String(repeating: "g", count: 64)))
+        let sha = String(repeating: "ab", count: 32), data = Data([0xFF, 0xD8, 0xFF, 0xD9])
+        PhotoCache.store(data, sha256: sha)
+        XCTAssertEqual(PhotoCache.data(sha), data)
+        PhotoCache.clear()
+        XCTAssertNil(PhotoCache.data(sha))
+    }
 }
