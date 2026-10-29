@@ -42,6 +42,7 @@ struct BotsHome: View {
 struct BotsSidebar: View {
     @ObservedObject var model: TeamsModel
     @FocusState private var searchFocused: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         let bots = model.sortedBots
@@ -77,9 +78,12 @@ struct BotsSidebar: View {
                     }
                     let hidden = model.hiddenBots
                     if !hidden.isEmpty {
-                        Button { model.showHiddenBots.toggle() } label: {
+                        Button {
+                            withAnimation(reduceMotion ? nil : KS.motion) { model.showHiddenBots.toggle() }
+                        } label: {
                             HStack(spacing: 6) {
-                                Image(systemName: model.showHiddenBots ? "chevron.down" : "chevron.right").font(.system(size: 10, weight: .bold))
+                                Image(systemName: "chevron.right").font(.system(size: 10, weight: .bold))
+                                    .rotationEffect(.degrees(model.showHiddenBots ? 90 : 0))
                                 KSLabel(L10n.t("Hidden · \(hidden.count)"))
                                 Spacer()
                             }
@@ -88,7 +92,10 @@ struct BotsSidebar: View {
                         .buttonStyle(.plain).foregroundStyle(KS.textMuted)
                         .padding(.horizontal, 8).padding(.top, 10)
                         .accessibilityLabel(L10n.t("Hidden bots, \(hidden.count)"))
-                        if model.showHiddenBots { ForEach(hidden) { BotRow(model: model, bot: $0) } }
+                        if model.showHiddenBots {
+                            ForEach(hidden) { BotRow(model: model, bot: $0) }
+                                .transition(reduceMotion ? .identity : .opacity.combined(with: .offset(y: -4)))
+                        }
                     }
                     if bots.isEmpty && hidden.isEmpty {
                         Text(verbatim: L10n.t("No bots match")).font(KS.body(14)).foregroundStyle(KS.textMuted).padding(10)
@@ -111,6 +118,7 @@ struct BotRow: View {
     @ObservedObject var model: TeamsModel
     let bot: TeamsBot
     @State private var hovered = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var selected: Bool { model.selectedThreadID == bot.threadID }
 
@@ -128,6 +136,10 @@ struct BotRow: View {
         Button { model.select(threadID: bot.threadID) } label: {
             HStack(spacing: 11) {
                 KSMoji(seed: bot.avatar ?? bot.leadAgentID, size: 34)
+                    .scaleEffect(hovered && !reduceMotion ? 1.03 : 1)
+                    .rotationEffect(.degrees(hovered && !reduceMotion ? 2 : 0))
+                    .offset(y: hovered && !reduceMotion ? -1.5 : 0)
+                    .animation(reduceMotion ? nil : KS.motion, value: hovered)
                 VStack(alignment: .leading, spacing: 5) {
                     HStack(spacing: 6) {
                         Text(verbatim: bot.name).font(KS.body(14, .bold)).lineLimit(1)
@@ -148,6 +160,8 @@ struct BotRow: View {
             .padding(.horizontal, 10).padding(.vertical, 12)
             .background {
                 RoundedRectangle(cornerRadius: 12).fill(selected ? KS.paper : hovered ? KS.paper.opacity(0.6) : .clear)
+                    .animation(reduceMotion ? nil : KS.motion, value: hovered)
+                    .animation(reduceMotion ? nil : KS.motion, value: selected)
             }
             .contentShape(RoundedRectangle(cornerRadius: 12))
         }

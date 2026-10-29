@@ -104,6 +104,9 @@ enum KS {
         .system(size >= 28 ? .largeTitle : size >= 14 ? .subheadline : size >= 12 ? .caption : .caption2, design: .monospaced, weight: .medium)
     }
     static func tint(_ provider: String) -> Color { provider == "claude" ? lime : provider == "codex" ? coral : sky }
+    // Short, interaction-driven motion; no ambient work while reading a thread.
+    static let settle = Animation.spring(response: 0.28, dampingFraction: 0.78)
+    static let glide = Animation.timingCurve(0.2, 0, 0, 1, duration: 0.28)
 }
 extension Color {
     init(hex: UInt32) { self.init(.sRGB, red: Double((hex >> 16) & 255) / 255, green: Double((hex >> 8) & 255) / 255, blue: Double(hex & 255) / 255, opacity: 1) }
@@ -137,17 +140,20 @@ struct Pill: ButtonStyle {
             .contentShape(Rectangle())
             .opacity(enabled ? 1 : 0.45)
             .offset(y: pressed && !reduceMotion ? 2 : 0)
-            .animation(reduceMotion ? nil : .easeOut(duration: 0.14), value: pressed)
+            .scaleEffect(pressed && !reduceMotion ? 0.985 : 1)
+            .animation(reduceMotion ? nil : KS.settle, value: pressed)
     }
 }
 /// Feedback for rows and icon controls without adding a second visual container.
 struct PressStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var enabled
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     func makeBody(configuration: Configuration) -> some View {
+        let pressed = enabled && configuration.isPressed
         configuration.label
-            .opacity(configuration.isPressed ? 0.72 : 1)
-            .scaleEffect(configuration.isPressed && !reduceMotion ? 0.98 : 1)
-            .animation(reduceMotion ? nil : .easeOut(duration: 0.14), value: configuration.isPressed)
+            .opacity(pressed ? 0.8 : 1)
+            .scaleEffect(pressed && !reduceMotion ? 0.985 : 1)
+            .animation(reduceMotion ? nil : KS.settle, value: pressed)
     }
 }
 struct Moji: View {
@@ -218,6 +224,8 @@ struct RootView: View {
     @State private var drafts: [String: (text: String, photos: [ChatPhoto])] = [:]
     @StateObject private var dictation = ChatDictation()
     @State private var filter = "All"
+    @Namespace private var taskFilterSelection
+    @ScaledMetric(relativeTo: .subheadline) private var filterLabelSize: CGFloat = 14
     @State private var nearBottom = true
     @Environment(\.scenePhase) private var phase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -395,9 +403,12 @@ struct RootView: View {
                         Divider().overlay(KS.ink.opacity(0.12))
                     }
                     if !hidden.isEmpty {
-                        Button { model.showHidden.toggle() } label: {
+                        Button {
+                            withAnimation(reduceMotion ? nil : KS.glide) { model.showHidden.toggle() }
+                        } label: {
                             HStack(spacing: 8) {
-                                Image(systemName: model.showHidden ? "chevron.down" : "chevron.right").font(.system(size: 12, weight: .bold))
+                                Image(systemName: "chevron.right").font(.system(size: 12, weight: .bold))
+                                    .rotationEffect(.degrees(model.showHidden ? 90 : 0))
                                 Text("HIDDEN · \(hidden.count)").font(KS.mono(12)).tracking(1)
                                 Spacer()
                             }.foregroundStyle(KS.muted).frame(minHeight: 44).contentShape(Rectangle())
@@ -406,6 +417,7 @@ struct RootView: View {
                         if model.showHidden {
                             ForEach(hidden) { bot in
                                 row(bot)
+                                    .transition(reduceMotion ? .identity : .opacity.combined(with: .offset(y: -6)))
                                 Divider().overlay(KS.ink.opacity(0.12))
                             }
                         }
@@ -628,11 +640,26 @@ struct RootView: View {
                 }.padding(12)
             }.frame(maxHeight: .infinity)
             ScrollView(.horizontal, showsIndicators: false) {
-              HStack(spacing: 8) {
+              HStack(spacing: 2) {
                 ForEach(["All", "Needs you", "Working", "Done"], id: \.self) { item in
-                    Button(item) { filter = item }.buttonStyle(Pill(fill: filter == item ? KS.lime : .white)).accessibilityAddTraits(filter == item ? .isSelected : [])
+                    Button { filter = item } label: {
+                        Text(item).font(.system(size: filterLabelSize, weight: .semibold))
+                            .padding(.horizontal, 12).padding(.vertical, 6).frame(minHeight: 32)
+                            .background {
+                                if filter == item {
+                                    Capsule().fill(KS.lime)
+                                        .matchedGeometryEffect(id: "task-filter", in: taskFilterSelection)
+                                }
+                            }
+                            .frame(minHeight: 44).contentShape(Rectangle())
+                    }
+                    .buttonStyle(PressStyle())
+                    .accessibilityAddTraits(filter == item ? .isSelected : [])
                 }
-              }.padding(.horizontal, 12).padding(.vertical, 4)
+              }
+              .animation(reduceMotion ? nil : KS.glide, value: filter)
+              .padding(.horizontal, 4).card(.white, radius: 24)
+              .padding(.horizontal, 12).padding(.vertical, 4)
             }.fixedSize(horizontal: false, vertical: true).buttonStyle(PressStyle())
                 .overlay(alignment: .top) { Rectangle().fill(KS.ink.opacity(0.12)).frame(height: 1) }
         }
@@ -652,7 +679,12 @@ struct RootView: View {
         return [bot?.name ?? task["scope"].string, provider, next].filter { !$0.isEmpty }.joined(separator: " · ")
     }
     private func countCard(_ name: String, count: Int, color: Color) -> some View {
-        VStack(alignment: .leading, spacing: 4) { Text(String(format: "%02d", count)).font(KS.display(28)); Text(name).font(KS.mono(9)) }
+        VStack(alignment: .leading, spacing: 4) {
+            Text(String(format: "%02d", count)).font(KS.display(28)).monospacedDigit()
+                .contentTransition(reduceMotion ? .identity : .numericText(value: Double(count)))
+                .animation(reduceMotion ? nil : KS.glide, value: count)
+            Text(name).font(KS.mono(9))
+        }
             .frame(maxWidth: .infinity, alignment: .leading).padding(10).card(color, radius: 14)
     }
     private var usage: some View {

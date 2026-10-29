@@ -32,6 +32,8 @@ enum KS {
 
     static let border: CGFloat = 2
     static let shadow: CGFloat = 3
+    static let motion = Animation.timingCurve(0.2, 0, 0, 1, duration: 0.2)
+    static let pressMotion = Animation.spring(response: 0.28, dampingFraction: 0.78)
 
     static func body(_ size: CGFloat = 15, _ weight: Font.Weight = .regular) -> Font {
         .system(size: size, weight: weight)
@@ -80,8 +82,11 @@ struct KSChip: View {
 /// A count in a lime pill.
 struct KSBadge: View {
     let count: Int
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
         Text(verbatim: count > 99 ? "99+" : "\(count)").font(KS.mono(11, .bold)).foregroundStyle(KS.ink)
+            .contentTransition(reduceMotion ? .identity : .numericText())
+            .animation(reduceMotion ? nil : KS.motion, value: count)
             .padding(.horizontal, 5).frame(minWidth: 20, minHeight: 20)
             .background(Capsule().fill(KS.lime))
             .overlay(Capsule().strokeBorder(KS.ink, lineWidth: 2))
@@ -129,10 +134,11 @@ struct KSButtonStyle: ButtonStyle {
                 }
             )
             .overlay(Capsule().strokeBorder(kind == .danger ? KS.danger : KS.ink, lineWidth: 2))
+            .scaleEffect(pressed && !reduceMotion ? 0.985 : 1)
             .offset(x: kind == .primary && pressed && !reduceMotion ? 2 : 0, y: kind == .primary && pressed && !reduceMotion ? 2 : 0)
             .contentShape(Capsule())
             .opacity(isEnabled ? 1 : 0.45)  // a disabled button must look it
-            .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: pressed)
+            .animation(reduceMotion ? nil : KS.pressMotion, value: pressed)
     }
 }
 
@@ -227,6 +233,20 @@ struct KSTopBar<Content: View>: View {
     }
 }
 
+private struct KSBarButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func makeBody(configuration: Configuration) -> some View {
+        let pressed = configuration.isPressed && isEnabled
+        configuration.label
+            .scaleEffect(pressed && !reduceMotion ? 0.985 : 1)
+            .offset(y: pressed && !reduceMotion ? 1 : 0)
+            .opacity(isEnabled ? (pressed ? 0.8 : 1) : 0.45)
+            .animation(reduceMotion ? nil : KS.pressMotion, value: pressed)
+    }
+}
+
 /// 32pt round icon button for the top bar. `on` fills it lime: a toggle that is on.
 struct KSBarButton: View {
     let symbol: String
@@ -241,7 +261,7 @@ struct KSBarButton: View {
                 .overlay(Circle().strokeBorder(KS.ink, lineWidth: 1.5))
                 .contentShape(Circle())
         }
-        .buttonStyle(.plain).foregroundStyle(KS.ink)
+        .buttonStyle(KSBarButtonStyle()).foregroundStyle(KS.ink)
         .accessibilityLabel(label).help(label)
     }
 }
