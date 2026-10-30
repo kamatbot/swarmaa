@@ -316,7 +316,12 @@ svg{display:block}
   .header-nav{display:none}
 }
 @media (max-width:760px){
-  .hero{padding:72px 20px 40px;border-radius:28px;box-shadow:5px 5px 0 var(--ink)}
+  .hero{margin-top:84px;padding:20px 16px 32px;gap:24px;border-radius:28px;box-shadow:5px 5px 0 var(--ink)}
+  /* Phones: the film leads the fold, and the Mac download and its framing step aside. */
+  .hero-right{order:-1}.hero-film{border-radius:18px;box-shadow:5px 5px 0 var(--ink)}
+  .glass--tab,.hero-eyebrow,.hero-ctas,.nav-cta,.finale-cta{display:none}
+  .hero-title{margin-bottom:18px}
+  .film-sound{right:8px;bottom:8px;padding:6px 10px;font-size:12px;border-width:1.5px;box-shadow:2px 2px 0 var(--ink)}.film-sound svg{width:14px;height:14px}
   .hero-eyebrow{font-size:11px;letter-spacing:.22em}
   .hero-trust li{border:0;margin:0 0 10px;padding:0;width:100%}
   .hero-visual{min-height:0}.chat{transform:none;height:540px}
