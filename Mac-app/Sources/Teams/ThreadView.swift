@@ -28,9 +28,11 @@ struct ThreadView: View {
                         // kept re-correcting as long markdown rows settled, so the chat bounced. A thread holds
                         // a page or two of messages, so exact heights are cheap.
                         VStack(alignment: .leading, spacing: 7) {
+                            // Older history loads when you scroll up to it (below), not on appear: in this
+                            // non-lazy stack the row "appears" the moment a thread opens, and that early page
+                            // of history landing under you was the first-load jump.
                             if model.hasOlder[threadID] == true, !messages.isEmpty {
                                 ProgressView().controlSize(.small).frame(maxWidth: .infinity)
-                                    .onAppear { Task { await model.loadOlder(threadID) } }
                             }
                             if model.loadingThreads.contains(threadID) { ProgressView("Loading messages") }
                             if let error = model.threadErrors[threadID] {
@@ -73,6 +75,15 @@ struct ThreadView: View {
                     .onScrollGeometryChange(for: Bool.self) { geometry in
                         geometry.contentOffset.y + geometry.containerSize.height >= geometry.contentSize.height - 80
                     } action: { _, value in nearBottom = value }
+                    .onScrollGeometryChange(for: Bool.self) { geometry in
+                        geometry.contentOffset.y < 80 && geometry.contentSize.height > geometry.containerSize.height
+                    } action: { _, nearTop in
+                        guard nearTop, settled, model.hasOlder[threadID] == true, let first = messages.first?.id else { return }
+                        Task {
+                            await model.loadOlder(threadID)
+                            proxy.scrollTo(first, anchor: .top) // keep your place above the new page
+                        }
+                    }
                     .onChange(of: model.targetQuestionID) { _, target in
                         if let target, let message = messages.first(where: { $0.question?.id == target || $0.ref?.questionID == target }) {
                             proxy.scrollTo(message.id, anchor: .center)
