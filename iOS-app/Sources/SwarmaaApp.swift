@@ -673,18 +673,22 @@ struct RootView: View {
                     } } }
                 }
                 HStack(alignment: .bottom, spacing: 6) {
-                    PhotosPicker(selection: $selections, maxSelectionCount: max(1, 2 - photos.count), matching: .images) { Image(systemName: "plus").font(.system(size: 18)).frame(width: 44, height: 44) }.disabled(photos.count >= 2 || preparingPhotos || dictation.isRecording || dictationStarting).accessibilityLabel("Add photo")
-                    TextField("Ask your bot…", text: $composer, axis: .vertical).font(KS.body(15)).lineLimit(1...4).focused($composerFocused).padding(.vertical, 8).frame(minHeight: 44).disabled(dictation.isRecording || dictationStarting).accessibilityIdentifier("composer")
+                    if !model.hasOpenApproval {
+                    PhotosPicker(selection: $selections, maxSelectionCount: max(1, 2 - photos.count), matching: .images) { Image(systemName: "plus").font(.system(size: 18)).frame(width: 44, height: 44) }.disabled(photos.count >= 2 || preparingPhotos || dictation.isRecording || dictationStarting).accessibilityLabel("Add photo") }
+                    TextField(model.hasOpenApproval ? "Answer the approval above to continue" : "Ask your bot…", text: $composer, axis: .vertical).font(KS.body(15)).lineLimit(1...4).focused($composerFocused).padding(.vertical, 8).padding(.leading, model.hasOpenApproval ? 14 : 0).frame(minHeight: 44).disabled(dictation.isRecording || dictationStarting).accessibilityIdentifier("composer")
+                    if !model.hasOpenApproval {
                     Button {
                         if dictation.isRecording || dictationStarting { dictation.stop(); dictationToken = UUID(); dictationStarting = false }
                         else { composerFocused = false; dictationStarting = true; let token = UUID(); dictationToken = token; let prefix = composer.isEmpty ? "" : composer + " "; Task { await dictation.start { utterance in composer = prefix + utterance }; if dictationToken == token { dictationStarting = false } } }
                     } label: { Image(systemName: (dictation.isRecording || dictationStarting) ? "stop.fill" : "mic").background { if dictation.isRecording || dictationStarting { Circle().fill(KS.lime).frame(width: 32, height: 32) } }.frame(width: 44, height: 44) }.accessibilityLabel((dictation.isRecording || dictationStarting) ? "Stop dictation" : "Dictate message")
+                    }
                     Button {
                         dictation.stop(); dictationToken = UUID(); dictationStarting = false
                         let text = composer, selected = photos, thread = model.openBot?.threadID, botID = model.openBot?.id
                         perform { try await model.post(text, photos: selected); if let botID, let draft = drafts[botID], draft.text == text && draft.photos == selected { drafts[botID] = nil }; if model.openBot?.threadID == thread && composer == text && photos == selected { composer = ""; photos = [] } }
                     } label: { Image(systemName: "arrow.up").font(.system(size: 16, weight: .semibold)).foregroundStyle(KS.paper).frame(width: 36, height: 36).background(KS.ink.opacity(composer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && photos.isEmpty ? 0.25 : 1), in: Circle()).frame(width: 44, height: 44).contentShape(Rectangle()) }.disabled((composer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && photos.isEmpty) || model.busy || preparingPhotos).accessibilityLabel("Send message")
                 }.buttonStyle(PressStyle(icon: true)).padding(.horizontal, 2)
+                    .disabled(model.hasOpenApproval)
                     .background {
                         RoundedRectangle(cornerRadius: 22).fill(.white)
                             .shadow(color: KS.ink.opacity(0.06), radius: 1, y: 1)
@@ -728,13 +732,24 @@ struct RootView: View {
                     }.buttonStyle(Pill())
                 }
             }.padding(.horizontal, 12).padding(.vertical, 10).frame(maxWidth: .infinity, alignment: .leading).card(task["status"].string == "failed" ? KS.attentionSurface : .white)
+        } else if message.kind == "swarm", message.raw["swarm"] != .null {
+            SwarmCard(swarm: message.raw["swarm"], agents: model.agents)
+        } else if message.kind == "question", let action = ApprovalAction(message.question) {
+            ApprovalCard(model: model, question: message.question, action: action)
         } else if message.kind == "question" {
             VStack(alignment: .leading, spacing: 5) {
                 StatusChip("Needs your input")
                 Text(message.question["prompt"].string).font(KS.body(15, .semibold))
                 Button("Answer question") { sheet = .question(message.question) }.buttonStyle(Pill()).disabled(message.question["status"].string != "open")
             }.padding(.horizontal, 12).padding(.vertical, 10).frame(maxWidth: .infinity, alignment: .leading).card(message.question["status"].string == "open" ? KS.attentionSurface : .white)
-        } else {
+        } else if let report = message.report {
+            VStack(alignment: .leading, spacing: 6) {
+                if !report.lead.isEmpty || !message.raw["attachments"].array.isEmpty { bubble(message, text: report.lead) }
+                ReportCard(report: report, author: report.lead.isEmpty && message.raw["attachments"].array.isEmpty ? message.raw["author"]["name"].string : "")
+            }
+        } else { bubble(message, text: message.text) }
+    }
+    @ViewBuilder private func bubble(_ message: Message, text: String) -> some View {
             HStack {
                 if message.human { Spacer(minLength: 24) }
                 if message.raw["author"]["kind"].string == "agent", let bot = model.openBot, bot.colorHex != nil {
@@ -745,12 +760,11 @@ struct RootView: View {
                     ForEach(Array(message.raw["attachments"].array.enumerated()), id: \.offset) { _, attachment in
                         ChatAttachmentView(service: model.service, threadID: model.openBot?.threadID ?? "", messageID: message.id, attachment: attachment)
                     }
-                    if !message.text.isEmpty || message.raw["attachments"].array.isEmpty { Text(message.text.isEmpty ? (message.kind == "answer" ? "Answer sent" : message.kind.capitalized) : message.text)
+                    if !text.isEmpty || message.raw["attachments"].array.isEmpty { Text(text.isEmpty ? (message.kind == "answer" ? "Answer sent" : message.kind.capitalized) : text)
                         .font(KS.body(15)).lineSpacing(1).fixedSize(horizontal: false, vertical: true).textSelection(.enabled) }
                 }.padding(.horizontal, 12).padding(.vertical, 9).foregroundStyle(message.human ? KS.paper : KS.ink).bubble(human: message.human)
                 if !message.human { Spacer(minLength: 16) }
             }
-        }
     }
     private var tasks: some View {
         VStack(spacing: 0) {
@@ -1200,6 +1214,7 @@ private extension AppModel {
         tasks = [Demo.task("banner", "Draft the launch banner", "completed", "claude"), Demo.task("pricing", "Summarise competitor pricing", "failed", "codex"), Demo.task("calendar", "Check the launch calendar", "running", "antigravity"), Demo.task("limits", "Fix the plan limits on the pricing page", "running", "claude")]
         attention = Array(tasks.prefix(2))
         messages = [Demo.message("m1", 1, "text", .string("Plan Friday’s launch. Ask me before anything goes public."), human: true), Demo.message("m2", 2, "text", .string("On it. Scout reads the brief, Forge drafts the banner. I’ll ask before anything goes out.")), Demo.message("m3", 3, "task", tasks[0]), Demo.message("m4", 4, "question", Demo.question)]
+        typing = [.object(["agent_id": .string("scout"), "task_id": .string("demo-turn"), "text": .string("I’m checking the launch calendar…")])]
         if ProcessInfo.processInfo.arguments.contains("-working-notes-demo") {
             var first = Demo.message("note1", 2, "notice", .string("Checking the launch brief"))
             var last = Demo.message("note2", 3, "handoff", .string("Handed off to the launch crew"))
@@ -1207,7 +1222,20 @@ private extension AppModel {
             last.raw["created_at"] = .string("2026-10-28T10:03:00Z")
             messages.insert(contentsOf: [first, last], at: 1)
         }
-        typing = [.object(["agent_id": .string("scout"), "task_id": .string("demo-turn"), "text": .string("I’m checking the launch calendar…")])]
+        if ProcessInfo.processInfo.arguments.contains("-handover-demo") {
+            func step(_ id: String, _ title: String, _ who: String, _ status: String, needs: [String] = [], check: String) -> JSON {
+                .object(["id": .string(id), "title": .string(title), "assignee_agent_id": .string(who), "status": .string(status), "needs": .strings(needs), "check": .string(check)])
+            }
+            var swarm = Demo.message("swarm1", 5, "swarm", .string(""))
+            swarm.raw["swarm"] = .object(["id": .string("demo-swarm"), "title": .string("Friday launch"), "status": .string("waiting_on_you"), "progress": .object(["done": .number(1), "total": .number(3)]), "steps": .array([
+                step("s1", "Read the launch brief", "scout", "done", check: "A five-point summary is posted in the thread"),
+                step("s2", "Draft the launch banner", "forge", "waiting_on_you", needs: ["s1"], check: "A 1200×630 banner PNG is attached"),
+                step("s3", "Schedule the launch posts", "launch", "pending", needs: ["s2"], check: "Posts are queued for Friday 9:00 in the calendar")])])
+            let report = Demo.message("report1", 6, "text", .string("Scout finished the brief.\n\n**Result:** Summarised the launch brief in five points.\n**Checks:** Compared every date against the brief; all match.\n**Not checked:** Whether the pricing page is live yet.\n**Files:** docs/launch/brief-summary.md"))
+            let approval = Demo.message("approval1", 7, "question", .object(["id": .string("demo-approval"), "prompt": .string("Deploy the launch site?"), "options": .strings(["Approve", "Deny"]), "status": .string("open"), "action": .object(["kind": .string("command"), "summary": .string("Deploy the launch site to production"), "detail": .string("npm run build && npm run deploy:site -- --prod --tag launch-friday"), "where": .string("~/Projects/swarma")])]))
+            messages += [swarm, report, approval]
+            typing = []
+        }
         let providers = ["antigravity", "claude", "codex"]
         status = .object(["scopes": .array([.object(["scope": .string("project:swarma")])]), "usage": .array(zip(providers, [79, 61, 11]).map { provider, left in
             .object(["provider": .string(provider), "ok": .bool(true), "headroom": .number(Double(left)), "plan": .string(provider == "claude" ? "MAX" : "PRO"), "windows": .array([.object(["name": .string("5 h"), "used_percent": .number(Double(100 - left))]), .object(["name": .string("Week"), "used_percent": .number(provider == "codex" ? 89 : 21)])])])
@@ -1285,6 +1313,134 @@ struct ScheduleCard: View {
             }
             if let error { Text(error).font(KS.body(14)) }
         }.padding(.horizontal, 12).padding(.vertical, 10).frame(maxWidth: .infinity, alignment: .leading).card(.white)
+    }
+}
+
+/// Who has which step, who waits on whom, and what "done" means for each step.
+struct SwarmCard: View {
+    let swarm: JSON
+    let agents: [JSON]
+    static func symbol(_ status: String) -> (String, Color) {
+        switch status {
+        case "done": ("checkmark.circle.fill", KS.readyText)
+        case "failed", "blocked", "cancelled": ("xmark.circle.fill", KS.failedText)
+        case "waiting_on_you": ("questionmark.circle.fill", KS.needsText)
+        case "running": ("circle.dotted", KS.ink)
+        default: ("circle", KS.muted)
+        }
+    }
+    var body: some View {
+        let steps = swarmSteps(swarm), crew = swarmCrew(steps, agents: agents), status = swarm["status"].string
+        let total = swarm["progress"]["total"] == .null ? steps.count : swarm["progress"]["total"].int
+        let done = swarm["progress"]["done"] == .null ? steps.filter { $0["status"].string == "done" }.count : swarm["progress"]["done"].int
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 5) {
+                    StatusChip(status == "waiting_on_you" ? "Needs you" : status.isEmpty ? "Swarm" : status.replacingOccurrences(of: "_", with: " "))
+                    Text(swarm["title"].string.isEmpty ? "Swarm" : swarm["title"].string).font(KS.body(15, .semibold))
+                }
+                Spacer()
+                Text("\(done)/\(total)").font(KS.display(24)).monospacedDigit()
+            }
+            if let line = swarmHeadline(steps, agents: agents) {
+                Text(line).font(KS.body(14, .semibold)).foregroundStyle(line.hasSuffix("waiting on you") ? KS.needsText : KS.soft)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if !crew.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 4) {
+                        ForEach(Array(crew.enumerated()), id: \.offset) { i, member in
+                            if i > 0 { Image(systemName: "arrow.right").font(.system(size: 9, weight: .bold)).foregroundStyle(KS.muted) }
+                            HStack(spacing: 4) { Moji(seed: member.id, size: 18); Text(member.name).font(KS.body(12, .semibold)).lineLimit(1) }
+                                .padding(.leading, 4).padding(.trailing, 8).frame(minHeight: 24)
+                                .background(member.active ? KS.lime : KS.neutralTint, in: Capsule())
+                        }
+                    }
+                }.accessibilityElement(children: .ignore)
+                    .accessibilityLabel("Crew: " + crew.map { $0.name + ($0.active ? ", active" : "") }.joined(separator: ", then "))
+            }
+            ForEach(Array(steps.enumerated()), id: \.offset) { _, step in
+                let (icon, color) = Self.symbol(step["status"].string)
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Image(systemName: icon).font(.system(size: 13)).foregroundStyle(color)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(step["title"].string).font(KS.body(14)).fixedSize(horizontal: false, vertical: true)
+                        if let line = waitingLine(step, in: steps, agents: agents) { Text(line).font(KS.body(12)).foregroundStyle(KS.muted) }
+                        if !step["check"].string.isEmpty { Text("Done when: " + step["check"].string).font(KS.body(12)).foregroundStyle(KS.muted).fixedSize(horizontal: false, vertical: true) }
+                    }
+                }
+            }
+        }.padding(.horizontal, 12).padding(.vertical, 10).frame(maxWidth: .infinity, alignment: .leading)
+            .card(["waiting_on_you", "blocked"].contains(status) ? KS.attentionSurface : .white)
+    }
+}
+
+/// A step's four-part report; "Not checked" is never hidden.
+struct ReportCard: View {
+    let report: StepReport
+    var author = ""
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if !author.isEmpty { Text(author).font(KS.body(12, .semibold)) }
+            ForEach([("result", "Result"), ("checks", "Checks"), ("not checked", "Not checked"), ("files", "Files")], id: \.0) { key, label in
+                let missing = (report.parts[key] ?? "").isEmpty
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(label).font(KS.body(12, .semibold)).foregroundStyle(key == "not checked" ? KS.needsText : KS.muted)
+                    Text(missing ? "Not stated" : report.parts[key]!).font(KS.body(14)).foregroundStyle(missing ? KS.muted : KS.ink)
+                        .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+                }.frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(key == "not checked" ? 8 : 0)
+                    .background(key == "not checked" ? KS.needsTint : .clear, in: RoundedRectangle(cornerRadius: 10))
+            }
+        }.padding(12).frame(maxWidth: .infinity, alignment: .leading).card(.white)
+    }
+}
+
+/// An approval: the exact action on top, the choices at the bottom of the card within thumb reach.
+struct ApprovalCard: View {
+    @Bindable var model: AppModel
+    let question: JSON
+    let action: ApprovalAction
+    @State private var sending = false
+    @State private var error: String?
+    @State private var detailHeight: CGFloat = 1
+    @Environment(\.dynamicTypeSize) private var textSize
+    var body: some View {
+        let open = question["status"].string == "open"
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) { StatusChip(open ? "Needs you" : "Answered"); StatusChip(action.kind) }
+            if open { Text("Waiting for your approval").font(KS.body(13, .semibold)).foregroundStyle(KS.needsText) }
+            Text(action.summary.isEmpty ? question["prompt"].string : action.summary).font(KS.body(15, .semibold)).fixedSize(horizontal: false, vertical: true)
+            if !action.detail.isEmpty {
+                ScrollView {
+                    Text(action.detail).font(KS.mono(12)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading).padding(10)
+                        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { detailHeight = $0 }
+                }.frame(height: min(detailHeight, 180)).scrollBounceBehavior(.basedOnSize)
+                    .background(KS.neutralTint, in: RoundedRectangle(cornerRadius: 10))
+            }
+            if !action.where_.isEmpty { Text("Where: " + action.where_).font(KS.body(13)).foregroundStyle(KS.muted).fixedSize(horizontal: false, vertical: true) }
+            if let error { Text(error).font(KS.body(14)) }
+            if open {
+                (textSize.isAccessibilitySize ? AnyLayout(VStackLayout(spacing: 10)) : AnyLayout(HStackLayout(alignment: .top, spacing: 10))) {
+                    ForEach(question["options"].array.map(\.string), id: \.self) { option in
+                        let sub = option == "Approve" ? "Runs this once" : option == "Deny" ? "The bot won’t do this" : ""
+                        Button {
+                            sending = true; error = nil
+                            Task {
+                                defer { sending = false }
+                                do { try await model.answer(question, choice: option) } catch { self.error = safeError(error) }
+                            }
+                        } label: {
+                            VStack(spacing: 1) {
+                                Text(option)
+                                if !sub.isEmpty { Text(sub).font(KS.body(12)).opacity(0.8) }
+                            }.frame(maxWidth: .infinity)
+                        }.buttonStyle(Pill(primary: option == "Approve", danger: option == "Deny", answerOption: !["Approve", "Deny"].contains(option)))
+                    }
+                }.disabled(sending).padding(.top, 4)
+            }
+        }.padding(.horizontal, 12).padding(.vertical, 10).frame(maxWidth: .infinity, alignment: .leading)
+            .card(open ? KS.attentionSurface : .white)
     }
 }
 

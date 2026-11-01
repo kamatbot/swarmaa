@@ -113,6 +113,101 @@ struct Message: Identifiable, Equatable, Sendable {
         if q["id"].string.isEmpty { q["id"] = raw["ref"]["question_id"] }
         return q
     }
+    /// A bot's four-part step report, when its reply carries one.
+    var report: StepReport? { raw["author"]["kind"].string == "agent" && kind == "text" ? StepReport(text) : nil }
+}
+
+/// The exact action an approval question asks for (handover brief, part 4). Unknown kinds read as "other".
+struct ApprovalAction: Equatable, Sendable {
+    let kind, summary, detail, where_: String
+    init?(_ question: JSON) {
+        let a = question["action"]
+        guard case .object = a else { return nil }
+        let k = a["kind"].string
+        kind = ["command", "publish", "send", "deploy", "purchase"].contains(k) ? k : "other"
+        summary = a["summary"].string; detail = a["detail"].string; where_ = a["where"].string
+    }
+}
+
+/// `Result / Checks / Not checked / Files`, each as `Label:`, `**Label:**`, `**Label**:` or a `#`–`###` heading.
+struct StepReport: Equatable, Sendable {
+    var lead = ""
+    var parts: [String: String] = [:]
+    static let labels = ["result", "checks", "not checked", "files"]
+    init?(_ text: String) {
+        var current: String?, lines: [String] = []
+        func flush() {
+            let body = lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+            if let current { parts[current] = body } else { lead = body }
+            lines = []
+        }
+        for line in text.components(separatedBy: "\n") {
+            if let (label, rest) = Self.label(line) { flush(); current = label; lines = [rest] }
+            else { lines.append(line) }
+        }
+        flush()
+        guard parts["result"] != nil, parts.count > 1 else { return nil }
+    }
+    static func label(_ line: String) -> (String, String)? {
+        var s = Substring(line.trimmingCharacters(in: .whitespaces))
+        let hashes = s.prefix { $0 == "#" }.count
+        guard hashes <= 3 else { return nil }
+        let heading = hashes > 0
+        if heading { s = s.dropFirst(hashes); guard s.first == " " else { return nil }; s = s.drop { $0 == " " } }
+        let bold = s.hasPrefix("**")
+        if bold { s = s.dropFirst(2) }
+        guard let label = labels.first(where: { s.lowercased().hasPrefix($0) }) else { return nil }
+        s = s.dropFirst(label.count)
+        if bold {
+            if s.hasPrefix(":**") || s.hasPrefix("**:") { s = s.dropFirst(3) }
+            else if heading && s.hasPrefix("**") { s = s.dropFirst(2) }
+            else { return nil }
+        } else if s.hasPrefix(":") { s = s.dropFirst() }
+        else if !heading || !(s.isEmpty || s.first == " ") { return nil }
+        if heading && s.hasPrefix(":") { s = s.dropFirst() }
+        return (label, s.trimmingCharacters(in: .whitespaces))
+    }
+}
+
+/// Swarm steps in plan order; `order_index` wins when present.
+func swarmSteps(_ swarm: JSON) -> [JSON] {
+    swarm["steps"].array.enumerated().sorted { ($0.element["order_index"].number.map(Int.init) ?? $0.offset, $0.offset) < ($1.element["order_index"].number.map(Int.init) ?? $1.offset, $1.offset) }.map(\.element)
+}
+private func crewName(_ id: String, _ agents: [JSON]) -> String {
+    let name = agents.first { $0["id"].string == id }?["name"].string ?? ""
+    return name.isEmpty ? "A crew member" : name
+}
+/// Who this step waits on (handover brief, part 5), or nil when it isn't waiting.
+func waitingLine(_ step: JSON, in steps: [JSON], agents: [JSON]) -> String? {
+    let who = crewName(step["assignee_agent_id"].string, agents)
+    switch step["status"].string {
+    case "waiting_on_you": return who + " is waiting on you"
+    case "pending", "blocked":
+        let needs = step["needs"].array.compactMap { id in steps.first { $0["id"] == id } }
+        guard let need = needs.first(where: { $0["status"].string != "done" }) else { return nil }
+        if ["failed", "cancelled"].contains(need["status"].string) { return who + " is blocked: " + need["title"].string + " failed" }
+        return who + " is waiting on " + crewName(need["assignee_agent_id"].string, agents) + " · " + need["title"].string
+    default: return nil
+    }
+}
+/// The swarm card's headline: someone waiting on you first, else the first other waiting line.
+func swarmHeadline(_ steps: [JSON], agents: [JSON]) -> String? {
+    steps.first { $0["status"].string == "waiting_on_you" }.flatMap { waitingLine($0, in: steps, agents: agents) }
+        ?? steps.lazy.compactMap { waitingLine($0, in: steps, agents: agents) }.first
+}
+/// Assignees in dependency order (a step after the steps it needs); active = running or waiting on you.
+func swarmCrew(_ steps: [JSON], agents: [JSON]) -> [(id: String, name: String, active: Bool)] {
+    // ponytail: O(n²) topological pass; swarms have a handful of steps.
+    var left = steps, placed = Set<String>(), crew: [(id: String, name: String, active: Bool)] = []
+    while !left.isEmpty {
+        let i = left.firstIndex { $0["needs"].array.allSatisfy { need in placed.contains(need.string) || !steps.contains { $0["id"] == need } } } ?? 0
+        let step = left.remove(at: i)
+        placed.insert(step["id"].string)
+        let id = step["assignee_agent_id"].string, active = ["running", "waiting_on_you"].contains(step["status"].string)
+        if let j = crew.firstIndex(where: { $0.id == id }) { crew[j].active = crew[j].active || active }
+        else { crew.append((id, crewName(id, agents), active)) }
+    }
+    return crew
 }
 
 
@@ -765,6 +860,16 @@ enum PushNotification {
         _ = try await service.call("task_resolve", ["task_id": .string(id), "expected_version": task["version"], "resolved": .bool(true)])
         if let bot = openBot { try await readThread(bot) }
         try await loadTasks()
+    }
+    /// An open approval pauses the thread's composer until it is answered.
+    var hasOpenApproval: Bool {
+        messages.contains { $0.kind == "question" && $0.question["status"].string == "open" && ApprovalAction($0.question) != nil }
+    }
+    /// One tap answers an approval; the key is stable per choice, so a retry never answers twice.
+    func answer(_ question: JSON, choice: String) async throws {
+        guard let service else { return }
+        _ = try await service.call("question_answer", ["question_id": question["id"], "choices": .strings([choice]), "idempotency_key": .string("approval-" + question["id"].string + "-" + choice)])
+        if let bot = openBot { try await readThread(bot) }
     }
     func signOut() async throws {
         guard !signingOut else { return }
