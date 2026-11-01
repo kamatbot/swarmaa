@@ -74,6 +74,7 @@ export function buildTurnPrompt(
   let fastMode = Boolean(fastModeArg);
   let delegatedObjective = '';
   const botTurn = Boolean((inputOrTask as Task & { bot_id?: string }).bot_id);
+  const stepTurn = Boolean((inputOrTask as Task & { swarm_step_id?: string }).swarm_step_id);
 
   let agents: Array<{ id: string; name: string; role?: string }> = [];
 
@@ -161,9 +162,10 @@ export function buildTurnPrompt(
     '```',
     'Valid action types:',
     '- {type:\'handoff\', to_agent, body, swarm_step_id?}',
-    '- {type:\'swarm_start\', title, goal, steps:[{key, title, assignee_agent_id, needs:[key], instructions?, check?}]}',
+    '- {type:\'swarm_start\', title, goal, steps:[{key, title, assignee_agent_id, needs:[key], instructions?, check}]}: check is required on every step (also in add_step): "Done when", what done means and how to check it, up to 512 chars.',
     '- {type:\'swarm_update\', swarm_id, ops:[...]}',
-    '- {type:\'question_ask\', prompt, options, multi, free_text, swarm_step_id?}',
+    '- {type:\'question_ask\', prompt, options, multi, free_text, swarm_step_id?, action?}: action is {kind: command|publish|send|deploy|purchase|other, summary (what will happen, up to 200 chars), detail (the exact command, text or URL, up to 2000 chars), where? (folder, channel, recipient or site)}.',
+    'Before anything that publishes, sends, deploys, buys, or runs a command outside the worktree, ask with question_ask including action with the exact detail, and do it only after the owner approves.',
     '- {type:\'channel_post\', channel_id, body}',
     ...(botTurn ? [
       "- {type:'bot_appearance', avatar?, color?}: change only this bot; provide at least one field. Allowed in every turn, read-only ones included: listing it in the actions block is the whole change, the service applies it, and you call nothing. When the owner asks for a new look, include it; never say you can't change your appearance.",
@@ -177,8 +179,11 @@ export function buildTurnPrompt(
 
   const fastModeInstruction = 'Reply now: answer directly when you can, briefly and honestly. If the request needs real work (code, research, multi-step reasoning, or anything you are unsure of), say in one line what you will do, then end your reply with a final line exactly `DELEGATE: <one-line objective>`. That line comes after everything else, including any actions block.';
 
+  const stepReport = 'This turn is a swarm step: its handoff message names the work you were given and "Done when", the check to meet. End your reply, before any actions block, with these four parts, each starting on its own line:\n**Result:** what you did\n**Checks:** what you ran or looked at to meet the check, and what it showed\n**Not checked:** honestly, everything you did not verify (or None)\n**Files:** the files you changed (or None)';
+
   const promptSections = [
     workerRules,
+    ...(stepTurn ? [stepReport] : []),
     ...(fastMode ? [fastModeInstruction] : []),
     ...(agents && agents.length > 0 ? [`Available agents in this project scope:\n${agents.map(a => `- ${a.name} (id: ${a.id}${a.role ? `, role: ${a.role}` : ''})`).join('\n')}`] : []),
     `Agent instructions:\n${instructions.trim()}`,

@@ -114,7 +114,7 @@ describe('teams service performance fixes', { skip: !connectionString, concurren
     }
     const { swarm } = await call(user, 'swarm_start', {
       title: 'Plan', goal: 'Ship', scope: 'project:a', thread_id: thread.id, owner_agent_id: agent.id,
-      steps: [{ key: 'a', title: 'Work', assignee_agent_id: agent.id }], idempotency_key: 'swarm'
+      steps: [{ key: 'a', title: 'Work', assignee_agent_id: agent.id, check: 'it works' }], idempotency_key: 'swarm'
     });
     for (const [kind, ref] of [['question', { question_id: q1 }], ['question', { question_id: q2 }], ['answer', { question_id: q2 }], ['swarm', { swarm_id: swarm.id }], ['swarm', { swarm_id: swarm.id }]] as const) {
       await pool.query(`INSERT INTO messages(id,tenant_id,scope,thread_id,seq,author,kind,body,ref)
