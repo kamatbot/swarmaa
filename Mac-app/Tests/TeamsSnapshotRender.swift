@@ -361,6 +361,29 @@ final class TeamsSnapshotRender: XCTestCase {
         XCTAssertLessThan((settled.max() ?? 0) - (settled.min() ?? 0), 1, "thread moved after the switch: \(offsets)")
     }
 
+    /// A step's four-part report, an open approval and the composer it pauses.
+    func testRenderReportAndApproval() throws {
+        let model = try fixture()
+        let messages = try dec([TeamsMessage].self, """
+        [{"id":"r1","thread_id":"t1","seq":1,"author":{"kind":"human"},"kind":"text","body":"Build the app and tell me what you checked."},
+         {"id":"r2","thread_id":"t1","seq":2,"author":{"kind":"agent","id":"a3"},"kind":"text","body":"The banner step is finished.\\n\\n**Result:** Drafted the launch banner and wired it into the home screen.\\n**Checks:** Ran `npm test` (42 passed) and looked at the compact layout.\\n**Not checked:** Dark mode and the Japanese copy.\\n**Files:** `src/banner.tsx`, `src/home.tsx`"},
+         {"id":"r3","thread_id":"t1","seq":3,"author":{"kind":"agent","id":"a3"},"kind":"question","ref":{"question_id":"qa"},
+          "question":{"id":"qa","prompt":"May I run the production build?","options":["Approve","Deny"],"multi":false,"free_text":false,"status":"open",
+           "action":{"kind":"command","summary":"Build the app for production","detail":"npm run build","where":"~/Projects/app"}}}]
+        """)
+        model.loadFixture(agents: model.agents, bots: model.bots, messages: ["t1": messages], status: model.status, select: "t1")
+        try render(ThreadView(model: model, threadID: "t1"), "report-approval-thread", size: CGSize(width: 900, height: 820))
+        let approval = try XCTUnwrap(messages.last?.question)
+        try render(VStack { QuestionCard(model: model, question: approval).padding() }.background(KS.paper),
+                   "approval-sheet", size: CGSize(width: 520, height: 380))
+        let detail = try dec(TeamsTaskDetails.self, """
+        {"id":"rd","objective":"Draft the launch banner","status":"completed",
+         "result":{"summary":"**Result:** Banner drafted.\\n**Checks:** npm test passed.\\n**Files:** src/banner.tsx"}}
+        """)
+        model.taskDetailID = "rd"; model.taskDetail = detail
+        try render(TaskDetailPanel(model: model), "task-detail-report", size: CGSize(width: 420, height: 640))
+    }
+
     func testRenderPhotoComposer() throws {
         let model = try fixture()
         let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 80, pixelsHigh: 60, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!

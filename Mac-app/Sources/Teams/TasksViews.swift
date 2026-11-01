@@ -321,7 +321,7 @@ struct TaskDetailPanel: View {
                     field("Duration", d.result?.durationMS.map(TeamsRun.duration))
                     VStack(alignment: .leading, spacing: 10) {
                         KSLabel(L10n.t("RUNS") + " · \(d.runs.count)")
-                        if d.runs.isEmpty { Text(verbatim: L10n.t("Not recorded")) }
+                        if d.runs.isEmpty { Text(verbatim: L10n.t("None yet")) }
                         ForEach(Array(d.runs.enumerated()), id: \.offset) { index, run in
                             VStack(alignment: .leading, spacing: 6) {
                                 Text(verbatim: L10n.t("Attempt \(index + 1)")).font(KS.body(14, .bold))
@@ -335,17 +335,22 @@ struct TaskDetailPanel: View {
                         }
                     }
                     field("Branch", d.result?.branch)
-                    field("Changed files", d.result.map { result in
-                        !result.files.isEmpty ? result.files.joined(separator: "\n") : result.fileCount.map { L10n.t("\($0) files (names not recorded)") } ?? L10n.t("Not recorded")
+                    field("Changed files", d.result.flatMap { result in
+                        !result.files.isEmpty ? result.files.joined(separator: "\n") : result.fileCount.map { L10n.t("\($0) files (names not recorded)") }
                     })
-                    field("Summary", d.result?.summary)
+                    if let summary = d.result?.summary, let (lead, report) = StepReport.parse(summary) {
+                        field("Summary", lead.isEmpty ? nil : lead)
+                        StepReportCard(report: report)
+                    } else {
+                        field("Summary", d.result?.summary)
+                    }
                     VStack(alignment: .leading, spacing: 8) {
                         KSLabel(L10n.t("TOKENS"))
                         if let usage = d.result?.usage {
                             field("Input", TeamsTaskBulk.tokens(usage.input_tokens))
                             field("Cached input", usage.cached_input_tokens.map(TeamsTaskBulk.tokens))
                             field("Output", TeamsTaskBulk.tokens(usage.output_tokens))
-                        } else { Text(verbatim: L10n.t("Not recorded")) }
+                        } else { Text(verbatim: L10n.t("None yet")) }
                     }
                 } else if let error = model.taskDetailError {
                     Text(verbatim: error)
@@ -355,10 +360,13 @@ struct TaskDetailPanel: View {
         }.background(KS.white)
     }
 
-    private func field(_ label: String.LocalizationValue, _ value: String?) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(verbatim: L10n.t(label)).font(KS.body(11, .bold)).foregroundStyle(KS.textSoft)
-            Text(verbatim: value ?? L10n.t("Not recorded")).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+    /// A missing value hides its field rather than printing "Not recorded".
+    @ViewBuilder private func field(_ label: String.LocalizationValue, _ value: String?) -> some View {
+        if let value {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(verbatim: L10n.t(label)).font(KS.body(11, .bold)).foregroundStyle(KS.textSoft)
+                Text(verbatim: value).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 }

@@ -284,9 +284,26 @@ struct TeamsQuestion: Decodable, Equatable, Identifiable {
     var status: String
     var answer: TeamsAnswer?
     var createdAt: Date?
+    /// Set on an approval: the exact action the bot will take if you say yes.
+    var action: Action?
+
+    struct Action: Decodable, Equatable {
+        enum Kind: String { case command, publish, send, deploy, purchase, other }
+        var kind: Kind
+        var summary: String
+        var detail: String
+        var `where`: String?
+        private enum CodingKeys: String, CodingKey { case kind, summary, detail, `where` }
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            kind = Kind(rawValue: c.opt(String.self, .kind) ?? "") ?? .other
+            summary = c.opt(String.self, .summary) ?? ""; detail = c.opt(String.self, .detail) ?? ""
+            `where` = c.opt(String.self, .where).flatMap { $0.isEmpty ? nil : $0 }
+        }
+    }
 
     private enum CodingKeys: String, CodingKey {
-        case id, prompt, options, multi, status, answer
+        case id, prompt, options, multi, status, answer, action
         case threadID = "thread_id", agentID = "agent_id", freeText = "free_text", swarmStepID = "swarm_step_id"
         case createdAt = "created_at"
     }
@@ -308,6 +325,7 @@ struct TeamsQuestion: Decodable, Equatable, Identifiable {
         status = c.opt(String.self, .status) ?? "open"
         answer = c.opt(TeamsAnswer.self, .answer)
         createdAt = c.opt(Date.self, .createdAt)
+        action = c.opt(Action.self, .action)
     }
 }
 
