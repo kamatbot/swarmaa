@@ -714,7 +714,7 @@ export class TeamService {
       const q = questions.get(String(r.ref?.question_id));
       if (q && r.kind === 'question') view.question = {
         id: q.id, prompt: q.prompt, options: q.options, multi: q.multi, free_text: q.free_text,
-        status: q.status, swarm_step_id: q.swarm_step_id, created_at: q.created_at.toISOString(),
+        status: q.status, swarm_step_id: q.swarm_step_id, action: q.action ?? null, created_at: q.created_at.toISOString(),
         answer: q.status === 'answered' ? { choices: q.choices, text: q.answer_text } : null
       };
       if (q && r.kind === 'answer') view.answer = { question_id: q.id, choices: q.choices, text: q.answer_text };

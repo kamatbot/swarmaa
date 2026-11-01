@@ -579,7 +579,7 @@ describe('bots core service (Brief B1)', { skip: !connectionString, concurrency:
       scope: 'project:a',
       thread_id: thread.id,
       steps: [
-        { key: 'step1', title: 'First step', assignee_agent_id: workerAgent.id }
+        { key: 'step1', title: 'First step', assignee_agent_id: workerAgent.id, check: 'it works' }
       ],
       idempotency_key: 'bot-swarm-1'
     });

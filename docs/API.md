@@ -535,7 +535,7 @@ Persistent agents, conversation threads, turn execution, read cursors and real-t
   - `goal` (string, up to 16,384 characters)
   - `scope` (valid project scope)
   - `thread_id` (UUID)
-  - `steps` (array of `{ key, title, assignee_agent_id, needs?, instructions?, check? }`)
+  - `steps` (array of `{ key, title, assignee_agent_id, needs?, instructions?, check }`; `check` ("Done when") is required, non-blank, ≤ 512 chars, else 400 `invalid_steps`)
   - `owner_agent_id`? (agent UUID)
   - `idempotency_key`? (string)
 - **Output:** `{ swarm: SwarmView, replayed: boolean }`. Validates step graph (DAG, no cycles, assignees in scope), creates persistent swarm, starts unblocked steps as turns, posts swarm card message, and logs handoffs.
@@ -546,7 +546,7 @@ Persistent agents, conversation threads, turn execution, read cursors and real-t
   - `swarm_id` (UUID)
   - `expected_version`? (integer)
   - `ops` (array of atomic update operations):
-    - `add_step`: `{ op: 'add_step', step: { key, title, assignee_agent_id, needs?, instructions?, check? } }`
+    - `add_step`: `{ op: 'add_step', step: { key, title, assignee_agent_id, needs?, instructions?, check } }`
     - `reassign`: `{ op: 'reassign', step_id, assignee_agent_id }`
     - `retry`: `{ op: 'retry', step_id }`
     - `cancel_step`: `{ op: 'cancel_step', step_id }`
@@ -639,7 +639,7 @@ Agent turns do not use a separate MCP server in worker CLIs. Instead:
   - `handoff`: `{ type: 'handoff', to_agent: UUID, body: string, swarm_step_id?: UUID }`
   - `swarm_start`: `{ type: 'swarm_start', title: string, goal: string, steps: StepInput[] }`
   - `swarm_update`: `{ type: 'swarm_update', swarm_id: UUID, ops: SwarmOp[] }`
-  - `question_ask`: `{ type: 'question_ask', prompt: string, options: string[], multi?: boolean, free_text?: boolean, swarm_step_id?: UUID, expires_in?: number }`
+  - `question_ask`: `{ type: 'question_ask', prompt: string, options: string[], multi?: boolean, free_text?: boolean, swarm_step_id?: UUID, expires_in?: number, action?: { kind: 'command'|'publish'|'send'|'deploy'|'purchase'|'other', summary: string ≤ 200, detail: string ≤ 2000, where?: string ≤ 300 } }`. A question with `action` is an approval: empty `options` become `["Approve", "Deny"]`; the action is redacted and returned as `action` (or null) in every question view
   - `channel_post`: `{ type: 'channel_post', channel_id: UUID, body: string }`
 - **Turn grant enforcement:** In `task_finish`, the block is parsed, stripped from the message text, and validated against the agent's turn grant (only member channels, only same scope, only owned swarms or assigned steps). Valid actions apply atomically; invalid actions post a explanatory `notice` message.
 

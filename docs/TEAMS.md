@@ -112,9 +112,9 @@ The answer is posted as an `answer` message and starts the agent's next turn. Qu
    - All valid actions are applied atomically with the reply. On refusal, a `notice` message is posted specifying the rejected action.
    The turn actions are:
    - `{type:'handoff', to_agent, body, swarm_step_id?}`: give work to another agent;
-   - `{type:'swarm_start', title, goal, steps:[{key, title, assignee_agent_id, needs:[key], instructions?, check?}]}`;
+   - `{type:'swarm_start', title, goal, steps:[{key, title, assignee_agent_id, needs:[key], instructions?, check}]}` (check required: "Done when");
    - `{type:'swarm_update', swarm_id, ops:[…]}`;
-   - `{type:'question_ask', prompt, options, multi, free_text, swarm_step_id?, expires_in?}`;
+   - `{type:'question_ask', prompt, options, multi, free_text, swarm_step_id?, expires_in?, action?}` (action `{kind, summary, detail, where?}` makes it an approval);
    - `{type:'channel_post', channel_id, body}`: post into a channel the agent belongs to.
 3. Atlas outputs a `swarm_start` action with five steps for Forge, Scout and Pulse. The service:
    - creates the swarm;
@@ -162,7 +162,7 @@ All new ids are UUIDs with a readable prefix in the UI only.
 
 | Tool | Permission | Input | Notes |
 |---|---|---|---|
-| `swarm_start` | `task:submit` | `title, goal, scope, thread_id, steps[]` (each `{title, assignee_agent_id, needs[], instructions?, check?}`), `flow?`, `inputs?`, `idempotency_key` | Validates the step graph (no cycles, assignees in scope), creates the card and starts the ready steps. |
+| `swarm_start` | `task:submit` | `title, goal, scope, thread_id, steps[]` (each `{title, assignee_agent_id, needs[], instructions?, check}`, check ≤ 512 required), `flow?`, `inputs?`, `idempotency_key` | Validates the step graph (no cycles, assignees in scope), creates the card and starts the ready steps. |
 | `swarm_update` | `task:submit` | `swarm_id, expected_version, ops[]` | Ops: `add_step`, `reassign {step, agent}`, `retry {step}`, `cancel_step {step}`, `edit {title?, goal?}`, `close`. Changes are atomic, versioned and posted as notices. |
 | `swarm_get` | `task:read` | `swarm_id` | Swarm, steps, their task states, failure codes, served providers and progress `{done, total}`. |
 | `swarm_list` | `task:read` | `scope?, status?=open, after?, limit?` | Open swarms first; the notch reads this. |
@@ -174,7 +174,7 @@ All new ids are UUIDs with a readable prefix in the UI only.
 
 | Tool | Permission | Input | Notes |
 |---|---|---|---|
-| `question_ask` | turn grant only | `prompt ≤ 500, options[] ≤ 8 (each ≤ 80), multi, free_text, expires_in?` | Agents only, from inside a turn. |
+| `question_ask` | turn grant only | `prompt ≤ 500, options[] ≤ 8 (each ≤ 80), multi, free_text, expires_in?, action?` | Agents only, from inside a turn. |
 | `question_answer` | `thread:write` + `answer_questions` (owner) | `question_id, choices[], text?, idempotency_key` | Posts the `answer` message and queues the agent's next turn. |
 | `question_list` | `thread:read` | `status?=open` | Everything waiting on you; the notch badge counts these. |
 
