@@ -143,7 +143,11 @@ struct ThreadView: View {
                     Button("Retry history") { Task { await model.loadLatest(threadID) } }.buttonStyle(.ks(.white, compact: true))
                 }
                 let questions = messages.compactMap(\.question).filter { $0.status == "open" }
-                if !questions.isEmpty {
+                // An open approval pauses the thread: its button goes straight to it.
+                if let approval = questions.first(where: { $0.action != nil }) {
+                    Button(L10n.t("Review approval")) { answeringQuestion = approval }
+                        .buttonStyle(.ks(.primary, compact: true)).fixedSize()
+                } else if !questions.isEmpty {
                     Menu("Answer question (\(questions.count))") {
                         ForEach(questions) { q in Button(q.prompt) { answeringQuestion = q } }
                     }.menuStyle(.button).buttonStyle(.ks(.primary, compact: true)).fixedSize()
@@ -400,21 +404,29 @@ struct TextBubble: View {
                 ForEach(message.attachments) { attachment in
                     ThreadPhoto(attachment: attachment, threadID: message.threadID, messageID: message.id)
                 }
-                if !(message.body ?? "").isEmpty {
-                Text(MarkdownCache.text(message.body ?? "")).textSelection(.enabled)
-                    .font(KS.body(14)).lineSpacing(1)
-                    .padding(.horizontal, 12).padding(.vertical, 7)
-                    .background(UnevenRoundedRectangle(topLeadingRadius: message.isHuman ? 18 : 5, bottomLeadingRadius: 18,
-                                                       bottomTrailingRadius: message.isHuman ? 5 : 18, topTrailingRadius: 18)
-                        .fill(message.isHuman ? KS.ink : KS.white)
-                        .shadow(color: KS.ink.opacity(message.isHuman ? 0 : 0.06), radius: 1, y: 1)
-                        .shadow(color: KS.ink.opacity(message.isHuman ? 0 : 0.05), radius: 7, y: 4))
-                    .foregroundStyle(message.isHuman ? KS.paper : KS.ink)
+                if let body = message.body, !body.isEmpty {
+                    // A step's four-part report: any text before it, then the report card.
+                    if message.author.kind == "agent", let (lead, report) = StepReport.parse(body) {
+                        if !lead.isEmpty { bubble(lead) }
+                        StepReportCard(report: report)
+                    } else { bubble(body) }
                 }
             }
             if !message.isHuman { Spacer(minLength: 60) }
         }
         .frame(maxWidth: .infinity, alignment: message.isHuman ? .trailing : .leading)
+    }
+
+    private func bubble(_ body: String) -> some View {
+        Text(MarkdownCache.text(body)).textSelection(.enabled)
+            .font(KS.body(14)).lineSpacing(1)
+            .padding(.horizontal, 12).padding(.vertical, 7)
+            .background(UnevenRoundedRectangle(topLeadingRadius: message.isHuman ? 18 : 5, bottomLeadingRadius: 18,
+                                               bottomTrailingRadius: message.isHuman ? 5 : 18, topTrailingRadius: 18)
+                .fill(message.isHuman ? KS.ink : KS.white)
+                .shadow(color: KS.ink.opacity(message.isHuman ? 0 : 0.06), radius: 1, y: 1)
+                .shadow(color: KS.ink.opacity(message.isHuman ? 0 : 0.05), radius: 7, y: 4))
+            .foregroundStyle(message.isHuman ? KS.paper : KS.ink)
     }
 }
 
@@ -617,6 +629,7 @@ struct QuestionCard: View {
     @State private var sending = false
 
     @State private var contentHeight: CGFloat = 200
+    @State private var detailHeight: CGFloat = 60
     var body: some View {
         VStack(alignment: .leading) {
             if interactive {
@@ -624,7 +637,8 @@ struct QuestionCard: View {
                     card.onGeometryChange(for: CGFloat.self) { $0.size.height } action: { contentHeight = $0 }
                 }.frame(height: min(contentHeight, 320))
             } else { card }
-            if interactive && question.status == "open" {
+            // An approval's buttons answer it directly; no Send step.
+            if interactive && question.status == "open" && question.action == nil {
                 HStack {
                     Spacer()
                     Button(L10n.t("Send")) {
@@ -651,6 +665,8 @@ struct QuestionCard: View {
             } else if question.status == "expired" {
                 Text(verbatim: question.prompt).font(.body)
                 Text(verbatim: L10n.t("This question expired")).font(.callout).foregroundStyle(Palette.textSecondary)
+            } else if let action = question.action {
+                approval(action)
             } else if !interactive {
                 HStack { KSLabel(L10n.t("Question")); Spacer(); KSChip(L10n.t("Needs you"), fill: KS.needsYouTint, ink: KS.needsYouText) }
                 Text(question.prompt).font(KS.body(15, .bold)).textSelection(.enabled)
@@ -668,17 +684,80 @@ struct QuestionCard: View {
                 if question.freeText {
                     TextField(L10n.t("Add a note"), text: $text, axis: .vertical).textFieldStyle(.roundedBorder).lineLimit(1...4)
                 }
-                if model.answeringBlocked {
-                    // 403 owner_required: the owner grants this Mac `answer_questions`.
-                    VStack(alignment: .leading, spacing: 4) {
-                        Label(L10n.t("Ask the owner to allow answering questions from this Mac"), systemImage: "lock")
-                            .font(.callout.weight(.semibold)).foregroundStyle(Palette.watch)
-                        Text(verbatim: TeamsSetup.grantCommand).font(.system(size: 11, design: .monospaced))
-                            .textSelection(.enabled).foregroundStyle(Palette.textSecondary)
-                    }
-                }
-
+                blockedNote
             }
+        }
+    }
+
+    @ViewBuilder private var blockedNote: some View {
+        if model.answeringBlocked {
+            // 403 owner_required: the owner grants this Mac `answer_questions`.
+            VStack(alignment: .leading, spacing: 4) {
+                Label(L10n.t("Ask the owner to allow answering questions from this Mac"), systemImage: "lock")
+                    .font(.callout.weight(.semibold)).foregroundStyle(Palette.watch)
+                Text(verbatim: TeamsSetup.grantCommand).font(.system(size: 11, design: .monospaced))
+                    .textSelection(.enabled).foregroundStyle(Palette.textSecondary)
+            }
+        }
+    }
+
+    /// An open approval: what will happen, the exact command or text, where, then Approve / Deny.
+    @ViewBuilder private func approval(_ action: TeamsQuestion.Action) -> some View {
+        HStack {
+            KSLabel(L10n.t("Waiting for your approval"))
+            Spacer()
+            KSChip(Self.kindLabel(action.kind), fill: KS.needsYouTint, ink: KS.needsYouText)
+        }
+        Text(verbatim: action.summary.isEmpty ? question.prompt : action.summary).font(KS.body(15, .bold)).textSelection(.enabled)
+        if !action.summary.isEmpty, question.prompt != action.summary, !question.prompt.isEmpty {
+            Text(verbatim: question.prompt).font(KS.body(13)).foregroundStyle(KS.textMuted)
+        }
+        if !action.detail.isEmpty {
+            ScrollView {
+                Text(verbatim: action.detail).font(KS.mono(12, .regular)).foregroundStyle(KS.ink)
+                    .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading).padding(10)
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { detailHeight = $0 }
+            }
+            .frame(height: min(detailHeight, 8 * 16 + 20)) // about eight lines, then it scrolls
+            .background(KS.paper, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        }
+        if let place = action.where {
+            Text(verbatim: L10n.t("Where: \(place)")).font(KS.body(12)).foregroundStyle(KS.textMuted).textSelection(.enabled)
+        }
+        FlowLayout(spacing: 12) {
+            ForEach(question.options, id: \.self) { option in
+                switch option.lowercased() {
+                case "approve": decision(option, .primary, L10n.t("Runs this once"))
+                case "deny": decision(option, .danger, L10n.t("The bot won't do this"))
+                default: ChipFlow(options: [option], selected: []) { send([$0]) }
+                }
+            }
+        }
+        .disabled(sending)
+        blockedNote
+    }
+
+    private func decision(_ option: String, _ kind: KSButtonStyle.Kind, _ note: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Button(option) { send([option]) }.buttonStyle(.ks(kind))
+            Text(verbatim: note).font(KS.body(11)).foregroundStyle(KS.textMuted)
+        }
+    }
+
+    private func send(_ choices: [String]) {
+        sending = true
+        Task { _ = await model.answer(question, choices: choices, text: ""); sending = false }
+    }
+
+    static func kindLabel(_ kind: TeamsQuestion.Action.Kind) -> String {
+        switch kind {
+        case .command: L10n.t("Command")
+        case .publish: L10n.t("Publish")
+        case .send: L10n.t("Send")
+        case .deploy: L10n.t("Deploy")
+        case .purchase: L10n.t("Purchase")
+        case .other: L10n.t("Action")
         }
     }
 
@@ -766,6 +845,10 @@ struct Composer: View {
         Binding(get: { model.drafts[threadID] ?? "" }, set: { model.drafts[threadID] = $0 })
     }
     private var sending: Bool { model.sendingThreads.contains(threadID) }
+    /// An open approval holds the thread until you answer it.
+    private var paused: Bool {
+        model.messages[threadID]?.contains { $0.question?.status == "open" && $0.question?.action != nil } ?? false
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -807,7 +890,7 @@ struct Composer: View {
             }
             HStack(alignment: .bottom, spacing: 8) {
             Button(action: choosePhotos) { Image(systemName: "photo") }
-                .buttonStyle(KSBarButtonStyle()).disabled(preparingPhotos || startingDictation || dictation.isRecording || (model.photoDrafts[threadID]?.count ?? 0) >= 2)
+                .buttonStyle(KSBarButtonStyle()).disabled(paused || preparingPhotos || startingDictation || dictation.isRecording || (model.photoDrafts[threadID]?.count ?? 0) >= 2)
                 .help(L10n.t("Add photos")).accessibilityLabel(L10n.t("Add photos"))
             Button {
                 if dictation.isRecording { dictation.stop() }
@@ -820,17 +903,18 @@ struct Composer: View {
                     }
                 }
             } label: { Image(systemName: dictation.isRecording ? "stop.fill" : "mic.fill") }
-                .buttonStyle(KSBarButtonStyle(on: dictation.isRecording)).disabled(startingDictation || preparingPhotos).help(L10n.t("Dictation"))
+                .buttonStyle(KSBarButtonStyle(on: dictation.isRecording)).disabled((paused && !dictation.isRecording) || startingDictation || preparingPhotos).help(L10n.t("Dictation"))
                 .accessibilityLabel(dictation.isRecording ? L10n.t("Stop dictation") : L10n.t("Start dictation"))
             ZStack(alignment: .topLeading) {
-                if text.wrappedValue.isEmpty {
-                    Text(verbatim: L10n.t("Message · Return to send, Shift-Return for a new line"))
+                if text.wrappedValue.isEmpty || paused {
+                    Text(verbatim: paused ? L10n.t("Answer the approval above to continue") : L10n.t("Message · Return to send, Shift-Return for a new line"))
                         .font(KS.body(14)).foregroundStyle(KS.textMuted).padding(.horizontal, 5).padding(.vertical, 5)
                         .allowsHitTesting(false)
                 }
                 TextEditor(text: text)
                     .focused($editorFocused).accessibilityLabel("Message in this thread")
-                    .disabled(startingDictation || dictation.isRecording)
+                    .disabled(paused || startingDictation || dictation.isRecording)
+                    .opacity(paused ? 0 : 1)
                     .font(KS.body(14)).scrollContentBackground(.hidden)
                     .frame(minHeight: 30, maxHeight: 140).fixedSize(horizontal: false, vertical: true)
                     .padding(.vertical, 5)
@@ -843,7 +927,7 @@ struct Composer: View {
             }
             Button(action: send) { Image(systemName: "arrow.up").font(.system(size: 14, weight: .semibold)) }
                 .buttonStyle(KSBarButtonStyle(send: true))
-                .disabled(sending || preparingPhotos || (model.pendingSends[threadID] == nil && text.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && (model.photoDrafts[threadID]?.isEmpty ?? true)))
+                .disabled(paused || sending || preparingPhotos || (model.pendingSends[threadID] == nil && text.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && (model.photoDrafts[threadID]?.isEmpty ?? true)))
                 .padding(.bottom, 5).help(L10n.t("Send")).accessibilityLabel(model.pendingSends[threadID] == nil ? "Send message" : "Retry previous message")
         }
             }
@@ -860,7 +944,7 @@ struct Composer: View {
     }
 
     private func send() {
-        guard !sending else { return }
+        guard !sending, !paused else { return }
         dictation.stop()
         let target = threadID
         editorFocused = true
