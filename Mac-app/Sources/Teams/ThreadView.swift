@@ -522,10 +522,14 @@ struct SwarmCard: View {
                         Text(verbatim: swarm.title).font(KS.body(15, .bold))
                         Text(verbatim: TeamsCopy.swarmStatus(swarm.status)).font(.caption)
                             .foregroundStyle(swarm.status == "waiting_on_you" ? Palette.watch : Palette.textSecondary)
+                        if let headline = HandoverStatus.headline(for: swarm, name: HandoverStatus.names(model)) {
+                            Text(verbatim: headline).font(.caption).foregroundStyle(KS.textMuted).lineLimit(2)
+                        }
                     }
                     Spacer()
                     Text(verbatim: "\(swarm.progress.done)/\(swarm.progress.total)").font(KS.display(24))
                 }
+                HandoverStrip(model: model, swarm: swarm)
                 ForEach(swarm.steps) { SwarmStepRow(model: model, step: $0) }
                 Button(L10n.t("Open swarm")) { model.detailSwarmID = swarm.id }.buttonStyle(.ks(.paper, compact: true))
             } else {
@@ -539,6 +543,9 @@ struct SwarmCard: View {
 struct SwarmStepRow: View {
     @ObservedObject var model: TeamsModel
     let step: TeamsSwarm.Step
+    /// The swarm detail list adds who is waiting on whom and "Done when".
+    var line: String? = nil
+    var showsCheck = false
 
     static func symbol(_ status: String) -> (String, Color) {
         switch status {
@@ -552,9 +559,15 @@ struct SwarmStepRow: View {
 
     var body: some View {
         let (icon, color) = Self.symbol(step.status)
-        HStack(spacing: 8) {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
             Image(systemName: icon).foregroundStyle(color)
-            Text(verbatim: step.title).font(KS.body(14)).lineLimit(2)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(verbatim: step.title).font(KS.body(14)).lineLimit(2)
+                if let line { Text(verbatim: line).font(KS.body(12)).foregroundStyle(KS.textMuted) }
+                if showsCheck, let check = step.check, !check.isEmpty {
+                    Text(verbatim: L10n.t("Done when: \(check)")).font(KS.body(12)).foregroundStyle(KS.textMuted).textSelection(.enabled)
+                }
+            }
             Spacer()
             if let a = model.agent(id: step.assigneeAgentID) {
                 Text(verbatim: a.name.uppercased()).font(KS.mono(10)).foregroundStyle(KS.textMuted)
@@ -886,6 +899,7 @@ struct SwarmDetailView: View {
     @ObservedObject var model: TeamsModel
     let swarmID: String
     @Environment(\.dismiss) private var dismiss
+    @State private var contentHeight: CGFloat = 320
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -898,8 +912,16 @@ struct SwarmDetailView: View {
                 Text(verbatim: TeamsCopy.swarmStatus(s.status)).foregroundStyle(Palette.textSecondary)
                 if let goal = s.goal, !goal.isEmpty { Text(verbatim: goal).textSelection(.enabled) }
                 Divider()
-                ScrollView { VStack(alignment: .leading, spacing: 8) { ForEach(s.steps) { SwarmStepRow(model: model, step: $0) } } }
-                    .frame(height: min(CGFloat(s.steps.count) * 52 + 16, 320))
+                let lines = HandoverStatus.lines(for: s, name: HandoverStatus.names(model))
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 12) {
+                        HandoverMap(model: model, swarm: s)
+                        Divider()
+                        ForEach(s.steps) { SwarmStepRow(model: model, step: $0, line: lines[$0.id], showsCheck: true) }
+                    }
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { contentHeight = $0 }
+                }
+                .frame(height: min(contentHeight, 560))
             } else if let error = model.swarmErrors[swarmID] {
                 Text(error)
                 Button("Retry") { Task { await model.loadSwarm(swarmID) } }
@@ -908,7 +930,7 @@ struct SwarmDetailView: View {
             }
             HStack { Spacer(); Button(L10n.t("Done")) { dismiss() }.keyboardShortcut(.defaultAction) }
         }
-        .padding(20).frame(minWidth: 420, idealWidth: 520, maxWidth: 640)
+        .padding(20).frame(minWidth: 640, idealWidth: 760, maxWidth: 960)
         .fixedSize(horizontal: false, vertical: true)
         .onExitCommand { dismiss() }
         .task { await model.loadSwarm(swarmID) }

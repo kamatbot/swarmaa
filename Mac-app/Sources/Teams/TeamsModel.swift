@@ -417,6 +417,7 @@ final class TeamsModel: ObservableObject {
         self.agents = agents; self.bots = bots; self.messages = messages; self.status = status
         self.attention = attention
         for (t, list) in messages { if let last = list.last { previews[t] = TeamsPreview(body: last.preview, createdAt: last.createdAt) } }
+        for s in messages.values.joined().compactMap(\.swarm) { swarms[s.id] = s }
         selectedThreadID = threadID
         streamState = "Live"
         phase = .ready

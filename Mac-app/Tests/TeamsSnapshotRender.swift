@@ -330,6 +330,23 @@ final class TeamsSnapshotRender: XCTestCase {
         }.padding(24).background(KS.paper), "soft-surface-states", size: CGSize(width: 560, height: 250))
     }
 
+    /// A diamond swarm: Scout reads, Forge and Atlas work in parallel, Scout schedules once both are done.
+    func testRenderHandoverMap() throws {
+        let model = try fixture()
+        let message = try dec(TeamsMessage.self, """
+        {"id":"h1","thread_id":"t1","seq":9,"author":{"kind":"system"},"kind":"swarm","ref":{"swarm_id":"s9"},
+         "swarm":{"id":"s9","title":"Friday's launch, split across the team.","goal":"Ship the launch posts on Friday.","status":"waiting_on_you","thread_id":"t1","progress":{"done":1,"total":4},
+          "steps":[{"id":"d1","title":"Read the launch brief","assignee_agent_id":"a2","status":"done","needs":[],"check":"a one-page summary is in the thread"},
+                   {"id":"d2","title":"Draft the banner and release notes","assignee_agent_id":"a3","status":"running","needs":["d1"],"check":"banner PNG and notes are on the branch"},
+                   {"id":"d3","title":"Pick the launch channels","assignee_agent_id":"a1","status":"waiting_on_you","needs":["d1"],"check":null},
+                   {"id":"d4","title":"Schedule the posts","assignee_agent_id":"a2","status":"pending","needs":["d2","d3"],"check":"every post is queued for Friday 9:00"}]}}
+        """)
+        model.loadFixture(agents: model.agents, bots: model.bots, messages: ["t1": [message]], status: model.status, select: nil)
+        try render(SwarmCard(model: model, message: message).padding(24).background(KS.paper), "handover-swarm-card", size: CGSize(width: 640, height: 420))
+        try render(HandoverMap(model: model, swarm: try XCTUnwrap(message.swarm)).padding(24).background(KS.paper), "handover-map", size: CGSize(width: 760, height: 360))
+        try render(SwarmDetailView(model: model, swarmID: "s9").background(KS.paper), "handover-swarm-detail", size: CGSize(width: 760, height: 820))
+    }
+
     /// Switching to a bot must land its thread where it stays: the thread drew plain text first and
     /// re-laid out when markdown arrived, so it jumped on every switch.
     func testSwitchingBotsDoesNotJump() throws {
