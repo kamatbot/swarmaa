@@ -699,7 +699,11 @@ export async function receiveGithubDelivery(
   let branchAmbiguous = false;
   let branchMatchTaskId: string | null = null;
   const isPrAction = input.eventType === 'pull_request' && ['opened', 'reopened', 'synchronize'].includes(digest.action ?? '');
-  const headMatch = isPrAction && digest.head_ref ? digest.head_ref.match(/^swarmaa\/(claude|codex|antigravity)\/([0-9a-f]{8})$/) : null;
+  // Anyone can name a fork branch like ours; only a same-repo PR by an allowed author may claim a task.
+  const headRepo = String(payload.pull_request?.head?.repo?.full_name ?? '').toLowerCase();
+  const prAuthor = String(payload.pull_request?.user?.login ?? '').toLowerCase();
+  const trustedHead = headRepo === sourceRow.repo_full_name.toLowerCase() && sourceRow.rules.allow_authors.some(a => a.toLowerCase() === prAuthor);
+  const headMatch = isPrAction && trustedHead && digest.head_ref ? digest.head_ref.match(/^swarmaa\/(claude|codex|antigravity)\/([0-9a-f]{8})$/) : null;
 
   if (headMatch && sourceRow.rules.auto_subscribe_branches !== false) {
     const hex8 = headMatch[2];
@@ -836,6 +840,8 @@ async function processOneDelivery(pool: Pool, deliveryId: string): Promise<void>
     )).rows[0];
     if (!delivery) return;
 
+    // A failed statement aborts the transaction; roll back to here so the catch can still record the retry.
+    await db.query('SAVEPOINT delivery');
     try {
       const source = (await db.query<SourceRow>(
         'SELECT * FROM sources WHERE id = $1',
@@ -895,6 +901,7 @@ async function processOneDelivery(pool: Pool, deliveryId: string): Promise<void>
 
         if (subs.length > 0) {
           const tasksService = new TaskService(pool);
+          let continued = false;
           for (const sub of subs) {
             const task = (await db.query<TaskRow>(
               'SELECT * FROM tasks WHERE id = $1 FOR UPDATE',
@@ -903,12 +910,9 @@ async function processOneDelivery(pool: Pool, deliveryId: string): Promise<void>
             if (!task) continue;
 
             if (task.status === 'cancelled' || task.flow_id) {
+              // Other tasks on the same PR still get the event.
               await db.query('UPDATE task_subscriptions SET active = false WHERE id = $1', [sub.id]);
-              await db.query(
-                "UPDATE source_deliveries SET status = 'ignored', reason = 'task_not_continuable', processed_at = clock_timestamp() WHERE id = $1",
-                [delivery.id]
-              );
-              return;
+              continue;
             }
 
             const isLiveRunning = task.status === 'running' && task.lease_expires_at && (new Date(task.lease_expires_at).getTime() > Date.now());
@@ -984,6 +988,7 @@ async function processOneDelivery(pool: Pool, deliveryId: string): Promise<void>
 
             const requestHash = sha256(canonicalJson({ instruction, idempotency_key: idempotencyKey }));
             await tasksService.continueInternal(db, p, task, instruction, idempotencyKey, requestHash);
+            continued = true;
 
             await db.query(
               `UPDATE source_deliveries
@@ -1038,6 +1043,12 @@ async function processOneDelivery(pool: Pool, deliveryId: string): Promise<void>
                 [newBudget, sub.id]
               );
             }
+          }
+          if (!continued) {
+            await db.query(
+              "UPDATE source_deliveries SET status = 'ignored', reason = 'task_not_continuable', processed_at = clock_timestamp() WHERE id = $1",
+              [delivery.id]
+            );
           }
           return;
         }
@@ -1145,6 +1156,7 @@ async function processOneDelivery(pool: Pool, deliveryId: string): Promise<void>
         [delivery.id]
       );
     } catch {
+      await db.query('ROLLBACK TO SAVEPOINT delivery');
       const nextAttempts = delivery.attempts + 1;
       const failed = nextAttempts >= 8;
       const delaySec = Math.min(30 * Math.pow(2, delivery.attempts), 3600);

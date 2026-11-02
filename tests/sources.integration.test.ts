@@ -756,7 +756,7 @@ describe('sources and github intake integration tests (§8.2)', { skip: !connect
         number: 101,
         title: 'Fix issue',
         user: { login: 'mayurkamat', type: 'User' },
-        head: { ref: `swarmaa/claude/${prefix1}` },
+        head: { ref: `swarmaa/claude/${prefix1}`, repo: { full_name: 'kamatbot/branch-test' } },
         base: { ref: 'main' },
       },
     });
@@ -782,6 +782,35 @@ describe('sources and github intake integration tests (§8.2)', { skip: !connect
     assert.equal(subs[0].external_thread_ref, 'github:kamatbot/branch-test#pr/101');
     assert.equal(subs[0].active, true);
 
+    // A fork (or an author not on allow_authors) naming its branch like ours never claims the task.
+    const forkTask = await call(owner, 'task_submit', {
+      scope: 'project:demo', kind: 'patch', objective: 'Fork target', idempotency_key: randomUUID(), required_capability: 'claude.patch',
+    });
+    for (const [num, repo, login] of [[110, 'attacker/branch-test', 'mayurkamat'], [111, 'kamatbot/branch-test', 'stranger']] as const) {
+      const forkPayload = JSON.stringify({
+        repository: { full_name: 'kamatbot/branch-test' },
+        action: 'opened',
+        pull_request: {
+          number: num, title: 'Fork PR', user: { login, type: 'User' },
+          head: { ref: `swarmaa/claude/${forkTask.task.id.slice(0, 8)}`, repo: { full_name: repo } },
+          base: { ref: 'main' },
+        },
+      });
+      const forkRes = await fetch(`${origin}/hooks/github/${source.id}`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-github-event': 'pull_request',
+          'x-github-delivery': randomUUID(),
+          'x-hub-signature-256': sign(source.secret, forkPayload),
+        },
+        body: forkPayload,
+      });
+      assert.equal(forkRes.status, 202);
+    }
+    const forkSubs = (await pool.query('SELECT 1 FROM task_subscriptions WHERE task_id = $1', [forkTask.task.id])).rowCount;
+    assert.equal(forkSubs, 0);
+
     const fixedPrefix = 'abcdef01';
     const uuidAmbiguous1 = `${fixedPrefix}-0000-0000-0000-000000000001`;
     const uuidAmbiguous2 = `${fixedPrefix}-0000-0000-0000-000000000002`;
@@ -800,7 +829,7 @@ describe('sources and github intake integration tests (§8.2)', { skip: !connect
         number: 102,
         title: 'Ambiguous PR',
         user: { login: 'mayurkamat', type: 'User' },
-        head: { ref: `swarmaa/claude/${fixedPrefix}` },
+        head: { ref: `swarmaa/claude/${fixedPrefix}`, repo: { full_name: 'kamatbot/branch-test' } },
         base: { ref: 'main' },
       },
     });
@@ -847,7 +876,7 @@ describe('sources and github intake integration tests (§8.2)', { skip: !connect
         number: 103,
         title: 'Observe PR',
         user: { login: 'mayurkamat', type: 'User' },
-        head: { ref: `swarmaa/claude/${prefix3}` },
+        head: { ref: `swarmaa/claude/${prefix3}`, repo: { full_name: 'kamatbot/branch-test' } },
         base: { ref: 'main' },
       },
     });
