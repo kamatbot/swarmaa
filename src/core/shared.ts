@@ -83,7 +83,7 @@ export async function audit(db: Db, p: Principal, scope: string, operation: stri
   await db.query('INSERT INTO audit_log (id,tenant_id,actor_id,scope,operation,subject_id,details) VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb)', [newId(), p.tenantId, p.id, scope, operation, subjectId, JSON.stringify(details)]);
 }
 
-export type EventType = 'task.updated' | 'memory.changed' | 'message.created' | 'message.updated' | 'swarm.updated' | 'agent.updated' | 'question.created' | 'question.answered' | 'thread.read' | 'bot.updated';
+export type EventType = 'task.updated' | 'memory.changed' | 'message.created' | 'message.updated' | 'swarm.updated' | 'agent.updated' | 'question.created' | 'question.answered' | 'thread.read' | 'bot.updated' | 'source.delivery';
 
 export async function event(db: Db, p: Principal, scope: string, name: EventType, subjectId: string, metadata: Record<string, unknown>): Promise<void> {
   // Other subsystems also emit task updates; fill their identifiers without a round trip on the hot checkpoint path.

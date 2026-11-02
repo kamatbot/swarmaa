@@ -13,6 +13,7 @@ import { LESSON_GUIDANCE, LessonService } from './lessons.js';
 import { booleanOption, MemoryService } from './memory.js';
 import { assertKnownScope, noExtraKeys } from './shared.js';
 import { SessionService } from './sessions.js';
+import { SourceService } from './sources.js';
 import { getPolicy, setPolicy } from './routing.js';
 import { SwarmService } from './swarm.js';
 import { SwarmsService } from './swarms.js';
@@ -32,7 +33,7 @@ const responseReadPermissions:Partial<Record<string,Permission>> = {
   bot_create:'agent:read',bot_update:'agent:read',bot_archive:'agent:read',bot_unarchive:'agent:read',bot_delete:'agent:read',
   swarm_start:'task:read',swarm_update:'task:read',swarm_cancel:'task:read',question_answer:'thread:read',
   channel_create:'agent:read',channel_update:'agent:read',section_set:'thread:read',task_resolve:'task:read',
-  attention_list:'thread:read',
+  attention_list:'thread:read',source_update:'task:read',
 };
 
 /** Transport-independent authorization and one implementation shared by MCP, REST and stdio proxy. */
@@ -47,6 +48,7 @@ export class CoreService implements ToolBackend {
   private readonly flows:FlowService;
   private readonly teams:TeamService;
   private readonly bots:BotService;
+  public readonly sources:SourceService;
 
   constructor(private readonly pool:Pool) {
     this.memories = new MemoryService(pool);
@@ -59,6 +61,7 @@ export class CoreService implements ToolBackend {
     this.flows = new FlowService(pool);
     this.teams = new TeamService(pool);
     this.bots = new BotService(pool);
+    this.sources = new SourceService(pool);
   }
 
   listTools(principal:Principal):ToolDefinition[] {
@@ -150,6 +153,10 @@ export class CoreService implements ToolBackend {
       case 'bot_unarchive': return this.bots.botUnarchive(principal,input);
       case 'bot_delete': return this.bots.botDelete(principal,input);
       case 'bot_archive': return this.bots.botArchive(principal,input);
+      case 'source_list': return this.sources.list(principal,input);
+      case 'source_get': return this.sources.get(principal,input);
+      case 'source_update': return this.sources.update(principal,input);
+      case 'source_deliveries': return this.sources.deliveries(principal,input);
       default: throw new AppError(404,'unknown_tool','Unknown tool name.');
     }
   }

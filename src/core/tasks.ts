@@ -35,7 +35,7 @@ export interface TaskRow {
   id:string; tenant_id:string; scope:string; kind:TaskKind; objective:string;
   flow_id:string|null; flow:FlowTask|null;
   bot_id?:string|null; agent_id?:string|null; thread_id?:string|null; swarm_step_id?:string|null;
-  initiator_kind?: 'person' | 'handoff' | 'swarm' | 'answer' | 'flow' | 'schedule' | 'bot_check';
+  initiator_kind?: 'person' | 'handoff' | 'swarm' | 'answer' | 'flow' | 'schedule' | 'bot_check' | 'source';
   initiator_id?: string | null;
   resolved_at?: Date | null;
   constraints:string[]; acceptance_criteria:string[]; permission_envelope:Record<string,unknown>;

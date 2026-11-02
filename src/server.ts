@@ -1,5 +1,6 @@
 import { PushWorker } from './push.js';
 import { tickBotSchedules } from './core/bot-routing.js';
+import { tickSourceDeliveries } from './core/sources.js';
 import { createServer } from 'node:http';
 import { AuthService } from './auth.js';
 import { loadConfig } from './config.js';
@@ -42,11 +43,23 @@ const scheduleTimer = setInterval(() => {
 },30000);
 scheduleTimer.unref();
 
+let sourceSweep: Promise<void> | undefined;
+let sourceTimer: NodeJS.Timeout | undefined;
+if (config.sourcesEnabled) {
+  sourceTimer = setInterval(() => {
+    if (!sourceSweep) sourceSweep = tickSourceDeliveries(pool).catch(() => {
+      process.stderr.write('Source delivery sweep failed. Check database health.\n');
+    }).finally(() => { sourceSweep = undefined; });
+  }, 15000);
+  sourceTimer.unref();
+}
+
 let closing = false;
 async function shutdown(code: number): Promise<void> {
   if (closing) return;
   closing = true;
   clearInterval(scheduleTimer);
+  if (sourceTimer) clearInterval(sourceTimer);
   const deadline = setTimeout(() => { server.closeAllConnections(); process.exit(1); }, 20000);
   deadline.unref();
   await Promise.all([
@@ -55,6 +68,7 @@ async function shutdown(code: number): Promise<void> {
     events?.stop() ?? Promise.resolve(),
     push.stop(),
     scheduleSweep ?? Promise.resolve(),
+    sourceSweep ?? Promise.resolve(),
   ]);
   await pool.end();
   clearTimeout(deadline);
