@@ -48,7 +48,7 @@ const t0 = Date.now();
 const runs = [
   { label: 'auto', capability: 'auto.read', kind: 'research' },
   { label: 'claude', capability: 'claude.read', kind: 'research' },
-  { label: 'codex', capability: 'codex.read', kind: 'research' },
+  { label: 'codex', capability: 'codex.read', kind: 'review' }, // the routing policy gives Codex no research
   { label: 'antigravity', capability: 'antigravity.read', kind: 'review' }, // Antigravity takes no research
 ].filter(r => r.label === 'auto' || served.has(values.scope) && rows.some(w => w.role === 'worker' && w.live && w.name.includes(r.label === 'antigravity' ? 'agy' : r.label)));
 const tasks = await Promise.all(runs.map(async r => {

@@ -1,0 +1,10 @@
+import assert from 'node:assert/strict';
+import { byteRange } from './worker.js';
+assert.deepEqual(byteRange('bytes=0-1', 10), { start: 0, end: 1 });
+assert.deepEqual(byteRange('bytes=5-', 10), { start: 5, end: 9 });
+assert.deepEqual(byteRange('bytes=-3', 10), { start: 7, end: 9 });
+assert.deepEqual(byteRange('bytes=8-99', 10), { start: 8, end: 9 });
+assert.equal(byteRange('bytes=12-', 10), 'unsatisfiable');
+assert.equal(byteRange('bytes=0-1,4-5', 10), null);
+assert.equal(byteRange(null, 10), null);
+console.log('byteRange ok');

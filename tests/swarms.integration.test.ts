@@ -105,11 +105,11 @@ describe('teams phase 2 swarms and coordination', { skip: !connectionString, con
       title: "Friday's launch",
       goal: 'Launch the campaign across channels.',
       steps: [
-        { key: 'step1', title: 'Research launch channels', assignee_agent_id: pulse.id, needs: [] },
-        { key: 'step2', title: 'Design launch graphics', assignee_agent_id: scout.id, needs: ['step1'] },
-        { key: 'step3', title: 'Draft launch copy', assignee_agent_id: pulse.id, needs: ['step1'] },
-        { key: 'step4', title: 'Assemble campaign page', assignee_agent_id: scout.id, needs: ['step2', 'step3'] },
-        { key: 'step5', title: 'Review launch readiness', assignee_agent_id: atlas.id, needs: ['step4'] }
+        { key: 'step1', title: 'Research launch channels', assignee_agent_id: pulse.id, needs: [], check: 'it works' },
+        { key: 'step2', title: 'Design launch graphics', assignee_agent_id: scout.id, needs: ['step1'], check: 'it works' },
+        { key: 'step3', title: 'Draft launch copy', assignee_agent_id: pulse.id, needs: ['step1'], check: 'it works' },
+        { key: 'step4', title: 'Assemble campaign page', assignee_agent_id: scout.id, needs: ['step2', 'step3'], check: 'it works' },
+        { key: 'step5', title: 'Review launch readiness', assignee_agent_id: atlas.id, needs: ['step4'], check: 'it works' }
       ]
     };
 
@@ -332,9 +332,9 @@ describe('teams phase 2 swarms and coordination', { skip: !connectionString, con
       scope: 'project:sibling',
       thread_id: a1.main_thread_id,
       steps: [
-        { key: 'step1', title: 'Sibling 1', assignee_agent_id: a1.id, needs: [] },
-        { key: 'step2', title: 'Sibling 2', assignee_agent_id: a2.id, needs: [] },
-        { key: 'step3', title: 'Dependent Step', assignee_agent_id: a3.id, needs: ['step1', 'step2'] }
+        { key: 'step1', title: 'Sibling 1', assignee_agent_id: a1.id, needs: [], check: 'it works' },
+        { key: 'step2', title: 'Sibling 2', assignee_agent_id: a2.id, needs: [], check: 'it works' },
+        { key: 'step3', title: 'Dependent Step', assignee_agent_id: a3.id, needs: ['step1', 'step2'], check: 'it works' }
       ]
     });
 
@@ -392,7 +392,7 @@ describe('teams phase 2 swarms and coordination', { skip: !connectionString, con
       type: 'swarm_start',
       title: 'Action Swarm',
       goal: 'Action Goal',
-      steps: [{ key: 's1', title: 'Step 1', assignee_agent_id: agent.id, needs: [] }]
+      steps: [{ key: 's1', title: 'Step 1', assignee_agent_id: agent.id, needs: [], check: 'it works' }]
     };
 
     const finish1 = await call(worker, 'task_finish', {
@@ -440,7 +440,7 @@ describe('teams phase 2 swarms and coordination', { skip: !connectionString, con
     // Create swarm in project:f2b
     const { swarm: swarmB } = await call(user, 'swarm_start', {
       title: 'Swarm B', goal: 'Goal B', scope: 'project:f2b', thread_id: agentB.main_thread_id,
-      steps: [{ key: 'stepB', title: 'Step B', assignee_agent_id: agentB.id, needs: [] }]
+      steps: [{ key: 'stepB', title: 'Step B', assignee_agent_id: agentB.id, needs: [], check: 'it works' }]
     });
     const stepBId = swarmB.steps[0].id;
 
@@ -538,8 +538,8 @@ describe('teams phase 2 swarms and coordination', { skip: !connectionString, con
       scope: 'project:f4',
       thread_id: a1.main_thread_id,
       steps: [
-        { key: 'step1', title: 'Step 1', assignee_agent_id: a1.id, needs: [] },
-        { key: 'step2', title: 'Step 2', assignee_agent_id: a2.id, needs: [] }
+        { key: 'step1', title: 'Step 1', assignee_agent_id: a1.id, needs: [], check: 'it works' },
+        { key: 'step2', title: 'Step 2', assignee_agent_id: a2.id, needs: [], check: 'it works' }
       ]
     });
 
@@ -592,7 +592,7 @@ describe('teams phase 2 swarms and coordination', { skip: !connectionString, con
       await call(userA, 'swarm_start', {
         title: 'Leak Swarm', goal: 'Goal', scope: 'project:f5a', thread_id: agentA.main_thread_id,
         owner_agent_id: agentB.id,
-        steps: [{ key: 's1', title: 'S1', assignee_agent_id: agentA.id, needs: [] }]
+        steps: [{ key: 's1', title: 'S1', assignee_agent_id: agentA.id, needs: [], check: 'it works' }]
       });
     }, (err: any) => err.status === 400 && err.code === 'agent_not_found');
   });
@@ -638,7 +638,7 @@ describe('teams phase 2 swarms and coordination', { skip: !connectionString, con
 
     const { swarm } = await call(user, 'swarm_start', {
       title: 'Lease Test Swarm', goal: 'Test lease sweep', scope: 'project:f7', thread_id: agent.main_thread_id,
-      steps: [{ key: 's1', title: 'Step 1', assignee_agent_id: agent.id, needs: [] }]
+      steps: [{ key: 's1', title: 'Step 1', assignee_agent_id: agent.id, needs: [], check: 'it works' }]
     });
 
     const claim = await call(worker, 'task_claim', { scope: 'project:f7', capabilities: ['codex.read'] });
@@ -673,7 +673,7 @@ describe('teams phase 2 swarms and coordination', { skip: !connectionString, con
 
     const { swarm } = await call(user, 'swarm_start', {
       title: 'Close Swarm Test', goal: 'Test closing', scope: 'project:f8', thread_id: agent.main_thread_id,
-      steps: [{ key: 's1', title: 'Step 1', assignee_agent_id: agent.id, needs: [] }]
+      steps: [{ key: 's1', title: 'Step 1', assignee_agent_id: agent.id, needs: [], check: 'it works' }]
     });
 
     // Close the swarm
@@ -687,7 +687,7 @@ describe('teams phase 2 swarms and coordination', { skip: !connectionString, con
     // Create a new swarm and finish its step to done
     const { swarm: swarm2 } = await call(user, 'swarm_start', {
       title: 'Swarm 2', goal: 'Goal 2', scope: 'project:f8', thread_id: agent.main_thread_id,
-      steps: [{ key: 's1', title: 'Step 1', assignee_agent_id: agent.id, needs: [] }]
+      steps: [{ key: 's1', title: 'Step 1', assignee_agent_id: agent.id, needs: [], check: 'it works' }]
     });
     const step1Id = swarm2.steps[0].id;
 
@@ -729,8 +729,8 @@ describe('teams phase 2 swarms and coordination', { skip: !connectionString, con
     const { swarm } = await call(user, 'swarm_start', {
       title: 'Dep State Swarm', goal: 'Goal', scope: 'project:f9', thread_id: a1.main_thread_id,
       steps: [
-        { key: 'step1', title: 'Step 1', assignee_agent_id: a1.id, needs: [] },
-        { key: 'step2', title: 'Step 2 (pending)', assignee_agent_id: a1.id, needs: ['step1'] }
+        { key: 'step1', title: 'Step 1', assignee_agent_id: a1.id, needs: [], check: 'it works' },
+        { key: 'step2', title: 'Step 2 (pending)', assignee_agent_id: a1.id, needs: ['step1'], check: 'it works' }
       ]
     });
 
@@ -769,7 +769,7 @@ describe('teams phase 2 swarms and coordination', { skip: !connectionString, con
 
     const { swarm } = await call(userOwner, 'swarm_start', {
       title: 'Question Swarm', goal: 'Goal', scope: 'project:f10', thread_id: agent.main_thread_id,
-      steps: [{ key: 's1', title: 'Step 1', assignee_agent_id: agent.id, needs: [] }]
+      steps: [{ key: 's1', title: 'Step 1', assignee_agent_id: agent.id, needs: [], check: 'it works' }]
     });
     const stepId = swarm.steps[0].id;
 
@@ -956,7 +956,7 @@ describe('teams phase 2 swarms and coordination', { skip: !connectionString, con
     const key = 'shared-idempotency-key';
     await call(user, 'swarm_start', {
       title: 'Original Swarm', goal: 'Original Goal', scope: 'project:l3', thread_id: agent.main_thread_id,
-      steps: [{ key: 's1', title: 'Step 1', assignee_agent_id: agent.id, needs: [] }],
+      steps: [{ key: 's1', title: 'Step 1', assignee_agent_id: agent.id, needs: [], check: 'it works' }],
       idempotency_key: key
     });
 
@@ -964,7 +964,7 @@ describe('teams phase 2 swarms and coordination', { skip: !connectionString, con
     await assert.rejects(async () => {
       await call(user, 'swarm_start', {
         title: 'Tampered Swarm', goal: 'Different Goal', scope: 'project:l3', thread_id: agent.main_thread_id,
-        steps: [{ key: 's1', title: 'Step 1', assignee_agent_id: agent.id, needs: [] }],
+        steps: [{ key: 's1', title: 'Step 1', assignee_agent_id: agent.id, needs: [], check: 'it works' }],
         idempotency_key: key
       });
     }, (err: any) => err.status === 409 && err.code === 'idempotency_conflict');
@@ -1119,7 +1119,7 @@ describe('teams phase 2 swarms and coordination', { skip: !connectionString, con
 
     const { swarm: sw1 } = await call(user1, 'swarm_start', {
       title: 'Swarm 1', goal: 'Goal 1', scope: 'project:t1', thread_id: a1.main_thread_id,
-      steps: [{ key: 'step1', title: 'Step 1', assignee_agent_id: a1.id, needs: [] }]
+      steps: [{ key: 'step1', title: 'Step 1', assignee_agent_id: a1.id, needs: [], check: 'it works' }]
     });
 
     const { channel: chan1 } = await call(user1, 'channel_create', {
@@ -1194,10 +1194,10 @@ describe('teams phase 2 swarms and coordination', { skip: !connectionString, con
       const { swarm } = await call(t.user, 'swarm_start', {
         title: 'Parallel', goal: 'g', scope: t.scope, thread_id: A.main_thread_id,
         steps: [
-          { key: 'W', title: 'W', assignee_agent_id: B.id, needs: [] },
-          { key: 'X', title: 'X', assignee_agent_id: A.id, needs: [] },
-          { key: 'Y', title: 'Y', assignee_agent_id: B.id, needs: [] },
-          { key: 'Z', title: 'Z', assignee_agent_id: B.id, needs: ['X'] }
+          { key: 'W', title: 'W', assignee_agent_id: B.id, needs: [], check: 'it works' },
+          { key: 'X', title: 'X', assignee_agent_id: A.id, needs: [], check: 'it works' },
+          { key: 'Y', title: 'Y', assignee_agent_id: B.id, needs: [], check: 'it works' },
+          { key: 'Z', title: 'Z', assignee_agent_id: B.id, needs: ['X'], check: 'it works' }
         ]
       });
       const question = await waitingStep(t, swarm, 'W');
@@ -1230,10 +1230,10 @@ describe('teams phase 2 swarms and coordination', { skip: !connectionString, con
       const { swarm } = await call(t.user, 'swarm_start', {
         title: 'Q sibling', goal: 'g', scope: t.scope, thread_id: A.main_thread_id,
         steps: [
-          { key: 'X', title: 'X', assignee_agent_id: A.id, needs: [] },
-          { key: 'Y', title: 'Y', assignee_agent_id: B.id, needs: [] },
-          { key: 'V', title: 'V', assignee_agent_id: C.id, needs: [] },
-          { key: 'Z', title: 'Z', assignee_agent_id: A.id, needs: ['Y'] }
+          { key: 'X', title: 'X', assignee_agent_id: A.id, needs: [], check: 'it works' },
+          { key: 'Y', title: 'Y', assignee_agent_id: B.id, needs: [], check: 'it works' },
+          { key: 'V', title: 'V', assignee_agent_id: C.id, needs: [], check: 'it works' },
+          { key: 'Z', title: 'Z', assignee_agent_id: A.id, needs: ['Y'], check: 'it works' }
         ]
       });
       const claims = [await t.claim(), await t.claim(), await t.claim()];
@@ -1265,10 +1265,10 @@ describe('teams phase 2 swarms and coordination', { skip: !connectionString, con
       const { swarm } = await call(t.user, 'swarm_start', {
         title: 'Cancel sibling', goal: 'g', scope: t.scope, thread_id: A.main_thread_id,
         steps: [
-          { key: 'W', title: 'W', assignee_agent_id: A.id, needs: [] },
-          { key: 'X', title: 'X', assignee_agent_id: A.id, needs: [] },
-          { key: 'Y', title: 'Y', assignee_agent_id: B.id, needs: [] },
-          { key: 'Z', title: 'Z', assignee_agent_id: A.id, needs: ['Y'] }
+          { key: 'W', title: 'W', assignee_agent_id: A.id, needs: [], check: 'it works' },
+          { key: 'X', title: 'X', assignee_agent_id: A.id, needs: [], check: 'it works' },
+          { key: 'Y', title: 'Y', assignee_agent_id: B.id, needs: [], check: 'it works' },
+          { key: 'Z', title: 'Z', assignee_agent_id: A.id, needs: ['Y'], check: 'it works' }
         ]
       });
       const question = await waitingStep(t, swarm, 'W');
@@ -1294,15 +1294,15 @@ describe('teams phase 2 swarms and coordination', { skip: !connectionString, con
     const { swarm } = await call(t.user, 'swarm_start', {
       title: 'Locked', goal: 'g', scope: t.scope, thread_id: A.main_thread_id,
       steps: [
-        { key: 'W', title: 'W', assignee_agent_id: A.id, needs: [] },
-        { key: 'Y', title: 'Y', assignee_agent_id: B.id, needs: [] },
-        { key: 'V', title: 'V', assignee_agent_id: C.id, needs: [] },
-        { key: 'X', title: 'X', assignee_agent_id: A.id, needs: ['W'] }
+        { key: 'W', title: 'W', assignee_agent_id: A.id, needs: [], check: 'it works' },
+        { key: 'Y', title: 'Y', assignee_agent_id: B.id, needs: [], check: 'it works' },
+        { key: 'V', title: 'V', assignee_agent_id: C.id, needs: [], check: 'it works' },
+        { key: 'X', title: 'X', assignee_agent_id: A.id, needs: ['W'], check: 'it works' }
       ]
     });
     const { swarm: other } = await call(t.user, 'swarm_start', {
       title: 'To cancel', goal: 'g', scope: t.scope, thread_id: D.main_thread_id,
-      steps: [{ key: 'S', title: 'S', assignee_agent_id: D.id, needs: [] }]
+      steps: [{ key: 'S', title: 'S', assignee_agent_id: D.id, needs: [], check: 'it works' }]
     });
     const question = await waitingStep(t, swarm, 'W');
     const cy = await t.claim(t.worker);
@@ -1312,7 +1312,7 @@ describe('teams phase 2 swarms and coordination', { skip: !connectionString, con
     await pool.query("UPDATE tasks SET lease_expires_at=clock_timestamp() - interval '1 second' WHERE id=$1", [cv.task.id]);
     const { swarm: third } = await call(t.user, 'swarm_start', {
       title: 'Task to cancel', goal: 'g', scope: t.scope, thread_id: E.main_thread_id,
-      steps: [{ key: 'S', title: 'S', assignee_agent_id: E.id, needs: [] }]
+      steps: [{ key: 'S', title: 'S', assignee_agent_id: E.id, needs: [], check: 'it works' }]
     });
     const otherTask = (await pool.query('SELECT id, version FROM tasks WHERE swarm_step_id=$1', [stepOf(third, 'S').id])).rows[0];
     const { channel } = await call(t.user, 'channel_create', { name: 'locked', scope: t.scope, members: [A.id] });
@@ -1326,7 +1326,7 @@ describe('teams phase 2 swarms and coordination', { skip: !connectionString, con
       channel_create: () => call(t.user, 'channel_create', { name: 'new', scope: t.scope, members: [] }),
       channel_update: () => call(t.user, 'channel_update', { channel_id: channel.id, expected_version: 1, name: 'renamed' }),
       section_set: () => call(t.user, 'section_set', { sections: [{ name: 'S', items: [] }] }),
-      swarm_start: () => call(t.user, 'swarm_start', { title: 'New', goal: 'g', scope: t.scope, thread_id: D.main_thread_id, steps: [{ title: 'n', assignee_agent_id: D.id }] }),
+      swarm_start: () => call(t.user, 'swarm_start', { title: 'New', goal: 'g', scope: t.scope, thread_id: D.main_thread_id, steps: [{ title: 'n', assignee_agent_id: D.id, check: 'it works' }] }),
       swarm_update: () => call(t.user, 'swarm_update', { swarm_id: swarm.id, ops: [{ op: 'edit', title: 'Edited' }] }),
       swarm_cancel: () => call(t.user, 'swarm_cancel', { swarm_id: other.id }),
       question_answer: () => call(t.user, 'question_answer', { question_id: question, choices: ['a'] }),
@@ -1381,16 +1381,16 @@ describe('teams phase 2 swarms and coordination', { skip: !connectionString, con
     const { A, B } = t.agents;
     const { swarm } = await call(t.user, 'swarm_start', {
       title: 'Owned by A', goal: 'g', scope: t.scope, thread_id: A.main_thread_id, owner_agent_id: A.id,
-      steps: [{ key: 's1', title: 'S1', assignee_agent_id: B.id, needs: [] }]
+      steps: [{ key: 's1', title: 'S1', assignee_agent_id: B.id, needs: [], check: 'it works' }]
     });
     await t.claim(); // B's step turn, left running
     const s1 = stepOf(swarm, 's1');
 
     const cases: Array<{ label: string; actions: unknown[]; notice: RegExp }> = [
       { label: 'cycle', notice: /swarm_start.*cycle/i, actions: [{ type: 'swarm_start', title: 'Cyc', goal: 'g', steps: [
-        { key: 'a', title: 'a', assignee_agent_id: 'B', needs: ['b'] }, { key: 'b', title: 'b', assignee_agent_id: 'B', needs: ['a'] }] }] },
+        { key: 'a', title: 'a', assignee_agent_id: 'B', needs: ['b'], check: 'it works' }, { key: 'b', title: 'b', assignee_agent_id: 'B', needs: ['a'], check: 'it works' }] }] },
       { label: 'non-uuid needs', notice: /swarm_update.*needs/i, actions: [{ type: 'swarm_update', swarm_id: swarm.id, ops: [
-        { op: 'add_step', step: { title: 'N', assignee_agent_id: B.id, needs: ['not-a-uuid'] } }] }] },
+        { op: 'add_step', step: { title: 'N', assignee_agent_id: B.id, needs: ['not-a-uuid'], check: 'it works' } }] }] },
       { label: 'unknown op', notice: /swarm_update.*unknown op/i, actions: [{ type: 'swarm_update', swarm_id: swarm.id, ops: [{ op: 'explode' }] }] },
       { label: 'bad op field', notice: /swarm_update.*unknown field 'force'/i, actions: [{ type: 'swarm_update', swarm_id: swarm.id, ops: [{ op: 'retry', step_id: s1.id, force: true }] }] },
       { label: 'runtime error', notice: /action 2 \(swarm_update\).*retried/i, actions: [
@@ -1416,7 +1416,7 @@ describe('teams phase 2 swarms and coordination', { skip: !connectionString, con
     await call(t.user, 'thread_post', { thread_id: A.main_thread_id, body: 'turn name', idempotency_key: 'bad-name' });
     const claim = await t.claim();
     const res = await finishTurn(t.worker, claim, withActions('Reply name', [{ type: 'swarm_update', swarm_id: swarm.id, ops: [
-      { op: 'add_step', step: { title: 'Named', assignee_agent_id: 'B', needs: [s1.id] } }] }]));
+      { op: 'add_step', step: { title: 'Named', assignee_agent_id: 'B', needs: [s1.id], check: 'it works' } }] }]));
     assert.equal(res.task.status, 'completed');
     const named = (await call(t.user, 'swarm_get', { swarm_id: swarm.id })).swarm.steps.find((s: any) => s.title === 'Named');
     assert.equal(named.assignee_agent_id, B.id);
@@ -1430,7 +1430,7 @@ describe('teams phase 2 swarms and coordination', { skip: !connectionString, con
     const { A } = t.agents;
     const { swarm } = await call(t.user, 'swarm_start', {
       title: 'Cancel waiting', goal: 'g', scope: t.scope, thread_id: A.main_thread_id,
-      steps: [{ key: 'X', title: 'X', assignee_agent_id: A.id, needs: [] }]
+      steps: [{ key: 'X', title: 'X', assignee_agent_id: A.id, needs: [], check: 'it works' }]
     });
     const x = stepOf(swarm, 'X');
     const c = await t.claim();
@@ -1450,7 +1450,7 @@ describe('teams phase 2 swarms and coordination', { skip: !connectionString, con
     // Cancelling a whole swarm expires its steps' open questions too.
     const { swarm: second } = await call(t.user, 'swarm_start', {
       title: 'Cancel swarm', goal: 'g', scope: t.scope, thread_id: A.main_thread_id,
-      steps: [{ key: 'X', title: 'X2', assignee_agent_id: A.id, needs: [] }]
+      steps: [{ key: 'X', title: 'X2', assignee_agent_id: A.id, needs: [], check: 'it works' }]
     });
     const q2 = await waitingStep(t, second, 'X');
     await call(t.user, 'swarm_cancel', { swarm_id: second.id });
@@ -1459,12 +1459,37 @@ describe('teams phase 2 swarms and coordination', { skip: !connectionString, con
       (err: any) => err.status === 409 && err.code === 'step_not_waiting');
   });
 
+  it('handover: check is required, the handoff says Done when, and an approval action shows in every question view', async () => {
+    const t = await team('project:handover', ['A']);
+    const { A } = t.agents;
+    const start = (check?: string) => call(t.user, 'swarm_start', {
+      title: 'Handover', goal: 'g', scope: t.scope, thread_id: A.main_thread_id,
+      steps: [{ key: 'X', title: 'Ship it', assignee_agent_id: A.id, ...(check !== undefined ? { check } : {}) }]
+    });
+    for (const check of [undefined, '  ']) {
+      await assert.rejects(() => start(check), (err: any) => err.status === 400 && err.code === 'invalid_steps' && /check is required/.test(err.message));
+    }
+    const { swarm } = await start('the site loads');
+    await assert.rejects(() => call(t.user, 'swarm_update', { swarm_id: swarm.id, ops: [{ op: 'add_step', step: { title: 'N', assignee_agent_id: A.id } }] }),
+      (err: any) => err.status === 400 && err.code === 'invalid_steps');
+    assert.ok((await threadMessages(t.user, A.main_thread_id)).some(m => m.kind === 'handoff' && m.body.endsWith('gave you: Ship it\nDone when: the site loads')));
+
+    const c = await t.claim();
+    const action = { kind: 'deploy', summary: 'Deploy the site', detail: 'npm run deploy', where: 'example.com' };
+    await finishTurn(t.worker, c, withActions('Asking', [{ type: 'question_ask', prompt: 'Deploy?', options: [], swarm_step_id: stepOf(swarm, 'X').id, action }]));
+    const q = (await call(t.user, 'question_list', { status: 'open' })).questions.find((x: any) => x.prompt === 'Deploy?');
+    assert.deepEqual(q.action, action);
+    assert.deepEqual(q.options, ['Approve', 'Deny']);
+    assert.deepEqual((await threadMessages(t.user, A.main_thread_id)).find(m => m.kind === 'question').question.action, action);
+    assert.deepEqual((await call(t.user, 'attention_list', { scope: t.scope })).items.find((i: any) => i.id === q.id).action, action);
+  });
+
   it('fixes-2 question_list does not write; the lease sweep expires due questions by the database clock', async () => {
     const t = await team('project:qexp', ['A']);
     const { A } = t.agents;
     const { swarm } = await call(t.user, 'swarm_start', {
       title: 'Expiry', goal: 'g', scope: t.scope, thread_id: A.main_thread_id,
-      steps: [{ key: 'X', title: 'X', assignee_agent_id: A.id, needs: [] }]
+      steps: [{ key: 'X', title: 'X', assignee_agent_id: A.id, needs: [], check: 'it works' }]
     });
     const c = await t.claim();
     await finishTurn(t.worker, c, withActions('Asking', [{ type: 'question_ask', prompt: 'Soon?', options: ['y'], swarm_step_id: stepOf(swarm, 'X').id, expires_in: 60 }]));
@@ -1487,7 +1512,7 @@ describe('teams phase 2 swarms and coordination', { skip: !connectionString, con
     const { A, B } = t.agents;
     const { swarm } = await call(t.user, 'swarm_start', {
       title: 'One summary', goal: 'g', scope: t.scope, thread_id: A.main_thread_id, owner_agent_id: A.id,
-      steps: [{ key: 'S', title: 'S', assignee_agent_id: B.id, needs: [] }]
+      steps: [{ key: 'S', title: 'S', assignee_agent_id: B.id, needs: [], check: 'it works' }]
     });
     const s = stepOf(swarm, 'S');
     await finishTurn(t.worker, await t.claim(t.worker), 'S done');
@@ -1513,7 +1538,7 @@ describe('teams phase 2 swarms and coordination', { skip: !connectionString, con
     const t = await team('project:loop', ['A', 'B']);
     const { A, B } = t.agents;
     await call(t.user, 'thread_post', { thread_id: A.main_thread_id, body: 'Plan a check', idempotency_key: 'plan' });
-    const start = [{ type: 'swarm_start', title: 'Check', goal: 'g', steps: [{ key: 's', title: 'List colours', assignee_agent_id: 'B' }] }];
+    const start = [{ type: 'swarm_start', title: 'Check', goal: 'g', steps: [{ key: 's', title: 'List colours', assignee_agent_id: 'B', check: 'it works' }] }];
     await finishTurn(t.worker, await t.claim(), withActions('Planned.', start));
     const step = await t.claim();
     assert.equal(step.task.agent_id, B.id);
@@ -1555,7 +1580,7 @@ describe('teams phase 2 swarms and coordination', { skip: !connectionString, con
     const { A, B } = t.agents;
     const { swarm } = await call(t.user, 'swarm_start', {
       title: 'Done', goal: 'g', scope: t.scope, thread_id: A.main_thread_id,
-      steps: [{ key: 'S', title: 'S', assignee_agent_id: B.id, needs: [] }]
+      steps: [{ key: 'S', title: 'S', assignee_agent_id: B.id, needs: [], check: 'it works' }]
     });
     const s = stepOf(swarm, 'S');
     await finishTurn(t.worker, await t.claim(), 'S done');
@@ -1576,7 +1601,7 @@ describe('teams phase 2 swarms and coordination', { skip: !connectionString, con
     await call(t.user, 'thread_post', { thread_id: A.main_thread_id, body: 'plan', idempotency_key: 'plan' });
     const turn = (await pool.query("SELECT id FROM tasks WHERE agent_id=$1 AND status='queued'", [A.id])).rows[0];
     await pool.query("UPDATE tasks SET context_versions = context_versions || '{\"hop_depth\":2}'::jsonb WHERE id=$1", [turn.id]);
-    await finishTurn(t.worker, await t.claim(), withActions('starting', [{ type: 'swarm_start', title: 'Hop', goal: 'g', steps: [{ key: 's', title: 's', assignee_agent_id: 'B' }] }]));
+    await finishTurn(t.worker, await t.claim(), withActions('starting', [{ type: 'swarm_start', title: 'Hop', goal: 'g', steps: [{ key: 's', title: 's', assignee_agent_id: 'B', check: 'it works' }] }]));
     const stepTurn = (await pool.query("SELECT id, context_versions FROM tasks WHERE agent_id=$1 AND initiator_kind='swarm' AND status='queued'", [B.id])).rows[0];
     assert.equal(stepTurn.context_versions.hop_depth, 3);
     const c = await t.claim();
@@ -1588,7 +1613,7 @@ describe('teams phase 2 swarms and coordination', { skip: !connectionString, con
     // Fan-out cap: 20 ready swarm steps plus one handoff in one finish queue 20 turns and refuse the handoff.
     const t2 = await team('project:cap', ['A', 'B']);
     await call(t2.user, 'thread_post', { thread_id: t2.agents.A.main_thread_id, body: 'fan out', idempotency_key: 'fan' });
-    const steps = Array.from({ length: 20 }, (_, i) => ({ key: `k${i}`, title: `k${i}`, assignee_agent_id: t2.agents.B.id }));
+    const steps = Array.from({ length: 20 }, (_, i) => ({ key: `k${i}`, title: `k${i}`, assignee_agent_id: t2.agents.B.id, check: 'it works' }));
     const res = await finishTurn(t2.worker, await t2.claim(), withActions('fan', [
       { type: 'swarm_start', title: 'Fan', goal: 'g', steps },
       { type: 'handoff', to_agent: t2.agents.B.id, body: 'one more' }
@@ -1628,7 +1653,7 @@ describe('teams phase 2 swarms and coordination', { skip: !connectionString, con
     const grok = await createPrincipal(t.tenantId, 'grok', 'admin', [t.scope]);
     const { swarm } = await call(t.user, 'swarm_start', {
       title: 'Owner answers', goal: 'g', scope: t.scope, thread_id: A.main_thread_id,
-      steps: [{ key: 'X', title: 'X', assignee_agent_id: A.id, needs: [] }]
+      steps: [{ key: 'X', title: 'X', assignee_agent_id: A.id, needs: [], check: 'it works' }]
     });
     const x = stepOf(swarm, 'X');
     await finishTurn(t.worker, await t.claim(), withActions('Asking', [{ type: 'question_ask', prompt: 'Ok?', options: ['yes'], swarm_step_id: x.id }]));

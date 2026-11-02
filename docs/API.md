@@ -34,6 +34,10 @@ All examples below show **tool arguments and unwrapped tool results**, without t
 | `bot_get`, `bot_list` | `agent:read` | Exact authorized scope |
 | `thread_post` | `thread:write` and `thread:read` | Exact authorized scope |
 | `thread_read`, `thread_attachment_get`, `thread_mark_read`, `thread_list` | `thread:read` | Exact authorized scope |
+| `source_list`, `source_get`, `source_deliveries` | `task:read` | Exact authorized scope |
+| `source_update` | `routing:manage` and `task:read` | May only lower accept_mode; raising to auto requires owner CLI |
+| `task_subscribe`, `task_unsubscribe` | `task:submit` and `task:read` | Exact authorized scope |
+| `task_subscriptions` | `task:read` | Exact authorized scope |
 
 The `admin` permission satisfies permission checks, but it does not turn an admin connection into a worker. Owner review and worker execution use separate identities. Default frontend and worker permissions do not include `memory:moderate` or `task:patch`. Capability strings route work; they are never permissions. Mutation tools that return a full memory/task also require that resource's read permission, preventing a custom write-only grant from exposing an existing record through a conflict or replay response.
 
@@ -535,7 +539,7 @@ Persistent agents, conversation threads, turn execution, read cursors and real-t
   - `goal` (string, up to 16,384 characters)
   - `scope` (valid project scope)
   - `thread_id` (UUID)
-  - `steps` (array of `{ key, title, assignee_agent_id, needs?, instructions?, check? }`)
+  - `steps` (array of `{ key, title, assignee_agent_id, needs?, instructions?, check }`; `check` ("Done when") is required, non-blank, ≤ 512 chars, else 400 `invalid_steps`)
   - `owner_agent_id`? (agent UUID)
   - `idempotency_key`? (string)
 - **Output:** `{ swarm: SwarmView, replayed: boolean }`. Validates step graph (DAG, no cycles, assignees in scope), creates persistent swarm, starts unblocked steps as turns, posts swarm card message, and logs handoffs.
@@ -546,7 +550,7 @@ Persistent agents, conversation threads, turn execution, read cursors and real-t
   - `swarm_id` (UUID)
   - `expected_version`? (integer)
   - `ops` (array of atomic update operations):
-    - `add_step`: `{ op: 'add_step', step: { key, title, assignee_agent_id, needs?, instructions?, check? } }`
+    - `add_step`: `{ op: 'add_step', step: { key, title, assignee_agent_id, needs?, instructions?, check } }`
     - `reassign`: `{ op: 'reassign', step_id, assignee_agent_id }`
     - `retry`: `{ op: 'retry', step_id }`
     - `cancel_step`: `{ op: 'cancel_step', step_id }`
@@ -639,7 +643,7 @@ Agent turns do not use a separate MCP server in worker CLIs. Instead:
   - `handoff`: `{ type: 'handoff', to_agent: UUID, body: string, swarm_step_id?: UUID }`
   - `swarm_start`: `{ type: 'swarm_start', title: string, goal: string, steps: StepInput[] }`
   - `swarm_update`: `{ type: 'swarm_update', swarm_id: UUID, ops: SwarmOp[] }`
-  - `question_ask`: `{ type: 'question_ask', prompt: string, options: string[], multi?: boolean, free_text?: boolean, swarm_step_id?: UUID, expires_in?: number }`
+  - `question_ask`: `{ type: 'question_ask', prompt: string, options: string[], multi?: boolean, free_text?: boolean, swarm_step_id?: UUID, expires_in?: number, action?: { kind: 'command'|'publish'|'send'|'deploy'|'purchase'|'other', summary: string ≤ 200, detail: string ≤ 2000, where?: string ≤ 300 } }`. A question with `action` is an approval: empty `options` become `["Approve", "Deny"]`; the action is redacted and returned as `action` (or null) in every question view
   - `channel_post`: `{ type: 'channel_post', channel_id: UUID, body: string }`
 - **Turn grant enforcement:** In `task_finish`, the block is parsed, stripped from the message text, and validated against the agent's turn grant (only member channels, only same scope, only owned swarms or assigned steps). Valid actions apply atomically; invalid actions post a explanatory `notice` message.
 
@@ -791,4 +795,25 @@ Calling `thread_read` on a bot thread automatically batches and embeds a `task` 
   "check": null
 }
 ```
+
+## Sources (GitHub Webhooks)
+
+### HTTP Route
+
+`POST /hooks/github/<source_id>` receives webhook events from GitHub.
+- Requires `X-GitHub-Event`, `X-GitHub-Delivery`, `X-Hub-Signature-256`, and `Content-Type: application/json`.
+- Verified using HMAC SHA-256 before parsing body. Mismatched signatures and unknown source IDs return an identical `401 {"error": "unauthorized"}`.
+- Duplicate deliveries return `200 {"duplicate": true}`.
+- Valid deliveries are stored and acknowledged with `202 {"received": true}`.
+
+### Tools
+
+- `source_list`: `{ scope? }` -> `{ sources: [...] }`. Returns configuration, accept_mode, rules, bot_id, and 24-hour delivery counts.
+- `source_get`: `{ source_id }` -> `{ source: {...} }`.
+- `source_update`: `{ source_id, expected_version, name?, rules?, bot_id?, accept_mode? }` -> `{ source: {...} }`. May only lower accept_mode (`auto` -> `observe` -> `off`).
+- `source_deliveries`: `{ source_id, after?, limit?, status? }` -> `{ deliveries: [...] }`. Returns durable delivery records with normalized digest, classification, reason, status, and execution evidence.
+- `task_subscribe`: `{ task_id, thread_ref, idempotency_key }` -> `{ subscription, replayed }`. Validates canonical ref (`github:<owner>/<repo>#pr/<number>`, `github:<owner>/<repo>#issue/<number>`, `github:<owner>/<repo>@<sha>`). Resolves source by repository in task scope. Rejects flow tasks (409) and cancelled tasks (409).
+- `task_unsubscribe`: `{ subscription_id }` -> `{ subscription, unsubscribed: true }`. Idempotently deactivates subscription (`active=false`).
+- `task_subscriptions`: `{ task_id }` -> `{ subscriptions: [...] }`. Lists active and inactive subscriptions for a task. Subscriptions are read through this tool.
+
 

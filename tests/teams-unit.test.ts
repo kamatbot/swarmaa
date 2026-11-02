@@ -119,3 +119,39 @@ test('regression 7: turn prompt includes worker rules, unforgeable fenced delimi
   // Message 3 is after agent message 2, so marked [NEW]
   assert.ok(roPrompt.includes('[Message #3 from human:usr-1 (text) [NEW]]:'), 'New message after agent turn must be marked NEW');
 });
+
+test('router turn prompt contains router preamble, lists only allowed actions, and has no DELEGATE text', () => {
+  const instructions = 'You are the lead agent.';
+  const messages = [{ seq: 1, author: { kind: 'human', id: 'usr-1' }, kind: 'text', body: 'Please triage' }];
+  const prompt = buildTurnPrompt({
+    instructions,
+    messages,
+    router: true,
+    fastMode: true
+  });
+
+  assert.ok(prompt.includes('You are the router for this bot. Do not do the work yourself and do not edit files. Decide who should do it and dispatch with swarm_start or handoff, or ask the human with question_ask. Reply in ≤3 sentences plus the actions block.'));
+  assert.ok(!prompt.includes('You are a worker in the Swarmaa agent network'));
+  assert.ok(!prompt.includes('DELEGATE: <one-line objective>'));
+  assert.ok(prompt.includes("- {type:'handoff'"));
+  assert.ok(prompt.includes("- {type:'swarm_start'"));
+  assert.ok(prompt.includes("- {type:'question_ask'"));
+  assert.ok(prompt.includes("- {type:'bot_appearance'"));
+  assert.ok(!prompt.includes("- {type:'swarm_update'"));
+  assert.ok(!prompt.includes("- {type:'channel_post'"));
+
+  const task = {
+    kind: 'turn',
+    objective: 'Help',
+    bot_id: 'bot-1',
+    permission_envelope: {
+      runner: { router: true }
+    }
+  } as any;
+  const taskPrompt = buildTurnPrompt(task, {});
+  assert.ok(taskPrompt.includes('You are the router for this bot. Do not do the work yourself and do not edit files.'));
+  assert.ok(!taskPrompt.includes('You are a worker in the Swarmaa agent network'));
+  assert.ok(!taskPrompt.includes('DELEGATE: <one-line objective>'));
+  assert.ok(!taskPrompt.includes("- {type:'swarm_update'"));
+  assert.ok(!taskPrompt.includes("- {type:'channel_post'"));
+});

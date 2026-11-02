@@ -330,6 +330,23 @@ final class TeamsSnapshotRender: XCTestCase {
         }.padding(24).background(KS.paper), "soft-surface-states", size: CGSize(width: 560, height: 250))
     }
 
+    /// A diamond swarm: Scout reads, Forge and Atlas work in parallel, Scout schedules once both are done.
+    func testRenderHandoverMap() throws {
+        let model = try fixture()
+        let message = try dec(TeamsMessage.self, """
+        {"id":"h1","thread_id":"t1","seq":9,"author":{"kind":"system"},"kind":"swarm","ref":{"swarm_id":"s9"},
+         "swarm":{"id":"s9","title":"Friday's launch, split across the team.","goal":"Ship the launch posts on Friday.","status":"waiting_on_you","thread_id":"t1","progress":{"done":1,"total":4},
+          "steps":[{"id":"d1","title":"Read the launch brief","assignee_agent_id":"a2","status":"done","needs":[],"check":"a one-page summary is in the thread"},
+                   {"id":"d2","title":"Draft the banner and release notes","assignee_agent_id":"a3","status":"running","needs":["d1"],"check":"banner PNG and notes are on the branch"},
+                   {"id":"d3","title":"Pick the launch channels","assignee_agent_id":"a1","status":"waiting_on_you","needs":["d1"],"check":null},
+                   {"id":"d4","title":"Schedule the posts","assignee_agent_id":"a2","status":"pending","needs":["d2","d3"],"check":"every post is queued for Friday 9:00"}]}}
+        """)
+        model.loadFixture(agents: model.agents, bots: model.bots, messages: ["t1": [message]], status: model.status, select: nil)
+        try render(SwarmCard(model: model, message: message).padding(24).background(KS.paper), "handover-swarm-card", size: CGSize(width: 640, height: 420))
+        try render(HandoverMap(model: model, swarm: try XCTUnwrap(message.swarm)).padding(24).background(KS.paper), "handover-map", size: CGSize(width: 760, height: 360))
+        try render(SwarmDetailView(model: model, swarmID: "s9").background(KS.paper), "handover-swarm-detail", size: CGSize(width: 760, height: 820))
+    }
+
     /// Switching to a bot must land its thread where it stays: the thread drew plain text first and
     /// re-laid out when markdown arrived, so it jumped on every switch.
     func testSwitchingBotsDoesNotJump() throws {
@@ -359,6 +376,29 @@ final class TeamsSnapshotRender: XCTestCase {
         }
         let settled = Array(offsets.dropFirst(2))
         XCTAssertLessThan((settled.max() ?? 0) - (settled.min() ?? 0), 1, "thread moved after the switch: \(offsets)")
+    }
+
+    /// A step's four-part report, an open approval and the composer it pauses.
+    func testRenderReportAndApproval() throws {
+        let model = try fixture()
+        let messages = try dec([TeamsMessage].self, """
+        [{"id":"r1","thread_id":"t1","seq":1,"author":{"kind":"human"},"kind":"text","body":"Build the app and tell me what you checked."},
+         {"id":"r2","thread_id":"t1","seq":2,"author":{"kind":"agent","id":"a3"},"kind":"text","body":"The banner step is finished.\\n\\n**Result:** Drafted the launch banner and wired it into the home screen.\\n**Checks:** Ran `npm test` (42 passed) and looked at the compact layout.\\n**Not checked:** Dark mode and the Japanese copy.\\n**Files:** `src/banner.tsx`, `src/home.tsx`"},
+         {"id":"r3","thread_id":"t1","seq":3,"author":{"kind":"agent","id":"a3"},"kind":"question","ref":{"question_id":"qa"},
+          "question":{"id":"qa","prompt":"May I run the production build?","options":["Approve","Deny"],"multi":false,"free_text":false,"status":"open",
+           "action":{"kind":"command","summary":"Build the app for production","detail":"npm run build","where":"~/Projects/app"}}}]
+        """)
+        model.loadFixture(agents: model.agents, bots: model.bots, messages: ["t1": messages], status: model.status, select: "t1")
+        try render(ThreadView(model: model, threadID: "t1"), "report-approval-thread", size: CGSize(width: 900, height: 820))
+        let approval = try XCTUnwrap(messages.last?.question)
+        try render(VStack { QuestionCard(model: model, question: approval).padding() }.background(KS.paper),
+                   "approval-sheet", size: CGSize(width: 520, height: 380))
+        let detail = try dec(TeamsTaskDetails.self, """
+        {"id":"rd","objective":"Draft the launch banner","status":"completed",
+         "result":{"summary":"**Result:** Banner drafted.\\n**Checks:** npm test passed.\\n**Files:** src/banner.tsx"}}
+        """)
+        model.taskDetailID = "rd"; model.taskDetail = detail
+        try render(TaskDetailPanel(model: model), "task-detail-report", size: CGSize(width: 420, height: 640))
     }
 
     func testRenderPhotoComposer() throws {

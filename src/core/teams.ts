@@ -9,7 +9,7 @@ import { booleanOption } from './memory.js';
 import { assertKnownScope, audit, canonicalJson, event, newId, noExtraKeys, requireFound, scopeLock, scopeSql, sha256, teamsLock, type Db } from './shared.js';
 import { runnerCapability, type RunnerConfig } from '../bridge/adapters.js';
 import { sectionView, swarmView, type SwarmRow, type SwarmStepRow, type QuestionRow, type SectionRow } from './swarms.js';
-import { botCapability, firstReplyRunner } from './bots.js';
+import { firstReplyRunner, leadTurnProfile } from './bots.js';
 import type { TaskRow } from './tasks.js';
 import { MAX_THREAD_PHOTOS, MESSAGE_METADATA_COLUMNS, parseThreadPhotos, photoMetadata, samePhotos, storedThreadPhotos, type ThreadPhoto } from './thread-attachments.js';
 
@@ -126,7 +126,7 @@ export interface MessageRow {
   thread_id: string;
   seq: string | number | bigint;
   author: { kind: 'human' | 'agent' | 'system'; id: string };
-  kind: 'text' | 'handoff' | 'swarm' | 'run' | 'question' | 'answer' | 'notice' | 'task';
+  kind: 'text' | 'handoff' | 'swarm' | 'run' | 'question' | 'answer' | 'notice' | 'task' | 'schedule' | 'source_event';
   body: string;
   ref: Record<string, unknown> | null;
   idempotency_key: string | null;
@@ -155,6 +155,67 @@ function runnerDisplayName(runner: RunnerConfig): string {
   if (runner.provider === 'claude') return 'Claude';
   if (runner.provider === 'antigravity') return 'Antigravity';
   return runner.provider ?? 'Auto';
+}
+
+export async function enqueueAgentTurn(
+  db: Db,
+  p: Principal,
+  opts: {
+    thread: { id: string; kind?: string; title?: string | null };
+    agent: AgentRow;
+    bot?: { id?: string; lead_agent_id: string; rules: Record<string, unknown>; routing: Record<string, unknown> } | null;
+    seq: number | bigint;
+    initiatorKind: 'person' | 'handoff' | 'swarm' | 'answer' | 'flow' | 'schedule' | 'bot_check' | 'source';
+    hopDepth?: number;
+    objective?: string;
+  }
+): Promise<string> {
+  const { thread, agent, bot, seq, initiatorKind, hopDepth = 0, objective } = opts;
+  const queuedTurn = (await db.query<{ id: string; context_versions: Record<string, unknown> }>(
+    "SELECT id, context_versions FROM tasks WHERE tenant_id=$1 AND agent_id=$2 AND thread_id=$3 AND kind='turn' AND status='queued' ORDER BY id ASC LIMIT 1 FOR UPDATE",
+    [p.tenantId, agent.id, thread.id]
+  )).rows[0];
+
+  if (queuedTurn) {
+    const updatedVersions = { ...(queuedTurn.context_versions ?? {}), message_seq: Number(seq) };
+    await db.query(
+      'UPDATE tasks SET context_versions=$1::jsonb, updated_at=clock_timestamp() WHERE id=$2',
+      [JSON.stringify(updatedVersions), queuedTurn.id]
+    );
+    return queuedTurn.id;
+  }
+
+  const botId = bot?.id ?? null;
+  const profile = bot ? leadTurnProfile(bot, agent) : null;
+  const first = (bot && !profile?.router) ? firstReplyRunner(bot.rules, agent.edits) : null;
+  const requiredCap = first?.capability ?? (profile ? profile.capability : runnerCapability(agent.runner, agent.edits));
+  const taskId = newId();
+  const turnObjective = objective || `Turn for agent ${agent.name} in ${thread.kind === 'bot' ? (thread.title ?? 'bot') : '#' + (thread.title ?? 'channel')}`;
+  const edits = profile ? profile.edits : agent.edits;
+  const runnerObj = profile?.runner ?? first?.runner;
+  const envelope = {
+    deploy: false, publish: false, purchase: false, local_patch: edits,
+    read_project: true, send_messages: false, permission_changes: false, external_side_effects: false,
+    ...(runnerObj ? { runner: runnerObj } : {})
+  };
+  const contextVersions = { message_seq: Number(seq), hop_depth: hopDepth };
+  const reqHash = sha256(canonicalJson({
+    kind: 'turn', scope: agent.scope, agent_id: agent.id, thread_id: thread.id, seq: Number(seq)
+  }));
+
+  await db.query(
+    `INSERT INTO tasks
+       (id, tenant_id, scope, kind, agent_id, thread_id, bot_id, initiator_kind, objective, constraints, acceptance_criteria,
+        permission_envelope, required_capability, resource_key, context_versions, status, created_by,
+        idempotency_key, request_hash, max_attempts)
+     VALUES ($1, $2, $3, 'turn', $4, $5, $6, $7, $8, '[]'::jsonb, '[]'::jsonb, $9::jsonb, $10, $11, $12::jsonb, 'queued', $13, $14, $15, 3)`,
+    [taskId, p.tenantId, agent.scope, agent.id, thread.id, botId, initiatorKind, turnObjective, JSON.stringify(envelope),
+     requiredCap, `agent:${agent.id}`, JSON.stringify(contextVersions), p.id, newId(), reqHash]
+  );
+
+  await audit(db, p, agent.scope, 'task.submitted', taskId, { kind: 'turn', agent_id: agent.id, thread_id: thread.id });
+  await event(db, p, agent.scope, 'task.updated', taskId, { task_id: taskId, kind: 'turn', thread_id: thread.id, status: 'queued', action: 'submitted' });
+  return taskId;
 }
 
 export function agentView(row: AgentRow, status = 'idle', unreadCount = 0): Record<string, unknown> {
@@ -530,10 +591,10 @@ export class TeamService {
       }
 
       if (thread.kind === 'channel' || thread.kind === 'bot') {
-        let bot: { id: string; routing: Record<string, unknown>; rules: Record<string, unknown> } | undefined;
+        let bot: { id: string; routing: Record<string, unknown>; rules: Record<string, unknown>; lead_agent_id: string } | undefined;
         if (thread.kind === 'bot') {
-          bot = (await db.query<{ id: string; routing: Record<string, unknown>; rules: Record<string, unknown> }>(
-            'SELECT id, routing, rules FROM bots WHERE thread_id=$1 AND tenant_id=$2 AND NOT archived',
+          bot = (await db.query<{ id: string; routing: Record<string, unknown>; rules: Record<string, unknown>; lead_agent_id: string }>(
+            'SELECT id, routing, rules, lead_agent_id FROM bots WHERE thread_id=$1 AND tenant_id=$2 AND NOT archived',
             [threadId, p.tenantId]
           )).rows[0];
         }
@@ -564,55 +625,18 @@ export class TeamService {
           targetAgents.push(thread.lead_agent_id);
         }
 
+        const cleanBody = clipUtf8(redactSecrets(body).replace(/@[a-zA-Z0-9_-]+\s*/g, '').trim(), 256);
         for (const agentId of targetAgents) {
-          const queuedTurn = (await db.query<{ id: string; context_versions: Record<string, unknown> }>(
-            "SELECT id, context_versions FROM tasks WHERE tenant_id=$1 AND agent_id=$2 AND thread_id=$3 AND kind='turn' AND status='queued' ORDER BY id ASC LIMIT 1 FOR UPDATE",
-            [p.tenantId, agentId, threadId]
-          )).rows[0];
-
-          if (queuedTurn) {
-            const updatedVersions = { ...(queuedTurn.context_versions ?? {}), message_seq: Number(nextSeq) };
-            await db.query(
-              'UPDATE tasks SET context_versions=$1::jsonb, updated_at=clock_timestamp() WHERE id=$2',
-              [JSON.stringify(updatedVersions), queuedTurn.id]
-            );
-          } else {
-            const agent = (await db.query<AgentRow>('SELECT * FROM agents WHERE id=$1 FOR UPDATE', [agentId])).rows[0];
-            if (!agent) continue;
-
-            const botId = bot?.id ?? null;
-            const turnKind = agent.edits ? 'patch' : 'summary';
-            // A bot's chat turn runs its quick first-reply model, which may then delegate to the full model.
-            const first = bot ? firstReplyRunner(bot.rules, agent.edits) : null;
-            const requiredCap = first?.capability ?? (bot ? botCapability(bot, turnKind, agent.edits) : runnerCapability(agent.runner, agent.edits));
-            const taskId = newId();
-            const cleanBody = clipUtf8(redactSecrets(body).replace(/@[a-zA-Z0-9_-]+\s*/g, '').trim(), 256);
-            const turnObjective = thread.kind === 'bot'
-              ? (cleanBody || `Turn for agent ${agent.name} in ${thread.title ?? 'bot'}`)
-              : `Turn for agent ${agent.name} in #${thread.title ?? 'channel'}`;
-            const envelope = {
-              deploy: false, publish: false, purchase: false, local_patch: agent.edits,
-              read_project: true, send_messages: false, permission_changes: false, external_side_effects: false,
-              ...(first ? { runner: first.runner } : {})
-            };
-            const contextVersions = { message_seq: Number(nextSeq), hop_depth: 0 };
-            const reqHash = sha256(canonicalJson({
-              kind: 'turn', scope: agent.scope, agent_id: agent.id, thread_id: threadId, seq: Number(nextSeq)
-            }));
-
-            await db.query(
-              `INSERT INTO tasks
-                 (id, tenant_id, scope, kind, agent_id, thread_id, bot_id, objective, constraints, acceptance_criteria,
-                  permission_envelope, required_capability, resource_key, context_versions, status, created_by,
-                  idempotency_key, request_hash, max_attempts)
-               VALUES ($1, $2, $3, 'turn', $4, $5, $6, $7, '[]'::jsonb, '[]'::jsonb, $8::jsonb, $9, $10, $11::jsonb, 'queued', $12, $13, $14, 3)`,
-              [taskId, p.tenantId, agent.scope, agent.id, threadId, botId, turnObjective, JSON.stringify(envelope),
-               requiredCap, `agent:${agent.id}`, JSON.stringify(contextVersions), p.id, newId(), reqHash]
-            );
-
-            await audit(db, p, agent.scope, 'task.submitted', taskId, { kind: 'turn', agent_id: agent.id, thread_id: threadId });
-            await event(db, p, agent.scope, 'task.updated', taskId, { task_id: taskId, kind: 'turn', thread_id: threadId, status: 'queued', action: 'submitted' });
-          }
+          const agent = (await db.query<AgentRow>('SELECT * FROM agents WHERE id=$1 FOR UPDATE', [agentId])).rows[0];
+          if (!agent) continue;
+          await enqueueAgentTurn(db, p, {
+            thread,
+            agent,
+            bot,
+            seq: nextSeq,
+            initiatorKind: 'person',
+            objective: cleanBody
+          });
         }
       }
 
@@ -714,7 +738,7 @@ export class TeamService {
       const q = questions.get(String(r.ref?.question_id));
       if (q && r.kind === 'question') view.question = {
         id: q.id, prompt: q.prompt, options: q.options, multi: q.multi, free_text: q.free_text,
-        status: q.status, swarm_step_id: q.swarm_step_id, created_at: q.created_at.toISOString(),
+        status: q.status, swarm_step_id: q.swarm_step_id, action: q.action ?? null, created_at: q.created_at.toISOString(),
         answer: q.status === 'answered' ? { choices: q.choices, text: q.answer_text } : null
       };
       if (q && r.kind === 'answer') view.answer = { question_id: q.id, choices: q.choices, text: q.answer_text };

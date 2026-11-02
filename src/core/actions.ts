@@ -1,7 +1,7 @@
 import { BOT_AVATARS, BOT_COLORS } from './bots.js';
 import { AppError } from '../errors.js';
 import { redactSecrets } from '../safety/redact.js';
-import { validateStepGraph } from './swarms.js';
+import { checkProblem, validateStepGraph } from './swarms.js';
 import { clipUtf8 } from './teams.js';
 import type { Db } from './shared.js';
 import type { AgentRow, ThreadRow } from './teams.js';
@@ -19,7 +19,7 @@ export interface SwarmStartStepInput {
   assignee_agent_id: string;
   needs?: string[];
   instructions?: string;
-  check?: string;
+  check: string;
 }
 
 export interface TurnActionSwarmStart {
@@ -35,6 +35,36 @@ export interface TurnActionSwarmUpdate {
   ops: Array<Record<string, unknown>>;
 }
 
+const ACTION_KINDS = ['command', 'publish', 'send', 'deploy', 'purchase', 'other'] as const;
+
+/** What an approval question will do if the owner approves it. */
+export interface QuestionAction {
+  kind: typeof ACTION_KINDS[number];
+  summary: string;
+  detail: string;
+  where?: string;
+}
+
+/** A question_ask action object, redacted, or why it was refused. */
+export function parseQuestionAction(value: unknown): QuestionAction | string {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return 'question_ask action must be an object';
+  const a = value as Record<string, unknown>;
+  const extra = Object.keys(a).find(k => !['kind', 'summary', 'detail', 'where'].includes(k));
+  if (extra) return `unknown field '${extra}' in question_ask action object`;
+  if (!(ACTION_KINDS as readonly unknown[]).includes(a.kind)) return `question_ask action kind must be one of ${ACTION_KINDS.join(', ')}`;
+  for (const [k, max] of [['summary', 200], ['detail', 2000], ['where', 300]] as const) {
+    if (k === 'where' && a[k] === undefined) continue;
+    const v = a[k];
+    if (typeof v !== 'string' || !v.trim() || v.length > max) return `question_ask action ${k} must be a non-empty string up to ${max} chars`;
+  }
+  return {
+    kind: a.kind as QuestionAction['kind'],
+    summary: redactSecrets((a.summary as string).trim()),
+    detail: redactSecrets((a.detail as string).trim()),
+    ...(a.where !== undefined ? { where: redactSecrets((a.where as string).trim()) } : {})
+  };
+}
+
 export interface TurnActionQuestionAsk {
   type: 'question_ask';
   prompt: string;
@@ -43,6 +73,7 @@ export interface TurnActionQuestionAsk {
   free_text?: boolean;
   swarm_step_id?: string;
   expires_in?: number;
+  action?: QuestionAction;
 }
 
 export interface TurnActionChannelPost {
@@ -261,13 +292,15 @@ export function extractActionsBlock(text: string): ExtractedActions {
         if (!Array.isArray(needs)) {
           return { cleanText, rawBlock, error: 'step needs must be an array', rejectedAction: item };
         }
+        const checkError = checkProblem(stepObj.check);
+        if (checkError) return { cleanText, rawBlock, error: checkError, rejectedAction: item };
         steps.push({
           key: stepObj.key ? String(stepObj.key) : undefined,
           title: stepObj.title.trim(),
           assignee_agent_id: String(stepObj.assignee_agent_id).trim(),
           needs: needs.map(n => String(n).trim()),
           instructions: stepObj.instructions !== undefined ? clipUtf8(redactSecrets(String(stepObj.instructions)), 16384) : undefined,
-          check: stepObj.check !== undefined ? String(stepObj.check).trim() : undefined
+          check: redactSecrets((stepObj.check as string).trim())
         });
       }
       actions.push({
@@ -295,7 +328,7 @@ export function extractActionsBlock(text: string): ExtractedActions {
         ops: act.ops as Array<Record<string, unknown>>
       });
     } else if (type === 'question_ask') {
-      const allowed = new Set(['type', 'prompt', 'options', 'multi', 'free_text', 'swarm_step_id', 'expires_in']);
+      const allowed = new Set(['type', 'prompt', 'options', 'multi', 'free_text', 'swarm_step_id', 'expires_in', 'action']);
       for (const k of Object.keys(act)) {
         if (!allowed.has(k)) {
           return { cleanText, rawBlock, error: `unknown field '${k}' in question_ask action`, rejectedAction: item };
@@ -318,14 +351,18 @@ export function extractActionsBlock(text: string): ExtractedActions {
         }
         options.push(clipUtf8(redactSecrets(opt), 80));
       }
+      const action = act.action !== undefined ? parseQuestionAction(act.action) : undefined;
+      if (typeof action === 'string') return { cleanText, rawBlock, error: action, rejectedAction: item };
       actions.push({
         type: 'question_ask',
         prompt,
-        options,
+        // An approval with no options is answered Approve or Deny.
+        options: action && options.length === 0 ? ['Approve', 'Deny'] : options,
         multi: Boolean(act.multi),
         free_text: Boolean(act.free_text),
         swarm_step_id: act.swarm_step_id ? String(act.swarm_step_id).trim() : undefined,
-        expires_in: typeof act.expires_in === 'number' ? Math.max(1, Math.floor(act.expires_in)) : undefined
+        expires_in: typeof act.expires_in === 'number' ? Math.max(1, Math.floor(act.expires_in)) : undefined,
+        ...(action ? { action } : {})
       });
     } else if (type === 'channel_post') {
       const allowed = new Set(['type', 'channel_id', 'body']);
@@ -365,7 +402,10 @@ export interface TurnGrantContext {
   scope: string;
   hopDepth?: number;
   botId?: string | null;
+  leadMode?: 'router' | 'default';
 }
+
+const ROUTER_ACTIONS = new Set(['swarm_start', 'handoff', 'question_ask', 'bot_appearance']);
 
 /**
  * Validates parsed actions against the turn grant in the database.
@@ -383,6 +423,9 @@ export async function validateTurnGrant(
   actions: TurnAction[]
 ): Promise<{ valid: true } | { valid: false; reason: string; action: TurnAction }> {
   for (const act of actions) {
+    if (ctx.leadMode === 'router' && !ROUTER_ACTIONS.has(act.type)) {
+      return { valid: false, reason: 'router_dispatch_only', action: act };
+    }
     if (act.type === 'bot_appearance') {
       if (!ctx.botId) return { valid: false, reason: 'bot_appearance requires a bot turn', action: act };
       const bot = (await db.query(
@@ -665,9 +708,11 @@ async function validateOp(
   const extraStep = Object.keys(step).find(k => !ADD_STEP_FIELDS.has(k));
   if (extraStep) return `unknown field '${extraStep}' in add_step step`;
   if (typeof step.title !== 'string' || !step.title.trim() || step.title.length > 200) return 'add_step step requires title (1-200 chars)';
-  for (const k of ['key', 'instructions', 'check']) {
+  for (const k of ['key', 'instructions']) {
     if (step[k] !== undefined && typeof step[k] !== 'string') return `add_step step ${k} must be a string`;
   }
+  const checkError = checkProblem(step.check);
+  if (checkError) return checkError;
   if (typeof step.assignee_agent_id !== 'string' || !step.assignee_agent_id.trim()) return 'add_step step requires assignee_agent_id';
   const assignee = (await db.query<{ id: string }>(
     'SELECT id FROM agents WHERE tenant_id=$1 AND scope=$2 AND (id::text=$3 OR name=$3) AND NOT archived',

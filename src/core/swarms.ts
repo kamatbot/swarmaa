@@ -10,8 +10,8 @@ import { assertKnownScope, audit, canonicalJson, event, newId, noExtraKeys, requ
 import { assignThreadSeq, clipUtf8, type AgentRow, type ThreadRow, type MessageRow } from './teams.js';
 import { runnerCapability } from '../bridge/adapters.js';
 import { cancelTask, taskView, type TaskRow } from './tasks.js';
-import { botCapability } from './bots.js';
-import type { TurnAction, TurnGrantContext, SwarmStartStepInput } from './actions.js';
+import { botCapability, leadTurnProfile } from './bots.js';
+import type { QuestionAction, TurnAction, TurnGrantContext, SwarmStartStepInput } from './actions.js';
 
 // Teams writes take teamsLock first.
 
@@ -35,6 +35,24 @@ const oneLine = (text: string): string => { const line = text.split('\n')[0]!.tr
 function isActionError(err: unknown): boolean {
   if (err instanceof AppError) return err.status >= 400 && err.status < 500;
   return err instanceof pg.DatabaseError && /^2[23]/.test(err.code ?? '');
+}
+
+/** Why a step's check ("Done when") is unusable, or null: it is required, non-blank, at most 512 characters. */
+export function checkProblem(check: unknown): string | null {
+  if (typeof check !== 'string' || !check.trim()) return 'check is required: say what done means and how to check it.';
+  return check.trim().length > 512 ? 'check exceeds 512 characters.' : null;
+}
+
+/** A step's check, trimmed and redacted, or 400 invalid_steps. */
+export function stepCheck(check: unknown): string {
+  const problem = checkProblem(check);
+  if (problem) throw new AppError(400, 'invalid_steps', problem);
+  return redactSecrets((check as string).trim());
+}
+
+/** The handoff message an assignee sees: who gave them what, and when it is done. */
+export function handoffBody(owner: string, title: string, check: string | null): string {
+  return check ? `${owner} gave you: ${title}\nDone when: ${check}` : `${owner} gave you: ${title}`;
 }
 
 export interface SwarmRow {
@@ -94,6 +112,7 @@ export interface QuestionRow {
   answered_by: string | null;
   answered_at: Date | null;
   expires_at: Date | null;
+  action: QuestionAction | null;
   created_at: Date;
   updated_at: Date;
 }
@@ -250,6 +269,7 @@ export function questionView(q: QuestionRow): Record<string, unknown> {
     answered_by: q.answered_by,
     answered_at: q.answered_at ? q.answered_at.toISOString() : null,
     expires_at: q.expires_at ? q.expires_at.toISOString() : null,
+    action: q.action ?? null,
     created_at: q.created_at.toISOString(),
     updated_at: q.updated_at.toISOString()
   };
@@ -299,7 +319,7 @@ export class SwarmsService {
       assignee_agent_id: string;
       needs: string[];
       instructions?: string;
-      check?: string;
+      check: string;
     }> = [];
 
     for (let i = 0; i < input.steps.length; i++) {
@@ -309,14 +329,14 @@ export class SwarmsService {
       const assignee = uuid(s.assignee_agent_id, `steps[${i}].assignee_agent_id`);
       const needs = Array.isArray(s.needs) ? s.needs.map(n => String(n).trim()) : [];
       const instructions = s.instructions !== undefined ? string(s.instructions, `steps[${i}].instructions`, 16384) : undefined;
-      const check = s.check !== undefined ? string(s.check, `steps[${i}].check`, 64) : undefined;
+      const check = stepCheck(s.check);
       validatedSteps.push({
         key,
         title: stepTitle,
         assignee_agent_id: assignee,
         needs,
         ...(instructions !== undefined ? { instructions } : {}),
-        ...(check !== undefined ? { check } : {})
+        check
       });
     }
 
@@ -338,6 +358,11 @@ export class SwarmsService {
       requireCondition(Boolean(ownerAgent), 400, 'agent_not_found', `Owner agent '${ownerAgentId}' not found or archived in scope '${scope}'.`);
     }
 
+    const bot = (await db.query<{ id: string; rules: Record<string, unknown>; lead_agent_id: string }>(
+      'SELECT id, rules, lead_agent_id FROM bots WHERE thread_id=$1 AND tenant_id=$2 AND NOT archived',
+      [threadId, p.tenantId]
+    )).rows[0];
+
     // Verify all assignee agents exist and are not archived in same scope
     for (const st of validatedSteps) {
       const agent = (await db.query<AgentRow>(
@@ -345,6 +370,9 @@ export class SwarmsService {
         [st.assignee_agent_id, p.tenantId, scope]
       )).rows[0];
       requireCondition(Boolean(agent), 400, 'agent_not_found', `Assignee agent '${st.assignee_agent_id}' not found or archived in scope '${scope}'.`);
+      if (bot && bot.rules?.lead_mode === 'router' && st.assignee_agent_id === bot.lead_agent_id && agent!.edits) {
+        throw new AppError(400, 'router_lead_cannot_edit', 'Cannot assign patch step to router lead.');
+      }
     }
 
     const swarmOwner = ownerAgentId ?? thread.agent_id ?? thread.lead_agent_id ?? null;
@@ -390,7 +418,7 @@ export class SwarmsService {
       const row = (await db.query<SwarmStepRow>(
         `INSERT INTO swarm_steps (id, tenant_id, swarm_id, step_key, title, assignee_agent_id, needs, instructions, "check", order_index, status)
          VALUES ($1, $2, $3, $4, $5, $6, $7::uuid[], $8, $9, $10, 'pending') RETURNING *`,
-        [stepId, p.tenantId, swarmId, st.key, st.title, st.assignee_agent_id, depIds, st.instructions ?? null, st.check ?? null, i]
+        [stepId, p.tenantId, swarmId, st.key, st.title, st.assignee_agent_id, depIds, st.instructions ?? null, st.check, i]
       )).rows[0]!;
       stepRows.push(row);
     }
@@ -589,6 +617,7 @@ export class SwarmsService {
         const stepObj = object(op.step);
         const stepTitle = string(stepObj.title, 'step.title', 200);
         const assignee = uuid(stepObj.assignee_agent_id, 'step.assignee_agent_id');
+        const check = stepCheck(stepObj.check);
         const agent = (await db.query<AgentRow>(
           'SELECT * FROM agents WHERE id=$1 AND tenant_id=$2 AND scope=$3 AND NOT archived',
           [assignee, p.tenantId, swarm.scope]
@@ -609,7 +638,7 @@ export class SwarmsService {
           `INSERT INTO swarm_steps (id, tenant_id, swarm_id, step_key, title, assignee_agent_id, needs, instructions, "check", order_index, status)
            VALUES ($1, $2, $3, $4, $5, $6, $7::uuid[], $8, $9, $10, 'pending') RETURNING *`,
           [stepId, p.tenantId, swarmId, stepObj.key ? String(stepObj.key) : null, stepTitle, assignee,
-           needs, stepObj.instructions ? String(stepObj.instructions) : null, stepObj.check ? String(stepObj.check) : null, nextIndex]
+           needs, stepObj.instructions ? String(stepObj.instructions) : null, check, nextIndex]
         )).rows[0]!;
 
         allSteps.push(inserted);
@@ -940,19 +969,25 @@ export class SwarmsService {
       // Queue the agent's next turn with initiator answer
       let botId: string | null = null;
       let requiredCap = runnerCapability(agent.runner, agent.edits);
+      let localPatch = agent.edits;
+      let runnerObj: Record<string, unknown> | undefined;
       if (q.thread_id) {
-        const bot = (await db.query<{ id: string; routing: Record<string, unknown> }>(
-          'SELECT id, routing FROM bots WHERE thread_id=$1', [q.thread_id]
+        const bot = (await db.query<{ id: string; routing: Record<string, unknown>; rules: Record<string, unknown>; lead_agent_id: string }>(
+          'SELECT id, routing, rules, lead_agent_id FROM bots WHERE thread_id=$1', [q.thread_id]
         )).rows[0];
         if (bot) {
           botId = bot.id;
-          requiredCap = botCapability(bot, agent.edits ? 'patch' : 'summary', agent.edits);
+          const profile = leadTurnProfile(bot, agent);
+          requiredCap = profile.capability;
+          localPatch = profile.edits;
+          if (profile.runner) runnerObj = profile.runner;
         }
       }
       const taskId = newId();
       const envelope = {
-        deploy: false, publish: false, purchase: false, local_patch: agent.edits,
-        read_project: true, send_messages: false, permission_changes: false, external_side_effects: false
+        deploy: false, publish: false, purchase: false, local_patch: localPatch,
+        read_project: true, send_messages: false, permission_changes: false, external_side_effects: false,
+        ...(runnerObj ? { runner: runnerObj } : {})
       };
       const contextVersions = { message_seq: Number(nextSeq), hop_depth: 0 };
       const reqHash = sha256(canonicalJson({
@@ -1130,6 +1165,7 @@ export class SwarmsService {
       next_step: string;
       at: string;
       thread_id?: string;
+      action?: QuestionAction | null;
     }
 
     const items: AttentionItem[] = [];
@@ -1142,7 +1178,8 @@ export class SwarmsService {
         state: 'open',
         next_step: 'Needs input · answer the question',
         at: q.created_at.toISOString(),
-        thread_id: q.thread_id
+        thread_id: q.thread_id,
+        action: q.action ?? null
       });
     }
 
@@ -1390,18 +1427,24 @@ export class SwarmsService {
               + results.map((r, n) => `${n + 1}. ${r.title} (${r.name ?? 'unassigned'}): ${(r.body ?? '(no reply)').slice(0, 2000)}`).join('\n\n'));
             let botId: string | null = null;
             let requiredCap = runnerCapability(ownerAgent.runner, ownerAgent.edits);
+            let localPatch = ownerAgent.edits;
+            let runnerObj: Record<string, unknown> | undefined;
             if (swarm.thread_id) {
-              const bot = (await db.query<{ id: string; routing: Record<string, unknown> }>(
-                'SELECT id, routing FROM bots WHERE thread_id=$1', [swarm.thread_id]
+              const bot = (await db.query<{ id: string; routing: Record<string, unknown>; rules: Record<string, unknown>; lead_agent_id: string }>(
+                'SELECT id, routing, rules, lead_agent_id FROM bots WHERE thread_id=$1', [swarm.thread_id]
               )).rows[0];
               if (bot) {
                 botId = bot.id;
-                requiredCap = botCapability(bot, ownerAgent.edits ? 'patch' : 'summary', ownerAgent.edits);
+                const profile = leadTurnProfile(bot, ownerAgent);
+                requiredCap = profile.capability;
+                localPatch = profile.edits;
+                if (profile.runner) runnerObj = profile.runner;
               }
             }
             const envelope = {
-              deploy: false, publish: false, purchase: false, local_patch: ownerAgent.edits,
-              read_project: true, send_messages: false, permission_changes: false, external_side_effects: false
+              deploy: false, publish: false, purchase: false, local_patch: localPatch,
+              read_project: true, send_messages: false, permission_changes: false, external_side_effects: false,
+              ...(runnerObj ? { runner: runnerObj } : {})
             };
             const reqHash = sha256(canonicalJson({
               kind: 'turn', scope: ownerAgent.scope, agent_id: ownerAgent.id, swarm_id: swarm.id, summary: true
@@ -1511,18 +1554,24 @@ export class SwarmsService {
       if (!(await this.takeTurn(db, p, budget, targetAgent.name))) return;
       let botId: string | null = ctx.botId ?? null;
       let requiredCap = runnerCapability(targetAgent.runner, targetAgent.edits);
+      let localPatch = targetAgent.edits;
+      let runnerObj: Record<string, unknown> | undefined;
       if (botId) {
-        const bot = (await db.query<{ id: string; routing: Record<string, unknown> }>(
-          'SELECT id, routing FROM bots WHERE id=$1', [botId]
+        const bot = (await db.query<{ id: string; routing: Record<string, unknown>; rules: Record<string, unknown>; lead_agent_id: string }>(
+          'SELECT id, routing, rules, lead_agent_id FROM bots WHERE id=$1', [botId]
         )).rows[0];
         if (bot) {
-          requiredCap = botCapability(bot, targetAgent.edits ? 'patch' : 'summary', targetAgent.edits);
+          const profile = leadTurnProfile(bot, targetAgent);
+          requiredCap = profile.capability;
+          localPatch = profile.edits;
+          if (profile.runner) runnerObj = profile.runner;
         }
       }
       const taskId = newId();
       const envelope = {
-        deploy: false, publish: false, purchase: false, local_patch: targetAgent.edits,
-        read_project: true, send_messages: false, permission_changes: false, external_side_effects: false
+        deploy: false, publish: false, purchase: false, local_patch: localPatch,
+        read_project: true, send_messages: false, permission_changes: false, external_side_effects: false,
+        ...(runnerObj ? { runner: runnerObj } : {})
       };
       const ctxVersions = { message_seq: Number(targetSeq), hop_depth: budget.hop + 1 };
       const reqHash = sha256(canonicalJson({
@@ -1569,11 +1618,12 @@ export class SwarmsService {
 
       await db.query(
         `INSERT INTO questions
-           (id, tenant_id, scope, thread_id, agent_id, swarm_step_id, prompt, options, multi, free_text, status, expires_at)
+           (id, tenant_id, scope, thread_id, agent_id, swarm_step_id, prompt, options, multi, free_text, status, expires_at, action)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, 'open',
-           CASE WHEN $11::integer IS NULL THEN NULL ELSE clock_timestamp() + $11::integer * interval '1 second' END)`,
+           CASE WHEN $11::integer IS NULL THEN NULL ELSE clock_timestamp() + $11::integer * interval '1 second' END, $12::jsonb)`,
         [questionId, ctx.tenantId, ctx.scope, ctx.thread.id, ctx.agent.id, act.swarm_step_id ?? null,
-         act.prompt, JSON.stringify(act.options), act.multi ?? false, act.free_text ?? false, act.expires_in ?? null]
+         act.prompt, JSON.stringify(act.options), act.multi ?? false, act.free_text ?? false, act.expires_in ?? null,
+         act.action ? JSON.stringify(act.action) : null]
       );
 
       const cardSeq = await assignThreadSeq(db, ctx.tenantId, ctx.thread.id);
@@ -1762,12 +1812,11 @@ export class SwarmsService {
     // Post handoff message into assignee's main thread
     const seq = await assignThreadSeq(db, p.tenantId, targetThreadId);
     const handoffMsgId = newId();
-    const handoffBody = `${ownerName} gave you: ${step.title}`;
     await db.query(
       `INSERT INTO messages (id, tenant_id, scope, thread_id, seq, author, kind, body, ref)
        VALUES ($1, $2, $3, $4, $5, $6::jsonb, 'handoff', $7, $8::jsonb)`,
       [handoffMsgId, p.tenantId, scope, targetThreadId, seq,
-       JSON.stringify({ kind: 'system', id: 'service' }), handoffBody,
+       JSON.stringify({ kind: 'system', id: 'service' }), handoffBody(ownerName, step.title, step.check),
        JSON.stringify({ swarm_id: swarmId, step_id: step.id })]
     );
 
@@ -1783,20 +1832,30 @@ export class SwarmsService {
     const sw = (await db.query<{ thread_id: string }>('SELECT thread_id FROM swarms WHERE id=$1', [swarmId])).rows[0];
     let botId: string | null = null;
     let requiredCap = runnerCapability(agent.runner, agent.edits);
+    let localPatch = agent.edits;
+    let runnerObj: Record<string, unknown> | undefined;
     if (sw?.thread_id) {
-      const bot = (await db.query<{ id: string; routing: Record<string, unknown> }>(
-        'SELECT id, routing FROM bots WHERE thread_id=$1', [sw.thread_id]
+      const bot = (await db.query<{ id: string; routing: Record<string, unknown>; rules: Record<string, unknown>; lead_agent_id: string }>(
+        'SELECT id, routing, rules, lead_agent_id FROM bots WHERE thread_id=$1', [sw.thread_id]
       )).rows[0];
       if (bot) {
         botId = bot.id;
-        const routingKind = agent.edits ? 'patch' : 'research';
-        requiredCap = botCapability(bot, routingKind, agent.edits);
+        const profile = leadTurnProfile(bot, agent);
+        if (profile.router) {
+          requiredCap = profile.capability;
+          localPatch = profile.edits;
+          if (profile.runner) runnerObj = profile.runner;
+        } else {
+          const routingKind = agent.edits ? 'patch' : 'research';
+          requiredCap = botCapability(bot, routingKind, agent.edits);
+        }
       }
     }
     const taskId = newId();
     const envelope = {
-      deploy: false, publish: false, purchase: false, local_patch: agent.edits,
-      read_project: true, send_messages: false, permission_changes: false, external_side_effects: false
+      deploy: false, publish: false, purchase: false, local_patch: localPatch,
+      read_project: true, send_messages: false, permission_changes: false, external_side_effects: false,
+      ...(runnerObj ? { runner: runnerObj } : {})
     };
     const ctxVersions = { message_seq: Number(seq), hop_depth: budget ? budget.hop + 1 : 0 };
     const reqHash = sha256(canonicalJson({

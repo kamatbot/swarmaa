@@ -64,6 +64,7 @@ export interface BotRules {
    * Opus thinks hard on every reply; 'off' uses the agent's own model with no quick reply.
    */
   first_reply: FirstReply;
+  lead_mode?: 'default' | 'router';
 }
 
 /** Chat-reply models, the provider that runs each, and whether it is a quick reply that may hand off. */
@@ -99,7 +100,8 @@ export const DEFAULT_BOT_RULES: BotRules = {
   review_edits: true,
   require_tests: false,
   quiet_schedule: true,
-  first_reply: DEFAULT_FIRST_REPLY
+  first_reply: DEFAULT_FIRST_REPLY,
+  lead_mode: 'default'
 };
 
 export function validateRouting(raw: unknown): Record<string, unknown> {
@@ -161,13 +163,15 @@ export function validateRules(raw: unknown, existing?: Record<string, unknown>):
     require_tests: typeof existing.require_tests === 'boolean' ? existing.require_tests : DEFAULT_BOT_RULES.require_tests,
     quiet_schedule: typeof existing.quiet_schedule === 'boolean' ? existing.quiet_schedule : DEFAULT_BOT_RULES.quiet_schedule,
     first_reply: typeof existing.first_reply === 'string' && (existing.first_reply === 'off' || existing.first_reply in FIRST_REPLY_MODELS)
-      ? existing.first_reply as FirstReply : DEFAULT_FIRST_REPLY
+      ? existing.first_reply as FirstReply : DEFAULT_FIRST_REPLY,
+    lead_mode: typeof existing.lead_mode === 'string' && (existing.lead_mode === 'default' || existing.lead_mode === 'router')
+      ? existing.lead_mode as 'default' | 'router' : DEFAULT_BOT_RULES.lead_mode
   } : { ...DEFAULT_BOT_RULES };
 
   if (typeof existing?.schedule_paused === 'boolean') base.schedule_paused = existing.schedule_paused;
   if (raw === undefined || raw === null) return base;
   const obj = object(raw);
-  noExtraKeys(obj, ['quota_floor_pct', 'approve_public', 'review_edits', 'require_tests', 'quiet_schedule', 'first_reply', 'schedule_paused']);
+  noExtraKeys(obj, ['quota_floor_pct', 'approve_public', 'review_edits', 'require_tests', 'quiet_schedule', 'first_reply', 'schedule_paused', 'lead_mode']);
 
   if (obj.quota_floor_pct !== undefined) {
     base.quota_floor_pct = integer(obj.quota_floor_pct, 'quota_floor_pct', 0, 50);
@@ -190,6 +194,12 @@ export function validateRules(raw: unknown, existing?: Record<string, unknown>):
     requireCondition(v === 'off' || v in FIRST_REPLY_MODELS, 400, 'invalid_arguments',
       `first_reply must be one of ${[...Object.keys(FIRST_REPLY_MODELS), 'off'].join(', ')}`);
     base.first_reply = v as FirstReply;
+  }
+  if (obj.lead_mode !== undefined) {
+    const v = string(obj.lead_mode, 'lead_mode', 20);
+    requireCondition(v === 'default' || v === 'router', 400, 'invalid_arguments',
+      'lead_mode must be default or router');
+    base.lead_mode = v as 'default' | 'router';
   }
   return base;
 }
@@ -238,6 +248,41 @@ export function botCapability(
     return edits ? AUTO_PATCH : AUTO_READ;
   }
   return `${runner.provider}.${edits ? 'patch' : 'read'}`;
+}
+
+export function leadTurnProfile(
+  bot: { lead_agent_id: string; rules: Record<string, unknown>; routing: Record<string, unknown> },
+  agent: { id: string; edits: boolean }
+): {
+  router: boolean;
+  edits: boolean;
+  routeKind: 'summary' | 'patch';
+  capability: string;
+  runner?: { provider?: string; model?: string; effort?: string; fast: false; router: true };
+} {
+  if (bot.rules.lead_mode === 'router' && agent.id === bot.lead_agent_id) {
+    const summaryRunner = bot.routing.summary as { provider?: string; model?: string; effort?: string } | undefined;
+    const runner: { provider?: string; model?: string; effort?: string; fast: false; router: true } = {
+      fast: false,
+      router: true,
+      ...(summaryRunner?.provider ? { provider: summaryRunner.provider } : {}),
+      ...(summaryRunner?.model ? { model: summaryRunner.model } : {}),
+      ...(summaryRunner?.effort ? { effort: summaryRunner.effort } : {})
+    };
+    return {
+      router: true,
+      edits: false,
+      routeKind: 'summary',
+      capability: botCapability(bot, 'summary', false),
+      runner
+    };
+  }
+  return {
+    router: false,
+    edits: agent.edits,
+    routeKind: agent.edits ? 'patch' : 'summary',
+    capability: botCapability(bot, agent.edits ? 'patch' : 'summary', agent.edits)
+  };
 }
 
 export function formatTaskCardBody(
@@ -568,6 +613,10 @@ export class BotService {
     const memberAgentIds = input.member_agent_ids.map(m => uuid(m, 'member_agent_ids'));
     const routing = validateRouting(input.routing);
     const rules = validateRules(input.rules);
+    if (rules.lead_mode === 'router') {
+      const otherCrew = [...new Set(memberAgentIds)].filter(id => id !== leadAgentId);
+      requireCondition(otherCrew.length > 0, 400, 'router_needs_crew', 'A router bot requires at least one crew member besides the lead.');
+    }
     const schedule = validateSchedule(input.schedule);
     const avatar = input.avatar !== undefined ? string(input.avatar, 'avatar', 200) : null;
     const starred = input.starred !== undefined ? booleanOption(input.starred, 'starred') : false;
@@ -740,6 +789,9 @@ export class BotService {
       const routingChanged = input.routing !== undefined && canonicalJson(nextRouting) !== canonicalJson(existing.routing);
 
       const nextRules = input.rules !== undefined ? validateRules(input.rules, existing.rules) : existing.rules;
+      if (nextRules.lead_mode === 'router') {
+        requireCondition(nextMemberIds.length > 0, 400, 'router_needs_crew', 'A router bot requires at least one crew member besides the lead.');
+      }
       const nextSchedule = input.schedule !== undefined ? validateSchedule(input.schedule) : existing.schedule;
 
       const scheduleChanged = nextSchedule !== existing.schedule ||

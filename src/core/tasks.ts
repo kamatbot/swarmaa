@@ -1,5 +1,5 @@
 import { botTaskFinished, taskBotPolicy } from './bot-routing.js';
-import { botCapability, firstReplyRunner, postBotTaskCard } from './bots.js';
+import { botCapability, firstReplyRunner, leadTurnProfile, postBotTaskCard } from './bots.js';
 import { advanceFlow, validateFlowCompletion } from './flows.js';
 import type { FlowTask } from './flow-definition.js';
 import { inboxSession, readTaskInbox, taskFinished, taskReroutedNotice } from './inbox.js';
@@ -35,7 +35,7 @@ export interface TaskRow {
   id:string; tenant_id:string; scope:string; kind:TaskKind; objective:string;
   flow_id:string|null; flow:FlowTask|null;
   bot_id?:string|null; agent_id?:string|null; thread_id?:string|null; swarm_step_id?:string|null;
-  initiator_kind?: 'person' | 'handoff' | 'swarm' | 'answer' | 'flow' | 'schedule' | 'bot_check';
+  initiator_kind?: 'person' | 'handoff' | 'swarm' | 'answer' | 'flow' | 'schedule' | 'bot_check' | 'source';
   initiator_id?: string | null;
   resolved_at?: Date | null;
   constraints:string[]; acceptance_criteria:string[]; permission_envelope:Record<string,unknown>;
@@ -382,28 +382,39 @@ export class TaskService {
       }
       requireCondition(!row.flow_id,409,'flow_managed_task','Flow steps are immutable; start a new flow to retry or change work.');
       requireCondition(row.version === expected,409,'version_conflict','Task changed; read it before appending a continuation.');
-      requireCondition(row.continuation_count<20,409,'continuation_limit','A task permits at most 20 continuations; create a new bounded task.');
-      if (['completed','failed','cancelled'].includes(row.status)) {
-        const count = await db.query<{count:string}>(`SELECT count(*)::text AS count FROM tasks
-          WHERE tenant_id=$1 AND scope=$2 AND status IN ('queued','running','blocked')`,[p.tenantId,row.scope]);
-        requireCondition(Number(count.rows[0]?.count ?? 0)<1000,429,'queue_full','Scope already has 1000 open tasks; finish or cancel existing work first.');
-      }
-      if (row.status === 'running') {
-        const time = await db.query<{live:boolean}>('SELECT $1::timestamptz>clock_timestamp() AS live',[row.lease_expires_at]);
-        requireCondition(!time.rows[0]?.live,409,'task_running','Wait for the current run or cancel it before continuing.');
-        await db.query(`UPDATE task_runs SET status='abandoned',ended_at=clock_timestamp() WHERE task_id=$1 AND generation=$2 AND status='running'`,[id,row.lease_generation]);
-      }
-      await retireResource(db,row);
-      await db.query(`INSERT INTO task_instructions (id,task_id,actor_id,idempotency_key,request_hash,instruction)
-        VALUES ($1,$2,$3,$4,$5,$6)`,[newId(),id,p.id,key,requestHash,instruction]);
-      const updated = await db.query<TaskRow>(`UPDATE tasks SET status='queued',version=version+1,
-        continuation_count=continuation_count+1,attempt_count=0,lease_generation=lease_generation+1,
-        lease_owner=NULL,lease_hash=NULL,lease_expires_at=NULL,completed_at=NULL,updated_at=clock_timestamp()
-        WHERE id=$1 RETURNING *`,[id]);
-      const next = updated.rows[0]!;
-      await taskChanged(db,p,next,'continued');
-      return {task:await taskWithInstructions(db,next),replayed:false};
+      return this.continueInternal(db,p,row,instruction,key,requestHash);
     });
+  }
+
+  async continueInternal(
+    db: PoolClient,
+    p: Principal,
+    row: TaskRow,
+    instruction: string,
+    idempotencyKey: string,
+    requestHash: string
+  ): Promise<{ task: Record<string, unknown>; replayed: boolean }> {
+    requireCondition(row.continuation_count<20,409,'continuation_limit','A task permits at most 20 continuations; create a new bounded task.');
+    if (['completed','failed','cancelled'].includes(row.status)) {
+      const count = await db.query<{count:string}>(`SELECT count(*)::text AS count FROM tasks
+        WHERE tenant_id=$1 AND scope=$2 AND status IN ('queued','running','blocked')`,[p.tenantId,row.scope]);
+      requireCondition(Number(count.rows[0]?.count ?? 0)<1000,429,'queue_full','Scope already has 1000 open tasks; finish or cancel existing work first.');
+    }
+    if (row.status === 'running') {
+      const time = await db.query<{live:boolean}>('SELECT $1::timestamptz>clock_timestamp() AS live',[row.lease_expires_at]);
+      requireCondition(!time.rows[0]?.live,409,'task_running','Wait for the current run or cancel it before continuing.');
+      await db.query(`UPDATE task_runs SET status='abandoned',ended_at=clock_timestamp() WHERE task_id=$1 AND generation=$2 AND status='running'`,[row.id,row.lease_generation]);
+    }
+    await retireResource(db,row);
+    await db.query(`INSERT INTO task_instructions (id,task_id,actor_id,idempotency_key,request_hash,instruction)
+      VALUES ($1,$2,$3,$4,$5,$6)`,[newId(),row.id,p.id,idempotencyKey,requestHash,instruction]);
+    const updated = await db.query<TaskRow>(`UPDATE tasks SET status='queued',version=version+1,
+      continuation_count=continuation_count+1,attempt_count=0,lease_generation=lease_generation+1,
+      lease_owner=NULL,lease_hash=NULL,lease_expires_at=NULL,completed_at=NULL,updated_at=clock_timestamp()
+      WHERE id=$1 RETURNING *`,[row.id]);
+    const next = updated.rows[0]!;
+    await taskChanged(db,p,next,'continued');
+    return {task:await taskWithInstructions(db,next),replayed:false};
   }
 
   async claim(p:Principal,input:Record<string,unknown>):Promise<unknown> {
@@ -669,16 +680,28 @@ export class TaskService {
     noExtraKeys(input,['task_id','lease_token','lease_generation','outcome','result','artifact_ids']);
     worker(p);
     const lease = leaseInput(input);
-    const outcome = enumValue(input.outcome,'outcome',['completed','failed','blocked'] as const);
+    let outcome = enumValue(input.outcome,'outcome',['completed','failed','blocked'] as const);
     const result = jsonObject(input.result,'result',65536);
     const artifactIds = uuidArray(input.artifact_ids,'artifact_ids');
     patchResult(result);
-    const completionHash = sha256(canonicalJson({outcome,result_json:canonicalJson(result),artifact_ids:[...artifactIds].sort()}));
     return transaction(this.pool,async db => {
       const row = await lockedTask(db,p,lease.taskId,true);
       const runResult = await db.query<RunRow>('SELECT * FROM task_runs WHERE task_id=$1 AND generation=$2 FOR UPDATE',[row.id,lease.generation]);
       const run = runResult.rows[0];
       requireCondition(run && run.worker_id === p.id && sameHash(run.lease_hash,sha256(lease.token)),409,'lease_lost','This connection does not own that execution attempt.');
+      const bot = row.bot_id
+        ? (await db.query<{ id: string; routing: Record<string, unknown>; rules: Record<string, unknown>; lead_agent_id: string }>(
+            'SELECT id, routing, rules, lead_agent_id FROM bots WHERE id=$1 AND tenant_id=$2 AND NOT archived',
+            [row.bot_id, p.tenantId]
+          )).rows[0]
+        : undefined;
+      const routerLead = Boolean(bot && bot.rules.lead_mode === 'router' && bot.lead_agent_id === row.agent_id);
+      const isRouterTurn = (row.permission_envelope?.runner as any)?.router === true || routerLead;
+      if (isRouterTurn && (result.changed_files !== undefined || result.branch !== undefined)) {
+        outcome = 'failed';
+        result.failure = { code: 'router_edit_forbidden', retry: false, detail: 'Router lead turns cannot edit files or create branches.' };
+      }
+      const completionHash = sha256(canonicalJson({outcome,result_json:canonicalJson(result),artifact_ids:[...artifactIds].sort()}));
       if (run.completion_hash !== null) {
         requireCondition(run.completion_hash === completionHash,409,'completion_conflict','This run already finished with different result content.');
         return {task:await taskWithInstructions(db,row),replayed:true};
@@ -914,13 +937,14 @@ export class TaskService {
           const agentRow = (await db.query<AgentRow>('SELECT * FROM agents WHERE id=$1 FOR UPDATE', [row.agent_id])).rows[0];
           if (agentRow && threadRow) {
             const currentHop = (row.context_versions as any)?.hop_depth ?? 0;
-            const turnCtx: TurnGrantContext & { hopDepth?: number } = {
+            const turnCtx: TurnGrantContext = {
               agent: agentRow,
               thread: threadRow as any,
               tenantId: p.tenantId,
               scope: row.scope,
               hopDepth: typeof currentHop === 'number' ? currentHop : 0,
-              botId: row.bot_id ?? null
+              botId: row.bot_id ?? null,
+              leadMode: routerLead ? 'router' : 'default'
             };
 
             if (extracted.error) {
@@ -1013,7 +1037,24 @@ export class TaskService {
         // A swarm step's turn never delegates: the step would complete with the placeholder reply.
         const delegateObjective = outcome === 'completed' && runner?.delegated !== true && !row.swarm_step_id && typeof delegate?.objective === 'string'
           ? redactSecrets(delegate.objective).trim().slice(0, 500) : '';
-        if ((pendingHuman || delegateObjective) && agentRow) {
+        const botId = row.bot_id ?? null;
+        let effectiveDelegateObjective = delegateObjective;
+        if (routerLead && delegateObjective) {
+          effectiveDelegateObjective = '';
+          const seq = await assignThreadSeq(db, p.tenantId, row.thread_id);
+          const noticeId = newId();
+          const author = { kind: 'system', id: 'service' };
+          await db.query(
+            `INSERT INTO messages (id, tenant_id, scope, thread_id, seq, author, kind, body)
+             VALUES ($1, $2, $3, $4, $5, $6::jsonb, 'notice', $7)`,
+            [noticeId, p.tenantId, row.scope, row.thread_id, seq, JSON.stringify(author),
+             "Router lead can't self-delegate; use handoff or swarm_start."]
+          );
+          await event(db, p, row.scope, 'message.created', noticeId, {
+            thread_id: row.thread_id, message_id: noticeId, seq: Number(seq), kind: 'notice', author
+          });
+        }
+        if ((pendingHuman || effectiveDelegateObjective) && agentRow) {
           const active = (await db.query(
             `SELECT id FROM tasks
              WHERE tenant_id=$1 AND agent_id=$2 AND status IN ('queued', 'running') AND id <> $3
@@ -1022,27 +1063,28 @@ export class TaskService {
           )).rows[0];
 
           // A delegation is queued even behind a busy agent (resource_key runs it after); the user was told it is coming.
-          if (!active || delegateObjective) {
-            const botId = row.bot_id ?? null;
-            let nextCap = runnerCapability(agentRow.runner, agentRow.edits);
+          if (!active || effectiveDelegateObjective) {
+            const profile = bot ? leadTurnProfile(bot, agentRow) : null;
+            let nextCap = profile ? profile.capability : runnerCapability(agentRow.runner, agentRow.edits);
             let firstFollowUp: ReturnType<typeof firstReplyRunner> = null;
-            if (botId) {
-              const bot = (await db.query<{ id: string; routing: Record<string, unknown>; rules: Record<string, unknown> }>('SELECT id, routing, rules FROM bots WHERE id=$1 AND tenant_id=$2 AND NOT archived', [botId, p.tenantId])).rows[0];
-              if (bot) nextCap = botCapability(bot, agentRow.edits ? 'patch' : 'summary', agentRow.edits);
-              // A plain follow-up (more human messages) gets the bot's quick first reply too; a delegation never does.
-              if (bot && !delegateObjective) { firstFollowUp = firstReplyRunner(bot.rules, agentRow.edits); if (firstFollowUp?.capability) nextCap = firstFollowUp.capability; }
+            if (bot && !profile?.router && !effectiveDelegateObjective) {
+              firstFollowUp = firstReplyRunner(bot.rules, agentRow.edits);
+              if (firstFollowUp?.capability) nextCap = firstFollowUp.capability;
             }
             const followUpId = newId();
             // The full model must match the provider that runs it: a named non-Claude runner keeps its own model
             // (the bridge's full model when unset); Claude or auto agents are pinned to Claude on DELEGATE_MODEL.
             const pinnedProvider = agentRow.runner.provider;
             const delegateModel = pinnedProvider && pinnedProvider !== 'claude' ? agentRow.runner.model : (agentRow.runner.model ?? DELEGATE_MODEL);
-            if (delegateObjective && (!pinnedProvider || pinnedProvider === 'claude')) nextCap = `claude.${agentRow.edits ? 'patch' : 'read'}`;
+            if (effectiveDelegateObjective && (!pinnedProvider || pinnedProvider === 'claude')) nextCap = `claude.${agentRow.edits ? 'patch' : 'read'}`;
+            const edits = profile ? profile.edits : agentRow.edits;
+            const runnerObj = effectiveDelegateObjective
+              ? { ...agentRow.runner, ...(delegateModel ? { model: delegateModel } : {}), ...(pinnedProvider ? {} : { provider: 'claude', mode: undefined }), delegated: true }
+              : (profile?.runner ?? firstFollowUp?.runner);
             const envelope = {
-              deploy: false, publish: false, purchase: false, local_patch: agentRow.edits,
+              deploy: false, publish: false, purchase: false, local_patch: edits,
               read_project: true, send_messages: false, permission_changes: false, external_side_effects: false,
-              ...(delegateObjective ? { runner: { ...agentRow.runner, ...(delegateModel ? { model: delegateModel } : {}), ...(pinnedProvider ? {} : { provider: 'claude', mode: undefined }), delegated: true } }
-                : firstFollowUp ? { runner: firstFollowUp.runner } : {})
+              ...(runnerObj ? { runner: runnerObj } : {})
             };
             // hop_depth carries over, so a handoff -> delegate -> handoff chain still reaches MAX_HANDOFF_HOPS.
             const ctxVersions = { message_seq: Number(pendingHuman?.seq ?? processedSeq), hop_depth: (row.context_versions as any)?.hop_depth ?? 0 };
@@ -1055,12 +1097,12 @@ export class TaskService {
                   permission_envelope, required_capability, resource_key, context_versions, status, created_by,
                   idempotency_key, request_hash, max_attempts)
                VALUES ($1, $2, $3, 'turn', $4, $5, $6, $7, '[]'::jsonb, '[]'::jsonb, $8::jsonb, $9, $10, $11::jsonb, 'queued', $12, $13, $14, 3)`,
-              [followUpId, p.tenantId, agentRow.scope, agentRow.id, row.thread_id, botId, delegateObjective || `Turn for agent ${agentRow.name}`,
+              [followUpId, p.tenantId, agentRow.scope, agentRow.id, row.thread_id, botId, effectiveDelegateObjective || `Turn for agent ${agentRow.name}`,
                JSON.stringify(envelope), nextCap, `agent:${agentRow.id}`, JSON.stringify(ctxVersions), row.created_by, newId(), reqHash]
             );
             await audit(db, p, agentRow.scope, 'task.submitted', followUpId, { kind: 'turn', agent_id: agentRow.id, thread_id: row.thread_id });
             await event(db, p, agentRow.scope, 'task.updated', followUpId, { task_id: followUpId, kind: 'turn', thread_id: row.thread_id, status: 'queued', action: 'submitted' });
-            if (delegateObjective) {
+            if (effectiveDelegateObjective) {
               const seq = await assignThreadSeq(db, p.tenantId, row.thread_id);
               const noticeId = newId();
               const author = { kind: 'system', id: 'service' };

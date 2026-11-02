@@ -50,6 +50,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
   if (!allowedOrigins.includes(url.origin)) allowedOrigins.push(url.origin);
   for (const origin of allowedOrigins) if (new URL(origin).origin !== origin) throw new Error('ALLOWED_ORIGINS must contain exact URL origins.');
   const { trustProxy, trustedProxies } = parseTrustedProxies(env);
+  const sourcesEnabled = flag(env.SOURCES_ENABLED, false);
+  if (sourcesEnabled && (!eventEncryptionKey || !/^[0-9a-f]{64}$/i.test(eventEncryptionKey))) {
+    throw new Error('SOURCES_ENABLED requires EVENT_ENCRYPTION_KEY to be 32 random bytes encoded as 64 hex characters.');
+  }
   return {
     host, port, publicUrl: url.origin, allowedOrigins, allowInsecureLocalhost,
     maxBodyBytes: 512 * 1024,
@@ -59,5 +63,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     passkeyRpId: env.PASSKEY_RP_ID?.trim().toLowerCase() || undefined,
     trustProxy,
     trustedProxies,
+    sourcesEnabled,
   };
 }
