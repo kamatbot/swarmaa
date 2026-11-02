@@ -382,28 +382,39 @@ export class TaskService {
       }
       requireCondition(!row.flow_id,409,'flow_managed_task','Flow steps are immutable; start a new flow to retry or change work.');
       requireCondition(row.version === expected,409,'version_conflict','Task changed; read it before appending a continuation.');
-      requireCondition(row.continuation_count<20,409,'continuation_limit','A task permits at most 20 continuations; create a new bounded task.');
-      if (['completed','failed','cancelled'].includes(row.status)) {
-        const count = await db.query<{count:string}>(`SELECT count(*)::text AS count FROM tasks
-          WHERE tenant_id=$1 AND scope=$2 AND status IN ('queued','running','blocked')`,[p.tenantId,row.scope]);
-        requireCondition(Number(count.rows[0]?.count ?? 0)<1000,429,'queue_full','Scope already has 1000 open tasks; finish or cancel existing work first.');
-      }
-      if (row.status === 'running') {
-        const time = await db.query<{live:boolean}>('SELECT $1::timestamptz>clock_timestamp() AS live',[row.lease_expires_at]);
-        requireCondition(!time.rows[0]?.live,409,'task_running','Wait for the current run or cancel it before continuing.');
-        await db.query(`UPDATE task_runs SET status='abandoned',ended_at=clock_timestamp() WHERE task_id=$1 AND generation=$2 AND status='running'`,[id,row.lease_generation]);
-      }
-      await retireResource(db,row);
-      await db.query(`INSERT INTO task_instructions (id,task_id,actor_id,idempotency_key,request_hash,instruction)
-        VALUES ($1,$2,$3,$4,$5,$6)`,[newId(),id,p.id,key,requestHash,instruction]);
-      const updated = await db.query<TaskRow>(`UPDATE tasks SET status='queued',version=version+1,
-        continuation_count=continuation_count+1,attempt_count=0,lease_generation=lease_generation+1,
-        lease_owner=NULL,lease_hash=NULL,lease_expires_at=NULL,completed_at=NULL,updated_at=clock_timestamp()
-        WHERE id=$1 RETURNING *`,[id]);
-      const next = updated.rows[0]!;
-      await taskChanged(db,p,next,'continued');
-      return {task:await taskWithInstructions(db,next),replayed:false};
+      return this.continueInternal(db,p,row,instruction,key,requestHash);
     });
+  }
+
+  async continueInternal(
+    db: PoolClient,
+    p: Principal,
+    row: TaskRow,
+    instruction: string,
+    idempotencyKey: string,
+    requestHash: string
+  ): Promise<{ task: Record<string, unknown>; replayed: boolean }> {
+    requireCondition(row.continuation_count<20,409,'continuation_limit','A task permits at most 20 continuations; create a new bounded task.');
+    if (['completed','failed','cancelled'].includes(row.status)) {
+      const count = await db.query<{count:string}>(`SELECT count(*)::text AS count FROM tasks
+        WHERE tenant_id=$1 AND scope=$2 AND status IN ('queued','running','blocked')`,[p.tenantId,row.scope]);
+      requireCondition(Number(count.rows[0]?.count ?? 0)<1000,429,'queue_full','Scope already has 1000 open tasks; finish or cancel existing work first.');
+    }
+    if (row.status === 'running') {
+      const time = await db.query<{live:boolean}>('SELECT $1::timestamptz>clock_timestamp() AS live',[row.lease_expires_at]);
+      requireCondition(!time.rows[0]?.live,409,'task_running','Wait for the current run or cancel it before continuing.');
+      await db.query(`UPDATE task_runs SET status='abandoned',ended_at=clock_timestamp() WHERE task_id=$1 AND generation=$2 AND status='running'`,[row.id,row.lease_generation]);
+    }
+    await retireResource(db,row);
+    await db.query(`INSERT INTO task_instructions (id,task_id,actor_id,idempotency_key,request_hash,instruction)
+      VALUES ($1,$2,$3,$4,$5,$6)`,[newId(),row.id,p.id,idempotencyKey,requestHash,instruction]);
+    const updated = await db.query<TaskRow>(`UPDATE tasks SET status='queued',version=version+1,
+      continuation_count=continuation_count+1,attempt_count=0,lease_generation=lease_generation+1,
+      lease_owner=NULL,lease_hash=NULL,lease_expires_at=NULL,completed_at=NULL,updated_at=clock_timestamp()
+      WHERE id=$1 RETURNING *`,[row.id]);
+    const next = updated.rows[0]!;
+    await taskChanged(db,p,next,'continued');
+    return {task:await taskWithInstructions(db,next),replayed:false};
   }
 
   async claim(p:Principal,input:Record<string,unknown>):Promise<unknown> {

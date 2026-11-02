@@ -36,6 +36,8 @@ All examples below show **tool arguments and unwrapped tool results**, without t
 | `thread_read`, `thread_attachment_get`, `thread_mark_read`, `thread_list` | `thread:read` | Exact authorized scope |
 | `source_list`, `source_get`, `source_deliveries` | `task:read` | Exact authorized scope |
 | `source_update` | `routing:manage` and `task:read` | May only lower accept_mode; raising to auto requires owner CLI |
+| `task_subscribe`, `task_unsubscribe` | `task:submit` and `task:read` | Exact authorized scope |
+| `task_subscriptions` | `task:read` | Exact authorized scope |
 
 The `admin` permission satisfies permission checks, but it does not turn an admin connection into a worker. Owner review and worker execution use separate identities. Default frontend and worker permissions do not include `memory:moderate` or `task:patch`. Capability strings route work; they are never permissions. Mutation tools that return a full memory/task also require that resource's read permission, preventing a custom write-only grant from exposing an existing record through a conflict or replay response.
 
@@ -810,5 +812,8 @@ Calling `thread_read` on a bot thread automatically batches and embeds a `task` 
 - `source_get`: `{ source_id }` -> `{ source: {...} }`.
 - `source_update`: `{ source_id, expected_version, name?, rules?, bot_id?, accept_mode? }` -> `{ source: {...} }`. May only lower accept_mode (`auto` -> `observe` -> `off`).
 - `source_deliveries`: `{ source_id, after?, limit?, status? }` -> `{ deliveries: [...] }`. Returns durable delivery records with normalized digest, classification, reason, status, and execution evidence.
+- `task_subscribe`: `{ task_id, thread_ref, idempotency_key }` -> `{ subscription, replayed }`. Validates canonical ref (`github:<owner>/<repo>#pr/<number>`, `github:<owner>/<repo>#issue/<number>`, `github:<owner>/<repo>@<sha>`). Resolves source by repository in task scope. Rejects flow tasks (409) and cancelled tasks (409).
+- `task_unsubscribe`: `{ subscription_id }` -> `{ subscription, unsubscribed: true }`. Idempotently deactivates subscription (`active=false`).
+- `task_subscriptions`: `{ task_id }` -> `{ subscriptions: [...] }`. Lists active and inactive subscriptions for a task. Subscriptions are read through this tool.
 
 

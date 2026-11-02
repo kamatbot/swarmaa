@@ -205,6 +205,40 @@ describe('source-filter unit tests (§8.1)', () => {
       };
       const res = classifyGithubEvent(baseRules, digest, { subscribedRefs: new Set(['github:kamatbot/swarmaa#pr/42']) });
       assert.deepEqual(res, { classification: 'explicit', reason: 'subscribed_thread' });
+
+      const digestCommented: NormalizedDigest = { ...digest, review_state: 'commented' };
+      const resCommented = classifyGithubEvent(baseRules, digestCommented, { subscribedRefs: new Set(['github:kamatbot/swarmaa#pr/42']) });
+      assert.deepEqual(resCommented, { classification: 'explicit', reason: 'subscribed_thread' });
+
+      const digestApproved: NormalizedDigest = { ...digest, review_state: 'approved' };
+      const resApproved = classifyGithubEvent(baseRules, digestApproved, { subscribedRefs: new Set(['github:kamatbot/swarmaa#pr/42']) });
+      assert.deepEqual(resApproved, { classification: 'ignore', reason: 'review_state' });
+    });
+
+    it('Rule 4: issue_comment and pull_request_review_comment on subscribed ref are explicit', () => {
+      const issueComment: NormalizedDigest = {
+        repo: 'kamatbot/swarmaa', event: 'issue_comment', action: 'created', number: 42, is_pr: true,
+        title: null, author_login: 'alice', author_type: 'User', author_association: null,
+        url: null, head_ref: 'patch', head_sha: 'a'.repeat(40), base_ref: 'main', review_state: null,
+        ci_name: null, ci_conclusion: null, body_excerpt: 'Looks interesting', pull_requests: [42],
+      };
+      const resIssue = classifyGithubEvent(baseRules, issueComment, { subscribedRefs: new Set(['github:kamatbot/swarmaa#pr/42']) });
+      assert.deepEqual(resIssue, { classification: 'explicit', reason: 'subscribed_thread' });
+
+      const reviewComment: NormalizedDigest = { ...issueComment, event: 'pull_request_review_comment' };
+      const resReview = classifyGithubEvent(baseRules, reviewComment, { subscribedRefs: new Set(['github:kamatbot/swarmaa#pr/42']) });
+      assert.deepEqual(resReview, { classification: 'explicit', reason: 'subscribed_thread' });
+    });
+
+    it('Rule 4: pull_request.closed on subscribed ref yields ignore/closed', () => {
+      const digest: NormalizedDigest = {
+        repo: 'kamatbot/swarmaa', event: 'pull_request', action: 'closed', number: 42, is_pr: true,
+        title: null, author_login: 'alice', author_type: 'User', author_association: null,
+        url: null, head_ref: 'patch', head_sha: 'a'.repeat(40), base_ref: 'main', review_state: null,
+        ci_name: null, ci_conclusion: null, body_excerpt: null, pull_requests: [42],
+      };
+      const res = classifyGithubEvent(baseRules, digest, { subscribedRefs: new Set(['github:kamatbot/swarmaa#pr/42']) });
+      assert.deepEqual(res, { classification: 'ignore', reason: 'closed' });
     });
 
     it('Rule 4: successful CI on a subscribed ref yields ignore/ci_success', () => {

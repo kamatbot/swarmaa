@@ -95,6 +95,9 @@ const specs: Spec[] = [
   ['source_get','task:read','Get repo source configuration, rules and 24h delivery counts.', { source_id:id }, ['source_id'], true],
   ['source_update','routing:manage','Update repo source name, rules, bot or lower accept_mode. Raising accept_mode to auto requires the owner CLI.', { source_id:id, expected_version:version, name:text(64), rules:smallObject, bot_id:{type:['string','null'],format:'uuid'}, accept_mode:{enum:['off','observe','auto']} }, ['source_id','expected_version']],
   ['source_deliveries','task:read','List durable deliveries for a repo source with digest, classification, status and action evidence.', { source_id:id, after:id, limit:{type:'integer',minimum:1,maximum:100}, status:{enum:['received','ignored','observed','deferred','dispatched','continued','failed']} }, ['source_id'], true],
+  ['task_subscribe','task:submit','Subscribe a task to an external thread (PR, issue, commit). In auto mode, verified feedback automatically continues the task.', { task_id:id, thread_ref:text(300), idempotency_key:text(200) }, ['task_id','thread_ref','idempotency_key']],
+  ['task_unsubscribe','task:submit','Unsubscribe a task from an external thread. Sets active to false.', { subscription_id:id }, ['subscription_id']],
+  ['task_subscriptions','task:read','List subscriptions for a task.', { task_id:id }, ['task_id'], true],
 ];
 
 export const TOOL_PERMISSIONS = Object.fromEntries(specs.map(([name, permission]) => [name, permission])) as Record<string, Permission>;

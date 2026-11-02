@@ -1,16 +1,23 @@
 /** Needs a disposable PostgreSQL database via TEST_DATABASE_URL; skipped otherwise. */
 import assert from 'node:assert/strict';
 import { createHmac, randomBytes, randomUUID } from 'node:crypto';
-import { readFile, readdir } from 'node:fs/promises';
+import { readFile, readdir, mkdtemp, rm } from 'node:fs/promises';
 import { createServer, type Server } from 'node:http';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { after, before, describe, it } from 'node:test';
 import pg, { type Pool } from 'pg';
 import { AuthService, hashToken, newToken } from '../src/auth.js';
+import { createWorktree, finishWorktree } from '../src/bridge/worktree.js';
 import { CoreService } from '../src/core/index.js';
 import { tickSourceDeliveries } from '../src/core/sources.js';
 import { createHttpHandler } from '../src/http.js';
 import { ROLE_PERMISSIONS } from '../src/policy.js';
 import type { Principal, ServerConfig } from '../src/types.js';
+
+const runExec = promisify(execFile);
 
 const connectionString = process.env.TEST_DATABASE_URL;
 
@@ -629,5 +636,713 @@ describe('sources and github intake integration tests (§8.2)', { skip: !connect
     assert.ok(eventRow.payload.status);
     assert.equal(eventRow.payload.body, undefined);
     assert.equal(eventRow.payload.comment, undefined);
+  });
+
+  it('tool subscribe: task_subscribe, task_unsubscribe, task_subscriptions', async () => {
+    const owner = await createPrincipal('t_sub1', 'owner_sub1', 'admin', ['project:demo']);
+    const otherScopeOwner = await createPrincipal('t_sub1', 'owner_sub_other', 'admin', ['project:other']);
+
+    const source = await core.sources.createSource(owner, {
+      scope: 'project:demo',
+      repo_full_name: 'kamatbot/swarmaa',
+    }, encKey);
+
+    const taskRes = await call(owner, 'task_submit', {
+      scope: 'project:demo',
+      kind: 'patch',
+      objective: 'Subscribe tool test',
+      idempotency_key: randomUUID(),
+      required_capability: 'claude.patch',
+    });
+    const taskId = taskRes.task.id;
+
+    await assert.rejects(
+      async () => await call(owner, 'task_subscribe', {
+        task_id: taskId,
+        thread_ref: 'invalid-ref',
+        idempotency_key: randomUUID(),
+      }),
+      { code: 'invalid_thread_ref' }
+    );
+
+    const taskOther = await call(otherScopeOwner, 'task_submit', {
+      scope: 'project:other',
+      kind: 'patch',
+      objective: 'No source task',
+      idempotency_key: randomUUID(),
+      required_capability: 'claude.patch',
+    });
+    await assert.rejects(
+      async () => await call(otherScopeOwner, 'task_subscribe', {
+        task_id: taskOther.task.id,
+        thread_ref: 'github:kamatbot/swarmaa#pr/10',
+        idempotency_key: randomUUID(),
+      }),
+      { code: 'source_not_found' }
+    );
+
+    await pool.query("UPDATE tasks SET status='cancelled' WHERE id=$1", [taskOther.task.id]);
+    await assert.rejects(
+      async () => await call(otherScopeOwner, 'task_subscribe', {
+        task_id: taskOther.task.id,
+        thread_ref: 'github:kamatbot/swarmaa#pr/10',
+        idempotency_key: randomUUID(),
+      }),
+      { code: 'task_cancelled' }
+    );
+
+    const idemKey = randomUUID();
+    const subRes = await call(owner, 'task_subscribe', {
+      task_id: taskId,
+      thread_ref: 'github:kamatbot/swarmaa#pr/10',
+      idempotency_key: idemKey,
+    });
+    assert.ok(subRes.subscription.id);
+    assert.equal(subRes.subscription.task_id, taskId);
+    assert.equal(subRes.subscription.source_id, source.id);
+    assert.equal(subRes.subscription.external_thread_ref, 'github:kamatbot/swarmaa#pr/10');
+    assert.equal(subRes.subscription.budget_remaining, 5);
+    assert.equal(subRes.subscription.active, true);
+    assert.equal(subRes.subscription.created_via, 'tool');
+    assert.equal(subRes.replayed, false);
+
+    const replayRes = await call(owner, 'task_subscribe', {
+      task_id: taskId,
+      thread_ref: 'github:kamatbot/swarmaa#pr/10',
+      idempotency_key: idemKey,
+    });
+    assert.equal(replayRes.replayed, true);
+    assert.equal(replayRes.subscription.id, subRes.subscription.id);
+
+    const listRes = await call(owner, 'task_subscriptions', { task_id: taskId });
+    assert.equal(listRes.subscriptions.length, 1);
+    assert.equal(listRes.subscriptions[0].id, subRes.subscription.id);
+    assert.equal(listRes.subscriptions[0].active, true);
+
+    const unsubRes = await call(owner, 'task_unsubscribe', { subscription_id: subRes.subscription.id });
+    assert.equal(unsubRes.unsubscribed, true);
+    assert.equal(unsubRes.subscription.active, false);
+
+    const unsubReplay = await call(owner, 'task_unsubscribe', { subscription_id: subRes.subscription.id });
+    assert.equal(unsubReplay.unsubscribed, true);
+
+    const listAfterUnsub = await call(owner, 'task_subscriptions', { task_id: taskId });
+    assert.equal(listAfterUnsub.subscriptions[0].active, false);
+  });
+
+  it('branch match: auto mode creates branch_match subscription, ambiguous records reason, observe records would_do only', async () => {
+    const owner = await createPrincipal('t_sub2', 'owner_sub2', 'admin', ['project:demo']);
+    const source = await core.sources.createSource(owner, {
+      scope: 'project:demo',
+      repo_full_name: 'kamatbot/branch-test',
+      rules: { allow_authors: ['mayurkamat'], auto_subscribe_branches: true },
+    }, encKey);
+
+    const task1 = await call(owner, 'task_submit', {
+      scope: 'project:demo',
+      kind: 'patch',
+      objective: 'Branch match task 1',
+      idempotency_key: randomUUID(),
+      required_capability: 'claude.patch',
+    });
+    const prefix1 = task1.task.id.slice(0, 8);
+
+    await core.sources.setMode(owner, source.id, 'auto');
+
+    const prPayload = JSON.stringify({
+      repository: { full_name: 'kamatbot/branch-test' },
+      action: 'opened',
+      pull_request: {
+        number: 101,
+        title: 'Fix issue',
+        user: { login: 'mayurkamat', type: 'User' },
+        head: { ref: `swarmaa/claude/${prefix1}` },
+        base: { ref: 'main' },
+      },
+    });
+
+    const res = await fetch(`${origin}/hooks/github/${source.id}`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-github-event': 'pull_request',
+        'x-github-delivery': randomUUID(),
+        'x-hub-signature-256': sign(source.secret, prPayload),
+      },
+      body: prPayload,
+    });
+    assert.equal(res.status, 202);
+
+    const subs = (await pool.query<any>(
+      'SELECT * FROM task_subscriptions WHERE task_id = $1',
+      [task1.task.id]
+    )).rows;
+    assert.equal(subs.length, 1);
+    assert.equal(subs[0].created_via, 'branch_match');
+    assert.equal(subs[0].external_thread_ref, 'github:kamatbot/branch-test#pr/101');
+    assert.equal(subs[0].active, true);
+
+    const fixedPrefix = 'abcdef01';
+    const uuidAmbiguous1 = `${fixedPrefix}-0000-0000-0000-000000000001`;
+    const uuidAmbiguous2 = `${fixedPrefix}-0000-0000-0000-000000000002`;
+
+    await pool.query(
+      `INSERT INTO tasks (id, tenant_id, scope, kind, objective, required_capability, permission_envelope, constraints, acceptance_criteria, context_refs, context_versions, status, version, created_by, idempotency_key, request_hash)
+       VALUES ($1, 't_sub2', 'project:demo', 'patch', 'Obj1', 'claude.patch', '{}'::jsonb, '{}', '{}', '{}', '{}'::jsonb, 'queued', 1, $3, $4, 'h1'),
+              ($2, 't_sub2', 'project:demo', 'patch', 'Obj2', 'claude.patch', '{}'::jsonb, '{}', '{}', '{}', '{}'::jsonb, 'queued', 1, $3, $5, 'h2')`,
+      [uuidAmbiguous1, uuidAmbiguous2, owner.id, randomUUID(), randomUUID()]
+    );
+
+    const ambiguousPayload = JSON.stringify({
+      repository: { full_name: 'kamatbot/branch-test' },
+      action: 'opened',
+      pull_request: {
+        number: 102,
+        title: 'Ambiguous PR',
+        user: { login: 'mayurkamat', type: 'User' },
+        head: { ref: `swarmaa/claude/${fixedPrefix}` },
+        base: { ref: 'main' },
+      },
+    });
+
+    const deliveryIdAmbiguous = randomUUID();
+    await fetch(`${origin}/hooks/github/${source.id}`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-github-event': 'pull_request',
+        'x-github-delivery': deliveryIdAmbiguous,
+        'x-hub-signature-256': sign(source.secret, ambiguousPayload),
+      },
+      body: ambiguousPayload,
+    });
+
+    const deliveryAmbiguous = (await pool.query<any>(
+      'SELECT * FROM source_deliveries WHERE source_id=$1 AND delivery_id=$2',
+      [source.id, deliveryIdAmbiguous]
+    )).rows[0];
+    assert.equal(deliveryAmbiguous.reason, 'branch_ambiguous');
+    assert.equal(deliveryAmbiguous.status, 'ignored');
+
+    const subsAmbiguous = (await pool.query<any>(
+      'SELECT * FROM task_subscriptions WHERE external_thread_ref = $1',
+      ['github:kamatbot/branch-test#pr/102']
+    )).rows;
+    assert.equal(subsAmbiguous.length, 0);
+
+    await core.sources.setMode(owner, source.id, 'observe');
+    const task3 = await call(owner, 'task_submit', {
+      scope: 'project:demo',
+      kind: 'patch',
+      objective: 'Observe branch match task',
+      idempotency_key: randomUUID(),
+      required_capability: 'claude.patch',
+    });
+    const prefix3 = task3.task.id.slice(0, 8);
+
+    const observePayload = JSON.stringify({
+      repository: { full_name: 'kamatbot/branch-test' },
+      action: 'opened',
+      pull_request: {
+        number: 103,
+        title: 'Observe PR',
+        user: { login: 'mayurkamat', type: 'User' },
+        head: { ref: `swarmaa/claude/${prefix3}` },
+        base: { ref: 'main' },
+      },
+    });
+    const deliveryIdObserve = randomUUID();
+    await fetch(`${origin}/hooks/github/${source.id}`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-github-event': 'pull_request',
+        'x-github-delivery': deliveryIdObserve,
+        'x-hub-signature-256': sign(source.secret, observePayload),
+      },
+      body: observePayload,
+    });
+
+    const deliveryObserve = (await pool.query<any>(
+      'SELECT * FROM source_deliveries WHERE source_id=$1 AND delivery_id=$2',
+      [source.id, deliveryIdObserve]
+    )).rows[0];
+    assert.equal(deliveryObserve.status, 'observed');
+    assert.deepEqual(deliveryObserve.would_do, { subscribe_task: task3.task.id });
+
+    const subsObserve = (await pool.query<any>(
+      'SELECT * FROM task_subscriptions WHERE task_id = $1',
+      [task3.task.id]
+    )).rows;
+    assert.equal(subsObserve.length, 0);
+  });
+
+  it('continuation of completed task: pull_request_review changes_requested continues task idempotently', async () => {
+    const owner = await createPrincipal('t_sub3', 'owner_sub3', 'admin', ['project:demo']);
+    const source = await core.sources.createSource(owner, {
+      scope: 'project:demo',
+      repo_full_name: 'kamatbot/continue-test',
+      rules: { allow_authors: ['mayurkamat'] },
+    }, encKey);
+    await core.sources.setMode(owner, source.id, 'auto');
+
+    const taskRes = await call(owner, 'task_submit', {
+      scope: 'project:demo',
+      kind: 'patch',
+      objective: 'Patch continuation test',
+      idempotency_key: randomUUID(),
+      required_capability: 'claude.patch',
+    });
+    const taskId = taskRes.task.id;
+
+    await pool.query("UPDATE tasks SET status='completed', completed_at=clock_timestamp() WHERE id=$1", [taskId]);
+
+    await call(owner, 'task_subscribe', {
+      task_id: taskId,
+      thread_ref: 'github:kamatbot/continue-test#pr/42',
+      idempotency_key: randomUUID(),
+    });
+
+    const reviewPayload = JSON.stringify({
+      repository: { full_name: 'kamatbot/continue-test' },
+      action: 'submitted',
+      pull_request: { number: 42, title: 'Fix bug', head: { ref: 'patch' }, base: { ref: 'main' } },
+      review: { state: 'changes_requested', user: { login: 'mayurkamat', type: 'User' }, body: 'Please fix typo' },
+    });
+    const deliveryId = randomUUID();
+
+    await fetch(`${origin}/hooks/github/${source.id}`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-github-event': 'pull_request_review',
+        'x-github-delivery': deliveryId,
+        'x-hub-signature-256': sign(source.secret, reviewPayload),
+      },
+      body: reviewPayload,
+    });
+
+    await tickSourceDeliveries(pool);
+
+    const taskAfter = (await pool.query<any>('SELECT * FROM tasks WHERE id=$1', [taskId])).rows[0];
+    assert.equal(taskAfter.status, 'queued');
+    assert.equal(taskAfter.continuation_count, 1);
+
+    const instructions = (await pool.query<any>(
+      'SELECT * FROM task_instructions WHERE task_id=$1 ORDER BY created_at ASC',
+      [taskId]
+    )).rows;
+    assert.equal(instructions.length, 1);
+    assert.equal(instructions[0].idempotency_key, `source:${source.id}:${deliveryId}`);
+    assert.ok(instructions[0].instruction.includes('<<<UNTRUSTED_CONTENT_'));
+    assert.ok(instructions[0].instruction.includes('Address the review/CI feedback above on the same branch if this is a patch task.'));
+
+    const deliveryRow = (await pool.query<any>(
+      'SELECT * FROM source_deliveries WHERE source_id=$1 AND delivery_id=$2',
+      [source.id, deliveryId]
+    )).rows[0];
+    assert.equal(deliveryRow.status, 'continued');
+    assert.equal(deliveryRow.task_id, taskId);
+
+    await tickSourceDeliveries(pool);
+    const taskAfterReplay = (await pool.query<any>('SELECT * FROM tasks WHERE id=$1', [taskId])).rows[0];
+    assert.equal(taskAfterReplay.continuation_count, 1);
+  });
+
+  it('running task deferral and batching into one continuation when task leaves running', async () => {
+    const owner = await createPrincipal('t_sub4', 'owner_sub4', 'admin', ['project:demo']);
+    const worker = await createPrincipal('t_sub4', 'worker_sub4', 'worker', ['project:demo']);
+    const source = await core.sources.createSource(owner, {
+      scope: 'project:demo',
+      repo_full_name: 'kamatbot/batch-test',
+      rules: { allow_authors: ['mayurkamat'] },
+    }, encKey);
+    await core.sources.setMode(owner, source.id, 'auto');
+
+    const taskRes = await call(owner, 'task_submit', {
+      scope: 'project:demo',
+      kind: 'patch',
+      objective: 'Batching test',
+      idempotency_key: randomUUID(),
+      required_capability: 'claude.patch',
+    });
+    const taskId = taskRes.task.id;
+
+    await call(owner, 'task_subscribe', {
+      task_id: taskId,
+      thread_ref: 'github:kamatbot/batch-test#pr/50',
+      idempotency_key: randomUUID(),
+    });
+
+    const claimRes = await call(worker, 'task_claim', {
+      scope: 'project:demo',
+      capabilities: ['claude.patch'],
+      kinds: ['patch'],
+    });
+    assert.equal(claimRes.task.id, taskId);
+
+    const delivIds: string[] = [];
+    for (let i = 1; i <= 3; i++) {
+      const payload = JSON.stringify({
+        repository: { full_name: 'kamatbot/batch-test' },
+        action: 'created',
+        issue: { number: 50, pull_request: {} },
+        comment: { body: `Feedback ${i}`, user: { login: 'mayurkamat', type: 'User' } },
+      });
+      const dId = randomUUID();
+      delivIds.push(dId);
+      await fetch(`${origin}/hooks/github/${source.id}`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-github-event': 'issue_comment',
+          'x-github-delivery': dId,
+          'x-hub-signature-256': sign(source.secret, payload),
+        },
+        body: payload,
+      });
+    }
+
+    await tickSourceDeliveries(pool);
+
+    const deferredRows = (await pool.query<any>(
+      'SELECT status FROM source_deliveries WHERE source_id=$1 AND delivery_id=ANY($2::text[])',
+      [source.id, delivIds]
+    )).rows;
+    assert.equal(deferredRows.length, 3);
+    for (const row of deferredRows) {
+      assert.equal(row.status, 'deferred');
+    }
+
+    const taskStillRunning = (await pool.query<any>('SELECT * FROM tasks WHERE id=$1', [taskId])).rows[0];
+    assert.equal(taskStillRunning.continuation_count, 0);
+    assert.equal(taskStillRunning.status, 'running');
+
+    await call(worker, 'task_finish', {
+      task_id: taskId,
+      lease_token: claimRes.lease_token,
+      lease_generation: claimRes.lease_generation,
+      outcome: 'completed',
+      result: { branch: 'swarmaa/claude/test' },
+    });
+
+    await pool.query('UPDATE source_deliveries SET next_attempt_at = clock_timestamp() WHERE source_id=$1 AND delivery_id=ANY($2::text[])', [source.id, delivIds]);
+    await tickSourceDeliveries(pool);
+
+    const taskAfterBatch = (await pool.query<any>('SELECT * FROM tasks WHERE id=$1', [taskId])).rows[0];
+    assert.equal(taskAfterBatch.status, 'queued');
+    assert.equal(taskAfterBatch.continuation_count, 1);
+
+    const instructions = (await pool.query<any>(
+      'SELECT * FROM task_instructions WHERE task_id=$1 ORDER BY created_at ASC',
+      [taskId]
+    )).rows;
+    assert.equal(instructions.length, 1);
+    assert.equal(instructions[0].idempotency_key, `source:${source.id}:${delivIds[0]}:3`);
+    assert.ok(instructions[0].instruction.includes('Feedback 1'));
+    assert.ok(instructions[0].instruction.includes('Feedback 2'));
+    assert.ok(instructions[0].instruction.includes('Feedback 3'));
+
+    const continuedRows = (await pool.query<any>(
+      'SELECT status, task_id FROM source_deliveries WHERE source_id=$1 AND delivery_id=ANY($2::text[])',
+      [source.id, delivIds]
+    )).rows;
+    assert.equal(continuedRows.length, 3);
+    for (const row of continuedRows) {
+      assert.equal(row.status, 'continued');
+      assert.equal(row.task_id, taskId);
+    }
+  });
+
+  it('budget exhaustion: stops auto-continuing after 5 events, deactivates subscription and posts notice', async () => {
+    const owner = await createPrincipal('t_sub5', 'owner_sub5', 'admin', ['project:demo']);
+    const leadAgent = await call(owner, 'agent_create', {
+      name: 'lead5',
+      role: 'Lead',
+      instructions: 'Lead instructions',
+      scope: 'project:demo',
+      runner: { mode: 'auto' },
+    });
+    const bot = await call(owner, 'bot_create', {
+      name: 'bot5',
+      job: 'Bot job',
+      scope: 'project:demo',
+      lead_agent_id: leadAgent.agent.id,
+      member_agent_ids: [leadAgent.agent.id],
+    });
+
+    const source = await core.sources.createSource(owner, {
+      scope: 'project:demo',
+      repo_full_name: 'kamatbot/budget-test',
+      rules: { allow_authors: ['mayurkamat'] },
+    }, encKey);
+    await core.sources.setMode(owner, source.id, 'auto');
+
+    const taskRes = await call(owner, 'task_submit', {
+      scope: 'project:demo',
+      kind: 'patch',
+      objective: 'Budget task',
+      idempotency_key: randomUUID(),
+      required_capability: 'claude.patch',
+    });
+    const taskId = taskRes.task.id;
+    await pool.query('UPDATE tasks SET bot_id=$1, thread_id=$2 WHERE id=$3', [bot.bot.id, bot.bot.thread_id, taskId]);
+
+    const subRes = await call(owner, 'task_subscribe', {
+      task_id: taskId,
+      thread_ref: 'github:kamatbot/budget-test#pr/99',
+      idempotency_key: randomUUID(),
+    });
+    assert.equal(subRes.subscription.budget_remaining, 5);
+
+    for (let i = 1; i <= 5; i++) {
+      await pool.query("UPDATE tasks SET status='completed', completed_at=clock_timestamp() WHERE id=$1", [taskId]);
+      const payload = JSON.stringify({
+        repository: { full_name: 'kamatbot/budget-test' },
+        action: 'created',
+        issue: { number: 99, pull_request: {} },
+        comment: { body: `Event ${i}`, user: { login: 'mayurkamat', type: 'User' } },
+      });
+      await fetch(`${origin}/hooks/github/${source.id}`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-github-event': 'issue_comment',
+          'x-github-delivery': randomUUID(),
+          'x-hub-signature-256': sign(source.secret, payload),
+        },
+        body: payload,
+      });
+      await tickSourceDeliveries(pool);
+    }
+
+    const subAfter5 = (await pool.query<any>('SELECT * FROM task_subscriptions WHERE id=$1', [subRes.subscription.id])).rows[0];
+    assert.equal(subAfter5.budget_remaining, 0);
+    assert.equal(subAfter5.active, false);
+
+    const noticeMsg = (await pool.query<any>(
+      "SELECT * FROM messages WHERE thread_id=$1 AND kind='notice' ORDER BY created_at DESC LIMIT 1",
+      [bot.bot.thread_id]
+    )).rows[0];
+    assert.ok(noticeMsg);
+    assert.equal(noticeMsg.body, `Stopped auto-continuing ${taskId} after 5 GitHub events; resubscribe to continue.`);
+
+    await pool.query("UPDATE tasks SET status='completed', completed_at=clock_timestamp() WHERE id=$1", [taskId]);
+    const payload6 = JSON.stringify({
+      repository: { full_name: 'kamatbot/budget-test' },
+      action: 'created',
+      issue: { number: 99, pull_request: {} },
+      comment: { body: 'Event 6', user: { login: 'mayurkamat', type: 'User' } },
+    });
+    const deliv6 = randomUUID();
+    await fetch(`${origin}/hooks/github/${source.id}`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-github-event': 'issue_comment',
+        'x-github-delivery': deliv6,
+        'x-hub-signature-256': sign(source.secret, payload6),
+      },
+      body: payload6,
+    });
+    await tickSourceDeliveries(pool);
+
+    const taskFinal = (await pool.query<any>('SELECT * FROM tasks WHERE id=$1', [taskId])).rows[0];
+    assert.equal(taskFinal.continuation_count, 5);
+  });
+
+  it('cancelled or flow task deactivates subscription and delivery reason is task_not_continuable', async () => {
+    const owner = await createPrincipal('t_sub6', 'owner_sub6', 'admin', ['project:demo']);
+    const source = await core.sources.createSource(owner, {
+      scope: 'project:demo',
+      repo_full_name: 'kamatbot/cancelled-test',
+      rules: { allow_authors: ['mayurkamat'] },
+    }, encKey);
+    await core.sources.setMode(owner, source.id, 'auto');
+
+    const taskRes = await call(owner, 'task_submit', {
+      scope: 'project:demo',
+      kind: 'patch',
+      objective: 'Cancelled task test',
+      idempotency_key: randomUUID(),
+      required_capability: 'claude.patch',
+    });
+    const taskId = taskRes.task.id;
+
+    const subRes = await call(owner, 'task_subscribe', {
+      task_id: taskId,
+      thread_ref: 'github:kamatbot/cancelled-test#pr/77',
+      idempotency_key: randomUUID(),
+    });
+
+    await pool.query("UPDATE tasks SET status='cancelled' WHERE id=$1", [taskId]);
+
+    const payload = JSON.stringify({
+      repository: { full_name: 'kamatbot/cancelled-test' },
+      action: 'created',
+      issue: { number: 77, pull_request: {} },
+      comment: { body: 'Event on cancelled task', user: { login: 'mayurkamat', type: 'User' } },
+    });
+    const deliveryId = randomUUID();
+    await fetch(`${origin}/hooks/github/${source.id}`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-github-event': 'issue_comment',
+        'x-github-delivery': deliveryId,
+        'x-hub-signature-256': sign(source.secret, payload),
+      },
+      body: payload,
+    });
+
+    await tickSourceDeliveries(pool);
+
+    const subAfter = (await pool.query<any>('SELECT * FROM task_subscriptions WHERE id=$1', [subRes.subscription.id])).rows[0];
+    assert.equal(subAfter.active, false);
+
+    const deliveryRow = (await pool.query<any>('SELECT * FROM source_deliveries WHERE source_id=$1 AND delivery_id=$2', [source.id, deliveryId])).rows[0];
+    assert.equal(deliveryRow.status, 'ignored');
+    assert.equal(deliveryRow.reason, 'task_not_continuable');
+  });
+
+  it('PR closed deactivates subscription on subscribed thread', async () => {
+    const owner = await createPrincipal('t_sub7', 'owner_sub7', 'admin', ['project:demo']);
+    const source = await core.sources.createSource(owner, {
+      scope: 'project:demo',
+      repo_full_name: 'kamatbot/close-test',
+      rules: { allow_authors: ['mayurkamat'] },
+    }, encKey);
+    await core.sources.setMode(owner, source.id, 'auto');
+
+    const taskRes = await call(owner, 'task_submit', {
+      scope: 'project:demo',
+      kind: 'patch',
+      objective: 'PR close task',
+      idempotency_key: randomUUID(),
+      required_capability: 'claude.patch',
+    });
+    const taskId = taskRes.task.id;
+
+    const subRes = await call(owner, 'task_subscribe', {
+      task_id: taskId,
+      thread_ref: 'github:kamatbot/close-test#pr/88',
+      idempotency_key: randomUUID(),
+    });
+    assert.equal(subRes.subscription.active, true);
+
+    const closePayload = JSON.stringify({
+      repository: { full_name: 'kamatbot/close-test' },
+      action: 'closed',
+      pull_request: { number: 88, title: 'Closed PR', head: { ref: 'patch' }, base: { ref: 'main' } },
+    });
+    const deliveryId = randomUUID();
+
+    await fetch(`${origin}/hooks/github/${source.id}`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-github-event': 'pull_request',
+        'x-github-delivery': deliveryId,
+        'x-hub-signature-256': sign(source.secret, closePayload),
+      },
+      body: closePayload,
+    });
+
+    await tickSourceDeliveries(pool);
+
+    const subAfterClose = (await pool.query<any>('SELECT * FROM task_subscriptions WHERE id=$1', [subRes.subscription.id])).rows[0];
+    assert.equal(subAfterClose.active, false);
+
+    const deliveryRow = (await pool.query<any>('SELECT * FROM source_deliveries WHERE source_id=$1 AND delivery_id=$2', [source.id, deliveryId])).rows[0];
+    assert.equal(deliveryRow.status, 'ignored');
+    assert.equal(deliveryRow.reason, 'closed');
+  });
+
+  it('observe mode: records would_do continue_task only and sweep leaves task unchanged', async () => {
+    const owner = await createPrincipal('t_sub8', 'owner_sub8', 'admin', ['project:demo']);
+    const source = await core.sources.createSource(owner, {
+      scope: 'project:demo',
+      repo_full_name: 'kamatbot/observe-continue',
+      rules: { allow_authors: ['mayurkamat'] },
+    }, encKey);
+
+    const taskRes = await call(owner, 'task_submit', {
+      scope: 'project:demo',
+      kind: 'patch',
+      objective: 'Observe continue task',
+      idempotency_key: randomUUID(),
+      required_capability: 'claude.patch',
+    });
+    const taskId = taskRes.task.id;
+
+    await call(owner, 'task_subscribe', {
+      task_id: taskId,
+      thread_ref: 'github:kamatbot/observe-continue#pr/12',
+      idempotency_key: randomUUID(),
+    });
+
+    const payload = JSON.stringify({
+      repository: { full_name: 'kamatbot/observe-continue' },
+      action: 'created',
+      issue: { number: 12, pull_request: {} },
+      comment: { body: 'Observe comment', user: { login: 'mayurkamat', type: 'User' } },
+    });
+    const deliveryId = randomUUID();
+
+    await fetch(`${origin}/hooks/github/${source.id}`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-github-event': 'issue_comment',
+        'x-github-delivery': deliveryId,
+        'x-hub-signature-256': sign(source.secret, payload),
+      },
+      body: payload,
+    });
+
+    const deliveryBeforeSweep = (await pool.query<any>(
+      'SELECT * FROM source_deliveries WHERE source_id=$1 AND delivery_id=$2',
+      [source.id, deliveryId]
+    )).rows[0];
+    assert.equal(deliveryBeforeSweep.status, 'observed');
+    assert.deepEqual(deliveryBeforeSweep.would_do, { continue_task: taskId });
+
+    await tickSourceDeliveries(pool);
+
+    const taskAfterSweep = (await pool.query<any>('SELECT * FROM tasks WHERE id=$1', [taskId])).rows[0];
+    assert.equal(taskAfterSweep.version, 1);
+    assert.equal(taskAfterSweep.continuation_count, 0);
+  });
+
+  it('patch continuation worktree: continuing a completed patch task reuses branch and sets continued=true', async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), 'swarmaa-wt-pin-'));
+    try {
+      await runExec('git', ['init', '-b', 'main', tempDir]);
+      await runExec('git', ['-C', tempDir, 'config', 'user.name', 'Test']);
+      await runExec('git', ['-C', tempDir, 'config', 'user.email', 'test@test.com']);
+      await runExec('git', ['-C', tempDir, 'commit', '--allow-empty', '-m', 'initial']);
+
+      const fakeTask: any = {
+        id: randomUUID(),
+        scope: 'project:demo',
+        kind: 'patch',
+        objective: 'Worktree pin test',
+        base_ref: 'main',
+      };
+
+      const wt1 = await createWorktree(tempDir, 'claude', fakeTask);
+      assert.equal(wt1.branch, `swarmaa/claude/${fakeTask.id.slice(0, 8)}`);
+      assert.equal(wt1.continued, false);
+
+      await finishWorktree(tempDir, 'claude', fakeTask, wt1, 262144);
+
+      const wt2 = await createWorktree(tempDir, 'claude', fakeTask);
+      assert.equal(wt2.branch, `swarmaa/claude/${fakeTask.id.slice(0, 8)}`);
+      assert.equal(wt2.continued, true);
+
+      await finishWorktree(tempDir, 'claude', fakeTask, wt2, 262144);
+    } finally {
+      await rm(tempDir, { recursive: true, force: true }).catch(() => {});
+    }
   });
 });

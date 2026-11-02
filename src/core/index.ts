@@ -34,6 +34,7 @@ const responseReadPermissions:Partial<Record<string,Permission>> = {
   swarm_start:'task:read',swarm_update:'task:read',swarm_cancel:'task:read',question_answer:'thread:read',
   channel_create:'agent:read',channel_update:'agent:read',section_set:'thread:read',task_resolve:'task:read',
   attention_list:'thread:read',source_update:'task:read',
+  task_subscribe:'task:read',task_unsubscribe:'task:read',task_subscriptions:'task:read',
 };
 
 /** Transport-independent authorization and one implementation shared by MCP, REST and stdio proxy. */
@@ -157,6 +158,9 @@ export class CoreService implements ToolBackend {
       case 'source_get': return this.sources.get(principal,input);
       case 'source_update': return this.sources.update(principal,input);
       case 'source_deliveries': return this.sources.deliveries(principal,input);
+      case 'task_subscribe': return this.sources.taskSubscribe(principal,input);
+      case 'task_unsubscribe': return this.sources.taskUnsubscribe(principal,input);
+      case 'task_subscriptions': return this.sources.taskSubscriptions(principal,input);
       default: throw new AppError(404,'unknown_tool','Unknown tool name.');
     }
   }

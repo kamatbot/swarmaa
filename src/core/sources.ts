@@ -20,7 +20,40 @@ import {
   type SourceRules,
 } from './source-filter.js';
 import { assertKnownScope, audit, canonicalJson, event, newId, noExtraKeys, requireFound, scopeLock, scopeSql, sha256, type Db } from './shared.js';
+import { TaskService, type TaskRow } from './tasks.js';
 import { assignThreadSeq, clipUtf8, enqueueAgentTurn, type AgentRow } from './teams.js';
+
+export interface TaskSubscriptionRow {
+  id: string;
+  tenant_id: string;
+  scope: string;
+  task_id: string;
+  source_id: string;
+  external_thread_ref: string;
+  created_via: 'tool' | 'branch_match';
+  created_by: string;
+  budget_remaining: number;
+  active: boolean;
+  expires_at: Date;
+  last_delivery_at: Date | null;
+  idempotency_key: string | null;
+  created_at: Date;
+}
+
+export function subscriptionView(row: TaskSubscriptionRow): Record<string, unknown> {
+  return {
+    id: row.id,
+    task_id: row.task_id,
+    source_id: row.source_id,
+    external_thread_ref: row.external_thread_ref,
+    created_via: row.created_via,
+    budget_remaining: row.budget_remaining,
+    active: row.active,
+    expires_at: row.expires_at instanceof Date ? row.expires_at.toISOString() : row.expires_at,
+    last_delivery_at: row.last_delivery_at ? (row.last_delivery_at instanceof Date ? row.last_delivery_at.toISOString() : row.last_delivery_at) : null,
+    created_at: row.created_at instanceof Date ? row.created_at.toISOString() : row.created_at,
+  };
+}
 
 export interface SourceRow {
   id: string;
@@ -391,6 +424,108 @@ export class SourceService {
       return updated;
     });
   }
+
+  async taskSubscribe(p: Principal, input: Record<string, unknown>): Promise<unknown> {
+    noExtraKeys(input, ['task_id', 'thread_ref', 'idempotency_key']);
+    const taskId = uuid(input.task_id, 'task_id');
+    const rawRef = string(input.thread_ref, 'thread_ref', 300);
+    const parsed = parseThreadRef(rawRef);
+    const key = string(input.idempotency_key, 'idempotency_key', 200);
+
+    return transaction(this.pool, async db => {
+      const task = (await db.query<{
+        id: string;
+        tenant_id: string;
+        scope: string;
+        flow_id: string | null;
+        status: string;
+      }>('SELECT id, tenant_id, scope, flow_id, status FROM tasks WHERE id = $1 AND tenant_id = $2', [taskId, p.tenantId])).rows[0];
+      requireFound(task, 'Task');
+      assertKnownScope(p, task.scope);
+      requireScope(p, task.scope);
+
+      requireCondition(!task.flow_id, 409, 'flow_managed_task', 'Flow tasks cannot be subscribed.');
+      requireCondition(task.status !== 'cancelled', 409, 'task_cancelled', 'Cancelled tasks cannot be subscribed.');
+
+      const source = (await db.query<SourceRow>(
+        'SELECT * FROM sources WHERE tenant_id = $1 AND scope = $2 AND lower(repo_full_name) = lower($3) AND NOT archived',
+        [p.tenantId, task.scope, parsed.repo]
+      )).rows[0];
+      requireCondition(Boolean(source), 404, 'source_not_found', 'No source found for repo in task scope.');
+
+      const canonicalRef = parsed.kind === 'commit'
+        ? threadRef(source.repo_full_name, 'commit', parsed.sha!)
+        : threadRef(source.repo_full_name, parsed.kind, parsed.number!);
+
+      const existingIdem = (await db.query<TaskSubscriptionRow>(
+        'SELECT * FROM task_subscriptions WHERE tenant_id = $1 AND created_by = $2 AND idempotency_key = $3',
+        [p.tenantId, p.id, key]
+      )).rows[0];
+      if (existingIdem) {
+        requireCondition(
+          existingIdem.task_id === taskId && existingIdem.external_thread_ref === canonicalRef,
+          409,
+          'idempotency_conflict',
+          'This key was used for a different subscription.'
+        );
+        return { subscription: subscriptionView(existingIdem), replayed: true };
+      }
+
+      const id = newId();
+      const res = await db.query<TaskSubscriptionRow>(
+        `INSERT INTO task_subscriptions
+           (id, tenant_id, scope, task_id, source_id, external_thread_ref, created_via, created_by, budget_remaining, active, expires_at, idempotency_key)
+         VALUES ($1, $2, $3, $4, $5, $6, 'tool', $7, 5, true, clock_timestamp() + interval '14 days', $8)
+         ON CONFLICT (task_id, external_thread_ref) DO UPDATE
+           SET active = true, budget_remaining = 5, expires_at = clock_timestamp() + interval '14 days', idempotency_key = $8
+         RETURNING *`,
+        [id, p.tenantId, task.scope, taskId, source.id, canonicalRef, p.id, key]
+      );
+      return { subscription: subscriptionView(res.rows[0]!), replayed: false };
+    });
+  }
+
+  async taskUnsubscribe(p: Principal, input: Record<string, unknown>): Promise<unknown> {
+    noExtraKeys(input, ['subscription_id']);
+    const subId = uuid(input.subscription_id, 'subscription_id');
+    return transaction(this.pool, async db => {
+      const sub = (await db.query<TaskSubscriptionRow>(
+        'SELECT * FROM task_subscriptions WHERE id = $1 AND tenant_id = $2',
+        [subId, p.tenantId]
+      )).rows[0];
+      requireFound(sub, 'Subscription');
+      assertKnownScope(p, sub.scope);
+      requireScope(p, sub.scope);
+
+      if (!sub.active) {
+        return { subscription: subscriptionView(sub), unsubscribed: true };
+      }
+
+      const res = await db.query<TaskSubscriptionRow>(
+        'UPDATE task_subscriptions SET active = false WHERE id = $1 RETURNING *',
+        [subId]
+      );
+      return { subscription: subscriptionView(res.rows[0]!), unsubscribed: true };
+    });
+  }
+
+  async taskSubscriptions(p: Principal, input: Record<string, unknown>): Promise<unknown> {
+    noExtraKeys(input, ['task_id']);
+    const taskId = uuid(input.task_id, 'task_id');
+    const task = (await this.pool.query<{ id: string; scope: string }>(
+      'SELECT id, scope FROM tasks WHERE id = $1 AND tenant_id = $2',
+      [taskId, p.tenantId]
+    )).rows[0];
+    requireFound(task, 'Task');
+    assertKnownScope(p, task.scope);
+    requireScope(p, task.scope);
+
+    const rows = (await this.pool.query<TaskSubscriptionRow>(
+      'SELECT * FROM task_subscriptions WHERE tenant_id = $1 AND task_id = $2 ORDER BY created_at ASC',
+      [p.tenantId, taskId]
+    )).rows;
+    return { subscriptions: rows.map(subscriptionView) };
+  }
 }
 
 interface InsertDeliveryParams {
@@ -553,25 +688,85 @@ export async function receiveGithubDelivery(
   }
 
   const digest = normalizeGithubEvent(input.eventType, payload);
-  const ctx = { subscribedRefs: new Set<string>(), selfLogins: new Set<string>() };
-  const { classification, reason } = classifyGithubEvent(sourceRow.rules, digest, ctx);
+
+  const subRows = await pool.query<{ external_thread_ref: string }>(
+    `SELECT external_thread_ref FROM task_subscriptions
+     WHERE tenant_id = $1 AND scope = $2 AND active = true AND expires_at > clock_timestamp()`,
+    [sourceRow.tenant_id, sourceRow.scope]
+  );
+  const subscribedRefs = new Set(subRows.rows.map(r => r.external_thread_ref));
+
+  let branchAmbiguous = false;
+  let branchMatchTaskId: string | null = null;
+  const isPrAction = input.eventType === 'pull_request' && ['opened', 'reopened', 'synchronize'].includes(digest.action ?? '');
+  const headMatch = isPrAction && digest.head_ref ? digest.head_ref.match(/^swarmaa\/(claude|codex|antigravity)\/([0-9a-f]{8})$/) : null;
+
+  if (headMatch && sourceRow.rules.auto_subscribe_branches !== false) {
+    const hex8 = headMatch[2];
+    const candidateTasks = (await pool.query<{ id: string }>(
+      `SELECT id FROM tasks
+       WHERE tenant_id = $1 AND scope = $2 AND id::text LIKE $3
+         AND (kind = 'patch' OR (kind = 'turn' AND required_capability LIKE '%.patch'))`,
+      [sourceRow.tenant_id, sourceRow.scope, `${hex8}%`]
+    )).rows;
+
+    if (candidateTasks.length > 1) {
+      branchAmbiguous = true;
+    } else if (candidateTasks.length === 1) {
+      branchMatchTaskId = candidateTasks[0]!.id;
+      const prRef = threadRef(sourceRow.repo_full_name, 'pr', digest.number!);
+      if (sourceRow.accept_mode === 'auto') {
+        await pool.query(
+          `INSERT INTO task_subscriptions
+             (id, tenant_id, scope, task_id, source_id, external_thread_ref, created_via, created_by, budget_remaining, active, expires_at)
+           VALUES ($1, $2, $3, $4, $5, $6, 'branch_match', $7, 5, true, clock_timestamp() + interval '14 days')
+           ON CONFLICT (task_id, external_thread_ref) DO NOTHING`,
+          [newId(), sourceRow.tenant_id, sourceRow.scope, branchMatchTaskId, sourceRow.id, prRef, sourceRow.created_by]
+        );
+        subscribedRefs.add(prRef);
+      }
+    }
+  }
+
+  const ctx = { subscribedRefs, selfLogins: new Set<string>() };
+  let { classification, reason } = classifyGithubEvent(sourceRow.rules, digest, ctx);
 
   let status: 'received' | 'ignored' | 'observed' = 'received';
   let statusReason: string | null = reason;
   let wouldDo: Record<string, unknown> | null = null;
 
-  if (sourceRow.accept_mode === 'off') {
+  if (branchAmbiguous) {
+    classification = 'ignore';
+    statusReason = 'branch_ambiguous';
+    status = 'ignored';
+  } else if (sourceRow.accept_mode === 'off') {
     status = 'ignored';
     statusReason = 'source_off';
-  } else if (classification === 'ignore') {
-    status = 'ignored';
   } else if (sourceRow.accept_mode === 'observe') {
     status = 'observed';
-    if (sourceRow.bot_id && ['explicit', 'candidate'].includes(classification)) {
+    if (branchMatchTaskId) {
+      wouldDo = { subscribe_task: branchMatchTaskId };
+    } else if (classification === 'explicit' && reason === 'subscribed_thread') {
+      const refs = threadRefs(digest);
+      const sub = (await pool.query<{ task_id: string }>(
+        `SELECT task_id FROM task_subscriptions
+         WHERE source_id = $1 AND external_thread_ref = ANY($2::text[]) AND active = true AND expires_at > clock_timestamp()`,
+        [sourceRow.id, refs]
+      )).rows[0];
+      if (sub) wouldDo = { continue_task: sub.task_id };
+    } else if (sourceRow.bot_id && ['explicit', 'candidate'].includes(classification)) {
       wouldDo = { post_bot: sourceRow.bot_id };
     }
   } else if (sourceRow.accept_mode === 'auto') {
-    status = 'received';
+    if (classification === 'ignore') {
+      if (reason === 'closed' && digest.event === 'pull_request') {
+        status = 'received';
+      } else {
+        status = 'ignored';
+      }
+    } else {
+      status = 'received';
+    }
   }
 
   const refs = threadRefs(digest);
@@ -656,15 +851,196 @@ async function processOneDelivery(pool: Pool, deliveryId: string): Promise<void>
       }
 
       if (source.accept_mode === 'observe') {
-        const wouldDo = source.bot_id && delivery.classification && ['explicit', 'candidate'].includes(delivery.classification)
-          ? { post_bot: source.bot_id }
-          : null;
+        let wouldDo: Record<string, unknown> | null = null;
+        if (delivery.classification === 'explicit' && delivery.reason === 'subscribed_thread' && delivery.thread_ref) {
+          const sub = (await db.query<{ task_id: string }>(
+            `SELECT task_id FROM task_subscriptions
+             WHERE source_id = $1 AND external_thread_ref = $2 AND active = true AND expires_at > clock_timestamp()`,
+            [source.id, delivery.thread_ref]
+          )).rows[0];
+          if (sub) wouldDo = { continue_task: sub.task_id };
+        } else if (source.bot_id && delivery.classification && ['explicit', 'candidate'].includes(delivery.classification)) {
+          wouldDo = { post_bot: source.bot_id };
+        }
 
         await db.query(
           "UPDATE source_deliveries SET status = 'observed', would_do = $2::jsonb, processed_at = clock_timestamp() WHERE id = $1",
           [delivery.id, wouldDo ? JSON.stringify(wouldDo) : null]
         );
         return;
+      }
+
+      if (delivery.reason === 'closed' || (delivery.event_type === 'pull_request' && delivery.action === 'closed')) {
+        if (delivery.thread_ref) {
+          await db.query(
+            `UPDATE task_subscriptions SET active = false
+             WHERE tenant_id = $1 AND source_id = $2 AND external_thread_ref = $3 AND active = true`,
+            [source.tenant_id, source.id, delivery.thread_ref]
+          );
+        }
+        await db.query(
+          "UPDATE source_deliveries SET status = 'ignored', reason = 'closed', processed_at = clock_timestamp() WHERE id = $1",
+          [delivery.id]
+        );
+        return;
+      }
+
+      if (delivery.classification === 'explicit' && delivery.reason === 'subscribed_thread' && delivery.thread_ref) {
+        const subs = (await db.query<TaskSubscriptionRow>(
+          `SELECT * FROM task_subscriptions
+           WHERE source_id = $1 AND external_thread_ref = $2 AND active = true AND expires_at > clock_timestamp() AND budget_remaining > 0
+           ORDER BY created_at ASC`,
+          [source.id, delivery.thread_ref]
+        )).rows;
+
+        if (subs.length > 0) {
+          const tasksService = new TaskService(pool);
+          for (const sub of subs) {
+            const task = (await db.query<TaskRow>(
+              'SELECT * FROM tasks WHERE id = $1 FOR UPDATE',
+              [sub.task_id]
+            )).rows[0];
+            if (!task) continue;
+
+            if (task.status === 'cancelled' || task.flow_id) {
+              await db.query('UPDATE task_subscriptions SET active = false WHERE id = $1', [sub.id]);
+              await db.query(
+                "UPDATE source_deliveries SET status = 'ignored', reason = 'task_not_continuable', processed_at = clock_timestamp() WHERE id = $1",
+                [delivery.id]
+              );
+              return;
+            }
+
+            const isLiveRunning = task.status === 'running' && task.lease_expires_at && (new Date(task.lease_expires_at).getTime() > Date.now());
+            if (task.status === 'queued' || isLiveRunning) {
+              await db.query(
+                "UPDATE source_deliveries SET status = 'deferred', next_attempt_at = clock_timestamp() + interval '30 seconds' WHERE id = $1",
+                [delivery.id]
+              );
+              return;
+            }
+
+            const pending = (await db.query<SourceDeliveryRow>(
+              `SELECT * FROM source_deliveries
+               WHERE source_id = $1 AND thread_ref = $2
+                 AND status IN ('received', 'deferred')
+                 AND classification = 'explicit' AND reason = 'subscribed_thread'
+               ORDER BY received_at ASC, id ASC
+               FOR UPDATE`,
+              [source.id, delivery.thread_ref]
+            )).rows;
+
+            const allDeliveries = pending.length > 0 ? pending : [delivery];
+            const maxBatch = 10;
+            const folded = allDeliveries.slice(0, maxBatch);
+            const overflowCount = allDeliveries.length - folded.length;
+
+            const fixedSentence = 'Address the review/CI feedback above on the same branch if this is a patch task. Do not push, comment on GitHub, or deploy.';
+            const chunks: string[] = [];
+            for (const d of folded) {
+              const eventAction = d.action ? `.${d.action}` : '';
+              const header = `GitHub ${d.event_type}${eventAction} on ${d.thread_ref ?? d.digest?.repo ?? 'unknown'} by ${d.digest?.author_login ?? 'unknown'} — explicit (subscribed_thread)`;
+              chunks.push(`${header}\n${SOURCE_EVENT_GUIDANCE}\n${fenceUntrusted(JSON.stringify(d.digest))}`);
+            }
+
+            let foldedText = chunks.join('\n\n');
+            if (overflowCount > 0) {
+              foldedText += `\n\n${overflowCount} more events, see source_deliveries`;
+            }
+            if (foldedText.length > 15500) {
+              foldedText = clipUtf8(foldedText, 15500) + '\n[events truncated]';
+            }
+            const instruction = `${foldedText}\n\n${fixedSentence}`;
+
+            const idempotencyKey = folded.length === 1
+              ? `source:${source.id}:${folded[0]!.delivery_id}`
+              : `source:${source.id}:${folded[0]!.delivery_id}:${folded.length}`;
+
+            const foldedIds = folded.map(f => f.id);
+
+            const existingInstruction = (await db.query<{ id: string }>(
+              'SELECT id FROM task_instructions WHERE task_id = $1 AND idempotency_key = $2',
+              [task.id, idempotencyKey]
+            )).rows[0];
+
+            if (existingInstruction) {
+              await db.query(
+                `UPDATE source_deliveries
+                 SET status = 'continued', task_id = $1, processed_at = clock_timestamp()
+                 WHERE id = ANY($2::uuid[])`,
+                [task.id, foldedIds]
+              );
+              return;
+            }
+
+            const p: Principal = {
+              id: source.created_by,
+              tenantId: source.tenant_id,
+              name: `source:${source.id}`,
+              role: 'admin',
+              scopes: [task.scope],
+              permissions: [],
+            };
+
+            const requestHash = sha256(canonicalJson({ instruction, idempotency_key: idempotencyKey }));
+            await tasksService.continueInternal(db, p, task, instruction, idempotencyKey, requestHash);
+
+            await db.query(
+              `UPDATE source_deliveries
+               SET status = 'continued', task_id = $1, processed_at = clock_timestamp()
+               WHERE id = ANY($2::uuid[])`,
+              [task.id, foldedIds]
+            );
+
+            const newBudget = sub.budget_remaining - 1;
+            if (newBudget <= 0) {
+              await db.query(
+                `UPDATE task_subscriptions
+                 SET budget_remaining = 0, active = false, last_delivery_at = clock_timestamp()
+                 WHERE id = $1`,
+                [sub.id]
+              );
+
+              let botThreadId: string | null = null;
+              if (task.bot_id) {
+                const bot = (await db.query<{ thread_id: string }>(
+                  'SELECT thread_id FROM bots WHERE id = $1 AND NOT archived',
+                  [task.bot_id]
+                )).rows[0];
+                if (bot) botThreadId = bot.thread_id;
+              }
+
+              if (botThreadId) {
+                const seq = await assignThreadSeq(db, task.tenant_id, botThreadId);
+                const noticeId = newId();
+                const noticeBody = `Stopped auto-continuing ${task.id} after 5 GitHub events; resubscribe to continue.`;
+                const noticeAuthor = { kind: 'system', id: 'service' };
+
+                await db.query(
+                  `INSERT INTO messages (id, tenant_id, scope, thread_id, seq, author, kind, body)
+                   VALUES ($1, $2, $3, $4, $5, $6::jsonb, 'notice', $7)`,
+                  [noticeId, task.tenant_id, task.scope, botThreadId, seq, JSON.stringify(noticeAuthor), noticeBody]
+                );
+
+                await event(db, p, task.scope, 'message.created', noticeId, {
+                  thread_id: botThreadId,
+                  message_id: noticeId,
+                  seq: Number(seq),
+                  kind: 'notice',
+                  author: noticeAuthor,
+                });
+              }
+            } else {
+              await db.query(
+                `UPDATE task_subscriptions
+                 SET budget_remaining = $1, last_delivery_at = clock_timestamp()
+                 WHERE id = $2`,
+                [newBudget, sub.id]
+              );
+            }
+          }
+          return;
+        }
       }
 
       if (delivery.classification && ['explicit', 'candidate'].includes(delivery.classification) && source.bot_id) {
