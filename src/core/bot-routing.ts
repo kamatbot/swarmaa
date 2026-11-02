@@ -9,11 +9,12 @@ import { decide, getPolicy, scopeUsage, type RoutingKind, type RoutingPolicy, ty
 import { assertKnownScope, event, newId, noExtraKeys, requireFound, scopeLock, scopeSql, sha256, teamsLock, type Db } from './shared.js';
 import { assignThreadSeq, clipUtf8 } from './teams.js';
 import { taskChanged, type TaskRow } from './tasks.js';
+import { leadTurnProfile } from './bots.js';
 
 export interface BotRoutingRow {
   id:string; tenant_id:string; scope:string; thread_id:string; lead_agent_id:string; created_by:string;
   job:string; routing:Partial<Record<BotKind, RunnerConfig | {mode:'different_from_author'}>>;
-  rules:{schedule_paused?:boolean; quota_floor_pct?:number; review_edits?:boolean; require_tests?:boolean; quiet_schedule?:boolean};
+  rules:{schedule_paused?:boolean; quota_floor_pct?:number; review_edits?:boolean; require_tests?:boolean; quiet_schedule?:boolean; lead_mode?:'default'|'router'};
   schedule:string|null; next_run_at:Date|null; last_scheduled_run_at:Date|null; created_at:Date; archived:boolean;
 }
 export const BOT_KINDS = ['research','patch','review','summary'] as const;
@@ -267,9 +268,21 @@ async function fireSchedule(pool:Pool,candidate:BotRoutingRow):Promise<void> {
       if (!changed) return;
     }
     await db.query('UPDATE bots SET last_scheduled_run_at=$2 WHERE id=$1',[bot.id,watermark]);
+    const profile = leadTurnProfile(bot as any, agent);
     const key = `bot-schedule:${bot.id}:${bot.next_run_at.toISOString()}`;
+    const envelope = {
+      read_project: true,
+      local_patch: profile.edits,
+      deploy: false,
+      publish: false,
+      purchase: false,
+      send_messages: false,
+      permission_changes: false,
+      external_side_effects: false,
+      ...(profile.runner ? { runner: profile.runner } : {})
+    };
     const task = (await db.query<TaskRow>(`INSERT INTO tasks(id,tenant_id,scope,kind,objective,agent_id,thread_id,bot_id,initiator_kind,required_capability,resource_key,permission_envelope,created_by,idempotency_key,request_hash,status)
-      VALUES($1,$2,$3,'turn',$4,$5,$6,$7,'schedule',$8,$9,$10,$11,$12,$13,'queued') RETURNING *`,[newId(),p.tenantId,bot.scope,clipUtf8(`Scheduled run: ${bot.job}\nIf you have nothing worth reporting, reply with exactly {"quiet":true} as your whole answer.`,16000),agent.id,bot.thread_id,bot.id,runnerCapability((bot.routing[agent.edits ? 'patch' : 'summary'] ?? {mode:'auto'}) as RunnerConfig,agent.edits),`agent:${agent.id}`,JSON.stringify({read_project:true,local_patch:agent.edits,deploy:false,publish:false,purchase:false,send_messages:false,permission_changes:false,external_side_effects:false}),bot.created_by,key,sha256(key)])).rows[0]!;
+      VALUES($1,$2,$3,'turn',$4,$5,$6,$7,'schedule',$8,$9,$10,$11,$12,$13,'queued') RETURNING *`,[newId(),p.tenantId,bot.scope,clipUtf8(`Scheduled run: ${bot.job}\nIf you have nothing worth reporting, reply with exactly {"quiet":true} as your whole answer.`,16000),agent.id,bot.thread_id,bot.id,profile.capability,`agent:${agent.id}`,JSON.stringify(envelope),bot.created_by,key,sha256(key)])).rows[0]!;
     await taskChanged(db,p,task,'submitted',false);
   });
 }

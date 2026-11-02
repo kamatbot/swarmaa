@@ -9,7 +9,7 @@ import { booleanOption } from './memory.js';
 import { assertKnownScope, audit, canonicalJson, event, newId, noExtraKeys, requireFound, scopeLock, scopeSql, sha256, teamsLock, type Db } from './shared.js';
 import { runnerCapability, type RunnerConfig } from '../bridge/adapters.js';
 import { sectionView, swarmView, type SwarmRow, type SwarmStepRow, type QuestionRow, type SectionRow } from './swarms.js';
-import { botCapability, firstReplyRunner } from './bots.js';
+import { firstReplyRunner, leadTurnProfile } from './bots.js';
 import type { TaskRow } from './tasks.js';
 import { MAX_THREAD_PHOTOS, MESSAGE_METADATA_COLUMNS, parseThreadPhotos, photoMetadata, samePhotos, storedThreadPhotos, type ThreadPhoto } from './thread-attachments.js';
 
@@ -530,10 +530,10 @@ export class TeamService {
       }
 
       if (thread.kind === 'channel' || thread.kind === 'bot') {
-        let bot: { id: string; routing: Record<string, unknown>; rules: Record<string, unknown> } | undefined;
+        let bot: { id: string; routing: Record<string, unknown>; rules: Record<string, unknown>; lead_agent_id: string } | undefined;
         if (thread.kind === 'bot') {
-          bot = (await db.query<{ id: string; routing: Record<string, unknown>; rules: Record<string, unknown> }>(
-            'SELECT id, routing, rules FROM bots WHERE thread_id=$1 AND tenant_id=$2 AND NOT archived',
+          bot = (await db.query<{ id: string; routing: Record<string, unknown>; rules: Record<string, unknown>; lead_agent_id: string }>(
+            'SELECT id, routing, rules, lead_agent_id FROM bots WHERE thread_id=$1 AND tenant_id=$2 AND NOT archived',
             [threadId, p.tenantId]
           )).rows[0];
         }
@@ -581,19 +581,21 @@ export class TeamService {
             if (!agent) continue;
 
             const botId = bot?.id ?? null;
-            const turnKind = agent.edits ? 'patch' : 'summary';
+            const profile = bot ? leadTurnProfile(bot, agent) : null;
             // A bot's chat turn runs its quick first-reply model, which may then delegate to the full model.
-            const first = bot ? firstReplyRunner(bot.rules, agent.edits) : null;
-            const requiredCap = first?.capability ?? (bot ? botCapability(bot, turnKind, agent.edits) : runnerCapability(agent.runner, agent.edits));
+            const first = (bot && !profile?.router) ? firstReplyRunner(bot.rules, agent.edits) : null;
+            const requiredCap = first?.capability ?? (profile ? profile.capability : runnerCapability(agent.runner, agent.edits));
             const taskId = newId();
             const cleanBody = clipUtf8(redactSecrets(body).replace(/@[a-zA-Z0-9_-]+\s*/g, '').trim(), 256);
             const turnObjective = thread.kind === 'bot'
               ? (cleanBody || `Turn for agent ${agent.name} in ${thread.title ?? 'bot'}`)
               : `Turn for agent ${agent.name} in #${thread.title ?? 'channel'}`;
+            const edits = profile ? profile.edits : agent.edits;
+            const runnerObj = profile?.runner ?? first?.runner;
             const envelope = {
-              deploy: false, publish: false, purchase: false, local_patch: agent.edits,
+              deploy: false, publish: false, purchase: false, local_patch: edits,
               read_project: true, send_messages: false, permission_changes: false, external_side_effects: false,
-              ...(first ? { runner: first.runner } : {})
+              ...(runnerObj ? { runner: runnerObj } : {})
             };
             const contextVersions = { message_seq: Number(nextSeq), hop_depth: 0 };
             const reqHash = sha256(canonicalJson({

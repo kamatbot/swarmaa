@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { extractActionsBlock } from '../src/core/actions.js';
+import { extractActionsBlock, validateTurnGrant, type TurnGrantContext, type TurnAction } from '../src/core/actions.js';
 
 test('actions parser: plain message without actions block returns full text and empty actions', () => {
   const input = 'Hello! I am ready to work on the project.';
@@ -167,4 +167,74 @@ test('actions parser: schema rejects unknown action type or extra fields', () =>
 
   const res2 = extractActionsBlock(input2);
   assert.ok(res2.error?.includes('unknown field'));
+});
+
+test('validateTurnGrant with leadMode router allows only dispatch actions', async () => {
+  const mockDb = {
+    query: async (sql: string) => {
+      if (sql.includes('FROM agents')) {
+        return { rows: [{ id: 'a0000000-0000-0000-0000-000000000002', name: 'target', scope: 'project:a', edits: false, archived: false }] };
+      }
+      if (sql.includes('FROM bots')) {
+        return { rows: [{ id: 'b0000000-0000-0000-0000-000000000001' }] };
+      }
+      return { rows: [] };
+    }
+  } as any;
+
+  const baseCtx: TurnGrantContext = {
+    agent: { id: 'a0000000-0000-0000-0000-000000000001', name: 'lead', scope: 'project:a', edits: true } as any,
+    thread: { id: 't0000000-0000-0000-0000-000000000001', scope: 'project:a' } as any,
+    tenantId: 'tenant-1',
+    scope: 'project:a',
+    botId: 'b0000000-0000-0000-0000-000000000001',
+    leadMode: 'router'
+  };
+
+  // Valid dispatch actions
+  const handoffAction: TurnAction = { type: 'handoff', to_agent: 'a0000000-0000-0000-0000-000000000002', body: 'dispatch' };
+  assert.equal((await validateTurnGrant(mockDb, baseCtx, [handoffAction])).valid, true);
+
+  const swarmStartAction: TurnAction = {
+    type: 'swarm_start',
+    title: 'Swarm',
+    goal: 'Goal',
+    steps: [{ key: 'step1', title: 'Step 1', assignee_agent_id: 'a0000000-0000-0000-0000-000000000002' }]
+  };
+  assert.equal((await validateTurnGrant(mockDb, baseCtx, [swarmStartAction])).valid, true);
+
+  const questionAction: TurnAction = { type: 'question_ask', prompt: 'Prompt?', options: ['A', 'B'], multi: false, free_text: false };
+  assert.equal((await validateTurnGrant(mockDb, baseCtx, [questionAction])).valid, true);
+
+  const appearanceAction: TurnAction = { type: 'bot_appearance', avatar: 'runner' };
+  assert.equal((await validateTurnGrant(mockDb, baseCtx, [appearanceAction])).valid, true);
+
+  // Rejected non-dispatch actions in router mode
+  const swarmUpdateAction: TurnAction = {
+    type: 'swarm_update',
+    swarm_id: 's0000000-0000-0000-0000-000000000001',
+    ops: [{ op: 'add_step', step: { key: 's2', title: 'Step 2', assignee_agent_id: 'a0000000-0000-0000-0000-000000000002' } }]
+  };
+  const resUpdate = await validateTurnGrant(mockDb, baseCtx, [swarmUpdateAction]);
+  assert.equal(resUpdate.valid, false);
+  if (!resUpdate.valid) {
+    assert.equal(resUpdate.reason, 'router_dispatch_only');
+    assert.equal(resUpdate.action.type, 'swarm_update');
+  }
+
+  const channelPostAction: TurnAction = {
+    type: 'channel_post',
+    channel_id: 'c0000000-0000-0000-0000-000000000001',
+    body: 'hello'
+  };
+  const resPost = await validateTurnGrant(mockDb, baseCtx, [channelPostAction]);
+  assert.equal(resPost.valid, false);
+  if (!resPost.valid) {
+    assert.equal(resPost.reason, 'router_dispatch_only');
+    assert.equal(resPost.action.type, 'channel_post');
+  }
+
+  // With leadMode unset, behavior is unchanged
+  const unsetCtx: TurnGrantContext = { ...baseCtx, leadMode: undefined };
+  assert.equal((await validateTurnGrant(mockDb, unsetCtx, [handoffAction])).valid, true);
 });
