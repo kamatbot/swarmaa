@@ -7,6 +7,7 @@ import { after, before, describe, it } from 'node:test';
 import pg, { type Pool } from 'pg';
 import { AuthService, hashToken, newToken } from '../src/auth.js';
 import { CoreService } from '../src/core/index.js';
+import { tickBotSchedules } from '../src/core/bot-routing.js';
 import { AppError } from '../src/errors.js';
 import { createHttpHandler } from '../src/http.js';
 import { ROLE_PERMISSIONS } from '../src/policy.js';
@@ -1116,5 +1117,217 @@ describe('bots core service (Brief B1)', { skip: !connectionString, concurrency:
       call(userScopeX, 'bot_archive', { bot_id: botA.id }),
       (err: any) => err.status === 403
     );
+  });
+
+  it('router lead mode integration tests (§8.3)', async () => {
+    const tenantId = randomUUID();
+    const user = await createPrincipal(tenantId, 'user-router');
+    const worker = await createPrincipal(tenantId, 'worker-router', 'worker');
+
+    const leadAgent = (await call(user, 'agent_create', {
+      name: 'RouterLead', role: 'Lead', instructions: 'Router', scope: 'project:a', runner: { provider: 'claude' }, edits: true
+    })).agent;
+    const workerAgent = (await call(user, 'agent_create', {
+      name: 'Worker', role: 'Worker', instructions: 'Worker', scope: 'project:a', runner: { provider: 'codex' }, edits: true
+    })).agent;
+
+    // 1. bot_create with router and no crew -> 400 router_needs_crew
+    await assert.rejects(
+      call(user, 'bot_create', {
+        name: 'NoCrewRouterBot',
+        job: 'Router with no crew',
+        scope: 'project:a',
+        lead_agent_id: leadAgent.id,
+        member_agent_ids: [],
+        rules: { lead_mode: 'router' }
+      }),
+      (err: any) => err.status === 400 && err.code === 'router_needs_crew'
+    );
+
+    const { bot, thread } = await call(user, 'bot_create', {
+      name: 'RouterBot',
+      job: 'Router bot',
+      scope: 'project:a',
+      lead_agent_id: leadAgent.id,
+      member_agent_ids: [workerAgent.id],
+      rules: { lead_mode: 'router' },
+      routing: {
+        summary: { provider: 'claude', model: 'claude-haiku-5-5', effort: 'low' }
+      }
+    });
+
+    // 2. In router mode, posting to the bot thread queues a lead turn with required_capability ending .read, local_patch:false and runner.router:true
+    await call(user, 'thread_post', {
+      thread_id: thread.id,
+      body: 'Do something',
+      idempotency_key: 'router-post-1'
+    });
+
+    const leadTurn = (await pool.query(
+      "SELECT * FROM tasks WHERE tenant_id=$1 AND thread_id=$2 AND agent_id=$3 AND status='queued'",
+      [tenantId, thread.id, leadAgent.id]
+    )).rows[0];
+    assert.ok(leadTurn);
+    assert.equal(leadTurn.required_capability, 'claude.read');
+    assert.equal(leadTurn.permission_envelope.local_patch, false);
+    assert.equal(leadTurn.permission_envelope.runner?.router, true);
+
+    // 3. Finishing that turn with a channel_post action posts "Turn action rejected: …" and creates nothing. Finishing with swarm_start creates the swarm.
+    const claim1 = await call(worker, 'task_claim', {
+      scope: 'project:a',
+      capabilities: ['claude.read'],
+      kinds: ['turn']
+    });
+    assert.equal(claim1.task.id, leadTurn.id);
+
+    const channelPostReply = `I will post.\n\n\`\`\`swarmaa-actions\n[{"type":"channel_post","channel_id":"00000000-0000-0000-0000-000000000001","body":"forbidden"}]\n\`\`\``;
+    await call(worker, 'task_finish', {
+      task_id: leadTurn.id,
+      lease_token: claim1.lease_token,
+      lease_generation: claim1.lease_generation,
+      outcome: 'completed',
+      result: { answer: channelPostReply }
+    });
+
+    const threadMessages1 = (await call(user, 'thread_read', { thread_id: thread.id })).messages;
+    const rejectionNotice = threadMessages1.find((m: any) => m.kind === 'notice' && m.body?.includes('Turn action rejected: channel_post: router_dispatch_only'));
+    assert.ok(rejectionNotice, 'Turn action rejected notice should be posted');
+
+    await call(user, 'thread_post', {
+      thread_id: thread.id,
+      body: 'Start a swarm',
+      idempotency_key: 'router-post-2'
+    });
+
+    const leadTurn2 = (await pool.query(
+      "SELECT * FROM tasks WHERE tenant_id=$1 AND thread_id=$2 AND agent_id=$3 AND status='queued'",
+      [tenantId, thread.id, leadAgent.id]
+    )).rows[0];
+
+    const claim2 = await call(worker, 'task_claim', {
+      scope: 'project:a',
+      capabilities: ['claude.read'],
+      kinds: ['turn']
+    });
+
+    const swarmStartReply = `Dispatching.\n\n\`\`\`swarmaa-actions\n[{"type":"swarm_start","title":"Router Swarm","goal":"Do work","steps":[{"key":"s1","title":"Step 1","assignee_agent_id":"${workerAgent.id}","check":"it works"}]}]\n\`\`\``;
+    await call(worker, 'task_finish', {
+      task_id: leadTurn2.id,
+      lease_token: claim2.lease_token,
+      lease_generation: claim2.lease_generation,
+      outcome: 'completed',
+      result: { answer: swarmStartReply }
+    });
+
+    const swarms = (await pool.query(
+      "SELECT * FROM swarms WHERE tenant_id=$1 AND thread_id=$2",
+      [tenantId, thread.id]
+    )).rows;
+    assert.equal(swarms.length, 1);
+    assert.equal(swarms[0].title, 'Router Swarm');
+
+    // 4. Finishing it with DELEGATE: posts the 'can\'t self-delegate' notice and queues no claude.patch follow-up
+    await call(user, 'thread_post', {
+      thread_id: thread.id,
+      body: 'Can you delegate?',
+      idempotency_key: 'router-post-3'
+    });
+
+    const leadTurn3 = (await pool.query(
+      "SELECT * FROM tasks WHERE tenant_id=$1 AND thread_id=$2 AND agent_id=$3 AND status='queued'",
+      [tenantId, thread.id, leadAgent.id]
+    )).rows[0];
+
+    const claim3 = await call(worker, 'task_claim', {
+      scope: 'project:a',
+      capabilities: ['claude.read'],
+      kinds: ['turn']
+    });
+
+    const delegateReply = `I will look into it.\nDELEGATE: Self work`;
+    await call(worker, 'task_finish', {
+      task_id: leadTurn3.id,
+      lease_token: claim3.lease_token,
+      lease_generation: claim3.lease_generation,
+      outcome: 'completed',
+      result: { answer: delegateReply, delegate: { objective: 'Self work' } }
+    });
+
+    const threadMessages3 = (await call(user, 'thread_read', { thread_id: thread.id })).messages;
+    const delegateNotice = threadMessages3.find((m: any) => m.kind === 'notice' && m.body?.includes("Router lead can't self-delegate; use handoff or swarm_start."));
+    assert.ok(delegateNotice, 'Delegate notice should be posted');
+
+    const queuedFollowUps = (await pool.query(
+      "SELECT * FROM tasks WHERE tenant_id=$1 AND thread_id=$2 AND status='queued'",
+      [tenantId, thread.id]
+    )).rows;
+    assert.equal(queuedFollowUps.length, 0, 'No follow-up turn should be queued for self-delegation');
+
+    // 5. fireSchedule on a router bot queues a read-only lead turn
+    const scheduledBot = (await call(user, 'bot_create', {
+      name: 'ScheduledRouterBot',
+      job: 'Scheduled check',
+      scope: 'project:a',
+      lead_agent_id: leadAgent.id,
+      member_agent_ids: [workerAgent.id],
+      rules: { lead_mode: 'router', quiet_schedule: false },
+      schedule: '0 9 * * 1-5'
+    })).bot;
+
+    await pool.query("UPDATE bots SET next_run_at=clock_timestamp() - interval '1 second' WHERE id=$1", [scheduledBot.id]);
+    await tickBotSchedules(pool);
+
+    const schedTask = (await pool.query(
+      "SELECT * FROM tasks WHERE tenant_id=$1 AND bot_id=$2 AND initiator_kind='schedule' AND status='queued'",
+      [tenantId, scheduledBot.id]
+    )).rows[0];
+    assert.ok(schedTask, 'Scheduled task should be queued');
+    assert.equal(schedTask.required_capability.endsWith('.read'), true);
+    assert.equal(schedTask.permission_envelope.local_patch, false);
+    assert.equal(schedTask.permission_envelope.runner?.router, true);
+
+    // 6. swarm_start assigning a patch step to the router lead -> 400 router_lead_cannot_edit
+    await assert.rejects(
+      call(user, 'swarm_start', {
+        title: 'Patch on Router Lead',
+        goal: 'Should fail',
+        scope: 'project:a',
+        thread_id: thread.id,
+        steps: [
+          { key: 'step1', title: 'Edit code', assignee_agent_id: leadAgent.id, check: 'it works' }
+        ]
+      }),
+      (err: any) => err.status === 400 && err.code === 'router_lead_cannot_edit'
+    );
+
+    // Defense in depth: a router turn whose result reports changed_files or a branch is marked failed with router_edit_forbidden
+    await call(user, 'thread_post', {
+      thread_id: thread.id,
+      body: 'Check defense in depth',
+      idempotency_key: 'router-post-4'
+    });
+
+    const leadTurn4 = (await pool.query(
+      "SELECT * FROM tasks WHERE tenant_id=$1 AND thread_id=$2 AND agent_id=$3 AND status='queued'",
+      [tenantId, thread.id, leadAgent.id]
+    )).rows[0];
+
+    const claim4 = await call(worker, 'task_claim', {
+      scope: 'project:a',
+      capabilities: ['claude.read'],
+      kinds: ['turn']
+    });
+
+    await call(worker, 'task_finish', {
+      task_id: leadTurn4.id,
+      lease_token: claim4.lease_token,
+      lease_generation: claim4.lease_generation,
+      outcome: 'completed',
+      result: { answer: 'sneaky edit', changed_files: 2, branch: 'swarmaa/claude/evil' }
+    });
+
+    const finishedTurn4 = (await pool.query("SELECT * FROM tasks WHERE id=$1", [leadTurn4.id])).rows[0];
+    assert.equal(finishedTurn4.status, 'failed');
+    assert.equal(finishedTurn4.result?.failure?.code, 'router_edit_forbidden');
   });
 });

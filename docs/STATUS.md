@@ -14,6 +14,7 @@ Prepared 2026-10-21. This is an authored implementation, with source inspection 
 | Events | Persistent subscriptions/deliveries, callback challenge, HMAC signatures, retries, expiry, OAuth grant binding and polling | Public HTTPS receiver lifecycle and vendor event delivery |
 | Workers | Claude/Codex/Antigravity adapters (read by default; opt-in sandboxed git-worktree edits, local branches, never pushed), bounded processes, static project mapping | Installed CLI versions, account login, permission enforcement and actual tasks |
 | Antigravity | MCP config; sandboxed worker for review and in-project edits (no research) | Installed CLI version and actual tasks |
+| Sources | Verified GitHub intake, HMAC verification, code-first filter, and observe-by-default durable deliveries | Webhook integration and provider notification verification |
 | Reason | Optional targeted notifications and vendored upstream source | Local upstream install, pairing and live peer sessions |
 
 ## Deliberate scope of this release

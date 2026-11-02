@@ -402,7 +402,10 @@ export interface TurnGrantContext {
   scope: string;
   hopDepth?: number;
   botId?: string | null;
+  leadMode?: 'router' | 'default';
 }
+
+const ROUTER_ACTIONS = new Set(['swarm_start', 'handoff', 'question_ask', 'bot_appearance']);
 
 /**
  * Validates parsed actions against the turn grant in the database.
@@ -420,6 +423,9 @@ export async function validateTurnGrant(
   actions: TurnAction[]
 ): Promise<{ valid: true } | { valid: false; reason: string; action: TurnAction }> {
   for (const act of actions) {
+    if (ctx.leadMode === 'router' && !ROUTER_ACTIONS.has(act.type)) {
+      return { valid: false, reason: 'router_dispatch_only', action: act };
+    }
     if (act.type === 'bot_appearance') {
       if (!ctx.botId) return { valid: false, reason: 'bot_appearance requires a bot turn', action: act };
       const bot = (await db.query(

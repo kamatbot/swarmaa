@@ -34,6 +34,10 @@ All examples below show **tool arguments and unwrapped tool results**, without t
 | `bot_get`, `bot_list` | `agent:read` | Exact authorized scope |
 | `thread_post` | `thread:write` and `thread:read` | Exact authorized scope |
 | `thread_read`, `thread_attachment_get`, `thread_mark_read`, `thread_list` | `thread:read` | Exact authorized scope |
+| `source_list`, `source_get`, `source_deliveries` | `task:read` | Exact authorized scope |
+| `source_update` | `routing:manage` and `task:read` | May only lower accept_mode; raising to auto requires owner CLI |
+| `task_subscribe`, `task_unsubscribe` | `task:submit` and `task:read` | Exact authorized scope |
+| `task_subscriptions` | `task:read` | Exact authorized scope |
 
 The `admin` permission satisfies permission checks, but it does not turn an admin connection into a worker. Owner review and worker execution use separate identities. Default frontend and worker permissions do not include `memory:moderate` or `task:patch`. Capability strings route work; they are never permissions. Mutation tools that return a full memory/task also require that resource's read permission, preventing a custom write-only grant from exposing an existing record through a conflict or replay response.
 
@@ -791,4 +795,25 @@ Calling `thread_read` on a bot thread automatically batches and embeds a `task` 
   "check": null
 }
 ```
+
+## Sources (GitHub Webhooks)
+
+### HTTP Route
+
+`POST /hooks/github/<source_id>` receives webhook events from GitHub.
+- Requires `X-GitHub-Event`, `X-GitHub-Delivery`, `X-Hub-Signature-256`, and `Content-Type: application/json`.
+- Verified using HMAC SHA-256 before parsing body. Mismatched signatures and unknown source IDs return an identical `401 {"error": "unauthorized"}`.
+- Duplicate deliveries return `200 {"duplicate": true}`.
+- Valid deliveries are stored and acknowledged with `202 {"received": true}`.
+
+### Tools
+
+- `source_list`: `{ scope? }` -> `{ sources: [...] }`. Returns configuration, accept_mode, rules, bot_id, and 24-hour delivery counts.
+- `source_get`: `{ source_id }` -> `{ source: {...} }`.
+- `source_update`: `{ source_id, expected_version, name?, rules?, bot_id?, accept_mode? }` -> `{ source: {...} }`. May only lower accept_mode (`auto` -> `observe` -> `off`).
+- `source_deliveries`: `{ source_id, after?, limit?, status? }` -> `{ deliveries: [...] }`. Returns durable delivery records with normalized digest, classification, reason, status, and execution evidence.
+- `task_subscribe`: `{ task_id, thread_ref, idempotency_key }` -> `{ subscription, replayed }`. Validates canonical ref (`github:<owner>/<repo>#pr/<number>`, `github:<owner>/<repo>#issue/<number>`, `github:<owner>/<repo>@<sha>`). Resolves source by repository in task scope. Rejects flow tasks (409) and cancelled tasks (409).
+- `task_unsubscribe`: `{ subscription_id }` -> `{ subscription, unsubscribed: true }`. Idempotently deactivates subscription (`active=false`).
+- `task_subscriptions`: `{ task_id }` -> `{ subscriptions: [...] }`. Lists active and inactive subscriptions for a task. Subscriptions are read through this tool.
+
 

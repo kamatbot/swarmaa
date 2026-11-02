@@ -2,6 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   botCapability,
+  leadTurnProfile,
   validateRouting,
   validateRules,
   validateSchedule,
@@ -75,7 +76,8 @@ describe('bots unit tests', () => {
         review_edits: false,
         require_tests: true,
         quiet_schedule: true,
-        first_reply: 'claude-opus-5-5' as const
+        first_reply: 'claude-opus-5-5' as const,
+        lead_mode: 'default' as const
       };
       assert.deepEqual(validateRules(custom), custom);
     });
@@ -94,7 +96,8 @@ describe('bots unit tests', () => {
         review_edits: true,
         require_tests: true,
         quiet_schedule: true,
-        first_reply: 'claude-haiku-5-5'
+        first_reply: 'claude-haiku-5-5',
+        lead_mode: 'default'
       });
     });
 
@@ -118,6 +121,16 @@ describe('bots unit tests', () => {
 
     it('rejects unknown rule keys', () => {
       assert.throws(() => validateRules({ unknown_rule: true }), {
+        name: 'AppError',
+        code: 'invalid_arguments'
+      });
+    });
+
+    it('validates lead_mode rule', () => {
+      assert.equal(validateRules({}).lead_mode, 'default');
+      assert.equal(validateRules({ lead_mode: 'default' }).lead_mode, 'default');
+      assert.equal(validateRules({ lead_mode: 'router' }).lead_mode, 'router');
+      assert.throws(() => validateRules({ lead_mode: 'boss' }), {
         name: 'AppError',
         code: 'invalid_arguments'
       });
@@ -215,6 +228,58 @@ describe('bots unit tests', () => {
         { failure: { code: 'quota_exhausted' }, served: { provider: 'codex' } }
       );
       assert.equal(line, 'Failed · quota_exhausted on Codex');
+    });
+  });
+
+  describe('leadTurnProfile', () => {
+    const routerBot = {
+      id: 'b-1',
+      lead_agent_id: 'a-lead',
+      rules: { lead_mode: 'router' as const },
+      routing: {
+        summary: { provider: 'claude', model: 'claude-haiku-5-5', effort: 'low' },
+        patch: { provider: 'codex', model: 'codex-full', effort: 'high' }
+      }
+    };
+
+    it('router mode plus lead with edits:true -> edits:false, routeKind:summary, .read capability, runner from routing.summary', () => {
+      const leadAgent = { id: 'a-lead', edits: true };
+      const profile = leadTurnProfile(routerBot, leadAgent);
+      assert.equal(profile.router, true);
+      assert.equal(profile.edits, false);
+      assert.equal(profile.routeKind, 'summary');
+      assert.equal(profile.capability, 'claude.read');
+      assert.deepEqual(profile.runner, {
+        provider: 'claude',
+        model: 'claude-haiku-5-5',
+        effort: 'low',
+        fast: false,
+        router: true
+      });
+    });
+
+    it('non-lead member is unchanged in router bot', () => {
+      const memberAgent = { id: 'a-member', edits: true };
+      const profile = leadTurnProfile(routerBot, memberAgent);
+      assert.equal(profile.router, false);
+      assert.equal(profile.edits, true);
+      assert.equal(profile.routeKind, 'patch');
+      assert.equal(profile.capability, 'codex.patch');
+      assert.equal(profile.runner, undefined);
+    });
+
+    it('default mode is unchanged', () => {
+      const defaultBot = {
+        ...routerBot,
+        rules: { lead_mode: 'default' as const }
+      };
+      const leadAgent = { id: 'a-lead', edits: true };
+      const profile = leadTurnProfile(defaultBot, leadAgent);
+      assert.equal(profile.router, false);
+      assert.equal(profile.edits, true);
+      assert.equal(profile.routeKind, 'patch');
+      assert.equal(profile.capability, 'codex.patch');
+      assert.equal(profile.runner, undefined);
     });
   });
 });

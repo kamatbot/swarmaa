@@ -34,6 +34,13 @@ Callback allowlists are exact DNS hostnames. Every outbound attempt resolves and
 
 MCP callbacks require a signed, one-use challenge and Standard Webhooks HMAC over exact body bytes, event ID and signing timestamp. Secrets are encrypted with authenticated encryption and bound to the subscription ID. Generic sinks are owner-configured and use the receiver's supplied authentication headers; they are a distinct mode with no implied MCP challenge support.
 
+## GitHub event intake
+
+- **Threat model:** GitHub webhooks are external untrusted ingress. The endpoint requires an exact HMAC SHA-256 signature calculated over raw request bytes before JSON parsing. Secret ciphertexts are encrypted with AES-256-GCM and bound to `source:<id>`. Unknown source IDs and failed signatures return an identical 401 response to prevent ID enumeration.
+- **Replay note:** GitHub signatures do not include a timestamp header. Replay protection is enforced through deduplication on `(source_id, delivery_id)` in PostgreSQL, combined with a 30-day retention window for deliveries.
+- **Observe by default:** Sources start in `observe` mode, where events are evaluated and simulated (`would_do`) without creating tasks, messages, or turns. `auto` mode can only be enabled via the owner CLI with explicit confirmation (`--yes`). MCP and REST can only lower accept_mode.
+- **Fenced content:** All payload strings are bounded, stripped of invisible characters, secret-redacted, and wrapped with unforgeable random fences (`fenceUntrusted`) before reaching any agent prompt or thread message.
+
 ## Operational residuals
 
 Provisioned tokens do not expire automatically; rotate/revoke them deliberately. OAuth families have finite lifetimes. HTTP rate limits are process-local and shared by clients behind the same proxy IP. The implementation provides neither user signup/MFA nor a full identity-provider integration. There is no automatic backup, restore, retention or key-ring service.

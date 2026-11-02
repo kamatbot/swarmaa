@@ -1,16 +1,17 @@
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { open, unlink } from 'node:fs/promises';
 import { parseArgs } from 'node:util';
 import { AuthService, hashToken, newToken, principalFromRow } from '../src/auth.js';
 import { loadConfig } from '../src/config.js';
 import { createPool, transaction } from '../src/db.js';
-import { requireCondition } from '../src/errors.js';
+import { AppError, requireCondition } from '../src/errors.js';
 import { EventService } from '../src/events.js';
 import { PasskeyService } from '../src/passkeys.js';
 import { provisionConnection } from '../src/provision.js';
 import { GRANTABLE_PERMISSIONS, ROLE_PERMISSIONS } from '../src/policy.js';
 import type { Permission, Role } from '../src/types.js';
 import { enumValue, scopeName, string } from '../src/validation.js';
+import { SourceService } from '../src/core/sources.js';
 
 const { values, positionals } = parseArgs({
   allowPositionals: true, strict: true,
@@ -19,10 +20,15 @@ const { values, positionals } = parseArgs({
     tenant: { type: 'string', default: 'personal' }, grant: { type: 'string', multiple: true },
     out: { type: 'string' }, scope: { type: 'string' }, event: { type: 'string', default: 'task.updated' },
     permission: { type: 'string' }, id: { type: 'string' }, days: { type: 'string', default: '7' }, minutes: { type: 'string', default: '30' },
+    repo: { type: 'string' }, bot: { type: 'string' }, mode: { type: 'string' }, yes: { type: 'boolean' },
   },
 });
 const command = positionals[0];
-const commands = ['create', 'list', 'set-scopes', 'grant', 'revoke-grant', 'rotate', 'revoke', 'subscriptions', 'add-sink', 'remove-sink', 'passkey-invite', 'gateway-invite'];
+const commands = [
+  'create', 'list', 'set-scopes', 'grant', 'revoke-grant', 'rotate', 'revoke',
+  'subscriptions', 'add-sink', 'remove-sink', 'passkey-invite', 'gateway-invite',
+  'source-add', 'source-mode', 'source-rotate-secret', 'source-archive', 'sources'
+];
 requireCondition(positionals.length === 1 && commands.includes(command), 400, 'usage', `Usage: npm run admin -- ${commands.join('|')} [options]. See docs/OPERATIONS.md.`);
 const tenant = string(values.tenant, 'tenant', 100);
 requireCondition(/^[a-z0-9][a-z0-9_-]*$/.test(tenant), 400, 'invalid_tenant', 'Tenant must use lowercase letters, digits, underscore and hyphen.');
@@ -143,6 +149,46 @@ try {
     catch { throw new Error('CALLBACK_HEADERS_JSON must be valid JSON. Its contents are not displayed.'); }
     const service = new EventService(pool, new AuthService(pool), loadConfig());
     await emit(await service.registerGeneric(principalFromRow(row), { scope: scopeName(values.scope), name: values.event!, url, headers, ttlDays: Number(values.days) }));
+  } else if (['source-add', 'source-mode', 'source-rotate-secret', 'source-archive', 'sources'].includes(command)) {
+    const config = loadConfig();
+    const encKey = config.eventEncryptionKey;
+    requireCondition(Boolean(encKey && /^[0-9a-f]{64}$/i.test(encKey)), 503, 'events_not_configured', 'EVENT_ENCRYPTION_KEY is required for sources.');
+
+    const adminRow = (await pool.query('SELECT * FROM principals WHERE tenant_id=$1 AND role=$2 LIMIT 1', [tenant, 'admin'])).rows[0];
+    requireCondition(Boolean(adminRow), 404, 'not_found', 'No admin principal found.');
+    const ownerPrincipal = principalFromRow(adminRow);
+    const sources = new SourceService(pool);
+
+    if (command === 'source-add') {
+      const res = await sources.createSource(
+        ownerPrincipal,
+        { scope: values.scope, repo_full_name: values.repo, name: values.name, bot_id: values.bot },
+        encKey!,
+        config.publicUrl
+      );
+      process.stderr.write(`\nGitHub Webhook Setup:\n1. Payload URL: ${res.webhook_url}\n2. Content type: application/json\n3. Secret: ${res.secret}\n4. Select individual events: pull_request, pull_request_review, pull_request_review_comment, issue_comment, issues, check_suite, check_run, workflow_run\n\n`);
+      await emit({ id: res.id, name: res.name, repo: res.repo_full_name, accept_mode: res.accept_mode, webhook_url: res.webhook_url, secret: res.secret }, true);
+    } else if (command === 'source-mode') {
+      const id = string(values.id, 'id', 36);
+      const mode = string(values.mode, 'mode', 16) as 'off' | 'observe' | 'auto';
+      if (mode === 'auto' && !values.yes) {
+        throw new AppError(400, 'confirmation_required', 'Setting accept_mode to auto requires --yes. Auto mode will automatically trigger runs or continuations.');
+      }
+      const updated = await sources.setMode(ownerPrincipal, id, mode);
+      await emit({ id: updated.id, name: updated.name, accept_mode: updated.accept_mode, version: updated.version });
+    } else if (command === 'source-rotate-secret') {
+      const id = string(values.id, 'id', 36);
+      const res = await sources.rotateSecret(ownerPrincipal, id, encKey!);
+      process.stderr.write(`Rotated secret for source ${id}. Previous secret valid for 24 hours.\n`);
+      await emit({ id, secret: res.newSecret }, true);
+    } else if (command === 'source-archive') {
+      const id = string(values.id, 'id', 36);
+      const updated = await sources.archive(ownerPrincipal, id);
+      await emit({ id: updated.id, archived: true });
+    } else if (command === 'sources') {
+      const res = await sources.list(ownerPrincipal, { scope: values.scope });
+      await emit(res.sources);
+    }
   }
 } finally {
   await output?.close();

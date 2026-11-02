@@ -56,6 +56,7 @@ export interface ServerConfig {
   trustProxy?: boolean;
   /** Optional explicit proxy socket addresses allowed to supply forwarded client IPs (defaults to loopback when trustProxy is true). */
   trustedProxies?: string[];
+  sourcesEnabled?: boolean;
 }
 
 export interface HttpDependencies {

@@ -11,6 +11,7 @@ import { accountHtml, type AccountView } from './passkey-ui.js';
 import { BIND_COOKIE, OWNER_COOKIE, PasskeyService, bindCookie, newBinding, ownerCookie } from './passkeys.js';
 import { canAccessScope, hasPermission, requirePermission } from './policy.js';
 import type { HttpDependencies, Principal } from './types.js';
+import { receiveGithubDelivery } from './core/sources.js';
 
 const MAX_RESPONSE_BYTES = 6 * 1024 * 1024;
 
@@ -73,6 +74,42 @@ async function readBody(request: IncomingMessage, maximum: number): Promise<stri
       if (error) { request.pause(); reject(error); return; }
       try { resolve(new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks))); }
       catch { reject(new AppError(400, 'invalid_encoding', 'Request body must be UTF-8.')); }
+    };
+    const onData = (chunk: Buffer): void => {
+      size += chunk.length;
+      if (size > maximum) { finish(new AppError(413, 'body_too_large', 'Request body exceeds the configured limit.')); return; }
+      chunks.push(chunk);
+    };
+    const onEnd = (): void => finish();
+    const onError = (): void => finish(new AppError(400, 'request_failed', 'Request body could not be read.'));
+    const onAborted = (): void => finish(new AppError(400, 'request_aborted', 'Request was aborted.'));
+    request.on('data', onData);
+    request.once('end', onEnd);
+    request.once('error', onError);
+    request.once('aborted', onAborted);
+  });
+}
+
+async function readRawBody(request: IncomingMessage, maximum: number): Promise<Buffer> {
+  const length = oneHeader(request, 'content-length');
+  if (length !== undefined && (!/^\d+$/u.test(length) || Number(length) > maximum)) {
+    throw new AppError(413, 'body_too_large', 'Request body exceeds the configured limit.');
+  }
+  return new Promise<Buffer>((resolve, reject) => {
+    let size = 0;
+    const chunks: Buffer[] = [];
+    let settled = false;
+    const timer = setTimeout(() => finish(new AppError(408, 'request_timeout', 'Request body timed out.')), 15_000);
+    timer.unref();
+    const finish = (error?: Error): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      request.removeListener('data', onData);
+      request.removeListener('end', onEnd);
+      request.removeListener('aborted', onAborted);
+      if (error) { request.pause(); reject(error); return; }
+      resolve(Buffer.concat(chunks));
     };
     const onData = (chunk: Buffer): void => {
       size += chunk.length;
@@ -326,6 +363,43 @@ export function createHttpHandler(dependencies: HttpDependencies): (request: Inc
     // Per-address limit for visitors (through the tunnel, keyed by their own address). Same-machine clients
     // (bridges, the notch, stdio proxies) share 127.0.0.1, so they skip it; each identity keeps its own limit below.
     if (!loopback) limiter.accept(`ip:${remote}`, 600);
+    if (path.startsWith('/hooks/github/')) {
+      if (request.method === 'OPTIONS') throw new AppError(404, 'not_found', 'Endpoint not found.');
+      if (!config.sourcesEnabled) throw new AppError(404, 'not_found', 'Endpoint not found.');
+      onlyMethod(request, response, ['POST']);
+      const hookMatch = path.match(/^\/hooks\/github\/([0-9a-fA-F-]{36})$/);
+      if (!hookMatch) throw new AppError(404, 'not_found', 'Endpoint not found.');
+      const sourceId = hookMatch[1]!;
+
+      limiter.accept(`source:${sourceId}`, 120);
+      const rawBody = await readRawBody(request, config.maxBodyBytes);
+
+      const eventType = oneHeader(request, 'x-github-event');
+      const deliveryId = oneHeader(request, 'x-github-delivery');
+      const signature = oneHeader(request, 'x-hub-signature-256');
+      const contentType = oneHeader(request, 'content-type');
+
+      if (
+        !eventType || eventType.length > 64 || !/^[a-z_]+$/.test(eventType) ||
+        !deliveryId || deliveryId.length > 100 || !/^[0-9a-fA-F-]+$/.test(deliveryId) ||
+        !signature || !/^sha256=[0-9a-f]{64}$/.test(signature) ||
+        !contentType || contentType.toLowerCase().split(';', 1)[0]!.trim() !== 'application/json'
+      ) {
+        throw new AppError(400, 'invalid_request', 'Missing or malformed required GitHub webhook headers.');
+      }
+
+      const result = await receiveGithubDelivery(dependencies.pool, config, {
+        sourceId,
+        eventType,
+        deliveryId,
+        signature,
+        rawBody,
+      });
+
+      json(response, result.status, result.body);
+      return;
+    }
+
     if (request.method === 'OPTIONS') {
       const requestedMethod = oneHeader(request, 'access-control-request-method');
       const requestedHeaders = oneHeader(request, 'access-control-request-headers')?.split(',').map(header => header.trim().toLowerCase()) ?? [];
