@@ -246,3 +246,12 @@ test('swarm_start accepts a safe base_ref and rejects option-like ones', () => {
   assert.equal((good.actions![0] as { base_ref?: string }).base_ref, 'feat/tax-workspace-integration');
   for (const bad of ['--upload-pack=x', 'a..b', 'has space']) assert.match(extractActionsBlock(block(bad)).error ?? '', /base_ref/);
 });
+
+test('bot routing pinned wins; with Auto routing a pinned crew member keeps its provider', async () => {
+  const { leadTurnProfile } = await import('../src/core/bots.js');
+  const pinnedBot = { lead_agent_id: 'lead', rules: {}, routing: { patch: { provider: 'claude' } } };
+  const autoBot = { ...pinnedBot, routing: {} };
+  assert.equal(leadTurnProfile(pinnedBot, { id: 'b', edits: true, runner: { provider: 'antigravity' } }).capability, 'claude.patch');
+  assert.equal(leadTurnProfile(autoBot, { id: 'b', edits: true, runner: { provider: 'antigravity' } }).capability, 'antigravity.patch');
+  assert.equal(leadTurnProfile(autoBot, { id: 'b', edits: true, runner: { mode: 'auto' } }).capability, 'auto.patch');
+});

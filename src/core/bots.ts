@@ -250,9 +250,20 @@ export function botCapability(
   return `${runner.provider}.${edits ? 'patch' : 'read'}`;
 }
 
+/** Bot routing pinned to a provider wins; with Auto routing, a crew member pinned to a provider keeps it. */
+export function memberCapability(
+  bot: { routing?: Record<string, unknown> } | null | undefined,
+  agent: { edits: boolean; runner?: { mode?: string; provider?: string } | null },
+  kind: string
+): string {
+  const cap = botCapability(bot, kind, agent.edits);
+  const pinned = agent.runner?.mode !== 'auto' ? agent.runner?.provider : undefined;
+  return pinned && cap.startsWith('auto.') ? `${pinned}.${agent.edits ? 'patch' : 'read'}` : cap;
+}
+
 export function leadTurnProfile(
   bot: { lead_agent_id: string; rules: Record<string, unknown>; routing: Record<string, unknown> },
-  agent: { id: string; edits: boolean }
+  agent: { id: string; edits: boolean; runner?: { mode?: string; provider?: string } | null }
 ): {
   router: boolean;
   edits: boolean;
@@ -281,7 +292,7 @@ export function leadTurnProfile(
     router: false,
     edits: agent.edits,
     routeKind: agent.edits ? 'patch' : 'summary',
-    capability: botCapability(bot, agent.edits ? 'patch' : 'summary', agent.edits)
+    capability: memberCapability(bot, agent, agent.edits ? 'patch' : 'summary')
   };
 }
 

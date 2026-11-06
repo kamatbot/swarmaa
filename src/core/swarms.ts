@@ -10,7 +10,7 @@ import { assertKnownScope, audit, canonicalJson, event, newId, noExtraKeys, requ
 import { assignThreadSeq, clipUtf8, type AgentRow, type ThreadRow, type MessageRow } from './teams.js';
 import { runnerCapability } from '../bridge/adapters.js';
 import { cancelTask, taskView, type TaskRow } from './tasks.js';
-import { botCapability, leadTurnProfile } from './bots.js';
+import { botCapability, leadTurnProfile, memberCapability } from './bots.js';
 import type { QuestionAction, TurnAction, TurnGrantContext, SwarmStartStepInput } from './actions.js';
 import { isBaseRef } from './actions.js';
 
@@ -1852,8 +1852,7 @@ export class SwarmsService {
           localPatch = profile.edits;
           if (profile.runner) runnerObj = profile.runner;
         } else {
-          const routingKind = agent.edits ? 'patch' : 'research';
-          requiredCap = botCapability(bot, routingKind, agent.edits);
+          requiredCap = memberCapability(bot, agent, agent.edits ? 'patch' : 'research');
         }
       }
     }
