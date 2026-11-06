@@ -1,5 +1,5 @@
 import { fetchAntigravity } from './antigravity.js';
-import { fetchClaude } from './claude.js';
+import { fetchClaude, renewClaudeToken } from './claude.js';
 import { fetchCodex } from './codex.js';
 import { fetchGrok } from './grok.js';
 import { safeError, UsageError, type Ctx, type ProviderFn, type UsageProviderId, type UsageSnapshot } from './types.js';
@@ -8,7 +8,7 @@ export type { UsageProviderId, UsageSnapshot, UsageWindow } from './types.js';
 
 /** Provider table; exported (underscored) so tests can substitute fetchers without touching the real keychain/network. */
 export const _providers: Record<UsageProviderId, ProviderFn> = {
-  claude: (c) => fetchClaude(c),
+  claude: (c) => fetchClaude(c, undefined, c.claudeBinary ? () => renewClaudeToken(c.claudeBinary!) : undefined),
   codex: (c) => fetchCodex(c),
   antigravity: (c) => fetchAntigravity(c),
   grok: (c) => fetchGrok(c),
@@ -20,8 +20,8 @@ const backoff = new Map<UsageProviderId, { until: number; strikes: number }>();
 export const _resetBackoff = (): void => backoff.clear();
 
 /** Never throws. A failing provider yields ok:false with a short safe error. 429s back off 60s, doubling per consecutive hit, capped at 30 min. */
-export async function collectUsage(providers: UsageProviderId[], opts: { fetcher?: typeof fetch; now?: () => Date } = {}): Promise<UsageSnapshot[]> {
-  const ctx: Ctx = { fetcher: opts.fetcher ?? fetch, now: opts.now ?? (() => new Date()) };
+export async function collectUsage(providers: UsageProviderId[], opts: { fetcher?: typeof fetch; now?: () => Date; claudeBinary?: string } = {}): Promise<UsageSnapshot[]> {
+  const ctx: Ctx = { fetcher: opts.fetcher ?? fetch, now: opts.now ?? (() => new Date()), claudeBinary: opts.claudeBinary };
   return Promise.all(providers.map(async (provider): Promise<UsageSnapshot> => {
     const fetched_at = ctx.now().toISOString();
     const fail = (error: string): UsageSnapshot => ({ provider, ok: false, windows: [], fetched_at, error });

@@ -3,7 +3,7 @@ export interface UsageWindow { name: string; used_percent: number; resets_at: st
 export interface UsageSnapshot { provider: UsageProviderId; ok: boolean; windows: UsageWindow[]; plan?: string; fetched_at: string; error?: string }
 
 // ---- internals shared by the provider modules (not part of the cross-team contract) ----
-export interface Ctx { fetcher: typeof fetch; now: () => Date }
+export interface Ctx { fetcher: typeof fetch; now: () => Date; /** Set by a worker that runs Claude: lets the Claude reader renew an expiring token. */ claudeBinary?: string }
 export interface ProviderResult { windows: UsageWindow[]; plan?: string }
 export type ProviderFn = (ctx: Ctx) => Promise<ProviderResult>;
 

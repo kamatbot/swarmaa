@@ -1,5 +1,5 @@
-import { execFile } from 'node:child_process';
-import { readFile } from 'node:fs/promises';
+import { execFile, spawn } from 'node:child_process';
+import { mkdir, readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { promisify } from 'node:util';
 import { clampPct, getJson, isObj, isoFromText, num, UsageError, type Ctx, type ProviderResult, type UsageWindow } from './types.js';
@@ -70,11 +70,37 @@ export function parseClaudeUsage(json: unknown, now: Date = new Date()): UsageWi
   return [...out.values()];
 }
 
-export async function fetchClaude(ctx: Ctx, readCreds: (now: Date) => Promise<ClaudeCreds | null> = readClaudeCreds): Promise<ProviderResult> {
-  const creds = await readCreds(ctx.now());
+/** Under Claude Code's own 5-minute start-up gate, so a launch inside it actually renews. */
+const RENEW_MARGIN_MS = 4 * 60_000;
+// ponytail: in-memory; a restarted worker may spend one more launch on the same token.
+let renewAttemptedFor: number | undefined;
+export const _resetRenewal = (): void => { renewAttemptedFor = undefined; };
+
+/**
+ * Let Claude Code renew its own token: `claude -p` with empty stdin runs start-up (which renews a token
+ * within 5 minutes of expiry) and exits for want of a prompt, so no conversation is ever created.
+ * Runs from the Mac app's usage scratch folder, which its session monitor already ignores.
+ */
+export async function renewClaudeToken(binary: string): Promise<void> {
+  const cwd = process.platform === 'darwin' ? `${homedir()}/Library/Application Support/Codenotch/usage-scratch` : homedir();
+  await mkdir(cwd, { recursive: true }).catch(() => undefined);
+  await new Promise<void>((resolve) => {
+    const child = spawn(binary, ['-p', '--no-session-persistence', '--strict-mcp-config'], { cwd, stdio: ['ignore', 'ignore', 'ignore'], timeout: 30_000, killSignal: 'SIGKILL' });
+    child.on('error', () => resolve());
+    child.on('exit', () => resolve());
+  });
+}
+
+export async function fetchClaude(ctx: Ctx, readCreds: (now: Date) => Promise<ClaudeCreds | null> = readClaudeCreds, renew?: () => Promise<void>): Promise<ProviderResult> {
+  let creds = await readCreds(ctx.now());
   if (!creds) throw new UsageError('not signed in to Claude Code');
   if (!creds.accessToken) throw new UsageError('signed out; open Claude Code to sign in');
-  // Never refresh or run Claude: Claude Code owns this credential.
+  // Claude Code owns this credential; it renews only when it runs. One launch per token, judged by whether the expiry moved.
+  if (renew && creds.expiresAt - ctx.now().getTime() < RENEW_MARGIN_MS && renewAttemptedFor !== creds.expiresAt) {
+    renewAttemptedFor = creds.expiresAt;
+    await renew();
+    creds = (await readCreds(ctx.now())) ?? creds;
+  }
   if (creds.expiresAt <= ctx.now().getTime()) throw new UsageError('token expired; open Claude Code to renew');
   const json = await getJson(ctx, URL_, { Authorization: `Bearer ${creds.accessToken}`, 'anthropic-beta': 'oauth-2025-04-20', Accept: 'application/json' }, 'auth rejected; open Claude Code to renew');
   const windows = parseClaudeUsage(json, ctx.now());

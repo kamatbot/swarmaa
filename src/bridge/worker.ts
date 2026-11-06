@@ -78,7 +78,7 @@ export class BridgeWorker {
     private readonly client: ToolClient,
     private readonly logger: BridgeLogger = (event, metadata) => process.stderr.write(`${JSON.stringify({ event, ...metadata })}\n`),
     private readonly runner: ProcessRunner = runBoundedProcess,
-    private readonly usage: (providers: UsageProviderId[]) => Promise<UsageSnapshot[]> = providers => collectUsage(providers),
+    private readonly usage: (providers: UsageProviderId[]) => Promise<UsageSnapshot[]> = providers => collectUsage(providers, { claudeBinary: config.agents.find(a => a.provider === 'claude')?.binary }),
     streamOptions?: { fetcher?: typeof fetch; token?: string } | typeof fetch
   ) {
     if (typeof streamOptions === 'function') {

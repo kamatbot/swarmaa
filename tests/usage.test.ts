@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { collectUsage, headroom, _providers, _resetBackoff } from '../src/usage/index.js';
-import { fetchClaude, parseClaudeCreds, parseClaudeUsage, type ClaudeCreds } from '../src/usage/claude.js';
+import { _resetRenewal, fetchClaude, parseClaudeCreds, parseClaudeUsage, type ClaudeCreds } from '../src/usage/claude.js';
 import { fetchCodex, jwtExp, parseCodexAuth, parseCodexUsage } from '../src/usage/codex.js';
 import { discoverEndpoint, fetchAntigravity, parseAntigravityQuota, parsePorts, windowsForModel, type AntigravityIO, type AntigravityProcess } from '../src/usage/antigravity.js';
 import { fetchGrok, parseGrokAuth, parseGrokCredits } from '../src/usage/grok.js';
@@ -84,6 +84,30 @@ test('claude: an expired token is reported, not refreshed, and the network is ne
   const expired: ClaudeCreds = { accessToken: 'SECRET-TOKEN', expiresAt: NOW.getTime() - 1 };
   await assert.rejects(fetchClaude(ctxWith(fetcher), async () => expired), (e: Error) => e instanceof UsageError && e.message === 'token expired; open Claude Code to renew' && !e.message.includes('SECRET'));
   assert.equal(calls, 0);
+});
+
+test('claude: an expiring token is renewed once by running Claude, then read again', async () => {
+  _resetRenewal();
+  let token: ClaudeCreds = { accessToken: 'old', expiresAt: NOW.getTime() + 60_000 };
+  let launches = 0;
+  const renew = async () => { launches++; token = { accessToken: 'new', expiresAt: NOW.getTime() + 8 * 3600_000 }; };
+  let auth = '';
+  const fetcher = (async (_u: string, init: RequestInit) => { auth = (init.headers as Record<string, string>).Authorization; return json(CLAUDE_LIVE); }) as unknown as typeof fetch;
+  await fetchClaude(ctxWith(fetcher), async () => token, renew);
+  assert.equal(launches, 1);
+  assert.equal(auth, 'Bearer new');
+  // Far from expiry: no launch.
+  await fetchClaude(ctxWith(fetcher), async () => token, renew);
+  assert.equal(launches, 1);
+});
+
+test('claude: a renewal that does not move the expiry is not retried for that token', async () => {
+  _resetRenewal();
+  const expired: ClaudeCreds = { accessToken: 'tok', expiresAt: NOW.getTime() - 1 };
+  let launches = 0;
+  const renew = async () => { launches++; };
+  for (let i = 0; i < 3; i++) await assert.rejects(fetchClaude(ctxWith((async () => json({})) as typeof fetch), async () => expired, renew), /token expired/);
+  assert.equal(launches, 1);
 });
 
 test('claude: a valid token goes to the Anthropic endpoint with the OAuth beta header and returns plan + windows', async () => {
