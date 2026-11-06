@@ -27,6 +27,7 @@ export interface TurnActionSwarmStart {
   title: string;
   goal: string;
   steps: SwarmStartStepInput[];
+  base_ref?: string;
 }
 
 export interface TurnActionSwarmUpdate {
@@ -95,6 +96,10 @@ export type TurnAction =
   | TurnActionSwarmUpdate
   | TurnActionQuestionAsk
   | TurnActionChannelPost;
+
+/** A git ref name a swarm's edit steps may branch from: no leading dash, spaces, control chars or `..`. */
+export const isBaseRef = (v: unknown): v is string =>
+  typeof v === 'string' && /^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$/u.test(v.trim()) && !v.includes('..');
 
 export interface ExtractedActions {
   cleanText: string;
@@ -255,7 +260,7 @@ export function extractActionsBlock(text: string): ExtractedActions {
         swarm_step_id: act.swarm_step_id ? String(act.swarm_step_id).trim() : undefined
       });
     } else if (type === 'swarm_start') {
-      const allowed = new Set(['type', 'title', 'goal', 'steps']);
+      const allowed = new Set(['type', 'title', 'goal', 'steps', 'base_ref']);
       for (const k of Object.keys(act)) {
         if (!allowed.has(k)) {
           return { cleanText, rawBlock, error: `unknown field '${k}' in swarm_start action`, rejectedAction: item };
@@ -269,6 +274,9 @@ export function extractActionsBlock(text: string): ExtractedActions {
       }
       if (!Array.isArray(act.steps) || act.steps.length === 0 || act.steps.length > 50) {
         return { cleanText, rawBlock, error: 'swarm_start requires steps array (1-50 steps)', rejectedAction: item };
+      }
+      if (act.base_ref !== undefined && !isBaseRef(act.base_ref)) {
+        return { cleanText, rawBlock, error: 'swarm_start base_ref must be a git branch, tag or commit name', rejectedAction: item };
       }
       const steps: SwarmStartStepInput[] = [];
       const stepAllowed = new Set(['key', 'title', 'assignee_agent_id', 'needs', 'instructions', 'check']);
@@ -307,7 +315,8 @@ export function extractActionsBlock(text: string): ExtractedActions {
         type: 'swarm_start',
         title: act.title.trim(),
         goal: clipUtf8(redactSecrets(act.goal), 16384),
-        steps
+        steps,
+        ...(act.base_ref !== undefined ? { base_ref: (act.base_ref as string).trim() } : {})
       });
     } else if (type === 'swarm_update') {
       const allowed = new Set(['type', 'swarm_id', 'ops']);

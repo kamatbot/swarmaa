@@ -12,6 +12,7 @@ import { runnerCapability } from '../bridge/adapters.js';
 import { cancelTask, taskView, type TaskRow } from './tasks.js';
 import { botCapability, leadTurnProfile } from './bots.js';
 import type { QuestionAction, TurnAction, TurnGrantContext, SwarmStartStepInput } from './actions.js';
+import { isBaseRef } from './actions.js';
 
 // Teams writes take teamsLock first.
 
@@ -302,6 +303,7 @@ export class SwarmsService {
       owner_agent_id: string | null;
       flow_id?: string | null;
       idempotency_key?: string | null;
+      base_ref?: string | null;
     },
     budget?: TurnBudget
   ): Promise<Record<string, unknown>> {
@@ -377,7 +379,8 @@ export class SwarmsService {
 
     const swarmOwner = ownerAgentId ?? thread.agent_id ?? thread.lead_agent_id ?? null;
     const reqHash = sha256(canonicalJson({
-      title, goal, scope, thread_id: threadId, steps: validatedSteps, owner_agent_id: swarmOwner
+      title, goal, scope, thread_id: threadId, steps: validatedSteps, owner_agent_id: swarmOwner,
+      ...(input.base_ref ? { base_ref: input.base_ref } : {})
     }));
 
     if (idempotency) {
@@ -398,9 +401,9 @@ export class SwarmsService {
     const swarmId = newId();
 
     await db.query(
-      `INSERT INTO swarms (id, tenant_id, scope, title, goal, owner_agent_id, thread_id, status, flow_id, created_by, idempotency_key, request_hash)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, 'running', $8, $9, $10, $11)`,
-      [swarmId, p.tenantId, scope, title, goal, swarmOwner, threadId, flowId, p.id, idempotency, reqHash]
+      `INSERT INTO swarms (id, tenant_id, scope, title, goal, owner_agent_id, thread_id, status, flow_id, created_by, idempotency_key, request_hash, base_ref)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, 'running', $8, $9, $10, $11, $12)`,
+      [swarmId, p.tenantId, scope, title, goal, swarmOwner, threadId, flowId, p.id, idempotency, reqHash, input.base_ref ?? null]
     );
 
     // Create step UUID mapping
@@ -460,7 +463,8 @@ export class SwarmsService {
   }
 
   async swarmStart(p: Principal, input: Record<string, unknown>): Promise<unknown> {
-    noExtraKeys(input, ['title', 'goal', 'scope', 'thread_id', 'steps', 'owner_agent_id', 'flow_id', 'idempotency_key']);
+    noExtraKeys(input, ['title', 'goal', 'scope', 'thread_id', 'steps', 'owner_agent_id', 'flow_id', 'idempotency_key', 'base_ref']);
+    requireCondition(input.base_ref === undefined || isBaseRef(input.base_ref), 400, 'invalid_arguments', 'base_ref must be a git branch, tag or commit name.');
     requirePermission(p, 'task:submit');
     const title = string(input.title, 'title', 200);
     const goal = string(input.goal, 'goal', 16384);
@@ -486,7 +490,8 @@ export class SwarmsService {
         steps: input.steps as SwarmStartStepInput[],
         owner_agent_id: ownerAgentId,
         flow_id: flowId,
-        idempotency_key: idempotency
+        idempotency_key: idempotency,
+        base_ref: input.base_ref !== undefined ? (input.base_ref as string).trim() : null
       });
     });
   }
@@ -1606,7 +1611,8 @@ export class SwarmsService {
         scope: ctx.scope,
         thread_id: ctx.thread.id,
         steps: act.steps,
-        owner_agent_id: ctx.agent.id
+        owner_agent_id: ctx.agent.id,
+        base_ref: act.base_ref ?? null
       }, budget);
     } else if (act.type === 'swarm_update') {
       await this.internalSwarmUpdate(db, p, {

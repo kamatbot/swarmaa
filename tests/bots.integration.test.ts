@@ -582,6 +582,7 @@ describe('bots core service (Brief B1)', { skip: !connectionString, concurrency:
       steps: [
         { key: 'step1', title: 'First step', assignee_agent_id: workerAgent.id, check: 'it works' }
       ],
+      base_ref: 'feat/base',
       idempotency_key: 'bot-swarm-1'
     });
 
@@ -591,6 +592,7 @@ describe('bots core service (Brief B1)', { skip: !connectionString, concurrency:
     )).rows[0];
     assert.ok(stepTask, 'Swarm step task should be queued');
     assert.equal(stepTask.bot_id, bot.id);
+    assert.equal(stepTask.base_ref, 'feat/base', 'step tasks branch from the swarm base_ref');
 
     // Claim and finish the step task
     const stepClaim = await call(worker, 'task_claim', {

@@ -238,3 +238,11 @@ test('validateTurnGrant with leadMode router allows only dispatch actions', asyn
   const unsetCtx: TurnGrantContext = { ...baseCtx, leadMode: undefined };
   assert.equal((await validateTurnGrant(mockDb, unsetCtx, [handoffAction])).valid, true);
 });
+
+test('swarm_start accepts a safe base_ref and rejects option-like ones', () => {
+  const block = (ref: string) => `ok\n\n\`\`\`swarmaa-actions\n[{"type":"swarm_start","title":"T","goal":"G","base_ref":${JSON.stringify(ref)},"steps":[{"key":"a","title":"A","assignee_agent_id":"x","check":"it works"}]}]\n\`\`\``;
+  const good = extractActionsBlock(block('feat/tax-workspace-integration'));
+  assert.equal(good.error, undefined);
+  assert.equal((good.actions![0] as { base_ref?: string }).base_ref, 'feat/tax-workspace-integration');
+  for (const bad of ['--upload-pack=x', 'a..b', 'has space']) assert.match(extractActionsBlock(block(bad)).error ?? '', /base_ref/);
+});
