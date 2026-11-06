@@ -437,6 +437,14 @@ struct UsagePane: View {
                 Button(L10n.t("Refresh all")) { Task { await model.refresh() } }.buttonStyle(.ks(.primary))
             }
         }
+        // Workers report every pass; without this the pane kept whatever it
+        // loaded on opening, an expired-token error included, until clicked.
+        .task {
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(60))
+                await model.refreshUsage()
+            }
+        }
     }
 }
 

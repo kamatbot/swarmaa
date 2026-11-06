@@ -258,6 +258,14 @@ final class TeamsModel: ObservableObject {
 
     // MARK: Loading
 
+    /// Just the usage readings, for the Usage pane's own timer: a full
+    /// `refresh` reloads every bot and thread, which a minute's tick should not.
+    func refreshUsage() async {
+        guard hasLoaded, !refreshing, let fresh = try? await client.status() else { return }
+        status = fresh
+        lastUpdated = Date()
+    }
+
     func refresh() async {
         guard !refreshing else { return }
         refreshing = true
