@@ -182,6 +182,7 @@ export function buildTurnPrompt(
       'badge-sun (yellow, open smile); badge-peri (periwinkle, small eyes); badge-peach (peach/pink, straight mouth). Never use mark.',
       'Colours: blue, butter, peach, lilac, pink, lime, sky, orchid, or null to clear; orange maps to peach, green to lime.'
     ] : []),
+    'Every action above is applied by the service when you list it, in every turn, read-only ones included; listing it is not a file edit or a service call by you. Never say a read-only turn stops you from dispatching with swarm_start or handoff.',
     'The actions block must be the very last element in your response.'
   ].join('\n');
 

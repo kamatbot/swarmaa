@@ -1,4 +1,5 @@
 /** Needs a disposable PostgreSQL database via TEST_DATABASE_URL; skipped otherwise. */
+import { getTurnWindow } from '../src/core/teams.js';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { readFile, readdir } from 'node:fs/promises';
@@ -593,6 +594,9 @@ describe('bots core service (Brief B1)', { skip: !connectionString, concurrency:
     assert.ok(stepTask, 'Swarm step task should be queued');
     assert.equal(stepTask.bot_id, bot.id);
     assert.equal(stepTask.base_ref, 'feat/base', 'step tasks branch from the swarm base_ref');
+    const turnWindow = await getTurnWindow(pool as any, thread.id);
+    const card = turnWindow.find(m => m.kind === 'swarm') as { body: string } | undefined;
+    assert.match(card?.body ?? '', /Swarm "Bot Swarm".*feat\/base.*step1/, 'the lead sees the swarm card as text');
 
     // Claim and finish the step task
     const stepClaim = await call(worker, 'task_claim', {

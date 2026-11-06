@@ -82,6 +82,22 @@ export async function getTurnWindow(db: Db, threadId: string): Promise<Record<st
       });
     }
   }
+  // A swarm card has no body; give the model its live step statuses so it knows the swarm exists.
+  const swarmIds = window.filter(m => m.kind === 'swarm').map(m => (m.ref as { swarm_id?: string } | null)?.swarm_id).filter((id): id is string => Boolean(id));
+  if (swarmIds.length) {
+    const steps = (await db.query<{ swarm_id: string; title: string; status: string; base_ref: string | null; step_key: string; step_status: string; agent: string }>(
+      `SELECT sw.id AS swarm_id, sw.title, sw.status, sw.base_ref, st.step_key, st.status AS step_status, a.name AS agent
+       FROM swarms sw JOIN swarm_steps st ON st.swarm_id = sw.id JOIN agents a ON a.id = st.assignee_agent_id
+       WHERE sw.id = ANY($1::uuid[]) ORDER BY st.order_index`, [swarmIds]
+    )).rows;
+    for (const m of window) {
+      const id = (m.ref as { swarm_id?: string } | null)?.swarm_id;
+      const own = steps.filter(s => s.swarm_id === id);
+      if (m.kind === 'swarm' && own.length && !m.body) {
+        m.body = `Swarm "${own[0]!.title}" (id ${id}) is ${own[0]!.status}${own[0]!.base_ref ? `, branching from ${own[0]!.base_ref}` : ''}. Steps: ${own.map(s => `${s.step_key} (${s.agent}) ${s.step_status}`).join('; ')}.`;
+      }
+    }
+  }
   window.reverse();
   return window;
 }
