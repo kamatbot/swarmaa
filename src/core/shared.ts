@@ -57,16 +57,34 @@ export function optionalDate(value: unknown, name: string): string | null {
 
 export function sourceInput(value: unknown, principal: Principal): Record<string, unknown> {
   const input = object(value);
-  noExtraKeys(input, ['type', 'reference', 'observed_at']);
+  noExtraKeys(input, ['type', 'reference', 'observed_at', 'evidence']);
   const type = string(input.type, 'source.type', 20);
   requireCondition(['user', 'tool', 'document', 'agent'].includes(type), 400, 'invalid_source', 'source.type must be user, tool, document, or agent.');
+  const evidence = evidenceInput(input.evidence);
   return {
     type,
     reference: string(input.reference, 'source.reference', 2048),
     observed_at: optionalDate(input.observed_at, 'source.observed_at'),
+    ...(evidence.length ? { evidence } : {}),
     reported_by: principal.id,
     assurance: 'reported',
   };
+}
+
+/** Repository files a memory relies on, pinned to the commit they were checked at. The bridge compares each file at
+ * that commit with the task's base and labels the memory source_changed when it differs (file-level, conservative). */
+function evidenceInput(value: unknown): Array<{ path: string; commit: string }> {
+  if (value === undefined) return [];
+  requireCondition(Array.isArray(value) && value.length <= 8, 400, 'invalid_source', 'source.evidence must be an array of at most 8 {path, commit}.');
+  return value.map(v => {
+    const e = object(v);
+    noExtraKeys(e, ['path', 'commit']);
+    const path = string(e.path, 'source.evidence.path', 400).trim();
+    const commit = string(e.commit, 'source.evidence.commit', 40).trim().toLowerCase();
+    requireCondition(/^[A-Za-z0-9._@+-][A-Za-z0-9._@+\/ -]*$/u.test(path) && !path.split('/').includes('..'), 400, 'invalid_source', 'source.evidence.path must be a repository-relative path.');
+    requireCondition(/^[0-9a-f]{7,40}$/u.test(commit), 400, 'invalid_source', 'source.evidence.commit must be a git commit hash.');
+    return { path, commit };
+  });
 }
 
 export function uuidArray(value: unknown, name: string, max = 32): string[] {

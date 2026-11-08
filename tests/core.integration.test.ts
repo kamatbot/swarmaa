@@ -294,6 +294,23 @@ describe('core transactional invariants', {skip:!connectionString,concurrency:fa
     await rejects(f.otherScope,'context_get',{scope:'project:b',task_id:task.task.id},'not_found');
   });
 
+  it('task context is searched by objective, ranks reviewed memories over newer ones and keeps evidence',async () => {
+    const f = await fixture();
+    const reviewed = await call(f.front,'memory_propose',{...note('ctx-reviewed','Bounded project context: the approved way.'),
+      source:{type:'agent',reference:'test-agent://observation',evidence:[{path:'src/core/memory.ts',commit:'abc1234'}]}});
+    await pool.query(`UPDATE memories SET reviewed_by=created_by,updated_at=now()-interval '1 day' WHERE id=$1`,[reviewed.memory.id]);
+    const newer = await call(f.front,'memory_propose',note('ctx-newer','Bounded project context: a newer unreviewed note.'));
+    await call(f.front,'memory_propose',note('ctx-unrelated','Cooking recipes and garden notes.'));
+    const task = await call(f.front,'task_submit',submission());
+    const packet = await call(f.front,'context_get',{scope:'project:a',task_id:task.task.id});
+    const ids = packet.memories.map((m:{id:string}) => m.id);
+    assert.deepEqual(ids.slice(0,2),[reviewed.memory.id,newer.memory.id]);
+    assert.ok(!packet.memories.some((m:{key:string}) => m.key === 'ctx-unrelated'));
+    assert.equal(packet.memories[0].included_reason,'search_match');
+    assert.deepEqual(packet.memories[0].source.evidence,[{path:'src/core/memory.ts',commit:'abc1234'}]);
+    assert.deepEqual(packet.omitted,[]);
+  });
+
   it('deduplicates concurrent submissions and rejects changed inputs under a reused key',async () => {
     const f = await fixture();
     const args = submission();

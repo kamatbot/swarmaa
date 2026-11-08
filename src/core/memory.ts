@@ -234,28 +234,42 @@ export class MemoryService {
 
   /** Called inside context_get's transaction; memory/task scope has already been checked. */
   async contextMemories(db: PoolClient, p: Principal, scope: string, query: string|null, includeProposed: boolean,
-    limit: number, refs: string[], versions: Record<string, number>): Promise<{memories:Record<string,unknown>[];conflicts:Record<string,unknown>[]}> {
+    limit: number, refs: string[], versions: Record<string, number>): Promise<{memories:Record<string,unknown>[];omitted:Record<string,unknown>[];conflicts:Record<string,unknown>[]}> {
+    const terms = orTerms(query);
     const records = await db.query<MemoryRow>(`SELECT * FROM memories WHERE tenant_id=$1 AND scope=$2
       AND (status='active' OR ($3::boolean AND status='proposed'))
       AND (expires_at IS NULL OR expires_at>clock_timestamp())
-      AND ($4::text IS NULL OR id=ANY($5::uuid[]) OR search_vector @@ plainto_tsquery('simple',$4))
+      AND ($4::text IS NULL OR id=ANY($5::uuid[]) OR search_vector @@ to_tsquery('simple',$4))
       ORDER BY (id=ANY($5::uuid[])) DESC,
-        CASE WHEN $4::text IS NULL THEN 0 ELSE ts_rank(search_vector,plainto_tsquery('simple',$4)) END DESC,
-        updated_at DESC,id DESC LIMIT $6 FOR SHARE`, [p.tenantId, scope, includeProposed, query, refs, limit]);
+        -- Review outranks recency: a reviewed decision is not displaced by a newer unreviewed note.
+        (CASE WHEN $4::text IS NULL THEN 1 ELSE ts_rank(search_vector,to_tsquery('simple',$4)) END)
+          * (CASE WHEN status='active' AND reviewed_by IS NOT NULL THEN 1.5 WHEN status='proposed' THEN 0.5 ELSE 1 END)
+          * (CASE WHEN kind='decision' THEN 1.25 ELSE 1 END) DESC,
+        updated_at DESC,id DESC LIMIT $6 FOR SHARE`, [p.tenantId, scope, includeProposed, terms, refs, limit]);
     let remaining = 20000;
     const memories: Record<string, unknown>[] = [];
+    const omitted: Record<string, unknown>[] = [];
     for (const row of records.rows) {
-      if (remaining <= 0) break;
+      if (remaining <= 0) { omitted.push({ kind: 'memory', id: row.id, key: row.key, reason: 'budget' }); continue; }
       const text = row.content.slice(0, Math.min(2000, remaining));
       remaining -= text.length;
       memories.push({ ...memoryView(row), content: text, content_truncated: text.length !== row.content.length,
+        included_reason: refs.includes(row.id) ? 'explicit_ref' : terms ? 'search_match' : 'recent',
         input_version: versions[row.id] ?? null,
         changed_since_task: versions[row.id] !== undefined && versions[row.id] !== row.version });
     }
     const ids = memories.map(m => m.id as string);
-    if (!ids.length) return { memories, conflicts: [] };
+    if (!ids.length) return { memories, omitted, conflicts: [] };
     const proposals = await db.query<ProposalRow>(`SELECT * FROM memory_proposals WHERE tenant_id=$1 AND scope=$2
       AND memory_id=ANY($3::uuid[]) AND status IN ('proposed','conflict') ORDER BY created_at DESC,id DESC LIMIT 50`, [p.tenantId, scope, ids]);
-    return { memories, conflicts: proposals.rows.map(r => proposalView(r, false)) };
+    return { memories, omitted, conflicts: proposals.rows.map(r => proposalView(r, false)) };
   }
+}
+
+const STOP = new Set(['the','and','for','with','this','that','from','are','you','use','into','not','all','can','our','its','has','was','but','using','should','will','what','when','how','any','also','then','them','they','there','have','your']);
+/** Any-term full-text query (to_tsquery syntax): long objectives match on any meaningful word, ranked by ts_rank.
+ * Terms are letters/digits only, so the string cannot carry tsquery operators. */
+export function orTerms(query: string | null): string | null {
+  const words = [...new Set((query ?? '').toLowerCase().match(/[\p{L}\p{N}]{3,}/gu) ?? [])].filter(w => !STOP.has(w)).slice(0, 16);
+  return words.length ? words.join(' | ') : null;
 }
