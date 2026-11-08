@@ -76,6 +76,8 @@ export interface ProcessRequest {
   cwd: string;
   env: NodeJS.ProcessEnv;
   input: string;
+  /** The prompt text as built, for the context receipt; runners ignore it. */
+  prompt?: string;
   timeout_ms: number;
   max_output_bytes: number;
   signal?: AbortSignal;

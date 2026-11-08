@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { runFlowCheck } from './checks.js';
 import { setTimeout as delay } from 'node:timers/promises';
 import { AUTO_PATCH, AUTO_READ, buildInvocation, withTurnImages, capability, antigravityLogModel, classifyFailure, deniedActions, extractDelegate, extractPartialText, extractServed, extractUsage, finalAnswer, projectCapabilities, providerSucceeded } from './adapters.js';
@@ -8,6 +9,7 @@ import { runBoundedProcess } from './process.js';
 import { sameModel, type ServedStamp } from '../core/failures.js';
 import { reasonNotify } from './reason.js';
 import { cleanupNative, finishNative, prepareNative, type NativeSession } from './native-session.js';
+import { annotateEvidence, contextReceipt } from './context-receipt.js';
 import { createWorktree, finishWorktree, inspectWorktree, removeSnapshot, type PatchOutcome, type Worktree } from './worktree.js';
 import type { AgentConfig, BridgeConfig, BridgeLogger, Claim, Lease, ProcessResult, ProcessRunner, ProjectConfig, Task, ToolClient } from './types.js';
 import { redactSecrets } from '../safety/redact.js';
@@ -33,6 +35,27 @@ function transient(error: unknown): boolean {
   const status = error && typeof error === 'object' && 'status' in error && typeof error.status === 'number' ? error.status : undefined;
   return status === undefined || status === 408 || status === 429 || status >= 500;
 }
+/**
+ * Before the provider starts, a service blip (a deploy restarting it, a dropped connection) is retried for about a
+ * minute instead of blocking the task: nothing has run yet, so retrying is safe. A refusal still fails at once.
+ */
+async function beforeStart<T>(call: () => Promise<T>, signal: AbortSignal): Promise<T> {
+  for (let wait = 1000; ; wait *= 2) {
+    try { return await call(); }
+    catch (error) {
+      if (!transient(error) || wait > 32_000 || signal.aborted) throw error;
+      await delay(wait, undefined, { signal });
+    }
+  }
+}
+const BLOCKED_SUMMARY: Record<string, string> = {
+  photo_provider_unsupported: 'This provider does not support photo input; retry with Claude or Codex.',
+  not_a_git_repo: 'The project folder is not a git repository, so edit work has no worktree to run in. Run `git init` and commit once in the project folder, then retry.',
+  bad_base_ref: 'The branch this task starts from (base_ref) does not exist in the project checkout. Fetch or create it, or retry without base_ref.',
+  context_too_large: 'The prompt is larger than this worker allows even after dropping optional memories. Narrow the task, shorten the agent instructions, or remove explicit context references; the sizes are in detail.',
+  route_unavailable: 'No provider on this worker can take this auto-routed task right now; retry later or pin a provider.',
+  worker_operation_failed: 'Worker could not complete this attempt. Check local CLI authentication/version, project configuration and service availability.'
+};
 /** headroom: provider -> percent of quota left, from the latest local usage reading. */
 function validateClaim(claim: Claim, project: ProjectConfig, agents: AgentConfig[], headroom: ReadonlyMap<string, number> = new Map()): { task: Task; lease: Lease; agent: AgentConfig } | null {
   if (!claim.task) return null;
@@ -274,6 +297,9 @@ export class BridgeWorker {
     const running = this.running;
     try {
       while (!signal.aborted && (!this.draining || running.size)) {
+        // Homebrew upgrading node deletes the binary this process runs on; macOS then refuses it folder access
+        // (EPERM in ~/Documents). Stop claiming and exit once idle so launchd restarts on the new binary.
+        if (!this.draining && !existsSync(process.execPath)) { this.logger('node_binary_replaced', { path: process.execPath }); this.drain(); }
         let claimedAny = false;
         await this.reportUsage(signal);
         for (let i = 0; i < this.config.projects.length; i += 64) {
@@ -363,6 +389,9 @@ export class BridgeWorker {
     let completionAttempted = false;
     let isPatchWork = task.kind === 'patch' || (task.kind === 'turn' && task.required_capability.endsWith('.patch'));
     let worktree: Worktree | undefined;
+    // What reached the model, recorded on the result (finished or blocked) so the task can show the context it used.
+    let context: unknown;
+    let promptText: string | undefined;
     let patchResult: PatchOutcome | undefined;
     let observedCommit:string|undefined;
     let checkFact:Awaited<ReturnType<typeof runFlowCheck>>|undefined;
@@ -504,8 +533,8 @@ export class BridgeWorker {
     this.logger('task_claimed', { task_id: task.id, scope: task.scope, provider: task.kind==='check' ? 'bridge' : agent.provider, kind: task.kind });
     try {
       if (leaseLost) return;
-      await this.client.call('task_checkpoint', { ...lease, checkpoint: checkpoint('starting') }, execution.signal);
-      const context = await this.client.call('context_get', { scope: task.scope, task_id: task.id, limit: 12 }, execution.signal);
+      await beforeStart(() => this.client.call('task_checkpoint', { ...lease, checkpoint: checkpoint('starting') }, execution.signal), execution.signal);
+      context = await beforeStart(() => this.client.call('context_get', { scope: task.scope, task_id: task.id, limit: 12 }, execution.signal), execution.signal);
       // Patch work gets its own worktree+branch, so parallel patch tasks on one project never share files.
       // ponytail: flow commits must exist locally; cross-host execution needs reviewed commit transfer.
       const isPatchWork = task.kind === 'patch' || (task.kind === 'turn' && task.required_capability.endsWith('.patch'));
@@ -518,6 +547,7 @@ export class BridgeWorker {
           observedCommit = snapshot.commit;
         }
       }
+      if (task.kind !== 'turn' && task.kind !== 'check') await annotateEvidence(context, project.root, worktree?.baseCommit ?? task.base_ref ?? 'HEAD');
       let result: ProcessResult;
       let nativeSession: NativeSession | undefined;
       let nativePlan: ReturnType<typeof prepareNative>;
@@ -531,6 +561,7 @@ export class BridgeWorker {
         } else {
           result = await withTurnImages(agent, task, context, async images => {
           const request = buildInvocation(agent, project, task, context, this.config, execution.signal, process.env, worktree, nativePlan, images);
+          promptText = request.prompt;
           const scrub = (s: string) => images.length ? s.replace(/[A-Za-z0-9+/]{128,}={0,2}/gu, "[photo removed]") : s;
           request.on_progress = value => {
             progress = images.length ? { ...value, stdout_tail: "" } : value;
@@ -622,6 +653,7 @@ export class BridgeWorker {
           ...(usage ? { usage } : {}),
           served,
           ...(failure ? { failure } : {}),
+          ...(task.kind !== 'check' ? { context_used: contextReceipt(task, context, promptText, this.config.max_prompt_bytes, worktree?.baseRef ?? task.base_ref ?? null) } : {}),
           // The agent's own answer, so callers can read it with task_get; untrusted provider output.
           answer: task.kind==='check' ? checkFact!.output_tail : untrusted(cleanAnswer, 8 * 1024),
           ...(delegate ? { delegate } : {}),
@@ -657,8 +689,10 @@ export class BridgeWorker {
         try {
           await this.client.call('task_finish', { ...lease, outcome: 'blocked', result: {
             agent: agent.id, code: errorCode(error), review_required: true,
+            ...(error && typeof error === 'object' && 'detail' in error ? { detail: (error as { detail: unknown }).detail } : {}),
+            ...(context !== undefined && task.kind !== 'check' ? { context_used: contextReceipt(task, context, promptText, this.config.max_prompt_bytes, worktree?.baseRef ?? task.base_ref ?? null) } : {}),
             ...(task.kind==='check' ? {reason:`Deterministic check could not run: ${errorCode(error)}`,tests_run_by_bridge:true,observed_commit:observedCommit} : {}),
-            summary: errorCode(error) === 'photo_provider_unsupported' ? 'This provider does not support photo input; retry with Claude or Codex.' : 'Worker could not complete this attempt. Check local CLI authentication/version, project configuration, context size and service availability.',
+            summary: BLOCKED_SUMMARY[errorCode(error)] ?? `Worker could not complete this attempt (${errorCode(error)}). Check local CLI authentication/version, project configuration and service availability.`,
             acceptance_criteria_verified: false
           } });
           finished = true;

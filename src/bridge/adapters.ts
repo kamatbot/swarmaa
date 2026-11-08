@@ -62,6 +62,32 @@ export interface TurnPromptInput {
 const MAX_WINDOW_MESSAGES = 40;
 const MAX_WINDOW_BYTES = 24 * 1024; // 24 KB
 
+/** The newest thread messages that fit the turn window (oldest first): at most 40 messages and 24 KB of bodies. */
+export function selectWindow(allMessages: ThreadMessage[]): ThreadMessage[] {
+  const window: ThreadMessage[] = [];
+  let totalBytes = 0;
+  for (let i = allMessages.length - 1; i >= 0; i--) {
+    const msg = allMessages[i]!;
+    if (window.length >= MAX_WINDOW_MESSAGES) break;
+    const msgBytes = Buffer.byteLength(msg.body ?? '', 'utf8');
+    if (window.length > 0 && totalBytes + msgBytes > MAX_WINDOW_BYTES) break;
+    if (window.length === 0 && msgBytes > MAX_WINDOW_BYTES) {
+      window.push({ ...msg, body: Buffer.from(msg.body, 'utf8').subarray(0, MAX_WINDOW_BYTES).toString('utf8') });
+      break;
+    }
+    window.push(msg);
+    totalBytes += msgBytes;
+  }
+  return window.reverse();
+}
+
+const bytes = (v: unknown): number => Buffer.byteLength(typeof v === 'string' ? v : JSON.stringify(v ?? null), 'utf8');
+/** The prompt does not fit: say which parts are large so the caller can narrow the task instead of guessing. */
+export function contextTooLarge(promptBytes: number, limitBytes: number, parts: Record<string, number>): Error {
+  return Object.assign(new Error('Task/context exceeded configured prompt limit; narrow the task or its context references'),
+    { code: 'context_too_large', detail: { prompt_bytes: promptBytes, limit_bytes: limitBytes, parts } });
+}
+
 export function buildTurnPrompt(
   inputOrTask: TurnPromptInput | Task,
   contextOrMaxBytes?: unknown | number,
@@ -112,24 +138,7 @@ export function buildTurnPrompt(
     if (delegated && typeof task.objective === 'string') delegatedObjective = task.objective;
   }
 
-  const window: ThreadMessage[] = [];
-  let totalBytes = 0;
-
-  for (let i = allMessages.length - 1; i >= 0; i--) {
-    const msg = allMessages[i]!;
-    if (window.length >= MAX_WINDOW_MESSAGES) break;
-    const msgBytes = Buffer.byteLength(msg.body ?? '', 'utf8');
-    if (window.length > 0 && totalBytes + msgBytes > MAX_WINDOW_BYTES) break;
-    if (window.length === 0 && msgBytes > MAX_WINDOW_BYTES) {
-      window.push({ ...msg, body: Buffer.from(msg.body, 'utf8').subarray(0, MAX_WINDOW_BYTES).toString('utf8') });
-      totalBytes += MAX_WINDOW_BYTES;
-      break;
-    }
-    window.push(msg);
-    totalBytes += msgBytes;
-  }
-
-  window.reverse();
+  const window = selectWindow(allMessages);
 
   const lastAgentSeq = allMessages.filter(m => m.author?.kind === 'agent').reduce((max, m) => Math.max(max, Number(m.seq ?? 0)), 0);
   const isNew = (msg: ThreadMessage) => newSet ? newSet.has(msg.id ?? Number(msg.seq)) : Number(msg.seq ?? 0) > lastAgentSeq;
@@ -204,9 +213,8 @@ export function buildTurnPrompt(
   ];
 
   const prompt = promptSections.join('\n\n');
-  if (Buffer.byteLength(prompt, 'utf8') > maxBytes) {
-    throw new Error('Task/context exceeded configured prompt limit; narrow the task or its context references');
-  }
+  const size = Buffer.byteLength(prompt, 'utf8');
+  if (size > maxBytes) throw contextTooLarge(size, maxBytes, { instructions: bytes(instructions), thread_window: bytes(wrappedMessages.join('\n\n')), actions: bytes(actionsInstructions) });
   return prompt;
 }
 
@@ -229,8 +237,19 @@ export function buildPrompt(task: Task, context: unknown, maxBytes: number): str
     'The bridge owns task leases and service writes. Do not try to call the service or read its bearer token.',
     'Return a concise result with evidence, unresolved issues and recommended next steps. Provider exit code alone does not prove acceptance criteria passed.'
   ].join('\n');
-  const prompt = `${instruction}\n\nTASK_AND_CONTEXT_JSON\n${JSON.stringify({ task, context })}\n`;
-  if (Buffer.byteLength(prompt, 'utf8') > maxBytes) throw new Error('Task/context exceeded configured prompt limit; narrow the task or its context references');
+  const render = () => `${instruction}\n\nTASK_AND_CONTEXT_JSON\n${JSON.stringify({ task, context })}\n`;
+  let prompt = render();
+  // Optional memories (not explicit task references) are dropped lowest-ranked first, each recorded in
+  // context.omitted; the task and its explicit references are never dropped to fit.
+  const ctx = context as { memories?: Array<{ id?: string; key?: string; included_reason?: string }>; omitted?: unknown[] } | null;
+  while (Buffer.byteLength(prompt, 'utf8') > maxBytes && ctx?.memories?.some(m => m.included_reason !== 'explicit_ref')) {
+    const i = ctx.memories.map(m => m.included_reason !== 'explicit_ref').lastIndexOf(true);
+    const [dropped] = ctx.memories.splice(i, 1);
+    (ctx.omitted ??= []).push({ kind: 'memory', id: dropped!.id, key: dropped!.key, reason: 'prompt_limit' });
+    prompt = render();
+  }
+  const size = Buffer.byteLength(prompt, 'utf8');
+  if (size > maxBytes) throw contextTooLarge(size, maxBytes, { task: bytes(task), memories: bytes(ctx?.memories), other_context: bytes(context) - bytes(ctx?.memories) });
   return prompt;
 }
 
@@ -320,7 +339,7 @@ export function buildInvocation(agent: AgentConfig, project: ProjectConfig, task
     ({ command, args } = wrapCommand(agent.binary, args, { provider: agent.provider, binary: agent.binary, projectRoot: workspace?.dir ?? project.root, gitDir: workspace?.gitDir, patch, tmp, ownHistoryDir: native?.harness === 'claude' && workspace ? claudeWorkerDir(workspace.dir, native.home) : undefined }));
   }
   return {
-    command, args, cwd: workspace?.dir ?? project.root, env,
+    command, args, cwd: workspace?.dir ?? project.root, env, prompt: input,
     input: agent.provider === 'antigravity' ? '' : images?.length && agent.provider === 'claude'
       ? JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: input }, ...images.flatMap(image => [{ type: 'text', text: `Untrusted photo from message #${image.seq}:` }, { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: image.data } }])] } }) + '\n' : input,
     timeout_ms: config.task_timeout_seconds * 1000, max_output_bytes: config.max_output_bytes, signal
