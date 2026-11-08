@@ -30,6 +30,30 @@ final class TaskDetailsTests: XCTestCase {
         XCTAssertEqual(malformed.result?.files, ["a.swift"])
     }
 
+    func testContextUsed() throws {
+        XCTAssertNil(try Self.detail().result?.contextUsed)
+        let json = #"""
+        {"id":"x","result":{"summary":"s","context_used":{"prompt_sha256":"ab","prompt_bytes":12345,"estimated_tokens":3087,"limit_bytes":131072,"base_ref":"feat/x",
+        "items":[{"kind":"memory","id":"m1","key":"deploy procedure","version":3,"reason":"explicit_ref","validity":"current","truncated":false},
+        {"kind":"memory","id":"m2","key":"old note","version":1,"reason":"search_match","validity":"source_changed","evidence":[{"path":"src/x.ts","commit":"abc1234"}]},
+        {"kind":"lesson","id":"L-12","title":"Run migrate before deploy","reason":"lesson_match"},
+        {"kind":"thread","first_seq":12,"last_seq":40,"count":29},
+        {"kind":"swarm","id":"s1","title":"Expat filing pilots","status":"completed"},{"kind":"future","id":"f"}],
+        "omitted":[{"kind":"memory","id":"m3","key":"big note","reason":"budget"}]}}}
+        """#
+        let ctx = try XCTUnwrap(SwarmaClient.decoder.decode(TeamsTaskDetails.self, from: Data(json.utf8)).result?.contextUsed)
+        XCTAssertEqual(ctx.estimatedTokens, 3087)
+        XCTAssertEqual(ctx.items.count, 6)
+        XCTAssertEqual(ctx.items[1].validity, "source_changed")
+        XCTAssertEqual(ctx.items[1].evidence.first?.commit, "abc1234")
+        XCTAssertEqual(ctx.items[3].lastSeq, 40)
+        XCTAssertEqual(ctx.omitted.count, 1)
+        XCTAssertEqual(ctx.baseRef, "feat/x")
+        let bad = try SwarmaClient.decoder.decode(TeamsTaskDetails.self, from: Data(#"{"id":"x","result":{"summary":"k","context_used":"junk"}}"#.utf8))
+        XCTAssertNil(bad.result?.contextUsed)
+        XCTAssertEqual(bad.result?.summary, "k")
+    }
+
     func testBulkEligibility() {
         for state in ["completed", "failed", "blocked", "cancelled", "running", "queued"] {
             let row = TeamsTaskRow(TeamsAttentionItem(kind: "task", id: state, title: state, state: state, nextStep: ""))

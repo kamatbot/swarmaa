@@ -352,6 +352,7 @@ struct TaskDetailPanel: View {
                             field("Output", TeamsTaskBulk.tokens(usage.output_tokens))
                         } else { Text(verbatim: L10n.t("None yet")) }
                     }
+                    if let ctx = d.result?.contextUsed { ContextUsedSection(ctx: ctx) }
                 } else if let error = model.taskDetailError {
                     Text(verbatim: error)
                     Button(L10n.t("Try again")) { if let id = model.taskDetailID { Task { await model.openTaskDetail(id) } } }
@@ -366,6 +367,73 @@ struct TaskDetailPanel: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text(verbatim: L10n.t(label)).font(KS.body(11, .bold)).foregroundStyle(KS.textSoft)
                 Text(verbatim: value).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+}
+
+/// "Context used": what the runner was handed. Collapsed by default; unknown kinds render generically.
+private struct ContextUsedSection: View {
+    let ctx: TeamsTaskDetails.ContextUsed
+
+    private var summary: String {
+        var parts: [String] = []
+        if let t = ctx.estimatedTokens { parts.append("~" + (t >= 1000 ? String(format: "%.1fk", Double(t) / 1000) : "\(t)") + " " + L10n.t("tokens")) }
+        if let b = ctx.promptBytes {
+            var s = String(format: "%.1f KB", Double(b) / 1024)
+            if let l = ctx.limitBytes { s += " " + L10n.t("of") + " " + String(format: "%g KB", Double(l) / 1024) }
+            parts.append(s)
+        }
+        if let r = ctx.baseRef, !r.isEmpty { parts.append(L10n.t("from") + " " + r) }
+        return parts.joined(separator: " · ")
+    }
+
+    private func reason(_ r: String?) -> String? {
+        switch r {
+        case "explicit_ref": return L10n.t("referenced by the task")
+        case "search_match": return L10n.t("matched the task")
+        case "recent": return L10n.t("recent")
+        case "budget": return L10n.t("over the memory budget")
+        case "prompt_limit": return L10n.t("over the prompt limit")
+        default: return r
+        }
+    }
+
+    private func label(_ i: TeamsTaskDetails.ContextUsed.Item) -> String {
+        switch i.kind {
+        case "memory": return [i.key ?? i.id, reason(i.reason)].compactMap { $0 }.joined(separator: " — ")
+        case "lesson": return i.title ?? i.id ?? L10n.t("Lesson")
+        case "thread":
+            let range = [i.firstSeq, i.lastSeq].compactMap { $0 }.map { "#\($0)" }.joined(separator: "–")
+            return L10n.t("Thread messages") + (range.isEmpty ? "" : " " + range) + (i.count.map { " (\($0))" } ?? "")
+        case "swarm": return L10n.t("Swarm:") + " " + (i.title ?? i.id ?? "") + (i.status.map { " (\($0))" } ?? "")
+        default: return [i.kind, i.key ?? i.title ?? i.id, i.reason].compactMap { $0 }.joined(separator: " — ")
+        }
+    }
+
+    var body: some View {
+        DisclosureGroup {
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(Array(ctx.items.enumerated()), id: \.offset) { _, item in
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(verbatim: label(item)).textSelection(.enabled)
+                        if item.validity == "source_changed" {
+                            Text(verbatim: L10n.t("Source changed — verify")).font(KS.body(11, .bold)).foregroundStyle(.orange)
+                        } else if item.validity == "source_missing" {
+                            Text(verbatim: L10n.t("Source missing")).font(KS.body(11, .bold)).foregroundStyle(.orange)
+                        }
+                    }
+                }
+                if !ctx.omitted.isEmpty {
+                    Text(verbatim: L10n.t("Left out:") + " " + ctx.omitted.map { i in
+                        [i.key ?? i.title ?? i.id ?? i.kind, reason(i.reason).map { "(\($0))" }].compactMap { $0 }.joined(separator: " ")
+                    }.joined(separator: ", ")).font(KS.body(11)).foregroundStyle(KS.textSoft)
+                }
+            }.frame(maxWidth: .infinity, alignment: .leading).padding(.top, 6)
+        } label: {
+            VStack(alignment: .leading, spacing: 3) {
+                KSLabel(L10n.t("CONTEXT USED"))
+                if !summary.isEmpty { Text(verbatim: summary).font(KS.body(11)).foregroundStyle(KS.textSoft) }
             }
         }
     }

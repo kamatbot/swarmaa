@@ -590,6 +590,51 @@ struct TeamsTaskDetails: Decodable {
         let cached_input_tokens: Int?
         let output_tokens: Int
     }
+    /// What the runner was given as context. Every field is tolerant: unknown kinds/values still decode.
+    struct ContextUsed: Decodable {
+        struct Evidence: Decodable {
+            var path: String?; var commit: String?
+            enum CodingKeys: String, CodingKey { case path, commit }
+            init(from decoder: Decoder) throws {
+                let c = try decoder.container(keyedBy: CodingKeys.self)
+                path = c.opt(String.self, .path); commit = c.opt(String.self, .commit)
+            }
+        }
+        struct Item: Decodable {
+            var kind: String?, id: String?, key: String?, title: String?, reason: String?
+            var validity: String?, status: String?
+            var version: Int?, firstSeq: Int?, lastSeq: Int?, count: Int?
+            var truncated: Bool?
+            var evidence: [Evidence] = []
+            enum CodingKeys: String, CodingKey {
+                case kind, id, key, title, reason, validity, status, version, count, truncated, evidence
+                case firstSeq = "first_seq", lastSeq = "last_seq"
+            }
+            init(from decoder: Decoder) throws {
+                let c = try decoder.container(keyedBy: CodingKeys.self)
+                kind = c.opt(String.self, .kind); id = c.opt(String.self, .id); key = c.opt(String.self, .key)
+                title = c.opt(String.self, .title); reason = c.opt(String.self, .reason)
+                validity = c.opt(String.self, .validity); status = c.opt(String.self, .status)
+                version = c.opt(Int.self, .version); firstSeq = c.opt(Int.self, .firstSeq)
+                lastSeq = c.opt(Int.self, .lastSeq); count = c.opt(Int.self, .count)
+                truncated = c.opt(Bool.self, .truncated); evidence = c.list(.evidence)
+            }
+        }
+        var promptBytes: Int?, estimatedTokens: Int?, limitBytes: Int?
+        var baseRef: String?
+        var items: [Item] = []
+        var omitted: [Item] = []
+        enum CodingKeys: String, CodingKey {
+            case items, omitted, promptBytes = "prompt_bytes", estimatedTokens = "estimated_tokens"
+            case limitBytes = "limit_bytes", baseRef = "base_ref"
+        }
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            promptBytes = c.opt(Int.self, .promptBytes); estimatedTokens = c.opt(Int.self, .estimatedTokens)
+            limitBytes = c.opt(Int.self, .limitBytes); baseRef = c.opt(String.self, .baseRef)
+            items = c.list(.items); omitted = c.list(.omitted)
+        }
+    }
     struct Result: Decodable {
         var agent: String?
         var summary: String?
@@ -598,15 +643,16 @@ struct TeamsTaskDetails: Decodable {
         var files: [String] = []
         var fileCount: Int?
         var usage: Usage?
+        var contextUsed: ContextUsed?
         enum CodingKeys: String, CodingKey {
-            case agent, summary, branch, usage, durationMS = "duration_ms", files = "changed_files"
+            case agent, summary, branch, usage, contextUsed = "context_used", durationMS = "duration_ms", files = "changed_files"
         }
         init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             agent = c.opt(String.self, .agent); summary = c.opt(String.self, .summary)
             branch = c.opt(String.self, .branch); durationMS = c.opt(Int.self, .durationMS)
             files = c.list(.files); fileCount = c.opt(Int.self, .files)
-            usage = c.opt(Usage.self, .usage)
+            usage = c.opt(Usage.self, .usage); contextUsed = c.opt(ContextUsed.self, .contextUsed)
             if let u = usage, u.input_tokens < 0 || u.output_tokens < 0 || (u.cached_input_tokens ?? 0) < 0 { usage = nil }
         }
     }
