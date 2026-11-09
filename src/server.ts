@@ -1,6 +1,7 @@
 import { PushWorker } from './push.js';
 import { tickBotSchedules } from './core/bot-routing.js';
 import { tickSourceDeliveries } from './core/sources.js';
+import { sweepRetention } from './core/retention.js';
 import { createServer } from 'node:http';
 import { AuthService } from './auth.js';
 import { loadConfig } from './config.js';
@@ -54,12 +55,26 @@ if (config.sourcesEnabled) {
   sourceTimer.unref();
 }
 
+// Retention sweep: off unless RETENTION_DAYS is set; serialized and drained on shutdown.
+let retentionSweep: Promise<void> | undefined;
+let retentionTimer: NodeJS.Timeout | undefined;
+if (config.retentionDays) {
+  const days = config.retentionDays;
+  retentionTimer = setInterval(() => {
+    if (!retentionSweep) retentionSweep = sweepRetention(pool, days).then(() => undefined).catch(() => {
+      process.stderr.write('Retention sweep failed. Check database health.\n');
+    }).finally(() => { retentionSweep = undefined; });
+  }, 3_600_000);
+  retentionTimer.unref();
+}
+
 let closing = false;
 async function shutdown(code: number): Promise<void> {
   if (closing) return;
   closing = true;
   clearInterval(scheduleTimer);
   if (sourceTimer) clearInterval(sourceTimer);
+  if (retentionTimer) clearInterval(retentionTimer);
   const deadline = setTimeout(() => { server.closeAllConnections(); process.exit(1); }, 20000);
   deadline.unref();
   await Promise.all([
@@ -69,6 +84,7 @@ async function shutdown(code: number): Promise<void> {
     push.stop(),
     scheduleSweep ?? Promise.resolve(),
     sourceSweep ?? Promise.resolve(),
+    retentionSweep ?? Promise.resolve(),
   ]);
   await pool.end();
   clearTimeout(deadline);

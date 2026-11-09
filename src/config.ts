@@ -54,6 +54,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
   if (sourcesEnabled && (!eventEncryptionKey || !/^[0-9a-f]{64}$/i.test(eventEncryptionKey))) {
     throw new Error('SOURCES_ENABLED requires EVENT_ENCRYPTION_KEY to be 32 random bytes encoded as 64 hex characters.');
   }
+  const retentionDays = env.RETENTION_DAYS ? Number(env.RETENTION_DAYS) : 0;
+  if (!Number.isInteger(retentionDays) || retentionDays < 0 || retentionDays > 3650) throw new Error('RETENTION_DAYS must be a whole number of days between 1 and 3650, or unset/0 to keep everything.');
   return {
     host, port, publicUrl: url.origin, allowedOrigins, allowInsecureLocalhost,
     maxBodyBytes: 512 * 1024,
@@ -64,5 +66,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     trustProxy,
     trustedProxies,
     sourcesEnabled,
+    retentionDays: retentionDays || undefined,
   };
 }

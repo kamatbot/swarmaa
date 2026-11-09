@@ -57,6 +57,8 @@ export interface ServerConfig {
   /** Optional explicit proxy socket addresses allowed to supply forwarded client IPs (defaults to loopback when trustProxy is true). */
   trustedProxies?: string[];
   sourcesEnabled?: boolean;
+  /** Delete events and audit_log rows older than this many days (hourly). Undefined = retention off. */
+  retentionDays?: number;
 }
 
 export interface HttpDependencies {
