@@ -247,6 +247,7 @@ describe('lessons: propose, review, reuse and the distill job', { skip: !connect
       assert.deepEqual((await hit()).sort(), ['Pin the node version', 'Run migrate before restarting the service']);
       assert.deepEqual(await hit('migrate'), ['Run migrate before restarting the service']);
       assert.deepEqual(await hit('MIGRATE service'), ['Run migrate before restarting the service']);
+      assert.deepEqual(await hit('migrat'), ['Run migrate before restarting the service']);
       assert.deepEqual(await hit('migrate node'), []);
       assert.deepEqual(await hit('node'), ['Pin the node version']);
       assert.deepEqual(await hit('100%_'), []);

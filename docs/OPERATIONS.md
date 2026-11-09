@@ -34,6 +34,10 @@ Preserve the public `Host` header when proxying. Forward `/mcp`, `/oauth/*` and 
 
 Keep PostgreSQL off the public network. Keep the application listener on loopback or a private container network. Set database credentials and the event encryption key through the deployment's secret mechanism. A browser page, server health check or TLS certificate does not establish working agent interoperability; perform the actual client checks in `VALIDATION.md`.
 
+## Retention (off by default)
+
+Set `RETENTION_DAYS=N` (1-3650) to have the server prune, hourly and in bounded batches, `events` and `audit_log` rows older than N days and terminal (`delivered`/`failed`/`skipped`) `event_deliveries` older than 7 days. Events not yet passed by the push cursor or still referenced by a delivery are kept. Event cursors are `(xid,seq)` positions, so a client with an old cursor still receives every newer event; it only skips events that were pruned. Unset or `0` keeps everything. Not pruned (deliverables, follow-up): `task_runs`, `artifacts`, `inbox`, `chat_sessions`.
+
 ## Optional application container
 
 After generating and reviewing `package-lock.json` and completing local verification, the supplied Dockerfile builds the service from source. It deliberately requires that lockfile. It runs as the image's non-root `node` user. Container commands inherit environment values supplied by Compose and do not require an `.env` file inside the image.
