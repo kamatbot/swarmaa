@@ -10,7 +10,7 @@ import { sameModel, type ServedStamp } from '../core/failures.js';
 import { reasonNotify } from './reason.js';
 import { cleanupNative, finishNative, prepareNative, type NativeSession } from './native-session.js';
 import { annotateEvidence, contextReceipt } from './context-receipt.js';
-import { createWorktree, finishWorktree, inspectWorktree, removeSnapshot, type PatchOutcome, type Worktree } from './worktree.js';
+import { createWorktree, finishWorktree, inspectWorktree, providerPidfile, removeSnapshot, type PatchOutcome, type Worktree } from './worktree.js';
 import type { AgentConfig, BridgeConfig, BridgeLogger, Claim, Lease, ProcessResult, ProcessRunner, ProjectConfig, Task, ToolClient } from './types.js';
 import { redactSecrets } from '../safety/redact.js';
 
@@ -539,7 +539,7 @@ export class BridgeWorker {
       // ponytail: flow commits must exist locally; cross-host execution needs reviewed commit transfer.
       const isPatchWork = task.kind === 'patch' || (task.kind === 'turn' && task.required_capability.endsWith('.patch'));
       if (isPatchWork || task.flow_id) {
-        worktree = await createWorktree(project.root, task.kind==='check' ? 'check' : agent.provider, task);
+        worktree = await createWorktree(project.root, task.kind==='check' ? 'check' : agent.provider, task, this.logger);
         if (task.flow_id) {
           const snapshot = await inspectWorktree(worktree);
           if (task.kind!=='patch' && (snapshot.commit!==task.flow?.commit || snapshot.dirty)) throw Object.assign(new Error('Flow snapshot is not the exact clean pinned commit'),{code:'flow_commit_mismatch'});
@@ -562,6 +562,7 @@ export class BridgeWorker {
           result = await withTurnImages(agent, task, context, async images => {
           const request = buildInvocation(agent, project, task, context, this.config, execution.signal, process.env, worktree, nativePlan, images);
           promptText = request.prompt;
+          if (worktree && isPatchWork) request.pidfile = providerPidfile(worktree.dir);
           const scrub = (s: string) => images.length ? s.replace(/[A-Za-z0-9+/]{128,}={0,2}/gu, "[photo removed]") : s;
           request.on_progress = value => {
             progress = images.length ? { ...value, stdout_tail: "" } : value;

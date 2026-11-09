@@ -81,6 +81,8 @@ export interface ProcessRequest {
   timeout_ms: number;
   max_output_bytes: number;
   signal?: AbortSignal;
+  /** Written with pid/pgid/start marker while the child lives, removed on exit, so a later bridge can fence an orphan. */
+  pidfile?: string;
   on_progress?: (progress: { output_bytes: number; stdout_tail: string }) => void;
 }
 export interface ProcessResult {
