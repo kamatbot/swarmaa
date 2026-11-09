@@ -610,4 +610,63 @@ describe('core transactional invariants', {skip:!connectionString,concurrency:fa
     assert.equal(neither.events.length,0);
     assert.equal(neither.next_cursor,'0.0');
   });
+  it('requeues an expired lease from the server sweeper without any claim call',async () => {
+    const f = await fixture();
+    const submitted = await call(f.front,'task_submit',{...submission(),max_attempts:2});
+    const first = await call(f.worker,'task_claim',claimArgs);
+    assert.equal(first.task.id,submitted.task.id);
+    await call(f.worker,'task_checkpoint',{...lease(first),checkpoint:{phase:'x'}});
+    await expire(submitted.task.id);
+    assert.equal((await call(f.front,'task_get',{task_id:submitted.task.id})).task.status,'running');
+    await core.sweepExpiredLeases();
+    const swept = (await call(f.front,'task_get',{task_id:submitted.task.id})).task;
+    assert.equal(swept.status,'queued');
+    assert.equal(swept.lease_owner,null);
+    assert.equal(swept.runs[0].status,'abandoned');
+    const audit = await pool.query("SELECT 1 FROM audit_log WHERE subject_id=$1 AND operation='task.lease_expired'",[submitted.task.id]);
+    assert.equal(audit.rowCount,1);
+    await rejects(f.worker,'task_checkpoint',{...lease(first),checkpoint:{stale:true}},'lease_lost');
+    // Exhausting attempts fails the task exactly as claim does.
+    const second = await call(f.worker,'task_claim',claimArgs);
+    assert.equal(second.task.id,submitted.task.id);
+    await expire(submitted.task.id);
+    await core.sweepExpiredLeases();
+    assert.equal((await call(f.front,'task_get',{task_id:submitted.task.id})).task.status,'failed');
+  });
+  it('does not audit checkpoints and emits at most one running-checkpoint event per 3 seconds',async () => {
+    const f = await fixture();
+    const submitted = await call(f.front,'task_submit',submission());
+    const claimed = await call(f.worker,'task_claim',claimArgs);
+    const id = submitted.task.id;
+    const count = async (sql:string) => Number((await pool.query(sql,[id])).rows[0].n);
+    const audits = () => count("SELECT count(*) AS n FROM audit_log WHERE subject_id=$1 AND operation='task.checkpointed'");
+    const events = () => count("SELECT count(*) AS n FROM events WHERE subject_id=$1 AND payload->>'action'='checkpointed'");
+    const cp = (checkpoint:Record<string,unknown>) => call(f.worker,'task_checkpoint',{...lease(claimed),checkpoint});
+    await cp({phase:'starting'});
+    await cp({phase:'running',partial_text:'a'});
+    await cp({phase:'running',partial_text:'ab'});
+    assert.equal(await events(),1);
+    await cp({phase:'provider_finished'});
+    assert.equal(await events(),2);
+    await pool.query("UPDATE events SET created_at=created_at-interval '4 seconds' WHERE subject_id=$1",[id]);
+    const last = await cp({phase:'running',partial_text:'abc'});
+    assert.equal(await events(),3);
+    assert.equal(await audits(),0);
+    // Throttled checkpoints still persist and advance the version.
+    assert.equal(last.task.checkpoint.partial_text,'abc');
+    const stored = (await call(f.front,'task_get',{task_id:id})).task;
+    assert.equal(stored.version,last.task.version);
+  });
+  it('returns no task for all-empty scopes yet still records worker liveness once',async () => {
+    const f = await fixture();
+    f.worker.scopes.push('project:b');
+    await pool.query('UPDATE principals SET scopes=$2,last_seen_at=NULL WHERE id=$1',[f.worker.id,f.worker.scopes]);
+    const projects = ['project:a','project:b'].map(scope => ({scope,capabilities:['claude.read']}));
+    assert.deepEqual(await call(f.worker,'task_claim',{projects}),{task:null});
+    const seen = await pool.query('SELECT last_seen_at FROM principals WHERE id=$1',[f.worker.id]);
+    assert.ok(seen.rows[0].last_seen_at);
+    // A task the worker cannot serve (wrong capability) must not change the result either.
+    await call(f.front,'task_submit',{...submission(),required_capability:'codex.read'});
+    assert.deepEqual(await call(f.worker,'task_claim',{projects}),{task:null});
+  });
 });

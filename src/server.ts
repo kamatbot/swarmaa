@@ -43,6 +43,15 @@ const scheduleTimer = setInterval(() => {
 },30000);
 scheduleTimer.unref();
 
+// Reap expired task leases in scopes no worker polls (claim sweeps too); serialized and drained like the schedule tick.
+let leaseSweep:Promise<void>|undefined;
+const leaseTimer = setInterval(() => {
+  if (!leaseSweep) leaseSweep = core.sweepExpiredLeases().then(() => undefined,() => {
+    process.stderr.write('Lease sweep failed. Check database health.\n');
+  }).finally(() => { leaseSweep = undefined; });
+},30000);
+leaseTimer.unref();
+
 let sourceSweep: Promise<void> | undefined;
 let sourceTimer: NodeJS.Timeout | undefined;
 if (config.sourcesEnabled) {
@@ -59,6 +68,7 @@ async function shutdown(code: number): Promise<void> {
   if (closing) return;
   closing = true;
   clearInterval(scheduleTimer);
+  clearInterval(leaseTimer);
   if (sourceTimer) clearInterval(sourceTimer);
   const deadline = setTimeout(() => { server.closeAllConnections(); process.exit(1); }, 20000);
   deadline.unref();
@@ -68,6 +78,7 @@ async function shutdown(code: number): Promise<void> {
     events?.stop() ?? Promise.resolve(),
     push.stop(),
     scheduleSweep ?? Promise.resolve(),
+    leaseSweep ?? Promise.resolve(),
     sourceSweep ?? Promise.resolve(),
   ]);
   await pool.end();

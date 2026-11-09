@@ -65,6 +65,9 @@ export class CoreService implements ToolBackend {
     this.sources = new SourceService(pool);
   }
 
+  /** Server-timer sweep of expired task leases; returns the number of (tenant, scope) pairs swept. */
+  sweepExpiredLeases():Promise<number> { return this.tasks.sweepLeases(); }
+
   listTools(principal:Principal):ToolDefinition[] {
     return TOOLS.filter(tool => hasPermission(principal,TOOL_PERMISSIONS[tool.name]!)
       && (!responseReadPermissions[tool.name] || hasPermission(principal,responseReadPermissions[tool.name]!))

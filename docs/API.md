@@ -243,7 +243,7 @@ The token is random, returned only at claim, and stored only as a hash. Every mu
 
 Claims serialize through a per-tenant/scope advisory lock and task row locks. Eligible work must match an advertised capability and allowed kind. Patch leases also reserve `(tenant, scope, resource_key)`, preventing two current patch leases on one resource. Configure the same canonical resource key everywhere that reaches the same workspace; different keys or scopes cannot protect an accidentally shared external directory.
 
-Each claim sweep requeues expired running tasks and marks their runs abandoned. Attempts exhausted after expiry become failed with `result.error: 'attempts_exhausted'`; otherwise the next claim increments the attempt count and generation. A patch resource retains an old-generation tombstone for 30 seconds after the later of expiry or reclamation, allowing a cooperative local process time to stop. The task is queued during that cooldown; a later poll can claim it. Reclamation is driven by calls to `task_claim`, so a stopped fleet leaves expired work visible as running until a worker resumes polling. Results explicitly reported as failed/blocked are not automatically retried; an authorized continuation is needed.
+Each claim or timer sweep requeues expired running tasks and marks their runs abandoned. Attempts exhausted after expiry become failed with `result.error: 'attempts_exhausted'`; otherwise the next claim increments the attempt count and generation. A patch resource retains an old-generation tombstone for 30 seconds after the later of expiry or reclamation, allowing a cooperative local process time to stop. The task is queued during that cooldown; a later poll can claim it. Reclamation also runs on a 30 second server timer (`CoreService.sweepExpiredLeases`, same scope lock and effects as the claim sweep), so a scope no worker polls does not show expired work as running. Results explicitly reported as failed/blocked are not automatically retried; an authorized continuation is needed.
 
 ### `task_heartbeat`
 
@@ -251,7 +251,7 @@ Arguments: `{task_id, lease_token, lease_generation, lease_seconds?}`. Result: `
 
 ### `task_checkpoint`
 
-Arguments: `{task_id, lease_token, lease_generation, checkpoint: object}`. Checkpoint JSON is limited to 32 KiB and nesting depth 16. Result: `{task}`. Successful progress advances the task version and emits metadata. Save concrete evidence, phase and next steps; do not copy credentials or claim new authority in checkpoints.
+Arguments: `{task_id, lease_token, lease_generation, checkpoint: object}`. Checkpoint JSON is limited to 32 KiB and nesting depth 16. Result: `{task}`. Successful progress advances the task version. It emits a `task.updated` event with `action: 'checkpointed'` (chat clients refetch the thread's streaming `typing` text on it) but writes no audit row; a checkpoint with `phase: 'running'` emits at most one event per task per 3 seconds, every other phase always emits. Save concrete evidence, phase and next steps; do not copy credentials or claim new authority in checkpoints.
 
 ### `task_finish`
 
