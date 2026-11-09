@@ -15,9 +15,7 @@ struct MenuBarLimits: Equatable {
     var isOn: Bool
     /// The providers chosen for the bar, as ids.
     ///
-    /// Nil until someone chooses, which reads as Claude and Codex: their
-    /// headline limit *is* the five-hour window, so they are what the bar is
-    /// for. Empty is a choice rather than an absence, and gives the bar its
+    /// Nil until someone chooses, which reads as every provider with a limit. Empty is a choice rather than an absence, and gives the bar its
     /// icon back.
     var chosen: Set<String>?
 
@@ -26,7 +24,7 @@ struct MenuBarLimits: Equatable {
     /// Whether this provider is among the chosen. Answered with the feature
     /// off as well, so switching it off and on again keeps what was chosen.
     func isChosen(_ providerID: String) -> Bool {
-        chosen?.contains(providerID) ?? StatusItemSummary.isFiveHourFamily(providerID)
+        chosen?.contains(providerID) ?? true
     }
 
     /// The same choice with one provider put in or taken out.

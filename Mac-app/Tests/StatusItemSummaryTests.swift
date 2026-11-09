@@ -37,6 +37,15 @@ final class StatusItemSummaryTests: XCTestCase {
             headlineID: "primary", weeklyID: "secondary")
     }
 
+    /// The same account with no weekly window, so the bar falls back to the
+    /// five-hour figure: that is what the tests of its countdown and reset
+    /// rules are about.
+    private func sessionOnly(_ snapshot: ProviderSnapshot) -> ProviderSnapshot {
+        var snapshot = snapshot
+        snapshot.weeklyID = nil
+        return snapshot
+    }
+
     private func other(_ id: String, glyph: ProviderGlyph, length: TimeInterval,
                        kind: ProviderKind = .usage) -> ProviderSnapshot {
         ProviderSnapshot(
@@ -70,20 +79,20 @@ final class StatusItemSummaryTests: XCTestCase {
 
     // MARK: - Which providers
 
-    func testClaudeReadsAsItsSessionShareAndCountdown() throws {
+    func testClaudeReadsAsItsWeeklyShareAndTheSessionCountdown() throws {
         let entry = try XCTUnwrap(summary([claude(0.72, resetIn: 2 * hour + 18 * minute + 20)]).entries.first)
         XCTAssertEqual(entry.glyph, .claude)
-        XCTAssertEqual(entry.percent, "72%")
+        XCTAssertEqual(entry.percent, "31%", "the bar leads with the weekly limit")
         XCTAssertEqual(entry.countdown, "2h 18m")
         XCTAssertNil(entry.label)
         XCTAssertFalse(entry.isStale)
         XCTAssertEqual(entry.detail, "Claude — Current session: 72% Used · 28% left · 2h 18m")
     }
 
-    func testCodexReadsItsFiveHourPrimaryWindow() throws {
+    func testCodexReadsItsWeeklyWindowAndTheFiveHourCountdown() throws {
         let entry = try XCTUnwrap(summary([codex(0.41, resetIn: 4 * hour + 5 * minute + 30)]).entries.first)
         XCTAssertEqual(entry.glyph, .openai)
-        XCTAssertEqual(entry.percent, "41%")
+        XCTAssertEqual(entry.percent, "12%")
         XCTAssertEqual(entry.countdown, "4h 05m")
     }
 
@@ -95,24 +104,24 @@ final class StatusItemSummaryTests: XCTestCase {
         XCTAssertFalse(both.isCompact)
     }
 
-    /// The daily pace ring takes Claude's headline; the bar still means the
-    /// five-hour session.
+    /// The daily pace ring takes Claude's headline; the bar still reads the
+    /// five-hour session when there is no weekly limit.
     func testTheDailyPaceRingDoesNotTakeTheSessionsPlace() throws {
         let paced = DailyPace.apply(to: claude(0.72, resetIn: 2 * hour), now: now)
         XCTAssertEqual(paced.headlineID, DailyPace.windowID)
-        XCTAssertEqual(try XCTUnwrap(summary([paced]).entries.first).percent, "72%")
+        XCTAssertEqual(try XCTUnwrap(summary([sessionOnly(paced)]).entries.first).percent, "72%")
     }
 
-    /// A monthly figure in the five-hour slot would be a different fact in
-    /// the same clothes, and a local model has no quota at all.
-    func testOnlyFiveHourWindowsAreSummarised() {
+    /// Any limit is summarised, a monthly one included; a local model has no
+    /// quota at all.
+    func testOnlyProvidersWithALimitAreSummarised() {
         let result = summary([
             other("cursor", glyph: .cursor, length: 30 * 86400),
             other("glm", glyph: .glm, length: 5 * hour),
             other("ollama-local", glyph: .ollamaLocal, length: 5 * hour, kind: .localRuntime),
         ])
-        XCTAssertEqual(result.entries.map(\.id), ["glm"])
-        XCTAssertTrue(summary([other("cursor", glyph: .cursor, length: 30 * 86400)]).entries.isEmpty,
+        XCTAssertEqual(result.entries.map(\.id), ["cursor", "glm"])
+        XCTAssertTrue(summary([waiting("cursor", "Cursor", glyph: .cursor)]).entries.isEmpty,
                       "with nothing to summarise the item goes back to its icon")
     }
 
@@ -246,13 +255,12 @@ final class StatusItemSummaryTests: XCTestCase {
         XCTAssertEqual(summary(readings, limits: limits).entries.map(\.id), ["codex"])
     }
 
-    /// Before anyone chooses, the bar is for Claude and Codex, whose headline
-    /// is the five-hour window. Another provider with such a window waits to
-    /// be chosen rather than turning up by itself.
-    func testNeverChosenMeansClaudeAndCodex() {
+    /// Before anyone chooses, the bar is for every provider that has a limit.
+    /// Choosing narrows it down.
+    func testNeverChosenMeansEveryProvider() {
         let readings = [claude(0.72, resetIn: 2 * hour), other("glm", glyph: .glm, length: 5 * hour),
                         codex(0.41, resetIn: 4 * hour)]
-        XCTAssertEqual(summary(readings, limits: on(nil)).entries.map(\.id), ["claude", "codex"])
+        XCTAssertEqual(summary(readings, limits: on(nil)).entries.map(\.id), ["claude", "glm", "codex"])
         XCTAssertEqual(summary(readings, limits: on(["glm"])).entries.map(\.id), ["glm"])
     }
 
@@ -292,8 +300,8 @@ final class StatusItemSummaryTests: XCTestCase {
         XCTAssertTrue(StatusItemSummary.canSummarise(waiting("codex", "Codex", glyph: .openai)),
                       "Codex before its first reading")
         XCTAssertTrue(StatusItemSummary.canSummarise(other("glm", glyph: .glm, length: 5 * hour)))
-        XCTAssertFalse(StatusItemSummary.canSummarise(other("cursor", glyph: .cursor, length: 30 * 86400)),
-                       "a monthly limit has no five-hour figure to show")
+        XCTAssertTrue(StatusItemSummary.canSummarise(other("cursor", glyph: .cursor, length: 30 * 86400)),
+                      "a monthly limit is a limit the bar can show")
         XCTAssertFalse(StatusItemSummary.canSummarise(waiting("cursor", "Cursor", glyph: .cursor)))
         XCTAssertFalse(StatusItemSummary.canSummarise(
             other("ollama-local", glyph: .ollamaLocal, length: 5 * hour, kind: .localRuntime)))
@@ -312,14 +320,14 @@ final class StatusItemSummaryTests: XCTestCase {
     }
 
     func testASpentWindowReadsAsTheLimit() throws {
-        XCTAssertEqual(try XCTUnwrap(summary([claude(1.0, resetIn: hour)]).entries.first).percent, "100%")
-        XCTAssertEqual(try XCTUnwrap(summary([claude(1.04, resetIn: hour)]).entries.first).percent, "104%")
+        XCTAssertEqual(try XCTUnwrap(summary([sessionOnly(claude(1.0, resetIn: hour))]).entries.first).percent, "100%")
+        XCTAssertEqual(try XCTUnwrap(summary([sessionOnly(claude(1.04, resetIn: hour))]).entries.first).percent, "104%")
     }
 
     func testAnUnknownResetLeavesADashWhereTheCountdownWouldBe() throws {
         let result = summary([claude(0.72, resetIn: nil)])
         let entry = try XCTUnwrap(result.entries.first)
-        XCTAssertEqual(entry.percent, "72%")
+        XCTAssertEqual(entry.percent, "31%")
         XCTAssertEqual(entry.countdown, "—")
         XCTAssertNil(result.nextChange, "nothing is counting down, so nothing needs to wake")
     }
@@ -327,12 +335,14 @@ final class StatusItemSummaryTests: XCTestCase {
     /// Past the reset the old share belongs to a window that is over. The
     /// store re-reads on its next tick; until then there is no figure.
     func testAPassedResetShowsNoFigureUntilTheNextReading() throws {
-        let result = summary([claude(0.93, resetIn: -20)])
+        let result = summary([sessionOnly(claude(0.93, resetIn: -20))])
         let entry = try XCTUnwrap(result.entries.first)
         XCTAssertEqual(entry.percent, "—")
         XCTAssertEqual(entry.countdown, "—")
         XCTAssertEqual(entry.detail, "Claude — Current session: Resetting…")
         XCTAssertNil(result.nextChange)
+        // The weekly limit is its own window: with the session over it still reads.
+        XCTAssertEqual(try XCTUnwrap(summary([claude(0.93, resetIn: -20)]).entries.first).percent, "31%")
     }
 
     func testTheCountdownRunsDownThroughTheLastMinuteInSeconds() throws {
@@ -359,7 +369,7 @@ final class StatusItemSummaryTests: XCTestCase {
         let stale = claude(0.72, resetIn: 2 * hour, status: .stale(since: now.addingTimeInterval(-40 * minute)))
         let entry = try XCTUnwrap(summary([stale]).entries.first)
         XCTAssertTrue(entry.isStale)
-        XCTAssertEqual(entry.percent, "72%")
+        XCTAssertEqual(entry.percent, "31%")
         XCTAssertTrue(entry.detail.hasSuffix("· 40 min ago"), entry.detail)
     }
 
@@ -393,7 +403,9 @@ final class StatusItemSummaryTests: XCTestCase {
         // the window was, which misnamed this one and would misname a monthly
         // allowance too.
         XCTAssertTrue(on.detail.contains("All models: 31% Used · 69% left"), on.detail)
-        XCTAssertEqual(on.percent, "32%", "weekly usage never replaces the existing session share")
+        XCTAssertEqual(on.percent, "31%", "the bar's figure is the weekly share, whether or not the ring is on")
+        XCTAssertEqual(off.percent, "31%")
+        XCTAssertTrue(on.detail.contains("Current session: 32% Used"), "the tooltip keeps the session")
     }
 
     /// A provider whose second window is not a week still gets its own name for
@@ -437,8 +449,8 @@ final class StatusItemSummaryTests: XCTestCase {
     }
 
     /// Antigravity may choose its weekly allowance as the notch headline. The
-    /// status item still leads with its independent five-hour reading, so the
-    /// declared weekly allowance remains useful rather than becoming a duplicate.
+    /// status item reads it by its own id, so the weekly allowance still gets
+    /// its ring.
     func testWeeklyRingStillWorksWhenTheNotchHeadlineIsWeekly() throws {
         let snapshot = ProviderSnapshot(
             id: "antigravity", displayName: "Antigravity", glyph: .antigravity,
@@ -453,7 +465,7 @@ final class StatusItemSummaryTests: XCTestCase {
         XCTAssertNil(snapshot.weeklyWindow, "the notch still avoids drawing the same ring twice")
         XCTAssertEqual(snapshot.weeklyLimitWindow?.usedFraction, 0.67)
         let entry = try XCTUnwrap(summary([snapshot], weekly: true).entries.first)
-        XCTAssertEqual(entry.percent, "21%")
+        XCTAssertEqual(entry.percent, "67%", "the bar leads with the weekly limit")
         XCTAssertEqual(entry.weeklyFraction, 0.67)
     }
 
@@ -476,13 +488,15 @@ final class StatusItemSummaryTests: XCTestCase {
         XCTAssertEqual(result.entries.map(\.label), [nil, "work"])
     }
 
-    /// Past two, the countdowns stay in the tooltip; past four, in the menu.
-    func testTheBarGoesCompactPastTwoAndStopsAtFour() {
+    /// Past two, the countdowns stay in the tooltip; past six, in the menu.
+    func testTheBarGoesCompactPastTwoAndStopsAtSix() {
         let many = [claude(0.72, resetIn: hour), codex(0.41, resetIn: hour),
                     other("glm", glyph: .glm, length: 5 * hour), other("kimi", glyph: .kimi, length: 5 * hour),
-                    other("opencode", glyph: .opencode, length: 5 * hour)]
+                    other("opencode", glyph: .opencode, length: 5 * hour),
+                    other("cursor", glyph: .cursor, length: 5 * hour),
+                    other("gemini", glyph: .antigravity, length: 5 * hour)]
         let result = summary(many)
-        XCTAssertEqual(result.entries.map(\.id), ["claude", "codex", "glm", "kimi"])
+        XCTAssertEqual(result.entries.map(\.id), ["claude", "codex", "glm", "kimi", "opencode", "cursor"])
         XCTAssertTrue(result.isCompact)
         XCTAssertFalse(summary(Array(many.prefix(2))).isCompact)
     }
@@ -500,7 +514,8 @@ final class StatusItemSummaryTests: XCTestCase {
     func testTheItemFollowsTheFiguresItPrints() {
         let font = NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .regular)
         func width(_ used: Double, _ resetIn: TimeInterval?) -> CGFloat {
-            StatusItemArtwork(summary: summary([claude(used, resetIn: resetIn)]), font: font, height: 22).size.width
+            StatusItemArtwork(summary: summary([sessionOnly(claude(used, resetIn: resetIn))]),
+                              font: font, height: 22).size.width
         }
         // A digit fewer in either figure is a digit narrower in the item.
         let digit = ("0" as NSString).size(withAttributes: [.font: font]).width
@@ -571,7 +586,7 @@ final class StatusItemSummaryTests: XCTestCase {
     func testTheItemChangesWidthOnlyAsTheFiguresChangeShape() {
         let font = NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .regular)
         func width(_ snapshots: [ProviderSnapshot]) -> CGFloat {
-            StatusItemArtwork(summary: summary(snapshots), font: font, height: 22).size.width
+            StatusItemArtwork(summary: summary(snapshots.map(sessionOnly)), font: font, height: 22).size.width
         }
         var alone: [CGFloat] = []
         var paired: [CGFloat] = []
@@ -696,13 +711,14 @@ final class StatusItemSummaryTests: XCTestCase {
     func testWeeklyRingAddsNoMenuBarWidth() {
         let font = NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .regular)
         let snapshot = claude(0.72, resetIn: hour)
+        // "31%" and "99%" are the same width, so only the ring's fill differs.
         let ordinary = StatusItemArtwork(summary: summary([snapshot]), font: font, height: 22).size.width
         let weekly = StatusItemArtwork(summary: summary([snapshot], weekly: true), font: font, height: 22).size.width
         XCTAssertEqual(weekly, ordinary, "the ring occupies the provider glyph's existing box")
 
         var full = snapshot
         full.windows[1] = LimitWindow(id: "weekly_all", label: "All models",
-                                      usedFraction: 1, duration: 7 * 86400)
+                                      usedFraction: 0.99, duration: 7 * 86400)
         XCTAssertEqual(
             StatusItemArtwork(summary: summary([full], weekly: true), font: font, height: 22).size.width,
             weekly,
@@ -769,9 +785,9 @@ final class StatusItemSummaryTests: XCTestCase {
             StatusItemSummary.make(from: snaps, showing: limits, now: now,
                                    showingWeeklyLimit: true, showingRemaining: remaining).entries[0]
         }
-        XCTAssertEqual(entry(true).percent, "28%")
+        XCTAssertEqual(entry(true).percent, "69%")
         XCTAssertEqual(try XCTUnwrap(entry(true).weeklyFraction), 1 - 0.31, accuracy: 1e-9)
-        XCTAssertEqual(entry(false).percent, "72%")
+        XCTAssertEqual(entry(false).percent, "31%")
         XCTAssertEqual(try XCTUnwrap(entry(false).weeklyFraction), 0.31, accuracy: 1e-9)
     }
 }
@@ -779,15 +795,11 @@ final class StatusItemSummaryTests: XCTestCase {
 /// The menu bar choice on its own: what "never chosen" means, and how the
 /// first choice gets written down.
 final class MenuBarLimitsTests: XCTestCase {
-    /// Before anyone chooses, the bar is for the providers whose headline is
-    /// the five-hour window — every profile of them.
-    func testNeverChosenReadsAsEveryClaudeAndCodexProfile() {
+    /// Before anyone chooses, the bar is for every provider.
+    func testNeverChosenReadsAsEveryProvider() {
         let limits = MenuBarLimits(isOn: true, chosen: nil)
-        for id in ["claude", "claude-work", "codex", "codex-side"] {
+        for id in ["claude", "claude-work", "codex", "codex-side", "gemini", "glm", "kimi", "cursor"] {
             XCTAssertTrue(limits.isChosen(id), id)
-        }
-        for id in ["gemini", "glm", "kimi", "cursor"] {
-            XCTAssertFalse(limits.isChosen(id), id)
         }
     }
 
@@ -797,7 +809,7 @@ final class MenuBarLimitsTests: XCTestCase {
         let listed = ["claude", "codex", "gemini"]
         let never = MenuBarLimits(isOn: true, chosen: nil)
         XCTAssertEqual(never.choosing(true, "gemini", among: listed).chosen, ["claude", "codex", "gemini"])
-        XCTAssertEqual(never.choosing(false, "claude", among: listed).chosen, ["codex"])
+        XCTAssertEqual(never.choosing(false, "claude", among: listed).chosen, ["codex", "gemini"])
     }
 
     /// Once written down, a Claude profile that turns up later is not put in

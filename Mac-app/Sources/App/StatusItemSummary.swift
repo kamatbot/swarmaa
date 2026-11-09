@@ -44,19 +44,19 @@ struct StatusItemSummary: Equatable {
     /// Past this many the rest are in the menu only. macOS hides a status item
     /// that does not fit rather than squeezing it, and with the app out of the
     /// Dock this item is the only way into it.
-    static let entryLimit = 4
+    static let entryLimit = 6
 
     var isCompact: Bool { entries.count > Self.fullEntryLimit }
 
-    /// Whether the bar has anything to say about this provider: it meters a
-    /// five-hour window, or it is Claude or Codex, whose headline limit *is*
-    /// that window — so a missing figure is worth a dash rather than a silent
-    /// gap. Anyone else qualifies once they report one.
+    /// Whether the bar has anything to say about this provider: it reports any
+    /// limit, or it is Claude or Codex, where a missing figure is worth a dash
+    /// rather than a silent gap.
     ///
     /// Settings lists exactly these, so it never offers a provider the bar
     /// would not draw.
     static func canSummarise(_ snapshot: ProviderSnapshot) -> Bool {
-        snapshot.kind == .usage && (snapshot.fiveHourWindow != nil || isFiveHourFamily(snapshot.id))
+        snapshot.kind == .usage && (snapshot.weeklyLimitWindow != nil || snapshot.fiveHourWindow != nil
+            || snapshot.headline != nil || isFiveHourFamily(snapshot.id))
     }
 
     /// The chosen providers the bar can summarise, in the order the notch shows
