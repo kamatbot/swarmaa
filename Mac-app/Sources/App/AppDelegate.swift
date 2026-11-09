@@ -648,7 +648,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             preferences.$showsNotch.combineLatest(preferences.$notchVisibility)
                 .map { shows, visibility in shows ? visibility : .hidden }
                 .receive(on: RunLoop.main)
-                .sink { [weak fleet] in fleet?.apply($0) }
+                .sink { [weak fleet] in
+                    Costs.notchShowsCosts = $0 != .hidden
+                    fleet?.apply($0)
+                }
                 .store(in: &cancellables)
 
             preferences.$foldsForFullScreen

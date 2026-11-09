@@ -205,9 +205,8 @@ final class NotchWindowController {
         // bezel, and so how deep the panel is, depends on it.
         model.reduceTransparency = NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency
         relocate()
-        startWatchingCursor()
-        startWatchingFullScreen()
-        startClock()
+        isRunning = true
+        if visibility != .hidden { startPolling() }
 
         NotificationCenter.default.publisher(
             for: NSApplication.didChangeScreenParametersNotification
@@ -331,6 +330,7 @@ final class NotchWindowController {
     }
 
     func stop() {
+        isRunning = false
         setPointing(false)
         peekUntil = nil
         peekWork?.cancel()
@@ -341,7 +341,7 @@ final class NotchWindowController {
         fullScreenTimer = nil
         fullScreenFollowUp?.cancel()
         fullScreenFollowUp = nil
-        clockTimer?.invalidate()
+        clockTimer?.invalidate(); clockTimer = nil
         mouseMonitors.forEach(NSEvent.removeMonitor)
         mouseMonitors.removeAll()
         cancellables.removeAll()
@@ -1303,6 +1303,22 @@ final class NotchWindowController {
         fullScreenTimer = poll
     }
 
+    private var isRunning = false
+
+    private func startPolling() {
+        if cursorTimer == nil { startWatchingCursor() }
+        if fullScreenTimer == nil { startWatchingFullScreen() }
+        if clockTimer == nil { startClock() }
+    }
+
+    private func stopPolling() {
+        cursorTimer?.invalidate(); cursorTimer = nil
+        fullScreenTimer?.invalidate(); fullScreenTimer = nil
+        clockTimer?.invalidate(); clockTimer = nil
+        mouseMonitors.forEach(NSEvent.removeMonitor)
+        mouseMonitors.removeAll()
+    }
+
     private func startWatchingCursor() {
         let poll = Timer(timeInterval: 0.3, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.cursorMoved() }
@@ -1806,6 +1822,9 @@ final class NotchWindowController {
             // still takes the screen edge would keep swallowing the pointer.
             panel?.orderOut(nil)
         }
+        // Hidden, nothing reads the pointer, the full-screen state or the clock:
+        // a menu-bar-only app should cost nothing while its notch is off.
+        if visibility == .hidden { stopPolling() } else if isRunning { startPolling() }
         setPointing(false)
         updateInteractiveRects()
     }
