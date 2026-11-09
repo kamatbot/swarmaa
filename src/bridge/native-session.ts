@@ -8,8 +8,10 @@ import type { AgentConfig, Task } from './types.js';
 export interface NativePlan {
   harness: 'claude' | 'codex';
   home: string;
-  /** Claude: the session id passed as --session-id. */
+  /** Claude: the session id passed as --session-id (or --resume when `resumed`). */
   id?: string;
+  /** Claude: the prior transcript was put back where the worker looks, so the run continues that conversation. */
+  resumed?: boolean;
   /** Claude patch: realpath of the worktree (the worker's cwd, hence its history slug). */
   worktreeReal?: string;
   /** Codex: per-task CODEX_HOME holding only a link to auth.json. */
@@ -32,10 +34,17 @@ const sh = (s: string): string => /^[\w@%+=:,./-]+$/u.test(s) ? s : `'${s.replac
 export function claudeWorkerDir(worktree: string, home = homedir()): string { return join(real(home), '.claude', 'projects', slug(worktree)); }
 
 /** Before the run, outside the sandbox. Claude read tasks stay unpersisted (their cwd is the user's real project). */
-export function prepareNative(agent: AgentConfig, task: Task, worktreeDir?: string, home = homedir(), tmp = process.env.TMPDIR ?? tmpdir()): NativePlan | undefined {
+export function prepareNative(agent: AgentConfig, task: Task, worktreeDir?: string, home = homedir(), tmp = process.env.TMPDIR ?? tmpdir(), resume?: { id: string; projectRoot: string }): NativePlan | undefined {
   if (agent.provider === 'claude' && task.kind === 'patch' && worktreeDir) {
     const plan: NativePlan = { harness: 'claude', home, id: randomUUID(), worktreeReal: real(worktreeDir) };
     mkdirSync(claudeWorkerDir(worktreeDir, home), { recursive: true, mode: 0o700 });
+    // A retry continues the prior conversation: finishNative left its transcript under the project root's slug;
+    // put it back under this worktree's slug (paths rewritten the other way). No saved transcript means a fresh session.
+    const saved = resume && join(real(home), '.claude', 'projects', slug(resume.projectRoot), `${resume.id}.jsonl`);
+    if (resume && saved && existsSync(saved)) {
+      write0600(join(claudeWorkerDir(worktreeDir, home), `${resume.id}.jsonl`), rewriteTranscript(readFileSync(saved, 'utf8'), [real(resume.projectRoot)], plan.worktreeReal!));
+      plan.id = resume.id; plan.resumed = true;
+    }
     return plan;
   }
   // Codex and agy run with the user's own home and save their sessions natively; nothing to prepare.
