@@ -260,22 +260,34 @@ export async function removeJournalHooks(harness: Harness, opts: { root: string;
 
 // ---- Inbox hooks, independent of optional chat journaling ----
 const INBOX_MARKER = 'clients/hooks/swarmaa-inbox.mjs';
+const MEMORY_MARKER = 'clients/hooks/swarmaa-memory.mjs';
 const shellQuote = (value: string) => "'" + value.replaceAll("'", "'\"'\"'") + "'";
 async function inboxHooks(harness: Harness, install: boolean, o: Opts): Promise<HookResult> {
   if (!['claude','codex','agy'].includes(harness)) return { harness, changed: [] };
   const home = o.home ?? homedir();
   const cmd = (event: string) => `${shellQuote(o.node ?? process.execPath)} ${shellQuote(join(o.root,INBOX_MARKER))} ${harness} ${event}`;
   const ours = (c: unknown) => typeof c === 'string' && c.includes(INBOX_MARKER);
+  const memCmd = (event: string) => `${shellQuote(o.node ?? process.execPath)} ${shellQuote(join(o.root,MEMORY_MARKER))} ${harness} ${event}`;
   if (harness === 'agy') {
     const path = join(home,'.gemini','config','hooks.json');
     const r = await readJsonObject(path);
     if ('skipped' in r) return {harness,changed:[],skipped:r.skipped};
-    const current = r.data['swarmaa-inbox'];
-    if (current !== undefined && !JSON.stringify(current).includes(INBOX_MARKER)) return {harness,changed:[],skipped:`${path}: swarmaa-inbox is not ours; left untouched`};
-    const want = Object.fromEntries(['PreInvocation','Stop'].map(ev => [ev,[{type:'command',command:cmd(ev),timeout:5}]]));
-    if (install ? JSON.stringify(current)===JSON.stringify(want) : current===undefined) return {harness,changed:[]};
-    if (install) r.data['swarmaa-inbox']=want; else delete r.data['swarmaa-inbox'];
-    await write(path,json(r.data),o,install ? 'add inbox hooks' : 'remove inbox hooks');
+    const entries: [string, string, unknown][] = [
+      ['swarmaa-inbox', INBOX_MARKER, Object.fromEntries(['PreInvocation','Stop'].map(ev => [ev,[{type:'command',command:cmd(ev),timeout:5}]]))],
+      ['swarmaa-memory', MEMORY_MARKER, {PreInvocation:[{type:'command',command:memCmd('PreInvocation'),timeout:5}]}],
+    ];
+    for (const [key, marker] of entries) {
+      const current = r.data[key];
+      if (current !== undefined && !JSON.stringify(current).includes(marker)) return {harness,changed:[],skipped:`${path}: ${key} is not ours; left untouched`};
+    }
+    let dirty = false;
+    for (const [key, , want] of entries) {
+      if (install ? JSON.stringify(r.data[key])===JSON.stringify(want) : r.data[key]===undefined) continue;
+      dirty = true;
+      if (install) r.data[key]=want; else delete r.data[key];
+    }
+    if (!dirty) return {harness,changed:[]};
+    await write(path,json(r.data),o,install ? 'add inbox and memory hooks' : 'remove inbox and memory hooks');
     return {harness,changed:[path]};
   }
   const path = join(home,harness==='claude' ? '.claude' : '.codex',harness==='claude' ? 'settings.json' : 'hooks.json');
@@ -296,6 +308,9 @@ async function inboxHooks(harness: Harness, install: boolean, o: Opts): Promise<
     if (result.skipped) return {...result,changed:[...changed]};
     result.changed.forEach(p => changed.add(p));
   }
+  const mem = await settingsHooks(harness,path,['SessionStart'],{type:'command',command:memCmd('SessionStart'),timeout:5},install,o,false,c => typeof c === 'string' && c.includes(MEMORY_MARKER));
+  if (mem.skipped) return {...mem,changed:[...changed]};
+  mem.changed.forEach(p => changed.add(p));
   if (install && harness==='codex') o.log('Codex: review and trust the Swarmaa inbox hooks once with /hooks.');
   return {harness,changed:[...changed]};
 }
