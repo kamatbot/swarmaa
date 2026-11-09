@@ -17,6 +17,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var ollamaRelay: OllamaActivityRelay?
     private var lmstudioMetrics: LMStudioMetrics?
     private var omlxMetrics: OMLXMetrics?
+
+    /// Menu-bar-only mode: true while the notch is off. Usage and the Swarmaa
+    /// server are asked once a minute and nothing else polls — no activity
+    /// monitors, no local-runtime metrics, no Pi/OpenCode watchers.
+    @MainActor private static func lightweight(_ preferences: Preferences) -> AnyPublisher<Bool, Never> {
+        preferences.$showsNotch.combineLatest(preferences.$notchVisibility)
+            .map { shows, visibility in !shows || visibility == .hidden }
+            .removeDuplicates()
+            .eraseToAnyPublisher()
+    }
     private var preferences: Preferences?
     private var settings: SettingsWindowController?
     private var whatsNew: WhatsNewWindowController?
@@ -286,6 +296,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 .store(in: &cancellables)
             let swarma = SwarmaDirectory(store: store)
             self.swarmaDirectory = swarma
+            Self.lightweight(preferences)
+                .receive(on: RunLoop.main)
+                .sink { [weak swarma, weak store] light in
+                    store?.isLightweight = light
+                    swarma?.isLightweight = light
+                }
+                .store(in: &cancellables)
             preferences.$swarmaEnabled
                 .removeDuplicates()
                 .receive(on: RunLoop.main)
@@ -391,10 +408,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let lmstudio = LMStudioMetrics()
             self.lmstudioMetrics = lmstudio
             // Split like the relay's chain above, and for the same reason.
-            let lmstudioPreferences = Publishers.CombineLatest(
-                preferences.$connectedProviders, preferences.$lmstudioEndpoint)
+            let lmstudioPreferences = Publishers.CombineLatest3(
+                preferences.$connectedProviders, preferences.$lmstudioEndpoint, Self.lightweight(preferences))
             let lmstudioConfiguration = lmstudioPreferences.map { values in
-                (enabled: values.0.contains(LMStudioMetrics.providerID), endpoint: values.1)
+                (enabled: values.0.contains(LMStudioMetrics.providerID) && !values.2, endpoint: values.1)
             }.eraseToAnyPublisher()
             lmstudioConfiguration
                 .removeDuplicates { $0.enabled == $1.enabled && $0.endpoint == $1.endpoint }
@@ -424,10 +441,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let omlx = OMLXMetrics()
             self.omlxMetrics = omlx
             // Split like the relay's chain above, and for the same reason.
-            let omlxPreferences = Publishers.CombineLatest(
-                preferences.$connectedProviders, preferences.$omlxEndpoint)
+            let omlxPreferences = Publishers.CombineLatest3(
+                preferences.$connectedProviders, preferences.$omlxEndpoint, Self.lightweight(preferences))
             let omlxConfiguration = omlxPreferences.map { values in
-                (enabled: values.0.contains(OMLXMetrics.providerID), endpoint: values.1)
+                (enabled: values.0.contains(OMLXMetrics.providerID) && !values.2, endpoint: values.1)
             }.eraseToAnyPublisher()
             omlxConfiguration
                 .removeDuplicates { $0.enabled == $1.enabled && $0.endpoint == $1.endpoint }
@@ -1131,12 +1148,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // enabling the coordinator also keeps Pi's supplemental sessions out,
         // since it drops them for any provider that is not enabled.
         if !isDemo {
-            activity.setEnabled(preferences.connectedProviders)
             preferences.$connectedProviders
                 .removeDuplicates()
+                .combineLatest(Self.lightweight(preferences))
                 .receive(on: RunLoop.main)
-                .sink { [weak activity] connected in
-                    activity?.setEnabled(connected)
+                .sink { [weak activity] connected, light in
+                    activity?.setEnabled(light ? [] : connected)
                 }
                 .store(in: &cancellables)
         }
@@ -1145,10 +1162,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             activity?.setSupplementalSessions(providerID: id, source: "opencode", sessions: sessions)
         }
         self.openCodeActivityBridge = openCodeBridge
-        Publishers.CombineLatest(preferences.$customEndpoints, preferences.$connectedProviders)
+        Publishers.CombineLatest3(preferences.$customEndpoints, preferences.$connectedProviders,
+                                  Self.lightweight(preferences))
             .receive(on: RunLoop.main)
-            .sink { [weak openCodeBridge] endpoints, enabled in
-                openCodeBridge?.configure(endpoints: endpoints, enabled: enabled)
+            .sink { [weak openCodeBridge] endpoints, enabled, light in
+                openCodeBridge?.configure(endpoints: endpoints, enabled: light ? [] : enabled)
             }
             .store(in: &cancellables)
 
@@ -1174,8 +1192,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 )
             }
         )
-        piResponseMonitor.start()
         self.piResponseMonitor = piResponseMonitor
+        Self.lightweight(preferences)
+            .receive(on: RunLoop.main)
+            .sink { [weak piResponseMonitor] light in
+                if light { piResponseMonitor?.stop() } else { piResponseMonitor?.start() }
+            }
+            .store(in: &cancellables)
 
         store?.isBusy = { [weak self, weak activity] in
             (activity?.isBusy ?? false) || (self?.lmstudioMetrics?.isBusy ?? false)

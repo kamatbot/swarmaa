@@ -215,6 +215,12 @@ final class UsageStore: ObservableObject {
     private var lastGood: [String: (snapshot: ProviderSnapshot, fetchedAt: Date)] = [:]
     private var timer: Timer?
     private var localTimer: Timer?
+    /// Menu-bar-only: one pass every `lightweightInterval`, local runtimes
+    /// included, and nothing in between. Switched on while the notch is off.
+    var isLightweight = false {
+        didSet { if isLightweight != oldValue, timer != nil { scheduleTimers() } }
+    }
+    static let lightweightInterval: TimeInterval = 60
     private var fetchTasks: [String: Task<Void, Never>] = [:]
     private var generations: [String: Int] = [:]
     private var refreshTask: Task<Void, Never>?
@@ -346,18 +352,7 @@ final class UsageStore: ObservableObject {
 
     func start() {
         refreshNow()
-
-        let timer = Timer(timeInterval: refreshInterval, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.tick() }
-        }
-        RunLoop.main.add(timer, forMode: .common)
-        self.timer = timer
-
-        let localTimer = Timer(timeInterval: localRefreshInterval, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.refreshLocalRuntimes() }
-        }
-        RunLoop.main.add(localTimer, forMode: .common)
-        self.localTimer = localTimer
+        scheduleTimers()
 
         // Waking up is the one moment the numbers are guaranteed to be wrong —
         // and the one moment a cache is guaranteed to be wrong with them, having
@@ -402,8 +397,32 @@ final class UsageStore: ObservableObject {
         }
     }
 
+    private func scheduleTimers() {
+        timer?.invalidate()
+        localTimer?.invalidate()
+        localTimer = nil
+        let interval = isLightweight ? Self.lightweightInterval : refreshInterval
+        let timer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.tick() }
+        }
+        timer.tolerance = interval / 10
+        RunLoop.main.add(timer, forMode: .common)
+        self.timer = timer
+        // Lightweight, local runtimes ride the one tick instead of their own 1s timer.
+        guard !isLightweight else { return }
+        let localTimer = Timer(timeInterval: localRefreshInterval, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.refreshLocalRuntimes() }
+        }
+        RunLoop.main.add(localTimer, forMode: .common)
+        self.localTimer = localTimer
+    }
+
     /// Decides whether this tick is worth a request at all.
     private func tick() {
+        if isLightweight {
+            refreshNow(freshness: freshnessWanted, includeIdleSkipped: false)
+            return
+        }
         let now = pollingNow()
         let waited = lastAttempt.map { now.timeIntervalSince($0) } ?? .greatestFiniteMagnitude
         let rolledOver = Self.hasWindowRolledOver(in: snapshots, since: lastAttempt, at: now)
@@ -513,7 +532,8 @@ final class UsageStore: ObservableObject {
         let now = pollingNow()
         let waited = lastWorkFinished[providerID].map { now.timeIntervalSince($0) }
             ?? .greatestFiniteMagnitude
-        guard Self.shouldRefreshOnEvent(sinceLastRefresh: waited, spacing: busyRefreshInterval) else { return }
+        guard !isLightweight,
+              Self.shouldRefreshOnEvent(sinceLastRefresh: waited, spacing: busyRefreshInterval) else { return }
         lastWorkFinished[providerID] = now
         refresh(providerID: providerID)
     }
@@ -527,7 +547,8 @@ final class UsageStore: ObservableObject {
     /// is known now, and redraws when the fetch lands a moment later.
     func refreshBecauseSomeoneIsLooking() {
         let waited = lastAttempt.map { pollingNow().timeIntervalSince($0) } ?? .greatestFiniteMagnitude
-        guard Self.shouldRefreshOnEvent(sinceLastRefresh: waited, spacing: onLookInterval) else { return }
+        guard Self.shouldRefreshOnEvent(sinceLastRefresh: waited,
+                                        spacing: isLightweight ? Self.lightweightInterval : onLookInterval) else { return }
         // The spacing is not relaxed for `.fromSource`, and not tightened
         // either: what the setting changes is what an answer may be served from,
         // never how often one is asked for.

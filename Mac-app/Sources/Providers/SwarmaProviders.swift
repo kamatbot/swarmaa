@@ -476,6 +476,10 @@ final class SwarmaDirectory {
     private weak var store: UsageStore?
     private let interval: TimeInterval
     private var timer: Timer?
+    /// Menu-bar-only: ask the service once a minute instead.
+    var isLightweight = false {
+        didSet { if isLightweight != oldValue, timer != nil { scheduleTimer() } }
+    }
     private var registered: [String] = []
     private var syncing = false
 
@@ -520,12 +524,19 @@ final class SwarmaDirectory {
             store?.registerSwarmProviders([])
             return
         }
-        let timer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
+        scheduleTimer()
+        sync()
+    }
+
+    private func scheduleTimer() {
+        timer?.invalidate()
+        let every = isLightweight ? UsageStore.lightweightInterval : interval
+        let timer = Timer(timeInterval: every, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.sync() }
         }
+        timer.tolerance = every / 10
         RunLoop.main.add(timer, forMode: .common)
         self.timer = timer
-        sync()
     }
 
     /// Ask the service, then register or refresh. Cells already on screen are
