@@ -633,4 +633,28 @@ describe('core transactional invariants', {skip:!connectionString,concurrency:fa
     await core.sweepExpiredLeases();
     assert.equal((await call(f.front,'task_get',{task_id:submitted.task.id})).task.status,'failed');
   });
+  it('does not audit checkpoints and emits at most one running-checkpoint event per 3 seconds',async () => {
+    const f = await fixture();
+    const submitted = await call(f.front,'task_submit',submission());
+    const claimed = await call(f.worker,'task_claim',claimArgs);
+    const id = submitted.task.id;
+    const count = async (sql:string) => Number((await pool.query(sql,[id])).rows[0].n);
+    const audits = () => count("SELECT count(*) AS n FROM audit_log WHERE subject_id=$1 AND operation='task.checkpointed'");
+    const events = () => count("SELECT count(*) AS n FROM events WHERE subject_id=$1 AND payload->>'action'='checkpointed'");
+    const cp = (checkpoint:Record<string,unknown>) => call(f.worker,'task_checkpoint',{...lease(claimed),checkpoint});
+    await cp({phase:'starting'});
+    await cp({phase:'running',partial_text:'a'});
+    await cp({phase:'running',partial_text:'ab'});
+    assert.equal(await events(),1);
+    await cp({phase:'provider_finished'});
+    assert.equal(await events(),2);
+    await pool.query("UPDATE events SET created_at=created_at-interval '4 seconds' WHERE subject_id=$1",[id]);
+    const last = await cp({phase:'running',partial_text:'abc'});
+    assert.equal(await events(),3);
+    assert.equal(await audits(),0);
+    // Throttled checkpoints still persist and advance the version.
+    assert.equal(last.task.checkpoint.partial_text,'abc');
+    const stored = (await call(f.front,'task_get',{task_id:id})).task;
+    assert.equal(stored.version,last.task.version);
+  });
 });

@@ -251,7 +251,7 @@ Arguments: `{task_id, lease_token, lease_generation, lease_seconds?}`. Result: `
 
 ### `task_checkpoint`
 
-Arguments: `{task_id, lease_token, lease_generation, checkpoint: object}`. Checkpoint JSON is limited to 32 KiB and nesting depth 16. Result: `{task}`. Successful progress advances the task version and emits metadata. Save concrete evidence, phase and next steps; do not copy credentials or claim new authority in checkpoints.
+Arguments: `{task_id, lease_token, lease_generation, checkpoint: object}`. Checkpoint JSON is limited to 32 KiB and nesting depth 16. Result: `{task}`. Successful progress advances the task version. It emits a `task.updated` event with `action: 'checkpointed'` (chat clients refetch the thread's streaming `typing` text on it) but writes no audit row; a checkpoint with `phase: 'running'` emits at most one event per task per 3 seconds, every other phase always emits. Save concrete evidence, phase and next steps; do not copy credentials or claim new authority in checkpoints.
 
 ### `task_finish`
 

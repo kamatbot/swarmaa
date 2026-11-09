@@ -141,7 +141,7 @@ async function lockedTask(db:PoolClient,p:Principal,id:string,teams=false):Promi
   return findTask(db,p,id,true);
 }
 
-export async function taskChanged(db:PoolClient,p:Principal,row:TaskRow,action:string,advance=true):Promise<void> {
+export async function taskChanged(db:PoolClient,p:Principal,row:TaskRow,action:string,advance=true,audited=true):Promise<void> {
   const failureCode = (row.result as any)?.failure?.code;
   const details = { task_id:row.id,kind:row.kind,
     ...(row.thread_id ? {thread_id:row.thread_id} : {}),version:row.version,status:row.status,action,
@@ -149,7 +149,7 @@ export async function taskChanged(db:PoolClient,p:Principal,row:TaskRow,action:s
     ...(failureCode ? { failure_code: failureCode } : {}),
     ...(row.flow_id ? {flow_id:row.flow_id,step_id:row.flow!.step_id,
       ...(row.kind==='approve' && action==='flow_ready' ? {approval_required:true} : {})} : {}) };
-  await audit(db,p,row.scope,`task.${action}`,row.id,details);
+  if (audited) await audit(db,p,row.scope,`task.${action}`,row.id,details);
   await event(db,p,row.scope,'task.updated',row.id,details);
   await taskFinished(db,p,row);
   if (advance && row.status==='completed') await advanceFlow(db,p,row);
@@ -693,7 +693,14 @@ export class TaskService {
         updated_at=clock_timestamp() WHERE id=$1 AND lease_expires_at>clock_timestamp() RETURNING *`,[row.id,JSON.stringify(checkpoint)]);
       requireCondition(updated.rows[0],409,'lease_lost','Lease expired before checkpoint.');
       const next = updated.rows[0];
-      await taskChanged(db,p,next,'checkpointed');
+      // Chat UIs refetch the thread (typing text is read from the checkpoint column) on task.updated events, so the
+      // event stays; it is throttled to one per 3 s per task for streaming 'running' checkpoints. Other phases
+      // (starting, provider_finished, or any client-defined one) always emit. Checkpoints are never audited: the row
+      // and version still update every call, and the audit trail keeps claim/finish/expiry.
+      const streaming = checkpoint.phase === 'running' && (await db.query(`SELECT 1 FROM events WHERE tenant_id=$1 AND scope=$2
+        AND subject_id=$3 AND name='task.updated' AND payload->>'action'='checkpointed'
+        AND created_at>clock_timestamp()-interval '3 seconds' LIMIT 1`,[p.tenantId,next.scope,next.id])).rowCount;
+      if (!streaming) await taskChanged(db,p,next,'checkpointed',true,false);
       return {task:await taskWithInstructions(db,next)};
     });
   }
