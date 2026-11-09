@@ -1,10 +1,11 @@
 import { execFile } from 'node:child_process';
 import { existsSync, realpathSync } from 'node:fs';
-import { mkdir } from 'node:fs/promises';
+import { mkdir, readFile, rm } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
 import { ARTIFACT_MAX_BYTES } from '../types.js';
+import { processStart } from './process.js';
 import type { Task } from './types.js';
 
 const run = promisify(execFile);
@@ -32,6 +33,31 @@ export function worktreeDir(scope: string, taskId: string): string {
   return join(homedir(), '.swarma', 'worktrees', name, taskId);
 }
 
+/** Provider pid record, beside (not inside) the worktree so it is never committed. */
+export const providerPidfile = (dir: string): string => `${dir}.provider.json`;
+
+/**
+ * A bridge killed mid-run leaves its detached provider writing to the worktree. Kill that process group
+ * (only if pid and start time still match, so a recycled pid is never hit) before the worktree is reused.
+ */
+export async function fenceOrphan(dir: string, log?: (event: string, meta?: Record<string, unknown>) => void): Promise<boolean> {
+  const file = providerPidfile(dir);
+  let rec: { pgid?: unknown; started?: unknown };
+  try { rec = JSON.parse(await readFile(file, 'utf8')); } catch { return false; }
+  const pgid = rec.pgid;
+  const alive = (): boolean => { try { process.kill(-(pgid as number), 0); return true; } catch { return false; } };
+  let killed = false;
+  if (typeof pgid === 'number' && Number.isInteger(pgid) && pgid > 1 && typeof rec.started === 'string' && rec.started && processStart(pgid) === rec.started && alive()) {
+    killed = true;
+    try { process.kill(-pgid, 'SIGTERM'); } catch { /* gone */ }
+    for (let i = 0; i < 50 && alive(); i++) await new Promise(r => setTimeout(r, 100));
+    if (alive()) try { process.kill(-pgid, 'SIGKILL'); } catch { /* gone */ }
+    log?.('orphan_provider_killed', { dir, pgid });
+  }
+  await rm(file, { force: true });
+  return killed;
+}
+
 /** Creates the task's own worktree + branch off base_ref (default HEAD). Never touches the user's checkout. */
 /** Gitignored dependency folders a fresh worktree lacks, so agents can build and test without installing. */
 const DEPENDENCY_DIRS = ['node_modules'];
@@ -48,7 +74,7 @@ async function seedDependencies(root: string, dir: string): Promise<void> {
   }
 }
 
-export async function createWorktree(root: string, provider: string, task: Task): Promise<Worktree> {
+export async function createWorktree(root: string, provider: string, task: Task, log?: (event: string, meta?: Record<string, unknown>) => void): Promise<Worktree> {
   let gitDir: string;
   try { gitDir = (await git(root, ['rev-parse', '--path-format=absolute', '--git-common-dir'])).trim(); }
   catch { throw fail('not_a_git_repo', 'Project root is not a git repository'); }
@@ -75,6 +101,7 @@ export async function createWorktree(root: string, provider: string, task: Task)
     const branchExists = primaryExists || legacyExists;
     if (existsSync(dir) && !registered) throw fail('worktree_dir_occupied', 'Worktree directory exists but is not a registered worktree of this repository');
     if (registered || branchExists) {
+      await fenceOrphan(dir, log);
       if (!registered) await git(root, ['worktree', 'add', dir, branch]);
       const activeBranch = registered
         ? (await git(dir, ['rev-parse', '--abbrev-ref', 'HEAD']).catch(() => branch)).trim() || branch

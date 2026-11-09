@@ -1,5 +1,12 @@
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
+import { unlinkSync, writeFileSync } from 'node:fs';
 import type { ProcessRequest, ProcessResult } from './types.js';
+
+/** Process start time; with the pid it identifies one process even after the pid is recycled. */
+export function processStart(pid: number): string {
+  try { return execFileSync('/bin/ps', ['-o', 'lstart=', '-p', String(pid)], { encoding: 'utf8', timeout: 2000, env: { LC_ALL: 'C' } }).trim(); }
+  catch { return ''; }
+}
 
 /** No shell; a fixed executable + argv. POSIX process groups terminate descendants too. */
 export async function runBoundedProcess(request: ProcessRequest): Promise<ProcessResult> {
@@ -9,6 +16,9 @@ export async function runBoundedProcess(request: ProcessRequest): Promise<Proces
     const child = spawn(request.command, request.args, {
       cwd: request.cwd, env: request.env, shell: false, detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true
     });
+    if (request.pidfile && child.pid && process.platform !== 'win32') {
+      try { writeFileSync(request.pidfile, JSON.stringify({ pid: child.pid, pgid: child.pid, started: processStart(child.pid) }), { mode: 0o600 }); } catch { /* best effort */ }
+    }
     const output: Buffer[] = [];
     const errors: Buffer[] = [];
     let bytes = 0;
@@ -31,6 +41,7 @@ export async function runBoundedProcess(request: ProcessRequest): Promise<Proces
       request.signal?.removeEventListener('abort', abort);
       // A child could exit while a descendant retained its pipes. Do not leave it behind.
       signalGroup('SIGKILL');
+      if (request.pidfile) try { unlinkSync(request.pidfile); } catch { /* absent */ }
       child.stdin.destroy(); child.stdout.destroy(); child.stderr.destroy();
       resolve({ exit_code: exitCode, signal, stdout: Buffer.concat(output).toString('utf8'), stderr: Buffer.concat(errors).toString('utf8'), duration_ms: Date.now() - started, stop_reason: stopReason });
     };

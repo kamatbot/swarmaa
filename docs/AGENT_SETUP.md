@@ -153,12 +153,11 @@ keep patch work on one assigned machine, and inspect interrupted work before con
 Use one consistent `resource_key` for tasks touching the same logical resource. Keys supplied
 by different callers do not establish that their filesystem targets are distinct.
 
-Patch execution also takes an atomic local `.collective-patch.lock` directory in the configured
-project root, so two bridge processes cannot mutate the same root even when callers use
-different resource keys. It is released after the provider process group stops. A crashed
-bridge deliberately leaves the lock in place: inspect its `owner.json`, verify the old provider
-and its descendants have stopped, and then remove the lock before requeuing. There is no
-automatic stale-lock deletion that could overlap a still-active local process.
+Each patch provider process records its pid, process group and start time in
+`<worktree>.provider.json` beside the task's worktree under `~/.swarma/worktrees/`. It is removed when the
+provider exits. Before the bridge reuses a surviving worktree, it SIGTERMs (then SIGKILLs after 5 s) any
+recorded process group that is still alive with the same start time, so a provider orphaned by a
+killed bridge cannot keep writing while a new attempt starts.
 
 ## 4. Provider support and patch mode
 
