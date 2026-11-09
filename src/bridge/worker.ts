@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs';
-import { runFlowCheck } from './checks.js';
+import { runConfiguredChecks, runFlowCheck } from './checks.js';
 import { setTimeout as delay } from 'node:timers/promises';
 import { AUTO_PATCH, AUTO_READ, buildInvocation, withTurnImages, capability, antigravityLogModel, classifyFailure, deniedActions, extractDelegate, extractPartialText, extractServed, extractUsage, finalAnswer, projectCapabilities, providerSucceeded, codexThreadId, sessionMissing, UUID } from './adapters.js';
 import { collectUsage, headroom } from '../usage/index.js';
@@ -396,6 +396,7 @@ export class BridgeWorker {
     let observedCommit:string|undefined;
     let checkFact:Awaited<ReturnType<typeof runFlowCheck>>|undefined;
     let snapshotInvalid = false;
+    let checkResults: Awaited<ReturnType<typeof runConfiguredChecks>> | undefined;
     // A retry resumes the provider's own session recorded in this task's checkpoint by an earlier attempt.
     const prior = task.checkpoint as { native_session?: { provider?: unknown; id?: unknown }; last_failure?: unknown } | null;
     const resumeId = task.kind !== 'turn' && task.kind !== 'check' && prior?.native_session?.provider === agent.provider && typeof prior.native_session.id === 'string' && UUID.test(prior.native_session.id) ? prior.native_session.id : undefined;
@@ -588,6 +589,9 @@ export class BridgeWorker {
           return go(undefined);
           });
           nativeId = agent.provider === 'codex' ? codexThreadId(result.stdout) ?? nativeId : nativePlan?.id ?? nativeId;
+          // Owner-configured checks judge the patch before it is committed; a flow's own check steps cover flow patches.
+          if (task.kind === 'patch' && !task.flow_id && worktree && project.checks && Object.keys(project.checks).length && providerSucceeded(agent.provider, result) && !leaseLost && !execution.signal.aborted)
+            checkResults = await runConfiguredChecks(project, agent, this.config, worktree, this.runner, execution.signal);
           if (task.flow_id && task.kind!=='patch') {
             const snapshot = await inspectWorktree(worktree!);
             snapshotInvalid = snapshot.dirty || snapshot.commit!==observedCommit;
@@ -612,9 +616,12 @@ export class BridgeWorker {
       if (leaseLost) return;
       // A provider that stopped because the sandbox denied actions it needed did not finish the task.
       const denied = task.kind==='check' ? [] : deniedActions(agent.provider, result.stdout);
-      const outcome = finalizeFailure ? 'failed' : shutdown.aborted || denied.length || snapshotInvalid ? 'blocked' : task.kind==='check' ? (checkFact?.passed ? 'completed' : 'blocked') : providerSucceeded(agent.provider, result) ? 'completed' : 'failed';
+      const failedChecks = checkResults?.filter(c => !c.passed) ?? [];
+      const outcome = finalizeFailure ? 'failed' : shutdown.aborted || denied.length || snapshotInvalid ? 'blocked' : task.kind==='check' ? (checkFact?.passed ? 'completed' : 'blocked') : providerSucceeded(agent.provider, result) && !failedChecks.length ? 'completed' : 'failed';
       // What the next (resumed) attempt is told about why this one failed.
-      if (outcome === 'failed') lastFailure = untrusted(classifyFailure(agent.provider, result)?.detail ?? 'The previous attempt failed.', 3000);
+      if (outcome === 'failed') lastFailure = untrusted(failedChecks.length
+        ? `Configured checks failed:\n${failedChecks.map(c => `${c.name} (exit ${c.exit_code ?? 'none'}${c.stop_reason ? `, ${c.stop_reason}` : ''}):\n${c.output_tail.slice(-1500)}`).join('\n')}`
+        : classifyFailure(agent.provider, result)?.detail ?? 'The previous attempt failed.', 3000);
       await this.client.call('task_checkpoint', { ...lease, checkpoint: checkpoint('provider_finished') });
       const artifact = await this.client.call<{ artifact: { id: string } }>('artifact_put', {
         ...lease, name: `${agent.id}-transcript.txt`, media_type: 'text/plain',
@@ -636,7 +643,9 @@ export class BridgeWorker {
       if (leaseLost) return;
       await renew();
       if (leaseLost) return;
-      let failure = outcome === 'completed' ? undefined : classifyFailure(agent.provider, result);
+      let failure: ReturnType<typeof classifyFailure> = outcome === 'completed' ? undefined : failedChecks.length && !finalizeFailure
+        ? { code: 'swarmaa_checks_failed', retry: true, detail: `Configured checks failed: ${failedChecks.map(c => c.name).join(', ')}` }
+        : classifyFailure(agent.provider, result);
       if (outcome !== 'completed' && !failure) {
         // The provider finished; the bridge could not commit its worktree (for example gigabytes of untracked build output).
         if (finalizeFailure) failure = { code: 'swarmaa_worktree_commit_failed', retry: false, detail: 'Provider finished but its worktree could not be committed; untracked build output is the usual cause. Edits are kept in the worktree.' };
@@ -678,11 +687,12 @@ export class BridgeWorker {
           answer: task.kind==='check' ? checkFact!.output_tail : untrusted(cleanAnswer, 8 * 1024),
           ...(delegate ? { delegate } : {}),
           ...(denied.length ? { denied_actions: denied, next_step: 'This worker cannot run those actions (read-only sandbox). Resubmit with a capability whose worker can, e.g. codex.read, or narrow the task.' } : {}),
-          summary: task.kind==='check' ? `Deterministic bridge check ${outcome==='completed' ? 'passed' : 'did not pass'}. See the recorded check evidence.` : outcome === 'completed' ? 'Provider completed. Review the transcript and acceptance criteria before integrating changes.' : 'Provider did not complete successfully. Review the transcript before continuing the task.',
+          summary: task.kind==='check' ? `Deterministic bridge check ${outcome==='completed' ? 'passed' : 'did not pass'}. See the recorded check evidence.` : failedChecks.length ? 'Provider finished but the configured checks failed. See checks for their output.' : outcome === 'completed' ? 'Provider completed. Review the transcript and acceptance criteria before integrating changes.' : 'Provider did not complete successfully. Review the transcript before continuing the task.',
           ...(isPatchWork ? { commands_allowed: true, ...(patchResult ? { branch: patchResult.branch, base_ref: patchResult.base_ref, base_commit: patchResult.base_commit, head_commit: patchResult.head_commit, changed_files: patchResult.changed_files, diffstat: patchResult.diffstat, ...(patchResult.continued ? { continued: true } : {}) } : {}), ...(diffArtifactError ? { diff_artifact_error: diffArtifactError } : {}), ...(finalizeFailure ?? {}) } : {}),
           ...(nativeSession ? { native_session: nativeSession } : {}),
           ...(task.flow_id ? {observed_commit:observedCommit} : {}),
           ...(checkFact ? {check:checkFact} : {}),
+          ...(checkResults ? { checks: checkResults, checks_passed: !failedChecks.length } : {}),
           ...(snapshotInvalid ? {reason:'Review changed tracked source or HEAD; pinned evidence is invalid.'} : {}),
           tests_run_by_bridge: task.kind==='check'
         }

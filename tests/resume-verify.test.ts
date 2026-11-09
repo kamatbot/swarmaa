@@ -72,6 +72,27 @@ test('session-not-found on resume falls back to one fresh session in the same at
   assert.equal(h.finish.outcome, 'completed');
 });
 
+test('a patch task whose configured check fails finishes as a retryable failure carrying the output', async () => {
+  const h = await harness(null, r => r.command === checkBin ? { ...ok, exit_code: 1, stdout: 'FAIL: 2 tests', stderr: 'AssertionError' } : ok, true);
+  const result = h.finish.result;
+  assert.equal(h.finish.outcome, 'failed');
+  assert.equal(result.failure.retry, true);
+  assert.equal(result.checks_passed, false);
+  assert.equal(result.checks[0].name, 'tests_pass');
+  assert.equal(result.checks[0].exit_code, 1);
+  assert.match(result.checks[0].output_tail, /FAIL: 2 tests/);
+  assert.equal(result.acceptance_criteria_verified, false);
+  const last = h.calls.filter(c => c.name === 'task_checkpoint').at(-1)!.args.checkpoint;
+  assert.match(last.last_failure, /Configured checks failed[\s\S]*FAIL: 2 tests/);
+});
+
+test('a passing configured check records checks_passed true and completes', async () => {
+  const h = await harness(null, () => ok, true);
+  assert.equal(h.finish.outcome, 'completed');
+  assert.equal(h.finish.result.checks_passed, true);
+  assert.equal(h.finish.result.checks[0].passed, true);
+});
+
 test('codex resumes by thread id via `exec resume`, and the id is read from thread.started', async () => {
   const { buildInvocation, codexThreadId } = await import('../src/bridge/adapters.js');
   const cfg = parseBridgeConfig({ service_url: 'http://localhost:8080', agents: [{ id: 'codex', provider: 'codex', binary: '/bin/codex', sandbox: false }],
