@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs';
 import { runFlowCheck } from './checks.js';
 import { setTimeout as delay } from 'node:timers/promises';
-import { AUTO_PATCH, AUTO_READ, buildInvocation, withTurnImages, capability, antigravityLogModel, classifyFailure, deniedActions, extractDelegate, extractPartialText, extractServed, extractUsage, finalAnswer, projectCapabilities, providerSucceeded } from './adapters.js';
+import { AUTO_PATCH, AUTO_READ, buildInvocation, withTurnImages, capability, antigravityLogModel, classifyFailure, deniedActions, extractDelegate, extractPartialText, extractServed, extractUsage, finalAnswer, projectCapabilities, providerSucceeded, codexThreadId, sessionMissing, UUID } from './adapters.js';
 import { collectUsage, headroom } from '../usage/index.js';
 import { windowsForModel } from '../usage/antigravity.js';
 import type { UsageProviderId, UsageSnapshot } from '../usage/types.js';
@@ -396,6 +396,11 @@ export class BridgeWorker {
     let observedCommit:string|undefined;
     let checkFact:Awaited<ReturnType<typeof runFlowCheck>>|undefined;
     let snapshotInvalid = false;
+    // A retry resumes the provider's own session recorded in this task's checkpoint by an earlier attempt.
+    const prior = task.checkpoint as { native_session?: { provider?: unknown; id?: unknown }; last_failure?: unknown } | null;
+    const resumeId = task.kind !== 'turn' && task.kind !== 'check' && prior?.native_session?.provider === agent.provider && typeof prior.native_session.id === 'string' && UUID.test(prior.native_session.id) ? prior.native_session.id : undefined;
+    let nativeId = resumeId;
+    let lastFailure = typeof prior?.last_failure === 'string' ? prior.last_failure : undefined;
     let finalizeFailure: { worktree_path: string; recovery: string } | undefined;
     let expiryTimer: ReturnType<typeof setTimeout> | undefined;
     let progress = { output_bytes: 0, stdout_tail: '' };
@@ -437,6 +442,8 @@ export class BridgeWorker {
         output_bytes: progress.output_bytes, partial_output: untrusted(progress.stdout_tail, 8192),
         partial_output_is_untrusted: true
       };
+      if (nativeId) base.native_session = { provider: agent.provider, id: nativeId };
+      if (lastFailure) base.last_failure = lastFailure;
       if (task.kind === 'turn' && agent.provider !== 'antigravity') {
         base.partial_text = untrusted(currentPartialText, 8192);
       }
@@ -551,8 +558,10 @@ export class BridgeWorker {
       let result: ProcessResult;
       let nativeSession: NativeSession | undefined;
       let nativePlan: ReturnType<typeof prepareNative>;
-      try { if (task.kind!=='check') nativePlan = prepareNative(agent, task, worktree?.dir); }
+      try { if (task.kind!=='check') nativePlan = prepareNative(agent, task, worktree?.dir, undefined, undefined, resumeId ? { id: resumeId, projectRoot: project.root } : undefined); }
       catch { this.logger('native_session_failed', { task_id: task.id, phase: 'prepare' }); }
+      // Claude resumes only when its transcript was put back (plan.resumed); Codex resumes by thread id.
+      const resumed = agent.provider === 'codex' || nativePlan?.resumed ? resumeId : undefined;
       try {
         if (leaseLost || execution.signal.aborted) throw new Error('Execution start was aborted');
         if (task.kind==='check') {
@@ -560,16 +569,25 @@ export class BridgeWorker {
           result = {exit_code:checkFact.exit_code,signal:null,stdout:checkFact.output_tail,stderr:'',duration_ms:checkFact.duration_ms,stop_reason:checkFact.stop_reason as ProcessResult['stop_reason']};
         } else {
           result = await withTurnImages(agent, task, context, async images => {
-          const request = buildInvocation(agent, project, task, context, this.config, execution.signal, process.env, worktree, nativePlan, images);
-          promptText = request.prompt;
           const scrub = (s: string) => images.length ? s.replace(/[A-Za-z0-9+/]{128,}={0,2}/gu, "[photo removed]") : s;
-          request.on_progress = value => {
-            progress = images.length ? { ...value, stdout_tail: "" } : value;
-            updatePartialText(progress.stdout_tail, value.output_bytes);
+          const go = async (id?: string): Promise<ProcessResult> => {
+            const request = buildInvocation(agent, project, task, context, this.config, execution.signal, process.env, worktree, nativePlan, images, id || lastFailure ? { id, note: lastFailure } : undefined);
+            promptText = request.prompt;
+            request.on_progress = value => {
+              progress = images.length ? { ...value, stdout_tail: "" } : value;
+              updatePartialText(progress.stdout_tail, value.output_bytes);
+            };
+            const output = await this.runner(request);
+            return { ...output, stdout: scrub(output.stdout), stderr: scrub(output.stderr) };
           };
-          const output = await this.runner(request);
-          return { ...output, stdout: scrub(output.stdout), stderr: scrub(output.stderr) };
+          const first = await go(resumed);
+          if (!resumed || providerSucceeded(agent.provider, first) || !sessionMissing(first)) return first;
+          // The CLI no longer has that session: one fresh session in this same attempt.
+          this.logger('resume_session_missing', { task_id: task.id });
+          if (nativePlan) { cleanupNative(nativePlan); try { nativePlan = prepareNative(agent, task, worktree?.dir); } catch { nativePlan = undefined; } }
+          return go(undefined);
           });
+          nativeId = agent.provider === 'codex' ? codexThreadId(result.stdout) ?? nativeId : nativePlan?.id ?? nativeId;
           if (task.flow_id && task.kind!=='patch') {
             const snapshot = await inspectWorktree(worktree!);
             snapshotInvalid = snapshot.dirty || snapshot.commit!==observedCommit;
@@ -595,6 +613,8 @@ export class BridgeWorker {
       // A provider that stopped because the sandbox denied actions it needed did not finish the task.
       const denied = task.kind==='check' ? [] : deniedActions(agent.provider, result.stdout);
       const outcome = finalizeFailure ? 'failed' : shutdown.aborted || denied.length || snapshotInvalid ? 'blocked' : task.kind==='check' ? (checkFact?.passed ? 'completed' : 'blocked') : providerSucceeded(agent.provider, result) ? 'completed' : 'failed';
+      // What the next (resumed) attempt is told about why this one failed.
+      if (outcome === 'failed') lastFailure = untrusted(classifyFailure(agent.provider, result)?.detail ?? 'The previous attempt failed.', 3000);
       await this.client.call('task_checkpoint', { ...lease, checkpoint: checkpoint('provider_finished') });
       const artifact = await this.client.call<{ artifact: { id: string } }>('artifact_put', {
         ...lease, name: `${agent.id}-transcript.txt`, media_type: 'text/plain',
