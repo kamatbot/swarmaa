@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { packageRoot } from './setup-lib.js';
 import { SOURCE_IDS, runCapture } from '../src/capture/index.js';
+import { syncClaudeMemories } from '../src/capture/claude-memory.js';
 
 const { values } = parseArgs({ options: { once: { type: 'boolean' }, 'dry-run': { type: 'boolean' }, only: { type: 'string' } }, strict: true });
 const only = values.only?.split(',').map(s => s.trim()).filter(Boolean);
@@ -19,5 +20,11 @@ if (skipped) console.log(`capture: ${skipped}`);
 for (const r of reports) {
   if (!r.present) { console.log(`${r.id}: not installed`); continue; }
   console.log(`${r.id}: found ${r.found} sessions, ${dry ? 'would send' : 'sent'} ${dry ? r.changed : `${r.sent}/${r.changed}`}${r.errors.length ? `, errors: ${[...new Set(r.errors)].join(', ')}` : ''}`);
+}
+if (!only) {
+  try {
+    const m = await syncClaudeMemories({ root, dry });
+    console.log(`claude-memory: found ${m.found}, ${dry ? 'would send' : 'sent'} ${m.sent}, expired ${m.expired}${m.errors.length ? `, errors: ${[...new Set(m.errors)].join(', ')}` : ''}`);
+  } catch { console.log('claude-memory: failed'); }
 }
 process.exit(0);
