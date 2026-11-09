@@ -133,7 +133,10 @@ export async function findTask(db:Db,p:Principal,id:string,lock=false):Promise<T
 }
 
 /** All queue/resource mutations acquire scope then task locks, including retraction of context references.
- * Writes that can touch Teams state take teamsLock between the two when the task belongs to an agent or a swarm step. */
+ * Writes that can touch Teams state take teamsLock between the two when the task belongs to an agent or a swarm step.
+ * ponytail: tenant-wide on purpose. finish() posts into other agents' threads (handoff), starts/updates swarms, advances steps of
+ * other agents and queues bot checks; swarm/agent/bot/team writers elsewhere hold the same tenant key, so a per-thread key would not
+ * exclude them. Narrow only with shared(tenant)+exclusive(thread) keys across every holder. */
 async function lockedTask(db:PoolClient,p:Principal,id:string,teams=false):Promise<TaskRow> {
   const visible = await findTask(db,p,id);
   await scopeLock(db,'tasks',p,visible.scope);
@@ -719,465 +722,142 @@ export class TaskService {
     });
   }
 
+  /** finish(): validate lease/idempotency -> requeue on provider failure -> record run -> side effects, one transaction. */
   async finish(p:Principal,input:Record<string,unknown>):Promise<unknown> {
     noExtraKeys(input,['task_id','lease_token','lease_generation','outcome','result','artifact_ids']);
     worker(p);
     const lease = leaseInput(input);
-    let outcome = enumValue(input.outcome,'outcome',['completed','failed','blocked'] as const);
+    const outcome = enumValue(input.outcome,'outcome',['completed','failed','blocked'] as const);
     const result = jsonObject(input.result,'result',65536);
     const artifactIds = uuidArray(input.artifact_ids,'artifact_ids');
     patchResult(result);
     return transaction(this.pool,async db => {
-      const row = await lockedTask(db,p,lease.taskId,true);
-      const runResult = await db.query<RunRow>('SELECT * FROM task_runs WHERE task_id=$1 AND generation=$2 FOR UPDATE',[row.id,lease.generation]);
-      const run = runResult.rows[0];
-      requireCondition(run && run.worker_id === p.id && sameHash(run.lease_hash,sha256(lease.token)),409,'lease_lost','This connection does not own that execution attempt.');
-      const bot = row.bot_id
-        ? (await db.query<{ id: string; routing: Record<string, unknown>; rules: Record<string, unknown>; lead_agent_id: string }>(
-            'SELECT id, routing, rules, lead_agent_id FROM bots WHERE id=$1 AND tenant_id=$2 AND NOT archived',
-            [row.bot_id, p.tenantId]
-          )).rows[0]
-        : undefined;
-      const routerLead = Boolean(bot && bot.rules.lead_mode === 'router' && bot.lead_agent_id === row.agent_id);
-      const isRouterTurn = (row.permission_envelope?.runner as any)?.router === true || routerLead;
-      if (isRouterTurn && (result.changed_files !== undefined || result.branch !== undefined)) {
-        outcome = 'failed';
-        result.failure = { code: 'router_edit_forbidden', retry: false, detail: 'Router lead turns cannot edit files or create branches.' };
+      const v = await finishValidate(db,p,lease,outcome,result,artifactIds);
+      if ('replay' in v) return v.replay;
+      const c = v.ctx;
+      const requeued = await finishRequeue(db,p,c);
+      if (requeued) return requeued;
+      const next = await finishRecord(db,p,c);
+      const { replyMsgId, budget } = await this.finishTurnReply(db,p,c);
+      if (c.row.kind === 'turn' && c.row.agent_id && c.row.thread_id) await finishFollowUpTurn(db,p,c);
+      if (c.row.swarm_step_id) {
+        const failureObj = c.result.failure as { code?: string; detail?: string } | undefined;
+        await this.swarms.onStepTaskFinished(db, p, c.row.swarm_step_id, c.row.id, c.row.scope, c.outcome, replyMsgId, failureObj, budget);
       }
-      const completionHash = sha256(canonicalJson({outcome,result_json:canonicalJson(result),artifact_ids:[...artifactIds].sort()}));
-      if (run.completion_hash !== null) {
-        requireCondition(run.completion_hash === completionHash,409,'completion_conflict','This run already finished with different result content.');
-        return {task:await taskWithInstructions(db,row),replayed:true};
-      }
-      await requireLease(db,p,row,lease);
-      validateFlowCompletion(row,outcome,result);
-      if (row.flow?.different_provider_than) {
-        const other = (await db.query<TaskRow>("SELECT * FROM tasks WHERE flow_id=$1 AND flow->>'step_id'=$2",[row.flow_id,row.flow.different_provider_than])).rows[0];
-        const otherServed = (other?.result as any)?.served?.provider ?? other?.flow?.provider;
-        const currentServed = (result.served as any)?.provider ?? result.provider;
-        requireCondition(!otherServed || currentServed !== otherServed, 409, 'flow_provider_mismatch', 'Step ran on the same provider as the step it must differ from.');
-      }
-      const artifacts = await db.query<{id:string}>(`SELECT id FROM artifacts WHERE tenant_id=$1 AND scope=$2
-        AND task_id=$3 AND run_generation=$4 AND id=ANY($5::uuid[])`,[p.tenantId,row.scope,row.id,lease.generation,artifactIds]);
-      requireCondition(artifacts.rows.length === artifactIds.length,400,'invalid_artifacts','Each artifact must belong to this task execution attempt.');
-
-      const isAuto = row.required_capability === AUTO_READ || row.required_capability === AUTO_PATCH;
-      const failure = result.failure as { code?: string; retry?: boolean; detail?: string; retry_after_ms?: number } | undefined;
-      const failureCode = failure?.code;
-      const servedProvider = (result.served as any)?.provider || (result.provider as string) || row.required_capability.split('.')[0]!;
-
-      if (outcome === 'failed' && isAuto && failureCode === 'quota_exhausted') {
-        await db.query(`UPDATE provider_usage SET fetched_at=clock_timestamp()-interval '16 minutes', headroom=0
-          WHERE tenant_id=$1 AND provider=$2`, [p.tenantId, servedProvider]);
-        const nextExclusions = Array.from(new Set([...(row.excluded_providers || []), servedProvider]));
-        const { policy } = await getPolicy(db, p.tenantId);
-        const candidates = policy.providers.filter(pr => pr.enabled && (pr.kinds as string[]).includes(row.kind));
-        const usageRows = await db.query<{ provider: string; ok: boolean; headroom: number; windows: any }>(
-          `SELECT provider, ok, headroom::float AS headroom, windows FROM provider_usage WHERE tenant_id=$1`, [p.tenantId]
-        );
-        const usageMap = new Map(usageRows.rows.map(u => [u.provider, u]));
-
-        const allExhausted = candidates.every(c => {
-          if (nextExclusions.includes(c.provider)) return true;
-          const u = usageMap.get(c.provider);
-          return !u || !u.ok || u.headroom <= 0;
-        });
-
-        if (allExhausted) {
-          const resetDescriptions = candidates.map(c => {
-            const u = usageMap.get(c.provider);
-            const winList: any[] = u?.windows?.windows ?? u?.windows ?? [];
-            const resetWin = Array.isArray(winList) ? winList.find(w => w.resets_at) : undefined;
-            const resetTime = resetWin?.resets_at ? new Date(resetWin.resets_at).toISOString() : 'unknown';
-            return `${c.provider} resets at ${resetTime}`;
-          });
-          const exhaustedMessage = `quota_exhausted: all providers exhausted (${resetDescriptions.join(', ')})`;
-          result.failure = { code: 'quota_exhausted', retry: false, detail: exhaustedMessage };
-          result.summary = exhaustedMessage;
-          result.answer = exhaustedMessage;
-        } else {
-          const updated = await db.query<TaskRow>(`UPDATE tasks SET status='queued',result=$2::jsonb,
-            excluded_providers=$3::text[],artifact_ids=$4::uuid[],version=version+1,lease_owner=NULL,
-            lease_hash=NULL,lease_expires_at=NULL,updated_at=clock_timestamp(),completed_at=NULL
-            WHERE id=$1 AND lease_expires_at>clock_timestamp() RETURNING *`,
-          [row.id, JSON.stringify(result), nextExclusions, artifactIds]);
-          requireCondition(updated.rows[0], 409, 'lease_lost', 'Lease expired before result commit.');
-          await db.query(`UPDATE task_runs SET status='failed',completion_hash=$3,result=$4::jsonb,artifact_ids=$5::uuid[],ended_at=clock_timestamp()
-            WHERE task_id=$1 AND generation=$2`, [row.id, lease.generation, completionHash, JSON.stringify(result), artifactIds]);
-          await releaseResource(db, row);
-          const next = updated.rows[0]!;
-
-          const remainingUsage = await scopeUsage(db, p.tenantId, row.scope);
-          const policyForRequeue = { ...policy, providers: policy.providers.filter(pr => !nextExclusions.includes(pr.provider)) };
-          const nextDecision = decide(policyForRequeue, effectiveRoutingKind(row), remainingUsage);
-          const reroutedTo = nextDecision.provider ?? 'another provider';
-
-          await taskChanged(db, p, next, 'requeued');
-          await taskReroutedNotice(db, p, next, servedProvider, reroutedTo, 'quota_exhausted');
-          return { task: await taskWithInstructions(db, next), replayed: false };
-        }
-      } else if (outcome === 'failed' && isAuto && failureCode === 'provider_error') {
-        const priorRuns = await db.query<RunRow>(
-          `SELECT * FROM task_runs WHERE task_id=$1 AND status='failed'
-           AND result->'failure'->>'code'='provider_error'
-           AND coalesce(result->'served'->>'provider', result->>'provider')=$2`,
-          [row.id, servedProvider]
-        );
-        if (priorRuns.rows.length === 0) {
-          const backoffSec = failure?.retry_after_ms ? Math.ceil(failure.retry_after_ms / 1000) : 5;
-          const updated = await db.query<TaskRow>(`UPDATE tasks SET status='queued',result=$2::jsonb,
-            not_before=clock_timestamp()+$3::integer*interval '1 second',artifact_ids=$4::uuid[],
-            version=version+1,lease_owner=NULL,lease_hash=NULL,lease_expires_at=NULL,updated_at=clock_timestamp(),completed_at=NULL
-            WHERE id=$1 AND lease_expires_at>clock_timestamp() RETURNING *`,
-          [row.id, JSON.stringify(result), backoffSec, artifactIds]);
-          requireCondition(updated.rows[0], 409, 'lease_lost', 'Lease expired before result commit.');
-          await db.query(`UPDATE task_runs SET status='failed',completion_hash=$3,result=$4::jsonb,artifact_ids=$5::uuid[],ended_at=clock_timestamp()
-            WHERE task_id=$1 AND generation=$2`, [row.id, lease.generation, completionHash, JSON.stringify(result), artifactIds]);
-          await releaseResource(db, row);
-          const next = updated.rows[0]!;
-          await taskChanged(db, p, next, 'requeued');
-          return { task: await taskWithInstructions(db, next), replayed: false };
-        } else {
-          const nextExclusions = Array.from(new Set([...(row.excluded_providers || []), servedProvider]));
-          const { policy } = await getPolicy(db, p.tenantId);
-          const candidates = policy.providers.filter(pr => pr.enabled && (pr.kinds as string[]).includes(effectiveRoutingKind(row)));
-          const usageRows = await db.query<{ provider: string; ok: boolean; headroom: number; windows: any }>(
-            `SELECT provider, ok, headroom::float AS headroom, windows FROM provider_usage WHERE tenant_id=$1`, [p.tenantId]
-          );
-          const usageMap = new Map(usageRows.rows.map(u => [u.provider, u]));
-
-          const allExhausted = candidates.every(c => {
-            if (nextExclusions.includes(c.provider)) return true;
-            const u = usageMap.get(c.provider);
-            return !u || !u.ok || u.headroom <= 0;
-          });
-
-          if (allExhausted) {
-            const resetDescriptions = candidates.map(c => {
-              const u = usageMap.get(c.provider);
-              const winList: any[] = u?.windows?.windows ?? u?.windows ?? [];
-              const resetWin = Array.isArray(winList) ? winList.find(w => w.resets_at) : undefined;
-              const resetTime = resetWin?.resets_at ? new Date(resetWin.resets_at).toISOString() : 'unknown';
-              return `${c.provider} resets at ${resetTime}`;
-            });
-            const exhaustedMessage = `quota_exhausted: all providers exhausted (${resetDescriptions.join(', ')})`;
-            result.failure = { code: 'quota_exhausted', retry: false, detail: exhaustedMessage };
-            result.summary = exhaustedMessage;
-            result.answer = exhaustedMessage;
-          } else {
-            const updated = await db.query<TaskRow>(`UPDATE tasks SET status='queued',result=$2::jsonb,
-              excluded_providers=$3::text[],artifact_ids=$4::uuid[],version=version+1,lease_owner=NULL,
-              lease_hash=NULL,lease_expires_at=NULL,updated_at=clock_timestamp(),completed_at=NULL
-              WHERE id=$1 AND lease_expires_at>clock_timestamp() RETURNING *`,
-            [row.id, JSON.stringify(result), nextExclusions, artifactIds]);
-            requireCondition(updated.rows[0], 409, 'lease_lost', 'Lease expired before result commit.');
-            await db.query(`UPDATE task_runs SET status='failed',completion_hash=$3,result=$4::jsonb,artifact_ids=$5::uuid[],ended_at=clock_timestamp()
-              WHERE task_id=$1 AND generation=$2`, [row.id, lease.generation, completionHash, JSON.stringify(result), artifactIds]);
-            await releaseResource(db, row);
-            const next = updated.rows[0]!;
-
-            const remainingUsage = await scopeUsage(db, p.tenantId, row.scope);
-            const policyForRequeue = { ...policy, providers: policy.providers.filter(pr => !nextExclusions.includes(pr.provider)) };
-            const nextDecision = decide(policyForRequeue, effectiveRoutingKind(row), remainingUsage);
-            const reroutedTo = nextDecision.provider ?? 'another provider';
-
-            await taskChanged(db, p, next, 'requeued');
-            await taskReroutedNotice(db, p, next, servedProvider, reroutedTo, 'provider_error');
-            return { task: await taskWithInstructions(db, next), replayed: false };
-          }
-        }
-      } else if (outcome === 'failed' && isAuto && failureCode === 'rate_limited') {
-        const backoffSec = failure?.retry_after_ms ? Math.ceil(failure.retry_after_ms / 1000) : 60;
-        const updated = await db.query<TaskRow>(`UPDATE tasks SET status='queued',result=$2::jsonb,
-          not_before=clock_timestamp()+$3::integer*interval '1 second',artifact_ids=$4::uuid[],
-          version=version+1,lease_owner=NULL,lease_hash=NULL,lease_expires_at=NULL,updated_at=clock_timestamp(),completed_at=NULL
-          WHERE id=$1 AND lease_expires_at>clock_timestamp() RETURNING *`,
-        [row.id, JSON.stringify(result), backoffSec, artifactIds]);
-        requireCondition(updated.rows[0], 409, 'lease_lost', 'Lease expired before result commit.');
-        await db.query(`UPDATE task_runs SET status='failed',completion_hash=$3,result=$4::jsonb,artifact_ids=$5::uuid[],ended_at=clock_timestamp()
-          WHERE task_id=$1 AND generation=$2`, [row.id, lease.generation, completionHash, JSON.stringify(result), artifactIds]);
-        await releaseResource(db, row);
-        const next = updated.rows[0]!;
-        await taskChanged(db, p, next, 'requeued');
-        return { task: await taskWithInstructions(db, next), replayed: false };
-      }
-      const updated = await db.query<TaskRow>(`UPDATE tasks SET status=$2,result=$3::jsonb,artifact_ids=$4::uuid[],
-        version=version+1,lease_owner=NULL,lease_hash=NULL,lease_expires_at=NULL,updated_at=clock_timestamp(),
-        completed_at=CASE WHEN $2='blocked' THEN NULL ELSE clock_timestamp() END
-        WHERE id=$1 AND lease_expires_at>clock_timestamp() RETURNING *`,[row.id,outcome,JSON.stringify(result),artifactIds]);
-      requireCondition(updated.rows[0],409,'lease_lost','Lease expired before result commit.');
-      await db.query(`UPDATE task_runs SET status=$3,completion_hash=$4,result=$5::jsonb,artifact_ids=$6::uuid[],ended_at=clock_timestamp()
-        WHERE task_id=$1 AND generation=$2`,[row.id,lease.generation,outcome,completionHash,JSON.stringify(result),artifactIds]);
-      await releaseResource(db,row);
-      const next = updated.rows[0];
-
-      let replyMsgId: string | undefined;
-      let budget: TurnBudget | undefined;
-
-      if (row.kind === 'turn' && row.agent_id && row.thread_id) {
-        const targetThreadId = (result.thread_id as string | undefined) ?? row.thread_id;
-        const hop = (row.context_versions as any)?.hop_depth;
-        budget = { hop: typeof hop === 'number' ? hop : 0, queued: 0, threadId: targetThreadId, scope: row.scope,
-          summary: (row.context_versions as any)?.summary === true };
-        const threadRow = (await db.query('SELECT * FROM threads WHERE id=$1 AND tenant_id=$2', [targetThreadId, p.tenantId])).rows[0];
-        requireCondition(threadRow && (threadRow.agent_id === row.agent_id || ['channel','bot'].includes(threadRow.kind)) && threadRow.scope === row.scope, 403, 'turn_grant_forbidden', 'Turn grant refuses posting to another agent\'s thread.');
-        if (['channel','bot'].includes(threadRow.kind)) {
-          const isMember = (await db.query<{ count: string }>(
-            'SELECT count(*)::int AS count FROM thread_members WHERE thread_id=$1 AND agent_id=$2',
-            [targetThreadId, row.agent_id]
-          )).rows[0]?.count ?? 0;
-          requireCondition(Number(isMember) > 0, 403, 'turn_grant_forbidden', 'Turn grant refuses posting to a channel or bot thread the agent is not a member of.');
-        }
-
-        if (outcome === 'completed') {
-          const rawAnswer = [result.answer, result.summary, result.reason].find(v => typeof v === 'string') ?? '';
-          const extracted = extractActionsBlock(String(rawAnswer));
-          const answer = clipUtf8(redactSecrets(extracted.cleanText), 16384);
-          const scheduled = row.bot_id && row.initiator_kind === 'schedule';
-          // Models wrap JSON in fences or spaces; any {"quiet": true} as the whole answer counts.
-          const quiet = scheduled && /^\s*(?:```(?:json)?\s*)?\{\s*"quiet"\s*:\s*true\s*\}\s*(?:```)?\s*$/u.test(String(rawAnswer));
-          if (!quiet) {
-            // Defer the schedule notice until there is a reply; quiet runs never touch the thread.
-            if (scheduled) {
-              const seq = await assignThreadSeq(db, p.tenantId, targetThreadId), id = newId();
-              await db.query(
-                `INSERT INTO messages(id,tenant_id,scope,thread_id,seq,author,kind,body)
-                 VALUES($1,$2,$3,$4,$5,'{"kind":"system","id":"service"}','notice','Scheduled run')`,
-                [id,p.tenantId,row.scope,targetThreadId,seq]
-              );
-              await event(db,p,row.scope,'message.created',id,{thread_id:targetThreadId,message_id:id,seq:Number(seq),kind:'notice'});
-            }
-            const emptyBotAnswer = Boolean(row.bot_id) && !answer.trim();
-            const replyKind = emptyBotAnswer ? 'notice' : 'text';
-            const replyAuthor = emptyBotAnswer ? { kind: 'system', id: 'service' } : { kind: 'agent', id: row.agent_id };
-            const nextSeq = await assignThreadSeq(db, p.tenantId, targetThreadId);
-            replyMsgId = newId();
-            await db.query(
-              `INSERT INTO messages (id, tenant_id, scope, thread_id, seq, author, kind, body)
-               VALUES ($1, $2, $3, $4, $5, $6::jsonb, $8, $7)`,
-              [replyMsgId, p.tenantId, row.scope, targetThreadId, nextSeq, JSON.stringify(replyAuthor),
-               emptyBotAnswer ? 'Finished without a summary' : answer, replyKind]
-            );
-            await event(db, p, row.scope, 'message.created', replyMsgId, {
-              thread_id: targetThreadId,
-              message_id: replyMsgId,
-              seq: Number(nextSeq),
-              kind: replyKind,
-              author: replyAuthor
-            });
-          }
-          if (result.native_session) {
-            await db.query(
-              `INSERT INTO agent_provider_sessions (tenant_id, agent_id, provider, session_data, updated_at)
-               VALUES ($1, $2, $3, $4::jsonb, clock_timestamp())
-               ON CONFLICT (tenant_id, agent_id, provider)
-               DO UPDATE SET session_data=EXCLUDED.session_data, updated_at=clock_timestamp()`,
-              [p.tenantId, row.agent_id, servedProvider, JSON.stringify(result.native_session)]
-            );
-          }
-
-          // Process turn actions under turn grant
-          const agentRow = (await db.query<AgentRow>('SELECT * FROM agents WHERE id=$1 FOR UPDATE', [row.agent_id])).rows[0];
-          if (agentRow && threadRow) {
-            const currentHop = (row.context_versions as any)?.hop_depth ?? 0;
-            const turnCtx: TurnGrantContext = {
-              agent: agentRow,
-              thread: threadRow as any,
-              tenantId: p.tenantId,
-              scope: row.scope,
-              hopDepth: typeof currentHop === 'number' ? currentHop : 0,
-              botId: row.bot_id ?? null,
-              leadMode: routerLead ? 'router' : 'default'
-            };
-
-            if (extracted.error) {
-              const noticeSeq = await assignThreadSeq(db, p.tenantId, targetThreadId);
-              const noticeMsgId = newId();
-              const noticeBody = clipUtf8(`Turn action rejected: ${extracted.error}`, 16384);
-              await db.query(
-                `INSERT INTO messages (id, tenant_id, scope, thread_id, seq, author, kind, body)
-                 VALUES ($1, $2, $3, $4, $5, $6::jsonb, 'notice', $7)`,
-                [noticeMsgId, p.tenantId, row.scope, targetThreadId, noticeSeq, JSON.stringify({ kind: 'system', id: 'service' }), noticeBody]
-              );
-              await event(db, p, row.scope, 'message.created', noticeMsgId, {
-                thread_id: targetThreadId,
-                message_id: noticeMsgId,
-                seq: Number(noticeSeq),
-                kind: 'notice',
-                author: { kind: 'system', id: 'service' }
-              });
-            } else if (extracted.actions && extracted.actions.length > 0) {
-              const grant = await validateTurnGrant(db, turnCtx, extracted.actions);
-              if (!grant.valid) {
-                const noticeSeq = await assignThreadSeq(db, p.tenantId, targetThreadId);
-                const noticeMsgId = newId();
-                const noticeBody = clipUtf8(`Turn action rejected: ${grant.action.type}: ${grant.reason}`, 16384);
-                await db.query(
-                  `INSERT INTO messages (id, tenant_id, scope, thread_id, seq, author, kind, body)
-                   VALUES ($1, $2, $3, $4, $5, $6::jsonb, 'notice', $7)`,
-                  [noticeMsgId, p.tenantId, row.scope, targetThreadId, noticeSeq, JSON.stringify({ kind: 'system', id: 'service' }), noticeBody]
-                );
-                await event(db, p, row.scope, 'message.created', noticeMsgId, {
-                  thread_id: targetThreadId,
-                  message_id: noticeMsgId,
-                  seq: Number(noticeSeq),
-                  kind: 'notice',
-                  author: { kind: 'system', id: 'service' }
-                });
-              } else {
-                // Summary turns remain reply-only. Appearance targets are locked by validateTurnGrant.
-                await this.swarms.applyTurnActions(db, p, turnCtx,
-                  budget.summary ? extracted.actions : extracted.actions.filter(a => a.type !== 'bot_appearance'), budget);
-                if (!budget.summary) for (const act of extracted.actions) {
-                  if (act.type !== 'bot_appearance') continue;
-                  const updated = (await db.query<{ version: number }>(
-                    `UPDATE bots SET avatar=CASE WHEN $4 THEN $5 ELSE avatar END,
-                       color=CASE WHEN $6 THEN $7 ELSE color END,
-                       version=version+1, updated_at=clock_timestamp()
-                     WHERE id=$1 AND tenant_id=$2 AND scope=$3 RETURNING version`,
-                    [row.bot_id, p.tenantId, row.scope, act.avatar !== undefined, act.avatar ?? null,
-                     act.color !== undefined, act.color ?? null]
-                  )).rows[0]!;
-                  await audit(db, p, row.scope, 'bot.update', row.bot_id!, { reason: 'appearance', version: updated.version });
-                  await event(db, p, row.scope, 'bot.updated', row.bot_id!, { bot_id: row.bot_id, reason: 'appearance' });
-                }
-              }
-            }
-          }
-        } else {
-          const failureObj = result.failure as { code?: string; detail?: string } | undefined;
-          const failCode = failureObj?.code || 'harness_error';
-          const detail = failureObj?.detail || result.summary || failCode;
-          const noticeBody = clipUtf8(redactSecrets(`Turn failed: ${failCode} - ${detail}`), 16384);
-          const nextSeq = await assignThreadSeq(db, p.tenantId, targetThreadId);
-          const msgId = newId();
-          await db.query(
-            `INSERT INTO messages (id, tenant_id, scope, thread_id, seq, author, kind, body)
-             VALUES ($1, $2, $3, $4, $5, $6::jsonb, 'notice', $7)`,
-            [msgId, p.tenantId, row.scope, targetThreadId, nextSeq, JSON.stringify({ kind: 'system', id: 'service' }), noticeBody]
-          );
-          await event(db, p, row.scope, 'message.created', msgId, {
-            thread_id: targetThreadId,
-            message_id: msgId,
-            seq: Number(nextSeq),
-            kind: 'notice',
-            author: { kind: 'system', id: 'service' }
-          });
-        }
-
-        const agentRow = (await db.query<AgentRow>('SELECT * FROM agents WHERE id=$1 FOR UPDATE', [row.agent_id])).rows[0];
-
-        const processedSeq = (row.context_versions as any)?.message_seq ?? 0;
-        const pendingHuman = (await db.query<{ seq: string }>(
-          `SELECT seq FROM messages
-           WHERE thread_id=$1 AND (author->>'kind')='human' AND seq > $2
-           ORDER BY seq DESC LIMIT 1`,
-          [row.thread_id, processedSeq]
-        )).rows[0];
-
-        const runner = row.permission_envelope.runner as { delegated?: unknown } | undefined;
-        const delegate = result.delegate as { objective?: unknown } | undefined;
-        // A swarm step's turn never delegates: the step would complete with the placeholder reply.
-        const delegateObjective = outcome === 'completed' && runner?.delegated !== true && !row.swarm_step_id && typeof delegate?.objective === 'string'
-          ? redactSecrets(delegate.objective).trim().slice(0, 500) : '';
-        const botId = row.bot_id ?? null;
-        let effectiveDelegateObjective = delegateObjective;
-        if (routerLead && delegateObjective) {
-          effectiveDelegateObjective = '';
-          const seq = await assignThreadSeq(db, p.tenantId, row.thread_id);
-          const noticeId = newId();
-          const author = { kind: 'system', id: 'service' };
-          await db.query(
-            `INSERT INTO messages (id, tenant_id, scope, thread_id, seq, author, kind, body)
-             VALUES ($1, $2, $3, $4, $5, $6::jsonb, 'notice', $7)`,
-            [noticeId, p.tenantId, row.scope, row.thread_id, seq, JSON.stringify(author),
-             "Router lead can't self-delegate; use handoff or swarm_start."]
-          );
-          await event(db, p, row.scope, 'message.created', noticeId, {
-            thread_id: row.thread_id, message_id: noticeId, seq: Number(seq), kind: 'notice', author
-          });
-        }
-        if ((pendingHuman || effectiveDelegateObjective) && agentRow) {
-          const active = (await db.query(
-            `SELECT id FROM tasks
-             WHERE tenant_id=$1 AND agent_id=$2 AND status IN ('queued', 'running') AND id <> $3
-             LIMIT 1`,
-            [p.tenantId, row.agent_id, row.id]
-          )).rows[0];
-
-          // A delegation is queued even behind a busy agent (resource_key runs it after); the user was told it is coming.
-          if (!active || effectiveDelegateObjective) {
-            const profile = bot ? leadTurnProfile(bot, agentRow) : null;
-            let nextCap = profile ? profile.capability : runnerCapability(agentRow.runner, agentRow.edits);
-            let firstFollowUp: ReturnType<typeof firstReplyRunner> = null;
-            if (bot && !profile?.router && !effectiveDelegateObjective) {
-              firstFollowUp = firstReplyRunner(bot.rules, agentRow.edits);
-              if (firstFollowUp?.capability) nextCap = firstFollowUp.capability;
-            }
-            const followUpId = newId();
-            // The full model must match the provider that runs it: a named non-Claude runner keeps its own model
-            // (the bridge's full model when unset); Claude or auto agents are pinned to Claude on DELEGATE_MODEL.
-            const pinnedProvider = agentRow.runner.provider;
-            const delegateModel = pinnedProvider && pinnedProvider !== 'claude' ? agentRow.runner.model : (agentRow.runner.model ?? DELEGATE_MODEL);
-            if (effectiveDelegateObjective && (!pinnedProvider || pinnedProvider === 'claude')) nextCap = `claude.${agentRow.edits ? 'patch' : 'read'}`;
-            const edits = profile ? profile.edits : agentRow.edits;
-            const runnerObj = effectiveDelegateObjective
-              ? { ...agentRow.runner, ...(delegateModel ? { model: delegateModel } : {}), ...(pinnedProvider ? {} : { provider: 'claude', mode: undefined }), delegated: true }
-              : (profile?.runner ?? firstFollowUp?.runner);
-            const envelope = {
-              deploy: false, publish: false, purchase: false, local_patch: edits,
-              read_project: true, send_messages: false, permission_changes: false, external_side_effects: false,
-              ...(runnerObj ? { runner: runnerObj } : {})
-            };
-            // hop_depth carries over, so a handoff -> delegate -> handoff chain still reaches MAX_HANDOFF_HOPS.
-            const ctxVersions = { message_seq: Number(pendingHuman?.seq ?? processedSeq), hop_depth: (row.context_versions as any)?.hop_depth ?? 0 };
-            const reqHash = sha256(canonicalJson({
-              kind: 'turn', scope: agentRow.scope, agent_id: agentRow.id, thread_id: row.thread_id, seq: Number(pendingHuman?.seq ?? processedSeq)
-            }));
-            await db.query(
-              `INSERT INTO tasks
-                 (id, tenant_id, scope, kind, agent_id, thread_id, bot_id, objective, constraints, acceptance_criteria,
-                  permission_envelope, required_capability, resource_key, context_versions, status, created_by,
-                  idempotency_key, request_hash, max_attempts)
-               VALUES ($1, $2, $3, 'turn', $4, $5, $6, $7, '[]'::jsonb, '[]'::jsonb, $8::jsonb, $9, $10, $11::jsonb, 'queued', $12, $13, $14, 3)`,
-              [followUpId, p.tenantId, agentRow.scope, agentRow.id, row.thread_id, botId, effectiveDelegateObjective || `Turn for agent ${agentRow.name}`,
-               JSON.stringify(envelope), nextCap, `agent:${agentRow.id}`, JSON.stringify(ctxVersions), row.created_by, newId(), reqHash]
-            );
-            await audit(db, p, agentRow.scope, 'task.submitted', followUpId, { kind: 'turn', agent_id: agentRow.id, thread_id: row.thread_id });
-            await event(db, p, agentRow.scope, 'task.updated', followUpId, { task_id: followUpId, kind: 'turn', thread_id: row.thread_id, status: 'queued', action: 'submitted' });
-            if (effectiveDelegateObjective) {
-              const seq = await assignThreadSeq(db, p.tenantId, row.thread_id);
-              const noticeId = newId();
-              const author = { kind: 'system', id: 'service' };
-              await db.query(
-                `INSERT INTO messages (id, tenant_id, scope, thread_id, seq, author, kind, body)
-                 VALUES ($1, $2, $3, $4, $5, $6::jsonb, 'notice', $7)`,
-                [noticeId, p.tenantId, row.scope, row.thread_id, seq, JSON.stringify(author),
-                 redactSecrets(`${agentRow.name} handed this to ${delegateModel ?? 'its full model'} for a fuller answer`)]
-              );
-              await event(db, p, row.scope, 'message.created', noticeId, {
-                thread_id: row.thread_id, message_id: noticeId, seq: Number(seq), kind: 'notice', author
-              });
-            }
-          }
-        }
-      }
-
-      if (row.swarm_step_id) {
-        const failureObj = result.failure as { code?: string; detail?: string } | undefined;
-        await this.swarms.onStepTaskFinished(db, p, row.swarm_step_id, row.id, row.scope, outcome, replyMsgId, failureObj, budget);
-      }
-
       // B2 bot hook: follow-ups and check outcomes commit with the fenced result.
-      await botTaskFinished(db,p,next!);
+      await botTaskFinished(db,p,next);
       // Bots B1: post task card into bot thread on review-ready or failed
-      if (row.bot_id) {
-        await postBotTaskCard(db, p, row, outcome, result);
-      }
-
+      if (c.row.bot_id) await postBotTaskCard(db, p, c.row, c.outcome, c.result);
       await taskChanged(db,p,next,'finished');
       return {task:await taskWithInstructions(db,next),replayed:false};
     });
+  }
+
+  /** Thread reply, native session, turn actions or failure notice for an agent turn. */
+  private async finishTurnReply(db:PoolClient,p:Principal,c:FinishCtx):Promise<{replyMsgId?:string;budget?:TurnBudget}> {
+    const { row, result, outcome, routerLead, servedProvider } = c;
+    if (!(row.kind === 'turn' && row.agent_id && row.thread_id)) return {};
+    let replyMsgId: string | undefined;
+    const targetThreadId = (result.thread_id as string | undefined) ?? row.thread_id;
+    const hop = (row.context_versions as any)?.hop_depth;
+    const budget: TurnBudget = { hop: typeof hop === 'number' ? hop : 0, queued: 0, threadId: targetThreadId, scope: row.scope,
+      summary: (row.context_versions as any)?.summary === true };
+    const threadRow = (await db.query('SELECT * FROM threads WHERE id=$1 AND tenant_id=$2', [targetThreadId, p.tenantId])).rows[0];
+    requireCondition(threadRow && (threadRow.agent_id === row.agent_id || ['channel','bot'].includes(threadRow.kind)) && threadRow.scope === row.scope, 403, 'turn_grant_forbidden', 'Turn grant refuses posting to another agent\'s thread.');
+    if (['channel','bot'].includes(threadRow.kind)) {
+      const isMember = (await db.query<{ count: string }>(
+        'SELECT count(*)::int AS count FROM thread_members WHERE thread_id=$1 AND agent_id=$2',
+        [targetThreadId, row.agent_id]
+      )).rows[0]?.count ?? 0;
+      requireCondition(Number(isMember) > 0, 403, 'turn_grant_forbidden', 'Turn grant refuses posting to a channel or bot thread the agent is not a member of.');
+    }
+
+    if (outcome === 'completed') {
+      const rawAnswer = [result.answer, result.summary, result.reason].find(v => typeof v === 'string') ?? '';
+      const extracted = extractActionsBlock(String(rawAnswer));
+      const answer = clipUtf8(redactSecrets(extracted.cleanText), 16384);
+      const scheduled = row.bot_id && row.initiator_kind === 'schedule';
+      // Models wrap JSON in fences or spaces; any {"quiet": true} as the whole answer counts.
+      const quiet = scheduled && /^\s*(?:```(?:json)?\s*)?\{\s*"quiet"\s*:\s*true\s*\}\s*(?:```)?\s*$/u.test(String(rawAnswer));
+      if (!quiet) {
+        // Defer the schedule notice until there is a reply; quiet runs never touch the thread.
+        if (scheduled) await serviceNotice(db, p, row.scope, targetThreadId, 'Scheduled run', false);
+        const emptyBotAnswer = Boolean(row.bot_id) && !answer.trim();
+        const replyKind = emptyBotAnswer ? 'notice' : 'text';
+        const replyAuthor = emptyBotAnswer ? { kind: 'system', id: 'service' } : { kind: 'agent', id: row.agent_id };
+        const nextSeq = await assignThreadSeq(db, p.tenantId, targetThreadId);
+        replyMsgId = newId();
+        await db.query(
+          `INSERT INTO messages (id, tenant_id, scope, thread_id, seq, author, kind, body)
+           VALUES ($1, $2, $3, $4, $5, $6::jsonb, $8, $7)`,
+          [replyMsgId, p.tenantId, row.scope, targetThreadId, nextSeq, JSON.stringify(replyAuthor),
+           emptyBotAnswer ? 'Finished without a summary' : answer, replyKind]
+        );
+        await event(db, p, row.scope, 'message.created', replyMsgId, {
+          thread_id: targetThreadId,
+          message_id: replyMsgId,
+          seq: Number(nextSeq),
+          kind: replyKind,
+          author: replyAuthor
+        });
+      }
+      if (result.native_session) {
+        await db.query(
+          `INSERT INTO agent_provider_sessions (tenant_id, agent_id, provider, session_data, updated_at)
+           VALUES ($1, $2, $3, $4::jsonb, clock_timestamp())
+           ON CONFLICT (tenant_id, agent_id, provider)
+           DO UPDATE SET session_data=EXCLUDED.session_data, updated_at=clock_timestamp()`,
+          [p.tenantId, row.agent_id, servedProvider, JSON.stringify(result.native_session)]
+        );
+      }
+
+      // Process turn actions under turn grant
+      const agentRow = (await db.query<AgentRow>('SELECT * FROM agents WHERE id=$1 FOR UPDATE', [row.agent_id])).rows[0];
+      if (agentRow && threadRow) {
+        const currentHop = (row.context_versions as any)?.hop_depth ?? 0;
+        const turnCtx: TurnGrantContext = {
+          agent: agentRow,
+          thread: threadRow as any,
+          tenantId: p.tenantId,
+          scope: row.scope,
+          hopDepth: typeof currentHop === 'number' ? currentHop : 0,
+          botId: row.bot_id ?? null,
+          leadMode: routerLead ? 'router' : 'default'
+        };
+
+        if (extracted.error) {
+          await serviceNotice(db, p, row.scope, targetThreadId, clipUtf8(`Turn action rejected: ${extracted.error}`, 16384));
+        } else if (extracted.actions && extracted.actions.length > 0) {
+          const grant = await validateTurnGrant(db, turnCtx, extracted.actions);
+          if (!grant.valid) {
+            await serviceNotice(db, p, row.scope, targetThreadId, clipUtf8(`Turn action rejected: ${grant.action.type}: ${grant.reason}`, 16384));
+          } else {
+            // Summary turns remain reply-only. Appearance targets are locked by validateTurnGrant.
+            await this.swarms.applyTurnActions(db, p, turnCtx,
+              budget.summary ? extracted.actions : extracted.actions.filter(a => a.type !== 'bot_appearance'), budget);
+            if (!budget.summary) for (const act of extracted.actions) {
+              if (act.type !== 'bot_appearance') continue;
+              const updated = (await db.query<{ version: number }>(
+                `UPDATE bots SET avatar=CASE WHEN $4 THEN $5 ELSE avatar END,
+                   color=CASE WHEN $6 THEN $7 ELSE color END,
+                   version=version+1, updated_at=clock_timestamp()
+                 WHERE id=$1 AND tenant_id=$2 AND scope=$3 RETURNING version`,
+                [row.bot_id, p.tenantId, row.scope, act.avatar !== undefined, act.avatar ?? null,
+                 act.color !== undefined, act.color ?? null]
+              )).rows[0]!;
+              await audit(db, p, row.scope, 'bot.update', row.bot_id!, { reason: 'appearance', version: updated.version });
+              await event(db, p, row.scope, 'bot.updated', row.bot_id!, { bot_id: row.bot_id, reason: 'appearance' });
+            }
+          }
+        }
+      }
+    } else {
+      const failureObj = result.failure as { code?: string; detail?: string } | undefined;
+      const failCode = failureObj?.code || 'harness_error';
+      const detail = failureObj?.detail || result.summary || failCode;
+      await serviceNotice(db, p, row.scope, targetThreadId, clipUtf8(redactSecrets(`Turn failed: ${failCode} - ${detail}`), 16384));
+    }
+    return { replyMsgId, budget };
   }
 
   async cancel(p:Principal,input:Record<string,unknown>):Promise<unknown> {
@@ -1233,5 +913,248 @@ export class TaskService {
       AND ($3::boolean OR scope=ANY($4::text[]))`,[id,p.tenantId,all,scopes]);
     const row = requireFound(result.rows[0],'Artifact');
     return {artifact:{...artifactView(row),content:row.content}};
+  }
+}
+
+// ---- finish() phases -------------------------------------------------------------------------------------------
+
+type FinishOutcome = 'completed'|'failed'|'blocked';
+interface FinishBot { id: string; routing: Record<string, unknown>; rules: Record<string, unknown>; lead_agent_id: string }
+interface FinishCtx {
+  row:TaskRow; lease:LeaseInput; outcome:FinishOutcome; result:Record<string,unknown>; artifactIds:string[];
+  completionHash:string; bot?:FinishBot; routerLead:boolean; servedProvider:string;
+}
+
+/** Phase 1: lock, fence the lease, replay by completion_hash, validate flow/artifacts. */
+async function finishValidate(db:PoolClient,p:Principal,lease:LeaseInput,outcomeIn:FinishOutcome,result:Record<string,unknown>,artifactIds:string[])
+  :Promise<{replay:unknown}|{ctx:FinishCtx}> {
+  let outcome = outcomeIn;
+  const row = await lockedTask(db,p,lease.taskId,true);
+  const runResult = await db.query<RunRow>('SELECT * FROM task_runs WHERE task_id=$1 AND generation=$2 FOR UPDATE',[row.id,lease.generation]);
+  const run = runResult.rows[0];
+  requireCondition(run && run.worker_id === p.id && sameHash(run.lease_hash,sha256(lease.token)),409,'lease_lost','This connection does not own that execution attempt.');
+  const bot = row.bot_id
+    ? (await db.query<FinishBot>('SELECT id, routing, rules, lead_agent_id FROM bots WHERE id=$1 AND tenant_id=$2 AND NOT archived',
+        [row.bot_id, p.tenantId])).rows[0]
+    : undefined;
+  const routerLead = Boolean(bot && bot.rules.lead_mode === 'router' && bot.lead_agent_id === row.agent_id);
+  const isRouterTurn = (row.permission_envelope?.runner as any)?.router === true || routerLead;
+  if (isRouterTurn && (result.changed_files !== undefined || result.branch !== undefined)) {
+    outcome = 'failed';
+    result.failure = { code: 'router_edit_forbidden', retry: false, detail: 'Router lead turns cannot edit files or create branches.' };
+  }
+  const completionHash = sha256(canonicalJson({outcome,result_json:canonicalJson(result),artifact_ids:[...artifactIds].sort()}));
+  if (run.completion_hash !== null) {
+    requireCondition(run.completion_hash === completionHash,409,'completion_conflict','This run already finished with different result content.');
+    return {replay:{task:await taskWithInstructions(db,row),replayed:true}};
+  }
+  await requireLease(db,p,row,lease);
+  validateFlowCompletion(row,outcome,result);
+  if (row.flow?.different_provider_than) {
+    const other = (await db.query<TaskRow>("SELECT * FROM tasks WHERE flow_id=$1 AND flow->>'step_id'=$2",[row.flow_id,row.flow.different_provider_than])).rows[0];
+    const otherServed = (other?.result as any)?.served?.provider ?? other?.flow?.provider;
+    const currentServed = (result.served as any)?.provider ?? result.provider;
+    requireCondition(!otherServed || currentServed !== otherServed, 409, 'flow_provider_mismatch', 'Step ran on the same provider as the step it must differ from.');
+  }
+  const artifacts = await db.query<{id:string}>(`SELECT id FROM artifacts WHERE tenant_id=$1 AND scope=$2
+    AND task_id=$3 AND run_generation=$4 AND id=ANY($5::uuid[])`,[p.tenantId,row.scope,row.id,lease.generation,artifactIds]);
+  requireCondition(artifacts.rows.length === artifactIds.length,400,'invalid_artifacts','Each artifact must belong to this task execution attempt.');
+  const servedProvider = (result.served as any)?.provider || (result.provider as string) || row.required_capability.split('.')[0]!;
+  return {ctx:{row,lease,outcome,result,artifactIds,completionHash,bot,routerLead,servedProvider}};
+}
+
+/** Requeue the task with the failed run recorded. Differences between callers: `exclusions` replaces
+ * excluded_providers (no delay); `backoffSec` delays not_before (providers untouched). Fenced on the live lease. */
+async function requeue(db:PoolClient,p:Principal,c:FinishCtx,change:{exclusions:string[]}|{backoffSec:number}):Promise<TaskRow> {
+  const set = 'exclusions' in change
+    ? 'excluded_providers=$3::text[]'
+    : "not_before=clock_timestamp()+$3::integer*interval '1 second'";
+  const updated = await db.query<TaskRow>(`UPDATE tasks SET status='queued',result=$2::jsonb,${set},artifact_ids=$4::uuid[],
+    version=version+1,lease_owner=NULL,lease_hash=NULL,lease_expires_at=NULL,updated_at=clock_timestamp(),completed_at=NULL
+    WHERE id=$1 AND lease_expires_at>clock_timestamp() RETURNING *`,
+  [c.row.id, JSON.stringify(c.result), 'exclusions' in change ? change.exclusions : change.backoffSec, c.artifactIds]);
+  requireCondition(updated.rows[0], 409, 'lease_lost', 'Lease expired before result commit.');
+  await db.query(`UPDATE task_runs SET status='failed',completion_hash=$3,result=$4::jsonb,artifact_ids=$5::uuid[],ended_at=clock_timestamp()
+    WHERE task_id=$1 AND generation=$2`, [c.row.id, c.lease.generation, c.completionHash, JSON.stringify(c.result), c.artifactIds]);
+  await releaseResource(db, c.row);
+  const next = updated.rows[0]!;
+  await taskChanged(db, p, next, 'requeued');
+  return next;
+}
+
+/** Exclude the served provider and requeue on another one. Returns undefined (after rewriting `result` as a terminal
+ * quota_exhausted failure) when no enabled provider with headroom remains. `candidateKind` is the kind used to list
+ * candidate providers (quota_exhausted historically used row.kind, provider_error the routing kind). */
+async function requeueOnOtherProvider(db:PoolClient,p:Principal,c:FinishCtx,reason:'quota_exhausted'|'provider_error',candidateKind:string):Promise<unknown|undefined> {
+  const { row, result, servedProvider } = c;
+  const nextExclusions = Array.from(new Set([...(row.excluded_providers || []), servedProvider]));
+  const { policy } = await getPolicy(db, p.tenantId);
+  const candidates = policy.providers.filter(pr => pr.enabled && (pr.kinds as string[]).includes(candidateKind));
+  const usageRows = await db.query<{ provider: string; ok: boolean; headroom: number; windows: any }>(
+    `SELECT provider, ok, headroom::float AS headroom, windows FROM provider_usage WHERE tenant_id=$1`, [p.tenantId]
+  );
+  const usageMap = new Map(usageRows.rows.map(u => [u.provider, u]));
+  const allExhausted = candidates.every(cand => {
+    if (nextExclusions.includes(cand.provider)) return true;
+    const u = usageMap.get(cand.provider);
+    return !u || !u.ok || u.headroom <= 0;
+  });
+  if (allExhausted) {
+    const resetDescriptions = candidates.map(cand => {
+      const u = usageMap.get(cand.provider);
+      const winList: any[] = u?.windows?.windows ?? u?.windows ?? [];
+      const resetWin = Array.isArray(winList) ? winList.find(w => w.resets_at) : undefined;
+      const resetTime = resetWin?.resets_at ? new Date(resetWin.resets_at).toISOString() : 'unknown';
+      return `${cand.provider} resets at ${resetTime}`;
+    });
+    const exhaustedMessage = `quota_exhausted: all providers exhausted (${resetDescriptions.join(', ')})`;
+    result.failure = { code: 'quota_exhausted', retry: false, detail: exhaustedMessage };
+    result.summary = exhaustedMessage;
+    result.answer = exhaustedMessage;
+    return undefined;
+  }
+  const next = await requeue(db, p, c, { exclusions: nextExclusions });
+  const remainingUsage = await scopeUsage(db, p.tenantId, row.scope);
+  const policyForRequeue = { ...policy, providers: policy.providers.filter(pr => !nextExclusions.includes(pr.provider)) };
+  const reroutedTo = decide(policyForRequeue, effectiveRoutingKind(row), remainingUsage).provider ?? 'another provider';
+  await taskReroutedNotice(db, p, next, servedProvider, reroutedTo, reason);
+  return { task: await taskWithInstructions(db, next), replayed: false };
+}
+
+/** Phase 2: auto-routed tasks that failed on quota / provider error / rate limit are requeued instead of finished. */
+async function finishRequeue(db:PoolClient,p:Principal,c:FinishCtx):Promise<unknown|undefined> {
+  const { row, outcome, result, servedProvider } = c;
+  if (outcome !== 'failed' || !(row.required_capability === AUTO_READ || row.required_capability === AUTO_PATCH)) return undefined;
+  const failure = result.failure as { code?: string; retry_after_ms?: number } | undefined;
+  const backoff = (defaultSec:number) => ({ backoffSec: failure?.retry_after_ms ? Math.ceil(failure.retry_after_ms / 1000) : defaultSec });
+  const requeued = async (change:{backoffSec:number}) =>
+    ({ task: await taskWithInstructions(db, await requeue(db, p, c, change)), replayed: false });
+  switch (failure?.code) {
+    case 'quota_exhausted':
+      await db.query(`UPDATE provider_usage SET fetched_at=clock_timestamp()-interval '16 minutes', headroom=0
+        WHERE tenant_id=$1 AND provider=$2`, [p.tenantId, servedProvider]);
+      return requeueOnOtherProvider(db, p, c, 'quota_exhausted', row.kind);
+    case 'provider_error': {
+      // One delayed retry per provider; a repeat failure there moves to another provider.
+      const priorRuns = await db.query<RunRow>(
+        `SELECT * FROM task_runs WHERE task_id=$1 AND status='failed'
+         AND result->'failure'->>'code'='provider_error'
+         AND coalesce(result->'served'->>'provider', result->>'provider')=$2`,
+        [row.id, servedProvider]
+      );
+      return priorRuns.rows.length === 0
+        ? requeued(backoff(5))
+        : requeueOnOtherProvider(db, p, c, 'provider_error', effectiveRoutingKind(row));
+    }
+    case 'rate_limited':
+      return requeued(backoff(60));
+    default:
+      return undefined;
+  }
+}
+
+/** Phase 3: fenced task state transition and run record. */
+async function finishRecord(db:PoolClient,p:Principal,c:FinishCtx):Promise<TaskRow> {
+  const { row, lease, outcome, result, artifactIds, completionHash } = c;
+  const updated = await db.query<TaskRow>(`UPDATE tasks SET status=$2,result=$3::jsonb,artifact_ids=$4::uuid[],
+    version=version+1,lease_owner=NULL,lease_hash=NULL,lease_expires_at=NULL,updated_at=clock_timestamp(),
+    completed_at=CASE WHEN $2='blocked' THEN NULL ELSE clock_timestamp() END
+    WHERE id=$1 AND lease_expires_at>clock_timestamp() RETURNING *`,[row.id,outcome,JSON.stringify(result),artifactIds]);
+  requireCondition(updated.rows[0],409,'lease_lost','Lease expired before result commit.');
+  await db.query(`UPDATE task_runs SET status=$3,completion_hash=$4,result=$5::jsonb,artifact_ids=$6::uuid[],ended_at=clock_timestamp()
+    WHERE task_id=$1 AND generation=$2`,[row.id,lease.generation,outcome,completionHash,JSON.stringify(result),artifactIds]);
+  await releaseResource(db,row);
+  return updated.rows[0]!;
+}
+
+/** System notice in a thread. The scheduled-run notice never carried an author in its event payload. */
+async function serviceNotice(db:PoolClient,p:Principal,scope:string,threadId:string,body:string,withAuthor=true):Promise<void> {
+  const author = { kind: 'system', id: 'service' };
+  const seq = await assignThreadSeq(db, p.tenantId, threadId), id = newId();
+  await db.query(
+    `INSERT INTO messages (id, tenant_id, scope, thread_id, seq, author, kind, body)
+     VALUES ($1, $2, $3, $4, $5, $6::jsonb, 'notice', $7)`,
+    [id, p.tenantId, scope, threadId, seq, JSON.stringify(author), body]
+  );
+  await event(db, p, scope, 'message.created', id, {
+    thread_id: threadId, message_id: id, seq: Number(seq), kind: 'notice', ...(withAuthor ? { author } : {})
+  });
+}
+
+/** Phase 4b: queue the next turn for a pending human message or a delegation. */
+async function finishFollowUpTurn(db:PoolClient,p:Principal,c:FinishCtx):Promise<void> {
+  const { row, result, outcome, bot, routerLead } = c;
+  const threadId = row.thread_id!;
+  const agentRow = (await db.query<AgentRow>('SELECT * FROM agents WHERE id=$1 FOR UPDATE', [row.agent_id])).rows[0];
+
+  const processedSeq = (row.context_versions as any)?.message_seq ?? 0;
+  const pendingHuman = (await db.query<{ seq: string }>(
+    `SELECT seq FROM messages
+     WHERE thread_id=$1 AND (author->>'kind')='human' AND seq > $2
+     ORDER BY seq DESC LIMIT 1`,
+    [threadId, processedSeq]
+  )).rows[0];
+
+  const runner = row.permission_envelope.runner as { delegated?: unknown } | undefined;
+  const delegate = result.delegate as { objective?: unknown } | undefined;
+  // A swarm step's turn never delegates: the step would complete with the placeholder reply.
+  const delegateObjective = outcome === 'completed' && runner?.delegated !== true && !row.swarm_step_id && typeof delegate?.objective === 'string'
+    ? redactSecrets(delegate.objective).trim().slice(0, 500) : '';
+  const botId = row.bot_id ?? null;
+  let effectiveDelegateObjective = delegateObjective;
+  if (routerLead && delegateObjective) {
+    effectiveDelegateObjective = '';
+    await serviceNotice(db, p, row.scope, threadId, "Router lead can't self-delegate; use handoff or swarm_start.");
+  }
+  if (!((pendingHuman || effectiveDelegateObjective) && agentRow)) return;
+  const active = (await db.query(
+    `SELECT id FROM tasks
+     WHERE tenant_id=$1 AND agent_id=$2 AND status IN ('queued', 'running') AND id <> $3
+     LIMIT 1`,
+    [p.tenantId, row.agent_id, row.id]
+  )).rows[0];
+
+  // A delegation is queued even behind a busy agent (resource_key runs it after); the user was told it is coming.
+  if (active && !effectiveDelegateObjective) return;
+  const profile = bot ? leadTurnProfile(bot, agentRow) : null;
+  let nextCap = profile ? profile.capability : runnerCapability(agentRow.runner, agentRow.edits);
+  let firstFollowUp: ReturnType<typeof firstReplyRunner> = null;
+  if (bot && !profile?.router && !effectiveDelegateObjective) {
+    firstFollowUp = firstReplyRunner(bot.rules, agentRow.edits);
+    if (firstFollowUp?.capability) nextCap = firstFollowUp.capability;
+  }
+  const followUpId = newId();
+  // The full model must match the provider that runs it: a named non-Claude runner keeps its own model
+  // (the bridge's full model when unset); Claude or auto agents are pinned to Claude on DELEGATE_MODEL.
+  const pinnedProvider = agentRow.runner.provider;
+  const delegateModel = pinnedProvider && pinnedProvider !== 'claude' ? agentRow.runner.model : (agentRow.runner.model ?? DELEGATE_MODEL);
+  if (effectiveDelegateObjective && (!pinnedProvider || pinnedProvider === 'claude')) nextCap = `claude.${agentRow.edits ? 'patch' : 'read'}`;
+  const edits = profile ? profile.edits : agentRow.edits;
+  const runnerObj = effectiveDelegateObjective
+    ? { ...agentRow.runner, ...(delegateModel ? { model: delegateModel } : {}), ...(pinnedProvider ? {} : { provider: 'claude', mode: undefined }), delegated: true }
+    : (profile?.runner ?? firstFollowUp?.runner);
+  const envelope = {
+    deploy: false, publish: false, purchase: false, local_patch: edits,
+    read_project: true, send_messages: false, permission_changes: false, external_side_effects: false,
+    ...(runnerObj ? { runner: runnerObj } : {})
+  };
+  // hop_depth carries over, so a handoff -> delegate -> handoff chain still reaches MAX_HANDOFF_HOPS.
+  const ctxVersions = { message_seq: Number(pendingHuman?.seq ?? processedSeq), hop_depth: (row.context_versions as any)?.hop_depth ?? 0 };
+  const reqHash = sha256(canonicalJson({
+    kind: 'turn', scope: agentRow.scope, agent_id: agentRow.id, thread_id: threadId, seq: Number(pendingHuman?.seq ?? processedSeq)
+  }));
+  await db.query(
+    `INSERT INTO tasks
+       (id, tenant_id, scope, kind, agent_id, thread_id, bot_id, objective, constraints, acceptance_criteria,
+        permission_envelope, required_capability, resource_key, context_versions, status, created_by,
+        idempotency_key, request_hash, max_attempts)
+     VALUES ($1, $2, $3, 'turn', $4, $5, $6, $7, '[]'::jsonb, '[]'::jsonb, $8::jsonb, $9, $10, $11::jsonb, 'queued', $12, $13, $14, 3)`,
+    [followUpId, p.tenantId, agentRow.scope, agentRow.id, threadId, botId, effectiveDelegateObjective || `Turn for agent ${agentRow.name}`,
+     JSON.stringify(envelope), nextCap, `agent:${agentRow.id}`, JSON.stringify(ctxVersions), row.created_by, newId(), reqHash]
+  );
+  await audit(db, p, agentRow.scope, 'task.submitted', followUpId, { kind: 'turn', agent_id: agentRow.id, thread_id: threadId });
+  await event(db, p, agentRow.scope, 'task.updated', followUpId, { task_id: followUpId, kind: 'turn', thread_id: threadId, status: 'queued', action: 'submitted' });
+  if (effectiveDelegateObjective) {
+    await serviceNotice(db, p, row.scope, threadId, redactSecrets(`${agentRow.name} handed this to ${delegateModel ?? 'its full model'} for a fuller answer`));
   }
 }
