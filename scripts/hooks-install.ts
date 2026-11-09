@@ -1,6 +1,7 @@
 // Installs/removes the chat-journal hook (clients/hooks/swarmaa-journal.mjs) for Claude Code, Codex, Antigravity, Kiro, Windsurf and Qwen Code.
 // Idempotent, never clobbers foreign config, writes nothing when dry. Detection is by the script's path suffix.
 import { copyFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -261,13 +262,22 @@ export async function removeJournalHooks(harness: Harness, opts: { root: string;
 // ---- Inbox hooks, independent of optional chat journaling ----
 const INBOX_MARKER = 'clients/hooks/swarmaa-inbox.mjs';
 const MEMORY_MARKER = 'clients/hooks/swarmaa-memory.mjs';
+/** A Homebrew Cellar path dies on every `brew upgrade node`; use the stable bin/opt symlink that resolves to the same binary. */
+export function stableNode(exec = process.execPath): string {
+  if (!exec.includes('/Cellar/')) return exec;
+  const prefix = exec.slice(0, exec.indexOf('/Cellar/')), formula = exec.split('/Cellar/')[1]!.split('/')[0]!;
+  for (const c of [join(prefix, 'opt', formula, 'bin', 'node'), join(prefix, 'bin', 'node')]) {
+    try { if (realpathSync(c) === realpathSync(exec)) return c; } catch { /* missing */ }
+  }
+  return exec;
+}
 const shellQuote = (value: string) => "'" + value.replaceAll("'", "'\"'\"'") + "'";
 async function inboxHooks(harness: Harness, install: boolean, o: Opts): Promise<HookResult> {
   if (!['claude','codex','agy'].includes(harness)) return { harness, changed: [] };
   const home = o.home ?? homedir();
-  const cmd = (event: string) => `${shellQuote(o.node ?? process.execPath)} ${shellQuote(join(o.root,INBOX_MARKER))} ${harness} ${event}`;
+  const cmd = (event: string) => `${shellQuote(o.node ?? stableNode())} ${shellQuote(join(o.root,INBOX_MARKER))} ${harness} ${event}`;
   const ours = (c: unknown) => typeof c === 'string' && c.includes(INBOX_MARKER);
-  const memCmd = (event: string) => `${shellQuote(o.node ?? process.execPath)} ${shellQuote(join(o.root,MEMORY_MARKER))} ${harness} ${event}`;
+  const memCmd = (event: string) => `${shellQuote(o.node ?? stableNode())} ${shellQuote(join(o.root,MEMORY_MARKER))} ${harness} ${event}`;
   if (harness === 'agy') {
     const path = join(home,'.gemini','config','hooks.json');
     const r = await readJsonObject(path);
