@@ -442,7 +442,22 @@ export class TaskService {
       return {scope,capabilities,kinds};
     });
     const seconds = leaseSeconds(input.lease_seconds);
+    // One liveness write per call, then one cheap query so idle scopes skip the locked per-scope transaction.
+    await touchWorker(this.pool,p);
+    const ready = new Set((await this.pool.query<{scope:string}>(`SELECT x.scope FROM jsonb_to_recordset($2::jsonb)
+      AS x(scope text,capabilities text[],kinds text[]) WHERE
+      EXISTS (SELECT 1 FROM tasks t WHERE t.tenant_id=$1 AND t.scope=x.scope AND t.status='queued'
+        AND (t.not_before IS NULL OR t.not_before<=clock_timestamp()) AND t.attempt_count<t.max_attempts
+        AND t.required_capability=ANY(x.capabilities) AND (
+          (t.kind<>'turn' AND t.kind=ANY(x.kinds))
+          OR (t.kind='turn' AND (
+            (NOT t.required_capability LIKE '%.patch' AND ('turn'=ANY(x.kinds) OR x.kinds && ARRAY['research','review']::text[]))
+            OR (t.required_capability LIKE '%.patch' AND 'patch'=ANY(x.kinds))))))
+      OR EXISTS (SELECT 1 FROM tasks t WHERE t.tenant_id=$1 AND t.scope=x.scope AND t.status='running' AND t.lease_expires_at<=clock_timestamp())
+      OR EXISTS (SELECT 1 FROM questions q WHERE q.tenant_id=$1 AND q.scope=x.scope AND q.status='open' AND q.expires_at<=clock_timestamp())`,
+      [p.tenantId,JSON.stringify(projects)])).rows.map(r => r.scope));
     for (const {scope,capabilities,kinds} of projects) {
+      if (!ready.has(scope)) continue;
       const claim = await this.claimScope(p,scope,capabilities,kinds,seconds);
       if (claim.task) return claim;
     }
@@ -452,7 +467,6 @@ export class TaskService {
   private async claimScope(p:Principal,scope:string,capabilities:string[],kinds:TaskKind[],seconds:number) {
     return transaction(this.pool,async db => {
       await scopeLock(db,'tasks',p,scope);
-      await touchWorker(db,p);
       // The owner's routing policy decides, per kind, which provider takes auto.read work; explicit
       // capabilities still obey the policy's enabled flag and allowed kinds.
       const served = workerProviders(capabilities);

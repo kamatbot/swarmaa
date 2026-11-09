@@ -657,4 +657,16 @@ describe('core transactional invariants', {skip:!connectionString,concurrency:fa
     const stored = (await call(f.front,'task_get',{task_id:id})).task;
     assert.equal(stored.version,last.task.version);
   });
+  it('returns no task for all-empty scopes yet still records worker liveness once',async () => {
+    const f = await fixture();
+    f.worker.scopes.push('project:b');
+    await pool.query('UPDATE principals SET scopes=$2,last_seen_at=NULL WHERE id=$1',[f.worker.id,f.worker.scopes]);
+    const projects = ['project:a','project:b'].map(scope => ({scope,capabilities:['claude.read']}));
+    assert.deepEqual(await call(f.worker,'task_claim',{projects}),{task:null});
+    const seen = await pool.query('SELECT last_seen_at FROM principals WHERE id=$1',[f.worker.id]);
+    assert.ok(seen.rows[0].last_seen_at);
+    // A task the worker cannot serve (wrong capability) must not change the result either.
+    await call(f.front,'task_submit',{...submission(),required_capability:'codex.read'});
+    assert.deepEqual(await call(f.worker,'task_claim',{projects}),{task:null});
+  });
 });
