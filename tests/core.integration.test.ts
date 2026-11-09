@@ -610,4 +610,27 @@ describe('core transactional invariants', {skip:!connectionString,concurrency:fa
     assert.equal(neither.events.length,0);
     assert.equal(neither.next_cursor,'0.0');
   });
+  it('requeues an expired lease from the server sweeper without any claim call',async () => {
+    const f = await fixture();
+    const submitted = await call(f.front,'task_submit',{...submission(),max_attempts:2});
+    const first = await call(f.worker,'task_claim',claimArgs);
+    assert.equal(first.task.id,submitted.task.id);
+    await call(f.worker,'task_checkpoint',{...lease(first),checkpoint:{phase:'x'}});
+    await expire(submitted.task.id);
+    assert.equal((await call(f.front,'task_get',{task_id:submitted.task.id})).task.status,'running');
+    await core.sweepExpiredLeases();
+    const swept = (await call(f.front,'task_get',{task_id:submitted.task.id})).task;
+    assert.equal(swept.status,'queued');
+    assert.equal(swept.lease_owner,null);
+    assert.equal(swept.runs[0].status,'abandoned');
+    const audit = await pool.query("SELECT 1 FROM audit_log WHERE subject_id=$1 AND operation='task.lease_expired'",[submitted.task.id]);
+    assert.equal(audit.rowCount,1);
+    await rejects(f.worker,'task_checkpoint',{...lease(first),checkpoint:{stale:true}},'lease_lost');
+    // Exhausting attempts fails the task exactly as claim does.
+    const second = await call(f.worker,'task_claim',claimArgs);
+    assert.equal(second.task.id,submitted.task.id);
+    await expire(submitted.task.id);
+    await core.sweepExpiredLeases();
+    assert.equal((await call(f.front,'task_get',{task_id:submitted.task.id})).task.status,'failed');
+  });
 });

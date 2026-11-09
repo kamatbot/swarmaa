@@ -496,57 +496,7 @@ export class TaskService {
         await teamsLock(db,p.tenantId);
         await this.swarms.expireDueQuestions(db,p,scope);
       }
-      // Sweep expired attempts before selection. No process-local retry state is needed after a restart.
-      // Agent and step tasks take teamsLock before their row lock, one task at a time.
-      const expired = await db.query<{id:string;teams:boolean}>(`SELECT id,(agent_id IS NOT NULL OR swarm_step_id IS NOT NULL) AS teams
-        FROM tasks WHERE tenant_id=$1 AND scope=$2 AND status='running'
-        AND lease_expires_at<=clock_timestamp() ORDER BY created_at,id`,[p.tenantId,scope]);
-      for (const candidate of expired.rows) {
-        if (candidate.teams) await teamsLock(db,p.tenantId);
-        const row = (await db.query<TaskRow>(`SELECT * FROM tasks WHERE id=$1 AND status='running'
-          AND lease_expires_at<=clock_timestamp() FOR UPDATE`,[candidate.id])).rows[0];
-        if (!row) continue;
-        await db.query(`UPDATE task_runs SET status='abandoned',ended_at=clock_timestamp()
-          WHERE task_id=$1 AND generation=$2 AND status='running'`,[row.id,row.lease_generation]);
-        await retireResource(db,row);
-        const exhausted = row.attempt_count>=row.max_attempts;
-        const result = await db.query<TaskRow>(`UPDATE tasks SET status=$2,version=version+1,lease_owner=NULL,
-          lease_hash=NULL,lease_expires_at=NULL,updated_at=clock_timestamp(),
-          result=CASE WHEN $3::boolean THEN $4::jsonb ELSE result END,
-          completed_at=CASE WHEN $3::boolean THEN clock_timestamp() ELSE NULL END
-          WHERE id=$1 RETURNING *`,[row.id,exhausted ? 'failed':'queued',exhausted,
-          JSON.stringify({error:'attempts_exhausted',message:'Worker lease expired after the configured attempt limit.',checkpoint_available:row.checkpoint !== null})]);
-        await taskChanged(db,p,result.rows[0]!,exhausted ? 'attempts_exhausted':'lease_expired');
-        if (exhausted && row.swarm_step_id) {
-          await db.query(
-            `UPDATE swarm_steps SET status='failed', failure_code='attempts_exhausted', failure_detail='Worker lease expired after the configured attempt limit.', updated_at=clock_timestamp() WHERE id=$1`,
-            [row.swarm_step_id]
-          );
-          const stepRow = (await db.query<{ swarm_id: string }>('SELECT swarm_id FROM swarm_steps WHERE id=$1', [row.swarm_step_id])).rows[0];
-          if (stepRow) {
-            const swSteps = (await db.query<SwarmStepRow>('SELECT * FROM swarm_steps WHERE swarm_id=$1 ORDER BY id ASC', [stepRow.swarm_id])).rows;
-            const swRow = (await db.query<SwarmRow>('SELECT * FROM swarms WHERE id=$1', [stepRow.swarm_id])).rows[0];
-            if (swRow) {
-              const derived = deriveSwarmStatus(swSteps, Boolean(swRow.closed_at), swRow.status === 'cancelled');
-              await db.query('UPDATE swarms SET status=$1, version=version+1, updated_at=clock_timestamp() WHERE id=$2', [derived, swRow.id]);
-              await event(db, p, swRow.scope, 'swarm.updated', swRow.id, { swarm_id: swRow.id, status: derived });
-              const cardMsg = (await db.query<{ id: string; seq: string }>(
-                `SELECT id, seq FROM messages WHERE thread_id=$1 AND kind='swarm' AND (ref->>'swarm_id')=$2 ORDER BY seq DESC LIMIT 1`,
-                [swRow.thread_id, swRow.id]
-              )).rows[0];
-              if (cardMsg) {
-                await event(db, p, swRow.scope, 'message.updated', cardMsg.id, {
-                  thread_id: swRow.thread_id,
-                  message_id: cardMsg.id,
-                  seq: Number(cardMsg.seq),
-                  kind: 'swarm',
-                  ref: { swarm_id: swRow.id }
-                });
-              }
-            }
-          }
-        }
-      }
+      await this.sweepExpired(db,p,scope);
       const candidates = await db.query<TaskRow>(`SELECT * FROM tasks WHERE tenant_id=$1 AND scope=$2 AND status='queued'
         AND (not_before IS NULL OR not_before<=clock_timestamp())
         AND attempt_count<max_attempts AND required_capability=ANY($3::text[])
@@ -638,6 +588,78 @@ export class TaskService {
       }
       return {task:null};
     });
+  }
+
+  /** Server timer entry: reaps expired leases in scopes no worker polls. Same locks and effects as the sweep inside claim. */
+  async sweepLeases():Promise<number> {
+    const pairs = (await this.pool.query<{tenant_id:string;scope:string;owner:string}>(`SELECT tenant_id,scope,(array_agg(lease_owner))[1] AS owner
+      FROM tasks WHERE status='running' AND lease_expires_at<=clock_timestamp()
+      GROUP BY tenant_id,scope LIMIT 50`)).rows;
+    for (const pair of pairs) {
+      // The audit actor is the worker that lost the lease; audit_log.actor_id must reference a principal.
+      const p:Principal = {id:pair.owner,tenantId:pair.tenant_id,name:'lease-sweeper',role:'admin',scopes:[pair.scope],permissions:[]};
+      await transaction(this.pool,async db => {
+        await scopeLock(db,'tasks',p,pair.scope);
+        if ((await db.query(`SELECT 1 FROM tasks WHERE tenant_id=$1 AND scope=$2 AND bot_id IS NOT NULL AND status IN ('queued','running') LIMIT 1`,[p.tenantId,pair.scope])).rowCount) await teamsLock(db,p.tenantId);
+        await this.sweepExpired(db,p,pair.scope);
+      });
+    }
+    return pairs.length;
+  }
+
+  /** Requeues or fails running tasks whose lease expired. The caller holds the scope advisory lock (and teamsLock when bot tasks exist). */
+  private async sweepExpired(db:PoolClient,p:Principal,scope:string):Promise<void> {
+    // Sweep expired attempts before selection. No process-local retry state is needed after a restart.
+    // Agent and step tasks take teamsLock before their row lock, one task at a time.
+    const expired = await db.query<{id:string;teams:boolean}>(`SELECT id,(agent_id IS NOT NULL OR swarm_step_id IS NOT NULL) AS teams
+      FROM tasks WHERE tenant_id=$1 AND scope=$2 AND status='running'
+      AND lease_expires_at<=clock_timestamp() ORDER BY created_at,id`,[p.tenantId,scope]);
+    for (const candidate of expired.rows) {
+      if (candidate.teams) await teamsLock(db,p.tenantId);
+      const row = (await db.query<TaskRow>(`SELECT * FROM tasks WHERE id=$1 AND status='running'
+        AND lease_expires_at<=clock_timestamp() FOR UPDATE`,[candidate.id])).rows[0];
+      if (!row) continue;
+      await db.query(`UPDATE task_runs SET status='abandoned',ended_at=clock_timestamp()
+        WHERE task_id=$1 AND generation=$2 AND status='running'`,[row.id,row.lease_generation]);
+      await retireResource(db,row);
+      const exhausted = row.attempt_count>=row.max_attempts;
+      const result = await db.query<TaskRow>(`UPDATE tasks SET status=$2,version=version+1,lease_owner=NULL,
+        lease_hash=NULL,lease_expires_at=NULL,updated_at=clock_timestamp(),
+        result=CASE WHEN $3::boolean THEN $4::jsonb ELSE result END,
+        completed_at=CASE WHEN $3::boolean THEN clock_timestamp() ELSE NULL END
+        WHERE id=$1 RETURNING *`,[row.id,exhausted ? 'failed':'queued',exhausted,
+        JSON.stringify({error:'attempts_exhausted',message:'Worker lease expired after the configured attempt limit.',checkpoint_available:row.checkpoint !== null})]);
+      await taskChanged(db,p,result.rows[0]!,exhausted ? 'attempts_exhausted':'lease_expired');
+      if (exhausted && row.swarm_step_id) {
+        await db.query(
+          `UPDATE swarm_steps SET status='failed', failure_code='attempts_exhausted', failure_detail='Worker lease expired after the configured attempt limit.', updated_at=clock_timestamp() WHERE id=$1`,
+          [row.swarm_step_id]
+        );
+        const stepRow = (await db.query<{ swarm_id: string }>('SELECT swarm_id FROM swarm_steps WHERE id=$1', [row.swarm_step_id])).rows[0];
+        if (stepRow) {
+          const swSteps = (await db.query<SwarmStepRow>('SELECT * FROM swarm_steps WHERE swarm_id=$1 ORDER BY id ASC', [stepRow.swarm_id])).rows;
+          const swRow = (await db.query<SwarmRow>('SELECT * FROM swarms WHERE id=$1', [stepRow.swarm_id])).rows[0];
+          if (swRow) {
+            const derived = deriveSwarmStatus(swSteps, Boolean(swRow.closed_at), swRow.status === 'cancelled');
+            await db.query('UPDATE swarms SET status=$1, version=version+1, updated_at=clock_timestamp() WHERE id=$2', [derived, swRow.id]);
+            await event(db, p, swRow.scope, 'swarm.updated', swRow.id, { swarm_id: swRow.id, status: derived });
+            const cardMsg = (await db.query<{ id: string; seq: string }>(
+              `SELECT id, seq FROM messages WHERE thread_id=$1 AND kind='swarm' AND (ref->>'swarm_id')=$2 ORDER BY seq DESC LIMIT 1`,
+              [swRow.thread_id, swRow.id]
+            )).rows[0];
+            if (cardMsg) {
+              await event(db, p, swRow.scope, 'message.updated', cardMsg.id, {
+                thread_id: swRow.thread_id,
+                message_id: cardMsg.id,
+                seq: Number(cardMsg.seq),
+                kind: 'swarm',
+                ref: { swarm_id: swRow.id }
+              });
+            }
+          }
+        }
+      }
+    }
   }
 
   async heartbeat(p:Principal,input:Record<string,unknown>):Promise<unknown> {
