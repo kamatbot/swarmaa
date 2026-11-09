@@ -10,6 +10,7 @@ import { redactSecrets } from '../safety/redact.js';
 import type { Principal } from '../types.js';
 import { enumValue, integer, object, optionalString, scopeName, string, uuid } from '../validation.js';
 import { assertKnownScope, audit, canonicalJson, noExtraKeys, requireFound, scopeSql, sha256, type Db } from './shared.js';
+import { orTerms } from './memory.js';
 
 export const LESSON_KINDS = ['workflow', 'correction', 'debugging_pattern', 'gotcha', 'convention'] as const;
 export const LESSON_STATES = ['candidate', 'approved', 'rejected', 'superseded'] as const;
@@ -85,9 +86,10 @@ function readerView(r: LessonRow): Record<string, unknown> {
     tags: r.tags.map(redactSecrets), evidence: r.evidence.map(e => ({ ...e, summary: redactSecrets(e.summary) })) };
 }
 
-const likePattern = (term: string): string => `%${term.replace(/[\\%_]/g, '\\$&')}%`;
-function terms(q: string | undefined, minLength: number, max: number): string[] {
-  return [...new Set((q ?? '').toLowerCase().split(/\s+/).map(t => t.slice(0, 64)).filter(t => t.length >= minLength))].slice(0, max);
+/** All-terms tsquery for lesson_search: letters/digits only, so the string cannot carry tsquery operators. */
+function allTerms(q: string | undefined): string | null {
+  const words = [...new Set((q ?? '').toLowerCase().match(/[\p{L}\p{N}]+/gu)?.map(w => w.slice(0, 64)) ?? [])].slice(0, 8);
+  return words.length ? words.join(' & ') : null;
 }
 
 export class LessonService {
@@ -152,13 +154,13 @@ export class LessonService {
     assertKnownScope(p, scope);
     const q = optionalString(input.q, 'q', 256);
     const limit = input.limit === undefined ? 5 : integer(input.limit, 'limit', 1, 5);
-    const rows = await this.approved(this.pool, p.tenantId, scope, terms(q, 1, 8), 'all', limit);
+    const rows = await this.approved(this.pool, p.tenantId, scope, allTerms(q), 'all', limit);
     return { scope, lessons: rows.map(readerView), guidance: LESSON_GUIDANCE };
   }
 
   /** Up to five approved lessons for context_get: any query term matches (best first), else the newest. */
   async forContext(db: Db, p: Principal, scope: string, query: string | null): Promise<Record<string, unknown>[]> {
-    return (await this.approved(db, p.tenantId, scope, terms(query ?? undefined, 3, 12), 'any', 5)).map(readerView);
+    return (await this.approved(db, p.tenantId, scope, orTerms(query), 'any', 5)).map(readerView);
   }
 
   async review(p: Principal, input: Record<string, unknown>): Promise<unknown> {
@@ -215,14 +217,14 @@ export class LessonService {
     return (await db.query<LessonRow>('SELECT * FROM lessons WHERE tenant_id=$1 AND id=$2', [tenantId, id])).rows[0];
   }
 
-  private async approved(db: Db, tenantId: string, scope: string, termList: string[], mode: 'all' | 'any', limit: number): Promise<LessonRow[]> {
-    const r = await db.query<LessonRow>(`SELECT * FROM (
-        SELECT l.*, (SELECT count(*) FROM unnest($3::text[]) AS t(p)
-          WHERE lower(l.title||' '||l.applicability||' '||l.body||' '||array_to_string(l.tags,' ')) LIKE t.p) AS score
-        FROM lessons l WHERE l.tenant_id=$1 AND l.scope=$2 AND l.state='approved') x
-      WHERE cardinality($3::text[])=0 OR (CASE WHEN $4 THEN score=cardinality($3::text[]) ELSE score>0 END)
-      ORDER BY (CASE WHEN $4 THEN 0 ELSE score END) DESC, updated_at DESC, id LIMIT $5`,
-    [tenantId, scope, termList.map(likePattern), mode === 'all', limit]);
+  // The tsvector expression must match lessons_search_idx (008_lessons.sql) exactly to use the GIN index.
+  private async approved(db: Db, tenantId: string, scope: string, tsquery: string | null, mode: 'all' | 'any', limit: number): Promise<LessonRow[]> {
+    const r = await db.query<LessonRow>(`SELECT * FROM lessons l WHERE l.tenant_id=$1 AND l.scope=$2 AND l.state='approved'
+        AND ($3::text IS NULL OR to_tsvector('simple', l.title || ' ' || l.applicability || ' ' || l.body) @@ to_tsquery('simple',$3))
+      ORDER BY (CASE WHEN $4 OR $3::text IS NULL THEN 0
+        ELSE ts_rank(to_tsvector('simple', l.title || ' ' || l.applicability || ' ' || l.body), to_tsquery('simple',$3)) END) DESC,
+        l.updated_at DESC, l.id LIMIT $5`,
+    [tenantId, scope, tsquery, mode === 'all', limit]);
     return r.rows;
   }
 }
