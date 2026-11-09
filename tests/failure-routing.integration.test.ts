@@ -202,6 +202,17 @@ describe('failure codes and routing', { skip: !connectionString, concurrency: fa
     assert.equal(getTask.task.status, 'failed');
   });
 
+  it('swarmaa_checks_failed requeues with no delay until attempts run out', async () => {
+    const f = await fixture();
+    const sub = await call(f.front, 'task_submit', submit('checks-failed', 'review', 'codex.read', { max_attempts: 2 }));
+    const failure = { code: 'swarmaa_checks_failed', retry: true, detail: 'Configured checks failed: tests' };
+    const first = await call(f.codex, 'task_claim', { scope: 'project:a', capabilities: ['codex.read'] });
+    assert.equal((await finish(f.codex, first, { provider: 'codex', failure })).task.status, 'queued');
+    const second = await call(f.codex, 'task_claim', { scope: 'project:a', capabilities: ['codex.read'] });
+    assert.equal(second.task?.id, sub.task.id);
+    assert.equal((await finish(f.codex, second, { provider: 'codex', failure })).task.status, 'failed');
+  });
+
   it('rate_limited respects backoff', async () => {
     const f = await fixture();
     await call(f.codex, 'usage_report', report('codex', 10, 10));

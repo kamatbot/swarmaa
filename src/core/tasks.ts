@@ -1024,11 +1024,14 @@ async function requeueOnOtherProvider(db:PoolClient,p:Principal,c:FinishCtx,reas
 /** Phase 2: auto-routed tasks that failed on quota / provider error / rate limit are requeued instead of finished. */
 async function finishRequeue(db:PoolClient,p:Principal,c:FinishCtx):Promise<unknown|undefined> {
   const { row, outcome, result, servedProvider } = c;
-  if (outcome !== 'failed' || !(row.required_capability === AUTO_READ || row.required_capability === AUTO_PATCH)) return undefined;
+  if (outcome !== 'failed') return undefined;
   const failure = result.failure as { code?: string; retry_after_ms?: number } | undefined;
   const backoff = (defaultSec:number) => ({ backoffSec: failure?.retry_after_ms ? Math.ceil(failure.retry_after_ms / 1000) : defaultSec });
   const requeued = async (change:{backoffSec:number}) =>
     ({ task: await taskWithInstructions(db, await requeue(db, p, c, change)), replayed: false });
+  // Owner-configured checks failed on a patch: retry while attempts remain; the next attempt resumes with the check output.
+  if (failure?.code === 'swarmaa_checks_failed' && row.attempt_count < row.max_attempts) return requeued({ backoffSec: 0 });
+  if (!(row.required_capability === AUTO_READ || row.required_capability === AUTO_PATCH)) return undefined;
   switch (failure?.code) {
     case 'quota_exhausted':
       await db.query(`UPDATE provider_usage SET fetched_at=clock_timestamp()-interval '16 minutes', headroom=0
