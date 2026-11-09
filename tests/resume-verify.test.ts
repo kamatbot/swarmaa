@@ -104,3 +104,14 @@ test('codex resumes by thread id via `exec resume`, and the id is read from thre
   assert.ok(!args.includes('--color'));
   assert.equal(codexThreadId(`{"type":"thread.started","thread_id":"${SESSION}"}\n{"type":"turn.completed"}`), SESSION);
 });
+
+test('files a configured check creates are not committed with the patch', async () => {
+  const h = await harness(null, r => {
+    writeFileSync(join(r.cwd!, r.command === checkBin ? 'build.out' : 'agent.txt'), 'x');
+    return ok;
+  }, true);
+  assert.equal(h.finish.outcome, 'completed');
+  const diff = h.calls.filter(c => c.name === 'artifact_put').map(c => JSON.stringify(c.args)).join('\n');
+  assert.match(diff, /agent\.txt/);
+  assert.doesNotMatch(diff, /build\.out/);
+});
