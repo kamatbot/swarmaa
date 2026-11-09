@@ -613,6 +613,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             statusItem.limits = preferences.menuBarLimits
             statusItem.resetTimeFormat = preferences.resetTimeFormat
             statusItem.showsWeeklyLimit = preferences.showsWeeklyLimitInMenuBar
+            statusItem.showsRemaining = preferences.showsRemainingInNotch
 
             preferences.$appPresence
                 .receive(on: RunLoop.main)
@@ -801,7 +802,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
             preferences.$showsRemainingInNotch
                 .dropFirst()
-                .sink { [weak fleet] in fleet?.apply(showsRemainingInNotch: $0) }
+                .sink { [weak self, weak fleet] in
+                    fleet?.apply(showsRemainingInNotch: $0)
+                    self?.statusItem?.showsRemaining = $0
+                }
                 .store(in: &cancellables)
 
             preferences.$shutRingsWhenSpent

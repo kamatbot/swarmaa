@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 
 /// The menu bar icon, present only while `AppPresence.menuBar` is chosen.
 ///
@@ -69,6 +70,18 @@ final class StatusItemController: NSObject, NSMenuDelegate {
             updateButton()
         }
     }
+    /// Reads what is left rather than what is spent, from Settings. Presentation
+    /// only, like `showsWeeklyLimit`.
+    var showsRemaining: Bool = false {
+        didSet {
+            guard showsRemaining != oldValue else { return }
+            summary = nil
+            updateButton()
+        }
+    }
+    private let hover = StatusItemHover()
+    private var hoverCard: NSPopover?
+    private var menuIsOpen = false
     /// What the item shows now, so a publication that changes nothing on it —
     /// a local runtime is re-read every second — redraws nothing.
     private var summary: StatusItemSummary?
@@ -126,6 +139,9 @@ final class StatusItemController: NSObject, NSMenuDelegate {
 
         self.item = item
         guard let button = item.button else { return }
+        hover.install(on: button) { [weak self] inside in
+            MainActor.assumeIsolated { self?.hoverChanged(inside) }
+        }
         observe(NSView.frameDidChangeNotification, on: .default, object: button) { controller in
             controller.pulse.relayout()
             controller.observeStatusWindow(of: button)
@@ -151,6 +167,8 @@ final class StatusItemController: NSObject, NSMenuDelegate {
 
     func hide() {
         guard let item else { return }
+        hover.remove()
+        closeHoverCard()
         countdownTimer?.invalidate()
         countdownTimer = nil
         pulse.clear()
@@ -214,10 +232,12 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         guard let item, let button = item.button else { return }
         let next = StatusItemSummary.make(from: snapshots, showing: limits, now: now,
                                           format: resetTimeFormat,
-                                          showingWeeklyLimit: showsWeeklyLimit)
+                                          showingWeeklyLimit: showsWeeklyLimit,
+                                          showingRemaining: showsRemaining)
         scheduleCountdown(at: next.nextChange)
         guard next != summary else { return }
         summary = next
+        if next.entries.isEmpty { closeHoverCard() }
 
         if next.entries.isEmpty {
             pulse.clear()
@@ -232,7 +252,8 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         // is nothing for `variableLength` to work out.
         redrawArtwork()
         let details = next.entries.map(\.detail).joined(separator: "\n")
-        button.toolTip = details
+        // The hover card says this and more; both at once would stack.
+        button.toolTip = nil
         // The image is text VoiceOver cannot read; this says what it shows.
         button.setAccessibilityLabel(details)
     }
@@ -316,6 +337,8 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     /// time would freeze "Resets in 51 min" and "20 hr ago" until the next
     /// reading lands.
     func menuWillOpen(_ menu: NSMenu) {
+        menuIsOpen = true
+        closeHoverCard()
         // Asked here rather than anywhere else because opening the menu is the
         // one unambiguous "read these numbers" gesture the item has. The fetch
         // it may start lands a moment later: the item's own face follows it at
@@ -323,6 +346,49 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         // has landed by the time the menu is next opened.
         onLook?()
         rebuild(menu: menu, now: Date())
+    }
+
+    func menuDidClose(_ menu: NSMenu) { menuIsOpen = false }
+
+    // MARK: - Hover card
+
+    private func hoverChanged(_ inside: Bool) {
+        hoverCloseTimer?.invalidate()
+        hoverCloseTimer = nil
+        if inside {
+            guard !menuIsOpen, let summary, !summary.entries.isEmpty,
+                  hoverCard?.isShown != true, let button = item?.button else { return }
+            let shown = Set(summary.entries.map(\.id))
+            let rows = snapshots.filter { shown.contains($0.id) }
+            let popover = NSPopover()
+            popover.behavior = .applicationDefined
+            popover.contentViewController = NSHostingController(rootView: StatusItemHoverCard(
+                snapshots: rows, labels: Dictionary(uniqueKeysWithValues: summary.entries.map { ($0.id, $0.label) }),
+                showingRemaining: showsRemaining, format: resetTimeFormat, now: Date()))
+            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+            hoverCard = popover
+            // A shown popover swallows the click that should open the menu: close it as the press lands.
+            clickMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
+                MainActor.assumeIsolated { self?.closeHoverCard() }
+                return event
+            }
+        } else {
+            hoverCloseTimer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: false) { [weak self] _ in
+                MainActor.assumeIsolated { self?.closeHoverCard() }
+            }
+        }
+    }
+
+    private var hoverCloseTimer: Timer?
+    private var clickMonitor: Any?
+
+    private func closeHoverCard() {
+        hoverCloseTimer?.invalidate()
+        hoverCloseTimer = nil
+        hoverCard?.close()
+        hoverCard = nil
+        if let clickMonitor { NSEvent.removeMonitor(clickMonitor) }
+        clickMonitor = nil
     }
 
     /// Exposed for tests: what the menu says without needing a status item.
@@ -516,4 +582,32 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         }
         return line
     }
+}
+
+
+/// Reports the mouse entering and leaving the status item's button.
+@MainActor
+final class StatusItemHover: NSResponder {
+    private var area: NSTrackingArea?
+    private weak var button: NSView?
+    private var onChange: ((Bool) -> Void)?
+
+    func install(on button: NSView, onChange: @escaping (Bool) -> Void) {
+        remove()
+        self.button = button
+        self.onChange = onChange
+        let area = NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+                                  owner: self, userInfo: nil)
+        button.addTrackingArea(area)
+        self.area = area
+    }
+
+    func remove() {
+        if let area { button?.removeTrackingArea(area) }
+        area = nil
+        onChange = nil
+    }
+
+    override func mouseEntered(with event: NSEvent) { onChange?(true) }
+    override func mouseExited(with event: NSEvent) { onChange?(false) }
 }

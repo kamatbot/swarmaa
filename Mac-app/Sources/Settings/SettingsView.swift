@@ -913,7 +913,7 @@ struct SettingsView: View {
 
                 Toggle(L10n.t("Show remaining instead of used"),
                        isOn: $preferences.showsRemainingInNotch)
-                Text(L10n.t("The notch reads what is left — the figures, the rings' sweep, and the card's bars and percentages. Colours still judge by what is spent, so a nearly empty ring still reads red."))
+                Text(L10n.t("The notch and the menu bar read what is left — the figures, the rings' sweep, and the card's bars and percentages. Colours still judge by what is spent, so a nearly empty ring still reads red."))
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

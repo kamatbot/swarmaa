@@ -21,7 +21,7 @@ struct StatusItemSummary: Equatable {
         /// A remembered reading rather than a fresh one, dimmed the way the
         /// notch dims its ring.
         let isStale: Bool
-        /// Weekly allowance consumed, for the compact ring. Nil means the
+        /// Weekly allowance consumed (or left, when showing remaining), for the compact ring. Nil means the
         /// provider did not publish a valid current weekly percentage.
         let weeklyFraction: Double?
         /// What the tooltip and VoiceOver say about this entry, in full.
@@ -65,7 +65,8 @@ struct StatusItemSummary: Equatable {
     @MainActor
     static func make(from snapshots: [ProviderSnapshot], showing limits: MenuBarLimits,
                      now: Date, format: ResetTimeFormat = .automatic,
-                     showingWeeklyLimit: Bool = false) -> StatusItemSummary {
+                     showingWeeklyLimit: Bool = false,
+                     showingRemaining: Bool = false) -> StatusItemSummary {
         guard limits.isOn else { return StatusItemSummary(entries: [], nextChange: nil) }
         let summarised = snapshots.filter { snapshot in
             canSummarise(snapshot) && limits.isChosen(snapshot.id)
@@ -74,7 +75,8 @@ struct StatusItemSummary: Equatable {
         for snapshot in summarised { marks[snapshot.glyph, default: 0] += 1 }
         let entries = summarised.map { snapshot in
             entry(for: snapshot, sharesMark: marks[snapshot.glyph, default: 0] > 1, now: now,
-                  format: format, showingWeeklyLimit: showingWeeklyLimit)
+                  format: format, showingWeeklyLimit: showingWeeklyLimit,
+                  showingRemaining: showingRemaining)
         }
         let nextChange = summarised
             .compactMap { $0.fiveHourWindow?.resetsAt }
@@ -90,15 +92,19 @@ struct StatusItemSummary: Equatable {
     @MainActor
     private static func entry(for snapshot: ProviderSnapshot, sharesMark: Bool,
                               now: Date, format: ResetTimeFormat,
-                              showingWeeklyLimit: Bool) -> Entry {
+                              showingWeeklyLimit: Bool, showingRemaining: Bool) -> Entry {
         let window = snapshot.fiveHourWindow
+        // The bar's figure: the five-hour window, or the limit the account meters
+        // instead (Codex can report only its weekly one).
+        let barWindow = window ?? snapshot.headline
         // Past its reset a reading describes a window that is over. The store
         // re-reads on its first tick after a reset; until that lands the honest
         // figure is none, not the old one.
         let isOver = window?.resetsAt.map { $0 <= now } ?? false
+        let barIsOver = barWindow?.resetsAt.map { $0 <= now } ?? false
         var percent = Entry.unknown
-        if !isOver, let fraction = window?.usedFraction, fraction.isFinite {
-            percent = Percent.whole(for: fraction) + "%"
+        if !barIsOver, let fraction = barWindow?.usedFraction, fraction.isFinite {
+            percent = Percent.whole(for: Percent.metered(fraction, showingRemaining: showingRemaining)) + "%"
         }
         let countdown = window?.resetsAt.flatMap { ResetCopy.countdown(to: $0, now: now) }
         // A remote login's "slug" would be `<kind>-remote-<uuid>` — its
@@ -112,7 +118,7 @@ struct StatusItemSummary: Equatable {
         let weeklyWindow = showingWeeklyLimit ? snapshot.weeklyLimitWindow : nil
         let weeklyIsOver = weeklyWindow?.resetsAt.map { $0 <= now } ?? false
         let weeklyFraction = weeklyIsOver ? nil : weeklyWindow?.usedFraction.flatMap { fraction in
-            fraction.isFinite && fraction >= 0 ? fraction : nil
+            fraction.isFinite && fraction >= 0 ? Percent.metered(fraction, showingRemaining: showingRemaining) : nil
         }
         var detail = detail(for: snapshot, window: window, isOver: isOver,
                             countdown: countdown, now: now, format: format)
@@ -202,7 +208,6 @@ struct StatusItemArtwork {
         case activityBadge(NSRect)
     }
 
-    private var separator: String { " · " }
     private var glyphSize: CGFloat { (font.pointSize * 1.1).rounded() }
     private var glyphGap: CGFloat { (font.pointSize * 0.3).rounded() }
     /// Either side of the rule between two readings.
@@ -281,11 +286,8 @@ struct StatusItemArtwork {
                 text(StatusItemSummary.Entry.unknown, alpha: alpha)
                 continue
             }
+            // Just the figure: the reset times are in the hover card.
             text(entry.percent, alpha: alpha)
-            if !summary.isCompact {
-                text(separator, alpha: alpha)
-                text(entry.countdown, alpha: alpha)
-            }
         }
         return (x.rounded(.up), marks, glyphFrames)
     }

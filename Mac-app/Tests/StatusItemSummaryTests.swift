@@ -166,11 +166,11 @@ final class StatusItemSummaryTests: XCTestCase {
         XCTAssertNil(result.nextChange)
     }
 
-    /// A free Codex plan meters thirty days, not five hours: the bar has no
-    /// figure for it, and the tooltip says what the account does meter.
+    /// A free Codex plan meters thirty days, not five hours: the bar shows that
+    /// limit's figure, and the detail says which limit it is.
     func testAnAccountWithoutAFiveHourWindowSaysWhatItMetersInstead() throws {
         let entry = try XCTUnwrap(summary([codex(0.12, resetIn: 20 * 86400, length: 30 * 86400)]).entries.first)
-        XCTAssertTrue(entry.isBlank)
+        XCTAssertEqual(entry.percent, "12%")
         XCTAssertTrue(entry.detail.hasPrefix("Codex — Monthly limit: 12% Used"), entry.detail)
     }
 
@@ -566,10 +566,8 @@ final class StatusItemSummaryTests: XCTestCase {
     ///
     /// Monospaced digits mean the width can only move when a figure gains or
     /// loses a *character*, not when it changes value. Over 300 minutes the
-    /// shapes a window passes through are 2/6 → 3/6 → 2/6 → 3/6 → 3/3 → 3/2
-    /// (percent characters over countdown characters): five steps, one an
-    /// hour. A second provider on its own schedule brings the pair to eleven,
-    /// about one every twenty-seven minutes.
+    /// bar shows the percentage alone, so its width moves only when that figure
+    /// gains or loses a digit. A second provider on its own schedule adds its own steps.
     func testTheItemChangesWidthOnlyAsTheFiguresChangeShape() {
         let font = NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .regular)
         func width(_ snapshots: [ProviderSnapshot]) -> CGFloat {
@@ -587,8 +585,8 @@ final class StatusItemSummaryTests: XCTestCase {
                                                 resetIn: TimeInterval(other) * minute)]))
         }
         func steps(_ widths: [CGFloat]) -> Int { zip(widths, widths.dropFirst()).filter { $0 != $1 }.count }
-        XCTAssertEqual(steps(alone), 5, "one provider, across a whole window")
-        XCTAssertEqual(steps(paired), 11, "two providers, across a whole window")
+        XCTAssertEqual(steps(alone), 3, "one provider, across a whole window")
+        XCTAssertEqual(steps(paired), 7, "two providers, across a whole window")
     }
 
     /// A template, as the icon it stands in for is, so macOS tints it for
@@ -762,6 +760,19 @@ final class StatusItemSummaryTests: XCTestCase {
         let data = try XCTUnwrap(canvas.tiffRepresentation)
         let bitmap = try XCTUnwrap(NSBitmapImageRep(data: data))
         try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: URL(fileURLWithPath: path))
+    }
+
+    func testShowingRemainingFlipsThePercentAndTheWeeklyFraction() {
+        let snaps = [claude(0.72, resetIn: 2 * hour)]
+        let limits = MenuBarLimits(isOn: true, chosen: nil)
+        func entry(_ remaining: Bool) -> StatusItemSummary.Entry {
+            StatusItemSummary.make(from: snaps, showing: limits, now: now,
+                                   showingWeeklyLimit: true, showingRemaining: remaining).entries[0]
+        }
+        XCTAssertEqual(entry(true).percent, "28%")
+        XCTAssertEqual(try XCTUnwrap(entry(true).weeklyFraction), 1 - 0.31, accuracy: 1e-9)
+        XCTAssertEqual(entry(false).percent, "72%")
+        XCTAssertEqual(try XCTUnwrap(entry(false).weeklyFraction), 0.31, accuracy: 1e-9)
     }
 }
 
