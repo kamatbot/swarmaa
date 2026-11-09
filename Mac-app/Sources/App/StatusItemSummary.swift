@@ -94,9 +94,9 @@ struct StatusItemSummary: Equatable {
                               now: Date, format: ResetTimeFormat,
                               showingWeeklyLimit: Bool, showingRemaining: Bool) -> Entry {
         let window = snapshot.fiveHourWindow
-        // The bar's figure: the five-hour window, or the limit the account meters
-        // instead (Codex can report only its weekly one).
-        let barWindow = window ?? snapshot.headline
+        // The bar's figure: the weekly limit, else the five-hour window, else
+        // whatever the account meters instead.
+        let barWindow = snapshot.weeklyLimitWindow ?? window ?? snapshot.headline
         // Past its reset a reading describes a window that is over. The store
         // re-reads on its first tick after a reset; until that lands the honest
         // figure is none, not the old one.
