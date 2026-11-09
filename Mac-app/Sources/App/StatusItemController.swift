@@ -80,7 +80,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         }
     }
     private let hover = StatusItemHover()
-    private var hoverCard: NSPopover?
+    private var hoverCard: NSPanel?
     private var menuIsOpen = false
     /// What the item shows now, so a publication that changes nothing on it —
     /// a local runtime is re-read every second — redraws nothing.
@@ -357,21 +357,33 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         hoverCloseTimer = nil
         if inside {
             guard !menuIsOpen, let summary, !summary.entries.isEmpty,
-                  hoverCard?.isShown != true, let button = item?.button else { return }
+                  hoverCard == nil, let button = item?.button else { return }
             let shown = Set(summary.entries.map(\.id))
             let rows = snapshots.filter { shown.contains($0.id) }
-            let popover = NSPopover()
-            popover.behavior = .applicationDefined
-            popover.contentViewController = NSHostingController(rootView: StatusItemHoverCard(
+            // A mouse-transparent, never-key panel rather than an NSPopover: a popover anchored to the
+            // button sat in the click path and ate the press that should open the menu.
+            let card = StatusItemHoverCard(
                 snapshots: rows, labels: Dictionary(uniqueKeysWithValues: summary.entries.map { ($0.id, $0.label) }),
-                showingRemaining: showsRemaining, format: resetTimeFormat, now: Date()))
-            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-            hoverCard = popover
-            // A shown popover swallows the click that should open the menu: close it as the press lands.
-            clickMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
-                MainActor.assumeIsolated { self?.closeHoverCard() }
-                return event
-            }
+                showingRemaining: showsRemaining, format: resetTimeFormat, now: Date())
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+            let host = NSHostingView(rootView: card)
+            let size = host.fittingSize
+            let panel = NSPanel(contentRect: NSRect(origin: .zero, size: size),
+                                styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
+            panel.contentView = host
+            panel.isOpaque = false
+            panel.backgroundColor = .clear
+            panel.hasShadow = true
+            panel.ignoresMouseEvents = true
+            panel.level = .statusBar
+            panel.collectionBehavior = [.canJoinAllSpaces, .transient]
+            guard let window = button.window else { return }
+            let anchor = window.convertToScreen(button.convert(button.bounds, to: nil))
+            var x = anchor.midX - size.width / 2
+            if let screen = window.screen?.visibleFrame { x = min(max(x, screen.minX + 4), screen.maxX - size.width - 4) }
+            panel.setFrameTopLeftPoint(NSPoint(x: x, y: anchor.minY - 4))
+            panel.orderFrontRegardless()
+            hoverCard = panel
         } else {
             hoverCloseTimer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: false) { [weak self] _ in
                 MainActor.assumeIsolated { self?.closeHoverCard() }
@@ -380,15 +392,12 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     }
 
     private var hoverCloseTimer: Timer?
-    private var clickMonitor: Any?
 
     private func closeHoverCard() {
         hoverCloseTimer?.invalidate()
         hoverCloseTimer = nil
-        hoverCard?.close()
+        hoverCard?.orderOut(nil)
         hoverCard = nil
-        if let clickMonitor { NSEvent.removeMonitor(clickMonitor) }
-        clickMonitor = nil
     }
 
     /// Exposed for tests: what the menu says without needing a status item.
