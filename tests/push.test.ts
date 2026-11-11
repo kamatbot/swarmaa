@@ -8,7 +8,7 @@ import type { Principal } from '../src/types.js';
 const principal:Principal = {id:'11111111-1111-4111-8111-111111111111',tenantId:'tenant-a',name:'phone',role:'frontend',scopes:['project:test'],permissions:['agent:read']};
 const token = 'ab'.repeat(32);
 const device:Device = {token,tenant_id:principal.tenantId,principal_id:principal.id,environment:'sandbox',updated_at:'2026-10-28 15:20:00.123456+00'};
-const bot = {id:'22222222-2222-4222-8222-222222222222',name:'Helper'};
+const bot = {id:'22222222-2222-4222-8222-222222222222',name:'Helper',created_by:principal.id};
 const base:PushEvent = {name:'question.created',subject_id:'subject',tenant_id:principal.tenantId,scope:'project:test',payload:{thread_id:'thread',prompt:'SECRET message content'}};
 function fakeDb(rows:unknown[] = []) {
   const calls:{sql:string;args:unknown[]}[] = [];
@@ -61,9 +61,10 @@ test('event mapping emits only content-free fixed labels and bot identifiers',as
     [{...base,name:'task.updated',payload:{action:'finished',status:'completed',result:{answer:'SECRET'}}},'Ready for review'],
   ];
   for (const [e,body] of cases) {
-    const payload = await eventPayload(pool,e);
-    assert.deepEqual(payload,{aps:{alert:{title:bot.name,body},sound:'default','thread-id':bot.id},bot_id:bot.id});
-    assert.equal(JSON.stringify(payload).includes('SECRET'),false);
+    const mapped = await eventPayload(pool,e);
+    assert.equal(mapped?.ownerId, principal.id);
+    assert.deepEqual(mapped?.payload,{aps:{alert:{title:bot.name,body},sound:'default','thread-id':bot.id},bot_id:bot.id});
+    assert.equal(JSON.stringify(mapped?.payload).includes('SECRET'),false);
     assert.deepEqual(calls.at(-1)!.args.slice(1,3),[principal.tenantId,'project:test']);
   }
   assert.match(calls.at(-1)!.sql,/t.result->>'head_commit' IS NOT NULL/);
@@ -86,7 +87,7 @@ test('ignores humans, system notices, question cards, nonterminal and unrelated 
 for (const result of [{status:400,reason:'BadDeviceToken'},{status:400,reason:'Unregistered'},{status:410}]) {
   test(`fake APNs ${result.status}/${result.reason ?? ''} deletes only the rejected device registration`,async () => {
     const {pool,calls} = fakeDb([bot]);
-    const payload = (await eventPayload(pool,base))!;
+    const payload = (await eventPayload(pool,base))!.payload;
     calls.length = 0;
     const sender:PushSender = {async send(d,p) { assert.equal(d,device); assert.equal(p,payload); return result; },close() {}};
     await deliverPush(pool,sender,device,payload);
@@ -98,7 +99,7 @@ for (const result of [{status:400,reason:'BadDeviceToken'},{status:400,reason:'U
 
 test('successful/transient APNs responses never prune devices',async () => {
   const {pool,calls} = fakeDb([bot]);
-  const payload = (await eventPayload(pool,base))!;
+  const payload = (await eventPayload(pool,base))!.payload;
   calls.length = 0;
   for (const status of [200,0,429,500,403]) {
     await deliverPush(pool,{async send() { return {status}; },close() {}},device,payload);
@@ -119,7 +120,7 @@ test('missing any APNs variable logs once, with no key reads, connections or sen
   }
 });
 
-test('worker listens, catches up with fenced cursor, skips stale events and coalesces per bot',async () => {
+test('worker listens, catches up with fenced cursor, delivers the backlog and coalesces per bot',async () => {
   const calls:string[] = [];
   const sent:unknown[] = [];
   const events = [
@@ -145,7 +146,11 @@ test('worker listens, catches up with fenced cursor, skips stale events and coal
         assert.match(sql,/interval '20 seconds'/);
         const rows = cooldown ? [] : [{bot_id:bot.id}]; cooldown = true; return {rows};
       }
-      if (sql.includes('FROM push_devices')) {assert.deepEqual(args,[principal.tenantId]); return {rows:[device,{...device,token:'cd'.repeat(32)}]};}
+      if (sql.includes('FROM push_devices')) {
+        assert.match(sql,/principal_id=\$2/);
+        assert.deepEqual(args,[principal.tenantId,principal.id]);
+        return {rows:[device,{...device,token:'cd'.repeat(32)}]};
+      }
       if (sql === 'COMMIT') finish();
       return {rows:[]};
     },
@@ -160,7 +165,7 @@ test('worker listens, catches up with fenced cursor, skips stale events and coal
   await worker.stop();
   assert.equal(calls.filter(sql => sql === 'LISTEN swarmaa_events').length,1);
   assert.equal(calls.filter(sql => sql.includes('UPDATE push_cursor')).length,3);
-  assert.equal(sent.length,2); // every device, once per bot; no stale notification
+  assert.equal(sent.length,2); // both of this principal's devices, once; the older event is not dropped
   assert.equal(JSON.stringify(sent).includes('SECRET'),false);
 });
 
@@ -205,7 +210,7 @@ test('APNs sender signs ES256, reuses per-host sessions/JWT, refreshes at 50 min
   }) as unknown as typeof import('node:http2').connect;
   const sender = createAPNsSender({keyPath,keyId:'test-key',teamId:'test-team',bundleId:'test.bundle'},openSession);
   t.after(() => sender.close());
-  const payload = (await eventPayload(fakeDb([bot]).pool,base))!;
+  const payload = (await eventPayload(fakeDb([bot]).pool,base))!.payload;
   assert.equal((await sender.send(device,payload)).status,200);
   assert.equal(requests.length,2);
   await sender.send(device,payload);
@@ -239,7 +244,7 @@ test('a rejected old registration cannot delete a newly re-registered device',as
     if (row.updated_at === args[4]) row = undefined as unknown as Device;
     return {rows:[]};
   }} as unknown as Pool;
-  const payload = (await eventPayload(fakeDb([bot]).pool,base))!;
+  const payload = (await eventPayload(fakeDb([bot]).pool,base))!.payload;
   const sender:PushSender = {
     async send() {
       row = {...device,updated_at:'2026-10-28 15:20:00.123457+00'};

@@ -33,12 +33,13 @@ export interface PushSender {send(device:Device,payload:PushPayload):Promise<Pus
 export interface PushEvent {name:string;subject_id:string;tenant_id:string;scope:string;payload:Record<string,unknown>}
 
 // Only allowlisted identifiers and fixed labels cross the APNs boundary. Never spread event data.
-export async function eventPayload(db:Db,e:PushEvent):Promise<PushPayload|null> {
+export interface PushTarget { payload: PushPayload; ownerId: string }
+export async function eventPayload(db:Db,e:PushEvent):Promise<PushTarget|null> {
   let body:PushPayload['aps']['alert']['body'];
-  let bot:{id:string;name:string}|undefined;
+  let bot:{id:string;name:string;created_by:string}|undefined;
   if (e.name === 'task.updated') {
     if (e.payload.action !== 'finished' || !['completed','failed'].includes(String(e.payload.status))) return null;
-    bot = (await db.query<{id:string;name:string}>(`SELECT b.id,b.name FROM tasks t JOIN bots b ON b.id=t.bot_id AND b.tenant_id=t.tenant_id
+    bot = (await db.query<{id:string;name:string;created_by:string}>(`SELECT b.id,b.name,b.created_by FROM tasks t JOIN bots b ON b.id=t.bot_id AND b.tenant_id=t.tenant_id
       WHERE t.id::text=$1 AND t.tenant_id=$2 AND t.scope=$3 AND b.scope=t.scope AND NOT b.archived
       AND ($4='failed' OR (t.result->>'head_commit' IS NOT NULL))`,[e.subject_id,e.tenant_id,e.scope,e.payload.status])).rows[0];
     body = e.payload.status === 'failed' ? 'Task failed' : 'Ready for review';
@@ -48,10 +49,10 @@ export async function eventPayload(db:Db,e:PushEvent):Promise<PushPayload|null> 
       (e.payload.author as {kind?:string}|undefined)?.kind === 'agent') body = 'Replied';
     else return null;
     if (typeof e.payload.thread_id !== 'string') return null;
-    bot = (await db.query<{id:string;name:string}>(`SELECT id,name FROM bots
+    bot = (await db.query<{id:string;name:string;created_by:string}>(`SELECT id,name,created_by FROM bots
       WHERE thread_id::text=$1 AND tenant_id=$2 AND scope=$3 AND NOT archived`,[e.payload.thread_id,e.tenant_id,e.scope])).rows[0];
   }
-  return bot ? {aps:{alert:{title:bot.name,body},sound:'default','thread-id':bot.id},bot_id:bot.id} : null;
+  return bot?.created_by ? {payload:{aps:{alert:{title:bot.name,body},sound:'default','thread-id':bot.id},bot_id:bot.id},ownerId:bot.created_by} : null;
 }
 
 export async function deliverPush(db:Db,sender:PushSender,device:Device,payload:PushPayload):Promise<void> {
@@ -183,19 +184,21 @@ export class PushWorker {
       await db.query('BEGIN');
       // One worker owns cursor and coalescing through delivery, including across server processes.
       const cursor = (await db.query<{last_xid:string;last_seq:string}>('SELECT last_xid,last_seq FROM push_cursor WHERE id=1 FOR UPDATE')).rows[0]!;
-      const rows = (await db.query<PushEvent & {xid:string;seq:string;fresh:boolean}>(`SELECT name,subject_id,tenant_id,scope,payload,xid::text,seq::text,
-        created_at >= clock_timestamp()-interval '10 minutes' AS fresh FROM events
+      const rows = (await db.query<PushEvent & {xid:string;seq:string}>(`SELECT name,subject_id,tenant_id,scope,payload,xid::text,seq::text
+        FROM events
         WHERE (xid,seq)>($1::xid8,$2::bigint) AND xid<pg_snapshot_xmin(pg_current_snapshot())
         ORDER BY xid,seq LIMIT 100`,[cursor.last_xid,cursor.last_seq])).rows;
       for (const e of rows) {
-        const payload = e.fresh ? await eventPayload(db,e) : null;
-        if (payload) {
+        // Age does not drop the row: a restart must still deliver the backlog. The per-bot cooldown
+        // collapses a burst, and the cursor moves only after the row is considered.
+        const target = await eventPayload(db,e);
+        if (target) {
           const allowed = await db.query(`INSERT INTO push_cooldowns (bot_id,sent_at) VALUES ($1,clock_timestamp())
             ON CONFLICT (bot_id) DO UPDATE SET sent_at=EXCLUDED.sent_at
-            WHERE push_cooldowns.sent_at <= clock_timestamp()-interval '20 seconds' RETURNING bot_id`,[payload.bot_id]);
+            WHERE push_cooldowns.sent_at <= clock_timestamp()-interval '20 seconds' RETURNING bot_id`,[target.payload.bot_id]);
           if (allowed.rows.length) {
-            const devices = (await db.query<Device>('SELECT token,tenant_id,principal_id,environment,updated_at::text FROM push_devices WHERE tenant_id=$1',[e.tenant_id])).rows;
-            for (const device of devices) await deliverPush(db,this.sender!,device,payload);
+            const devices = (await db.query<Device>('SELECT token,tenant_id,principal_id,environment,updated_at::text FROM push_devices WHERE tenant_id=$1 AND principal_id=$2',[e.tenant_id,target.ownerId])).rows;
+            for (const device of devices) await deliverPush(db,this.sender!,device,target.payload);
           }
         }
         await db.query('UPDATE push_cursor SET last_xid=$1::xid8,last_seq=$2 WHERE id=1',[e.xid,e.seq]);

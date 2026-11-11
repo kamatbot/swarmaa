@@ -154,6 +154,14 @@ test('workers run the real CLIs headless with auto-approved permissions, wrapped
   assert.equal(claude.cwd, '/projects/demo');
   assert.ok(claude.input.includes('Review; $(touch /tmp/injected)'), 'task text stays stdin data');
   assert.deepEqual(run('codex', false).args, ['--search', 'exec', '--json', '--skip-git-repo-check', '--dangerously-bypass-approvals-and-sandbox', '--color', 'never', '-']);
+  // The user's own environment reaches the CLI (MCP keys, config), minus service tokens and database secrets.
+  assert.equal(claude.env.MY_MCP_KEY, 'k');
+  assert.equal(claude.env.COLLECTIVE_MCP_TOKEN, undefined);
+  assert.equal(providerEnvironment('codex', { A: '1', T: 'x', DATABASE_URL: 'postgres://secret' }, 'T', []).DATABASE_URL, undefined);
+  assert.equal(providerEnvironment('codex', { A: '1', T: 'x' }, 'T', []).T, undefined);
+  // Service tokens never reach a provider under either name; the user's own variables do.
+  const env = providerEnvironment('claude', { HOME: '/h', COLLECTIVE_WORKER_TOKEN: 'a', SWARMAA_WORKER_TOKEN: 'b', SWARMAA_URL: 'c', JAVA_HOME: '/j', EVENT_ENCRYPTION_KEY: 'k' }, 'COLLECTIVE_WORKER_TOKEN', []);
+  assert.deepEqual([env.COLLECTIVE_WORKER_TOKEN, env.SWARMAA_WORKER_TOKEN, env.SWARMAA_URL, env.HOME, env.JAVA_HOME, env.EVENT_ENCRYPTION_KEY], [undefined, undefined, undefined, '/h', '/j', undefined]);
   const agy = run('antigravity', true); // agy always runs inside the sandbox
   assert.deepEqual(agy.args.slice(2, 8), ['/bin/antigravity', '--output-format', 'json', '--print-timeout', '3600s', '--dangerously-skip-permissions']);
   assert.ok(agy.args.at(-1)!.startsWith('-p=') && agy.input === '');
@@ -161,11 +169,4 @@ test('workers run the real CLIs headless with auto-approved permissions, wrapped
   assert.equal(wrapped.command, '/usr/bin/sandbox-exec');
   assert.match(wrapped.args[1]!, /\(allow default\)/u);
   assert.deepEqual(wrapped.args.slice(2, 5), ['/bin/codex', '--search', 'exec']);
-  // The user's own environment reaches the CLI (MCP keys, config), minus the bridge's service token.
-  assert.equal(claude.env.MY_MCP_KEY, 'k');
-  assert.equal(claude.env.COLLECTIVE_MCP_TOKEN, undefined);
-  assert.equal(providerEnvironment('codex', { A: '1', T: 'x' }, 'T').T, undefined);
-  // Service tokens never reach a provider under either name; the user's own variables do.
-  const env = providerEnvironment('claude', { HOME: '/h', COLLECTIVE_WORKER_TOKEN: 'a', SWARMAA_WORKER_TOKEN: 'b', SWARMAA_URL: 'c', JAVA_HOME: '/j' }, 'COLLECTIVE_WORKER_TOKEN');
-  assert.deepEqual([env.COLLECTIVE_WORKER_TOKEN, env.SWARMAA_WORKER_TOKEN, env.SWARMAA_URL, env.HOME, env.JAVA_HOME], [undefined, undefined, undefined, '/h', '/j']);
 });

@@ -16,11 +16,16 @@ test('sbplString escapes quotes and backslashes and refuses control characters',
 
 
 
-test('light profile: allow by default, deny only credential folders, enforced on a real process', () => {
+test('light profile: allow by default, deny credential folders and service files, keep worktrees', () => {
   const profile = buildProfile(base);
   assert.match(profile, /^\(version 1\)\n\(allow default\)\n\(deny file-read\* file-write\* /u);
   assert.ok(profile.includes('"/Users/tester/.ssh"') && profile.includes('"/Users/tester/.config/gh"'));
+  assert.ok(profile.includes('"/Users/tester/.env"') && profile.includes('"/Users/tester/.local"') && profile.includes('"/Users/tester/.swarmaa"'));
+  assert.ok(profile.includes('"/tmp/.env"') && profile.includes('"/tmp/.local"'));
+  assert.ok(profile.includes('(deny file-read* file-write* (subpath "/Users/tester/.swarma"))'));
+  assert.ok(profile.includes('(allow file-read* file-write* (subpath "/Users/tester/.swarma/worktrees"))'));
   assert.ok(!profile.includes('Keychains'), 'CLIs keep their keychain logins');
+  assert.ok(!profile.includes('.claude') && !profile.includes('.codex'), 'provider logins stay reachable');
   if (process.platform !== 'darwin') return;
   const home = mkdtempSync(join(tmpdir(), 'sbx-home-'));
   try {

@@ -15,7 +15,7 @@ final class SwarmMapStore: ObservableObject {
             self.state.unpriced = []
             guard let model, !todo.isEmpty else { return }
             Task { @MainActor [weak self] in
-                for job in todo.prefix(30) {
+                for job in todo.prefix(8) {
                     if let n = await model.taskTokens(id: job.id) { self?.state.addTokens(n, provider: job.provider, task: job.id) }
                 }
             }
@@ -39,7 +39,7 @@ struct SwarmMapPanel: View {
         .onAppear { store.attach(model) }
         .task {
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                try? await Task.sleep(nanoseconds: 15_000_000_000)
                 await model.refreshUsage()
             }
         }

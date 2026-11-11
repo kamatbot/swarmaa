@@ -357,7 +357,25 @@ export class TaskService {
       const cursor = await this.pool.query<{created_at:Date}>('SELECT created_at FROM tasks WHERE id=$1 AND tenant_id=$2 AND scope=$3',[before,p.tenantId,scope]);
       beforeDate = requireFound(cursor.rows[0],'Task cursor').created_at;
     }
-    const result = await this.pool.query<TaskRow>(`SELECT * FROM tasks WHERE tenant_id=$1 AND scope=$2
+    // Project the list view in SQL. partial_output / partial_text and the full result stay out of the
+    // driver; task_get and claim still read the whole row.
+    const result = await this.pool.query<TaskRow>(`SELECT id, scope, kind, left(objective, 300) AS objective,
+      constraints, acceptance_criteria, permission_envelope, required_capability, resource_key, base_ref,
+      context_refs, context_versions, status, version, created_by, attempt_count, max_attempts,
+      continuation_count, lease_generation, lease_owner, lease_expires_at,
+      CASE WHEN checkpoint IS NULL THEN NULL ELSE (checkpoint - 'partial_output' - 'partial_text') END AS checkpoint,
+      CASE WHEN result IS NULL THEN NULL ELSE jsonb_strip_nulls(jsonb_build_object(
+        'answer', left(result->>'answer', 500),
+        'branch', result->'branch',
+        'changed_files', result->'changed_files',
+        'served', result->'served',
+        'failure', result->'failure',
+        'check', result->'check',
+        'summary', result->'summary',
+        'review_required', result->'review_required')) END AS result,
+      artifact_ids, excluded_providers, not_before, created_at, updated_at, completed_at,
+      flow_id, flow, bot_id, agent_id, thread_id, swarm_step_id, initiator_kind, initiator_id, resolved_at
+      FROM tasks WHERE tenant_id=$1 AND scope=$2
       AND ($3::text IS NULL OR status=$3)
       AND ($4::boolean IS NULL OR (CASE WHEN $4 THEN resolved_at IS NOT NULL ELSE resolved_at IS NULL END))
       AND ($5::text IS NULL OR initiator_kind=$5)
@@ -694,8 +712,9 @@ export class TaskService {
       const next = updated.rows[0];
       if ((next.kind === 'patch' || next.kind === 'turn') && next.resource_key !== null) await db.query(`UPDATE task_resource_leases SET expires_at=$4
         WHERE tenant_id=$1 AND scope=$2 AND task_id=$3 AND generation=$5`,[p.tenantId,next.scope,next.id,next.lease_expires_at,next.lease_generation]);
-      // Heartbeats do not change semantic versions or emit an event for every timer tick.
-      return {task:await taskWithInstructions(db,next)};
+      // Heartbeats do not change semantic versions or emit an event. The bridge only needs the lease
+      // fields, so skip the instruction and run history that task_get returns.
+      return {task:taskView(next)};
     });
   }
 
@@ -706,19 +725,23 @@ export class TaskService {
     return transaction(this.pool,async db => {
       const row = await lockedTask(db,p,lease.taskId);
       await requireLease(db,p,row,lease);
-      const updated = await db.query<TaskRow>(`UPDATE tasks SET checkpoint=$2::jsonb,version=version+1,
-        updated_at=clock_timestamp() WHERE id=$1 AND lease_expires_at>clock_timestamp() RETURNING *`,[row.id,JSON.stringify(checkpoint)]);
+      // Streaming text is not a new task version: bumping it on every partial would invalidate the
+      // caller's expected_version for the whole turn. Other phases still bump.
+      const streamingPhase = checkpoint.phase === 'running';
+      const updated = await db.query<TaskRow>(`UPDATE tasks SET checkpoint=$2::jsonb,
+        version=CASE WHEN $3::boolean THEN version ELSE version+1 END,
+        updated_at=clock_timestamp() WHERE id=$1 AND lease_expires_at>clock_timestamp() RETURNING *`,
+        [row.id,JSON.stringify(checkpoint),streamingPhase]);
       requireCondition(updated.rows[0],409,'lease_lost','Lease expired before checkpoint.');
       const next = updated.rows[0];
       // Chat UIs refetch the thread (typing text is read from the checkpoint column) on task.updated events, so the
       // event stays; it is throttled to one per 3 s per task for streaming 'running' checkpoints. Other phases
-      // (starting, provider_finished, or any client-defined one) always emit. Checkpoints are never audited: the row
-      // and version still update every call, and the audit trail keeps claim/finish/expiry.
-      const streaming = checkpoint.phase === 'running' && (await db.query(`SELECT 1 FROM events WHERE tenant_id=$1 AND scope=$2
+      // (starting, provider_finished, or any client-defined one) always emit. Checkpoints are never audited.
+      const recent = streamingPhase && (await db.query(`SELECT 1 FROM events WHERE tenant_id=$1 AND scope=$2
         AND subject_id=$3 AND name='task.updated' AND payload->>'action'='checkpointed'
         AND created_at>clock_timestamp()-interval '3 seconds' LIMIT 1`,[p.tenantId,next.scope,next.id])).rowCount;
-      if (!streaming) await taskChanged(db,p,next,'checkpointed',true,false);
-      return {task:await taskWithInstructions(db,next)};
+      if (!recent) await taskChanged(db,p,next,'checkpointed',true,false);
+      return {task:taskView(next)};
     });
   }
 

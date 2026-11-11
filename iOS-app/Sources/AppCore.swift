@@ -728,7 +728,9 @@ enum PushNotification {
                 else { tasks.append(task) }
             }
         }
-        if name.hasPrefix("bot.") || name == "message.created" || name.hasPrefix("question.") {
+        // A new message already refreshed the open thread. Reloading every bot on each one
+        // walked the whole bot list for a preview the thread read already has.
+        if name.hasPrefix("bot.") || name.hasPrefix("question.") {
             bots = try await allPages(service, "bot_list", ["limit": .number(100), "include_archived": .bool(true)], key: "bots").map { Bot(raw: $0) }
             if let id = openBot?.id, let updated = bots.first(where: { $0.id == id }) { openBot = updated }
         }
@@ -767,21 +769,16 @@ enum PushNotification {
     }
     func loadTasks() async throws {
         guard let service, !isDemo else { return }
-        // Seven task reads + attention = at most eight concurrent calls, including pagination.
+        // One page each of running, queued, and resolved per scope. The old walk fetched every
+        // task in the project, including history, up to 100 pages.
         let scopes = scopes
         var rows: [JSON] = []
         async let needs = allPages(service, "attention_list", ["limit": .number(100)], key: "items")
-        for offset in stride(from: 0, to: scopes.count, by: 7) {
-            let batch = Array(scopes[offset..<min(offset + 7, scopes.count)])
-            let result = try await withThrowingTaskGroup(of: [JSON].self) { group in
-                for scope in batch {
-                    group.addTask { try await allPages(service, "task_list", ["scope": .string(scope), "limit": .number(100)], key: "tasks") }
-                }
-                var results: [JSON] = []
-                for try await r in group { results += r }
-                return results
-            }
-            rows += result
+        for scope in scopes {
+            let running = try await service.call("task_list", ["scope": .string(scope), "status": .string("running"), "limit": .number(100)])
+            let queued = try await service.call("task_list", ["scope": .string(scope), "status": .string("queued"), "limit": .number(100)])
+            let resolved = try await service.call("task_list", ["scope": .string(scope), "resolved": .bool(true), "limit": .number(50)])
+            rows += running["tasks"].array + queued["tasks"].array + resolved["tasks"].array
         }
         tasks = rows; attention = try await needs
     }
@@ -918,7 +915,7 @@ enum PhotoCache {
 @MainActor enum AskStarredBot {
     nonisolated static let later = "Your reply will come in the app."
     static func run(service: any HostService, message: String, timeout: Double = 30,
-                    poll: Duration = .milliseconds(500)) async throws -> String {
+                    poll: Duration = .seconds(2)) async throws -> String {
         guard !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw AppFailure.invalidMessage }
         let clock = ContinuousClock()
         let deadline = clock.now.advanced(by: .seconds(timeout))

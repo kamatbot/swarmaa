@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -9,10 +10,48 @@ import { claudeWorkerDir, type NativePlan } from './native-session.js';
 import { wrapCommand } from './sandbox.js';
 import type { AgentConfig, BridgeConfig, ProcessRequest, ProcessResult, ProjectConfig, Task } from './types.js';
 
-/** The user's own environment, as the CLI would see it in their shell, minus every Swarmaa service token (COLLECTIVE_* and SWARMAA_*). */
-export function providerEnvironment(_provider: string, parent: NodeJS.ProcessEnv, tokenEnv: string): NodeJS.ProcessEnv {
+/** Service secrets that must never reach a provider, even when they are not in a `.env` file. */
+const SERVICE_SECRET_ENV = /^(?:DATABASE_URL|TEST_DATABASE_URL|POSTGRES_PASSWORD|PGPASSWORD|PG_PASSWORD|EVENT_ENCRYPTION_KEY)$/u;
+/** Operational variables a `.env` may repeat. Stripping these would break the CLI. */
+const ENV_KEEP = new Set(['PATH', 'HOME', 'USER', 'LOGNAME', 'SHELL', 'TMPDIR', 'TMP', 'TEMP', 'LANG', 'LC_ALL', 'TERM', 'NO_COLOR', 'TZ']);
+
+/** Names assigned in a dotenv file. Values are not returned. */
+export function keysFromEnvFile(text: string): string[] {
+  const keys: string[] = [];
+  for (const line of text.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const body = trimmed.startsWith('export ') ? trimmed.slice(7).trim() : trimmed;
+    const eq = body.indexOf('=');
+    if (eq <= 0) continue;
+    const key = body.slice(0, eq).trim();
+    if (/^[A-Za-z_][A-Za-z0-9_]*$/u.test(key)) keys.push(key);
+  }
+  return keys;
+}
+
+function envFileKeys(paths: string[]): Set<string> {
+  const keys = new Set<string>();
+  for (const path of paths) {
+    try { for (const key of keysFromEnvFile(readFileSync(path, 'utf8'))) keys.add(key); }
+    catch { /* The file is optional. */ }
+  }
+  return keys;
+}
+
+/**
+ * The user's own environment, minus Swarmaa service tokens and anything the service loaded for itself.
+ * `COLLECTIVE_*` / `SWARMAA_*`, database URLs and passwords, `EVENT_ENCRYPTION_KEY`, and every name in
+ * the given env files (default: `./.env`) are removed. PATH, HOME and locale are kept even if a file names them.
+ */
+export function providerEnvironment(_provider: string, parent: NodeJS.ProcessEnv, tokenEnv: string, envFiles = [join(process.cwd(), '.env')]): NodeJS.ProcessEnv {
+  const fromFile = envFileKeys(envFiles);
   const env: NodeJS.ProcessEnv = { NO_COLOR: '1', TERM: 'dumb' };
-  for (const [key, value] of Object.entries(parent)) if (key !== tokenEnv && !/^(?:COLLECTIVE|SWARMAA)_/u.test(key)) env[key] = value;
+  for (const [key, value] of Object.entries(parent)) {
+    if (key === tokenEnv || /^(?:COLLECTIVE|SWARMAA)_/u.test(key) || SERVICE_SECRET_ENV.test(key)) continue;
+    if (fromFile.has(key) && !ENV_KEEP.has(key) && !key.startsWith('LC_')) continue;
+    env[key] = value;
+  }
   return env;
 }
 

@@ -475,13 +475,14 @@ export class BridgeWorker {
       if (finished || leaseLost || execution.signal.aborted || heartbeatStop.signal.aborted || partialTextTimer) return;
       const now = Date.now();
       const elapsed = now - lastCheckpointTime;
-      if (elapsed >= 1500) {
+      // Match the service's 3 s event throttle so a streaming turn does not take the scope lock twice as often.
+      if (elapsed >= 3000) {
         void sendPartialCheckpoint();
       } else {
         partialTextTimer = setTimeout(() => {
           partialTextTimer = undefined;
           void sendPartialCheckpoint();
-        }, 1500 - elapsed);
+        }, 3000 - elapsed);
       }
     };
     const updatePartialText = (stdoutTail: string, outputBytes: number): void => {
@@ -603,8 +604,9 @@ export class BridgeWorker {
           try { nativeSession = finishNative(nativePlan, project.root, worktree?.dir); }
           catch (error) { cleanupNative(nativePlan); this.logger('native_session_failed', { task_id: task.id, phase: 'copy', message: error instanceof Error ? error.message.slice(0, 200) : '' }); }
         }
-        // Whatever the provider did (even if aborted), commit it to the branch and drop the worktree.
-        if (worktree && isPatchWork) {
+        // Commit only while this worker still holds the lease. A lost lease leaves the worktree
+        // for the next attempt; committing here races a worker that has already been given the task.
+        if (worktree && isPatchWork && !leaseLost) {
           try { patchResult = await finishWorktree(project.root, agent.provider, task, worktree, this.config.max_output_bytes); }
           catch {
             // Finalization failed: the worktree stays on disk and the task must not read as completed.

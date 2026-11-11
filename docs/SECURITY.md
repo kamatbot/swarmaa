@@ -22,9 +22,11 @@ The database serializes task changes, authenticates lease ownership and generati
 
 Resource keys coordinate known shared resources; callers must use a consistent key. They do not prove that different keys refer to different files. The Mac bridge's static project registry prevents task text from selecting a directory or binary. It runs one process at a time per bridge and uses a per-project patch lock for local file mutation. Cancellation and lease-loss logic reduce overlap, but cannot provide absolute filesystem fencing across a paused host, a sleeping machine or an uncooperative runner.
 
-Read-only defaults use provider restrictions. Claude's allowed tool set excludes shells and external MCP; Codex runs under its read-only sandbox configuration. The bridge rejects unsupported provider modes. These settings must be verified against the installed CLIs and managed policy. A read-only sandbox can still read sensitive files accessible to its OS account. The service does not isolate the user's home directory or create a separate OS account.
+Headless workers auto-approve provider tools. Nobody is present to answer a permission prompt, so Claude is started with `--permission-mode bypassPermissions` and Codex with `--dangerously-bypass-approvals-and-sandbox`, including for review and research. That is not a provider read-only sandbox, and it is not feasible to switch those flags off without a person or a narrower tool policy the installed CLIs will actually accept. Patch work is a separate opt-in (`task:patch`, `enable_patch`, and `allow_patch`) and runs in a git worktree.
 
-Use a dedicated worker account or isolated worktree with the least filesystem access it needs. Keep `.env`, connection tokens, Keychain privileges and provider credentials outside the project directory exposed to a worker. The parent process removes the Swarmaa service token and unrelated environment entries from model subprocesses, but an agent that can read arbitrary files available to its OS account may still find secrets stored there.
+The Seatbelt profile allows what the CLI can do in the user's shell, then denies credential directories, `.env` / `.env.local` / `.env.production`, `.local`, `.swarmaa`, and `~/.swarma` except `~/.swarma/worktrees` (the patch worktrees). The provider's own config (`.claude`, `.codex`) and the login keychain stay reachable, because the CLIs need them. The profile does not create a separate OS account.
+
+The parent strips `COLLECTIVE_*`, `SWARMAA_*`, `DATABASE_URL`, database passwords, `EVENT_ENCRYPTION_KEY`, and every name in the service `.env` (PATH, HOME, and locale are kept) before spawning a provider. A worker can still read other files its OS account can read outside that deny-list.
 
 ## Network and callbacks
 

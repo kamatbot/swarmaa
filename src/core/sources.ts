@@ -23,6 +23,14 @@ import { assertKnownScope, audit, canonicalJson, event, newId, noExtraKeys, requ
 import { TaskService, type TaskRow } from './tasks.js';
 import { assignThreadSeq, clipUtf8, enqueueAgentTurn, type AgentRow } from './teams.js';
 
+/** A patch branch this service creates. Full task ids are exact; the older 8-hex form is a prefix. */
+export function swarmBranchRef(ref: string): { provider: string; taskId: string; exact: boolean } | null {
+  const match = /^swarmaa\/(claude|codex|antigravity)\/([0-9a-f]{8}(?:-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})?)$/iu.exec(ref);
+  if (!match) return null;
+  const taskId = match[2]!.toLowerCase();
+  return { provider: match[1]!.toLowerCase(), taskId, exact: taskId.includes('-') };
+}
+
 export interface TaskSubscriptionRow {
   id: string;
   tenant_id: string;
@@ -703,15 +711,18 @@ export async function receiveGithubDelivery(
   const headRepo = String(payload.pull_request?.head?.repo?.full_name ?? '').toLowerCase();
   const prAuthor = String(payload.pull_request?.user?.login ?? '').toLowerCase();
   const trustedHead = headRepo === sourceRow.repo_full_name.toLowerCase() && sourceRow.rules.allow_authors.some(a => a.toLowerCase() === prAuthor);
-  const headMatch = isPrAction && trustedHead && digest.head_ref ? digest.head_ref.match(/^swarmaa\/(claude|codex|antigravity)\/([0-9a-f]{8})$/) : null;
+  const headMatch = isPrAction && trustedHead && digest.head_ref ? swarmBranchRef(digest.head_ref) : null;
 
   if (headMatch && sourceRow.rules.auto_subscribe_branches !== false) {
-    const hex8 = headMatch[2];
     const candidateTasks = (await pool.query<{ id: string }>(
-      `SELECT id FROM tasks
-       WHERE tenant_id = $1 AND scope = $2 AND id::text LIKE $3
-         AND (kind = 'patch' OR (kind = 'turn' AND required_capability LIKE '%.patch'))`,
-      [sourceRow.tenant_id, sourceRow.scope, `${hex8}%`]
+      headMatch.exact
+        ? `SELECT id FROM tasks
+           WHERE tenant_id = $1 AND scope = $2 AND id = $3::uuid
+             AND (kind = 'patch' OR (kind = 'turn' AND required_capability LIKE '%.patch'))`
+        : `SELECT id FROM tasks
+           WHERE tenant_id = $1 AND scope = $2 AND id::text LIKE $3
+             AND (kind = 'patch' OR (kind = 'turn' AND required_capability LIKE '%.patch'))`,
+      [sourceRow.tenant_id, sourceRow.scope, headMatch.exact ? headMatch.taskId : `${headMatch.taskId}%`]
     )).rows;
 
     if (candidateTasks.length > 1) {
