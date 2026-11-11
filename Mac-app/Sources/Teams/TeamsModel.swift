@@ -138,6 +138,9 @@ final class TeamsModel: ObservableObject {
     @Published var error: String?
     /// The New bot sheet's own error: the window's alert sits behind the sheet.
     @Published var botError: String?
+    @Published var creatingTask = false
+    @Published var savingTask = false
+    @Published var taskError: String?
     /// "Needs you", newest first, as `attention_list` sends it.
     @Published private(set) var attention: [TeamsAttentionItem] = []
     @Published private(set) var workingTasks: [TeamsTask] = []
@@ -518,6 +521,21 @@ final class TeamsModel: ObservableObject {
     /// A bot needs a lead: an existing agent, or a new one made for it from the bot's job.
     /// `onLeadCreated` hands back a lead made here, so a retry after a failed `bot_create` reuses it
     /// instead of colliding with its name. Errors go to `botError`, shown in the sheet.
+    /// Hands one task straight to an agent (or Auto) without a bot; it shows in Tasks and on the swarm map.
+    func submitTask(scope: String, kind: String, objective: String, provider: String?) async -> Bool {
+        savingTask = true; taskError = nil
+        defer { savingTask = false }
+        do {
+            _ = try await client.taskSubmit(scope: scope, kind: kind, objective: objective, capability: (provider ?? "auto") + ".read")
+            pane = .tasks
+            await loadTasks()
+            return true
+        } catch {
+            taskError = SwarmaTeamsClient.Failure.map(error).message
+            return false
+        }
+    }
+
     func createBot(name: String, job: String, scope: String, leadAgentID: String?, memberAgentIDs: [String],
                    onLeadCreated: (String) -> Void = { _ in }) async -> Bool {
         savingBot = true

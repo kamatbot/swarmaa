@@ -201,6 +201,7 @@ struct TeamsRootView: View {
             SwarmDetailView(model: model, swarmID: $0.id)
         }
         .sheet(isPresented: $model.creatingBot) { NewBotSheet(model: model) }
+        .sheet(isPresented: $model.creatingTask) { NewTaskSheet(model: model) }
         .sheet(isPresented: $model.showSetup) { SetupChecklistView(model: model) { model.showSetup = false } }
     }
 

@@ -905,6 +905,12 @@ actor SwarmaTeamsClient {
         try await allPages("attention_list", ["limit": 100], as: TeamsAttentionItem.self)
     }
 
+    /// One research or review task, to an agent you pick (`antigravity.read`) or routed by quota (`auto.read`).
+    func taskSubmit(scope: String, kind: String, objective: String, capability: String) async throws -> TeamsTask {
+        try await call("task_submit", ["scope": scope, "kind": kind, "objective": objective, "required_capability": capability,
+                                       "idempotency_key": UUID().uuidString], as: TaskWrapper.self).task
+    }
+
     func taskGet(id: String) async throws -> TeamsTask {
         try await call("task_get", ["task_id": id], as: TaskWrapper.self).task
     }

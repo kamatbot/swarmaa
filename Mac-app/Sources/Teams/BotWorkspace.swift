@@ -246,6 +246,14 @@ struct WorkspaceTopBar: View {
             iconButton("point.3.connected.trianglepath.dotted", L10n.t("Swarm map"), on: model.showSwarmMap) { model.showSwarmMap.toggle() }
                 .keyboardShortcut("m", modifiers: [.command, .shift]).fixedSize()
             iconButton("gearshape", L10n.t("Settings"), on: model.pane == .settings) { AppDelegate.shared?.openSettings() }.fixedSize()
+            Button { model.creatingTask = true } label: {
+                Text(verbatim: width >= 760 ? L10n.t("New task") : L10n.t("Task")).font(KS.text(.semibold)).foregroundStyle(KS.ink)
+                    .padding(.horizontal, 14).frame(height: 32)
+                    .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(KS.chip))
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain).fixedSize().keyboardShortcut("t", modifiers: [.command, .shift])
+            .help(L10n.t("Give one task to Claude, Codex or Antigravity")).accessibilityLabel(L10n.t("New task"))
             Button { model.creatingBot = true } label: {
                 Text(verbatim: width >= 760 ? "+ " + L10n.t("New bot") : "+").font(KS.text(.semibold)).foregroundStyle(KS.onSignal)
                     .padding(.horizontal, 16).frame(height: 32)

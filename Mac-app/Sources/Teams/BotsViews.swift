@@ -739,6 +739,79 @@ struct NewBotSheet: View {
     }
 }
 
+/// One task to one agent, no bot needed: the goal, the project, the agent (or Auto) and research or review.
+/// Read-only work; patch tasks stay with bots, which carry the edit permission.
+struct NewTaskSheet: View {
+    @ObservedObject var model: TeamsModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var goal = ""
+    @State private var scope = ""
+    @State private var provider = ""   // "" = Auto
+    @State private var kind = "research"
+
+    private var scopes: [String] { (model.status?.scopes ?? []).map(\.scope) }
+    private var providers: [String] { model.workerProviders }
+    private var ready: Bool { !goal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !scope.isEmpty && !model.savingTask }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text(verbatim: L10n.t("New task")).font(KS.title())
+            Text(verbatim: L10n.t("One job for one agent. It runs on this Mac and shows up in Tasks and on the swarm map."))
+                .font(KS.text()).foregroundStyle(KS.textSoft)
+            labeled(L10n.t("Goal")) {
+                TextEditor(text: $goal).font(KS.section()).scrollContentBackground(.hidden).frame(height: 140)
+                    .accessibilityLabel(L10n.t("Goal"))
+            }
+            HStack(spacing: 16) {
+                labeled(L10n.t("Project")) {
+                    Picker("", selection: $scope) { ForEach(scopes, id: \.self) { Text(verbatim: SwarmaCells.scopeLabel($0)).tag($0) } }
+                        .labelsHidden()
+                }
+                labeled(L10n.t("Agent")) {
+                    Picker("", selection: $provider) {
+                        Text(verbatim: L10n.t("Auto (most quota left)")).tag("")
+                        ForEach(providers, id: \.self) { Text(verbatim: SwarmaCells.vendorName($0)).tag($0) }
+                    }.labelsHidden()
+                }
+                labeled(L10n.t("Kind")) {
+                    Picker("", selection: $kind) {
+                        Text(verbatim: L10n.t("Research")).tag("research")
+                        Text(verbatim: L10n.t("Review")).tag("review")
+                    }.labelsHidden()
+                }
+            }
+            if let message = model.taskError {
+                Text(verbatim: message).font(KS.text()).foregroundStyle(KS.coral).fixedSize(horizontal: false, vertical: true)
+            }
+            HStack {
+                if model.savingTask { ProgressView().controlSize(.small) }
+                Spacer()
+                Button(L10n.t("Cancel")) { dismiss() }.buttonStyle(.ks(.paper)).keyboardShortcut(.cancelAction)
+                Button(L10n.t("Start task")) {
+                    Task {
+                        let ok = await model.submitTask(scope: scope, kind: kind, objective: String(goal.prefix(16_000)),
+                                                        provider: provider.isEmpty ? nil : provider)
+                        if ok { dismiss() }
+                    }
+                }
+                .buttonStyle(.ks(.primary)).keyboardShortcut(.defaultAction).disabled(!ready)
+            }
+        }
+        .padding(24).frame(width: 620).fixedSize(horizontal: false, vertical: true)
+        .background(KS.paper).environment(\.colorScheme, .dark)
+        .onAppear { model.taskError = nil; if scope.isEmpty { scope = scopes.first(where: { $0 == "project:swarma" }) ?? scopes.first ?? "" } }
+    }
+
+    private func labeled<C: View>(_ title: String, @ViewBuilder _ content: () -> C) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(verbatim: title).font(KS.section())
+            content().padding(.horizontal, 12).padding(.vertical, 8).frame(maxWidth: .infinity, alignment: .leading)
+                .background(RoundedRectangle(cornerRadius: 12).fill(KS.white))
+                .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(KS.hairline, lineWidth: 1))
+        }
+    }
+}
+
 // MARK: - Schedule card
 
 struct ScheduleCardView: View {
