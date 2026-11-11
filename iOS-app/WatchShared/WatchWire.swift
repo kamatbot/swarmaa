@@ -27,6 +27,8 @@ struct WatchSnapshot: Codable, Sendable {
     let generation: String
     let signedIn: Bool
     let bots: [WatchBot]
+    var questions: [WatchQuestion]? = nil
+    var moreQuestions: Bool? = nil
 }
 struct WatchPacket: Codable, Sendable {
     var kind: String
@@ -35,6 +37,7 @@ struct WatchPacket: Codable, Sendable {
     var generation: String? = nil
     var id: String? = nil
     var status: String? = nil
+    var hash: String? = nil
 }
 enum WatchCodec {
     static func encode(_ packet: WatchPacket) -> Data? {
@@ -45,4 +48,15 @@ enum WatchCodec {
         guard data.count <= WatchLimits.packetBytes else { return nil }
         return try? JSONDecoder().decode(WatchPacket.self, from: data)
     }
+}
+
+struct WatchQuestionDetails: Codable, Sendable {
+    let prompt: String
+    let options: [String]
+    let multi, freeText: Bool
+    let actionKind, actionSummary, actionDetail, actionWhere, expiresAt: String
+}
+struct WatchQuestion: Codable, Identifiable, Sendable {
+    let id, threadID: String
+    var details: WatchQuestionDetails?
 }
