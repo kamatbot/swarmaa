@@ -1360,13 +1360,13 @@ describe('sources and github intake integration tests (§8.2)', { skip: !connect
       };
 
       const wt1 = await createWorktree(tempDir, 'claude', fakeTask);
-      assert.equal(wt1.branch, `swarmaa/claude/${fakeTask.id.slice(0, 8)}`);
+      assert.equal(wt1.branch, `swarmaa/claude/${fakeTask.id}`);
       assert.equal(wt1.continued, false);
 
       await finishWorktree(tempDir, 'claude', fakeTask, wt1, 262144);
 
       const wt2 = await createWorktree(tempDir, 'claude', fakeTask);
-      assert.equal(wt2.branch, `swarmaa/claude/${fakeTask.id.slice(0, 8)}`);
+      assert.equal(wt2.branch, `swarmaa/claude/${fakeTask.id}`);
       assert.equal(wt2.continued, true);
 
       await finishWorktree(tempDir, 'claude', fakeTask, wt2, 262144);

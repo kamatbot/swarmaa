@@ -84,7 +84,9 @@ export async function createWorktree(root: string, provider: string, task: Task,
   let baseCommit: string;
   try { baseCommit = (await git(root, ['rev-parse', '--verify', '--quiet', `${baseRef}^{commit}`])).trim(); }
   catch { throw fail('bad_base_ref', 'base_ref does not resolve to a commit'); }
-  const primaryBranch = `swarmaa/${provider}/${task.id.slice(0, 8)}`;
+  // Full task id: an 8-hex prefix collides. Older branches (8-hex swarmaa/ and swarma/) are still continued.
+  const primaryBranch = `swarmaa/${provider}/${task.id}`;
+  const shortBranch = `swarmaa/${provider}/${task.id.slice(0, 8)}`;
   const legacyBranch = `swarma/${provider}/${task.id.slice(0, 8)}`;
   const dir = worktreeDir(task.scope, task.id);
   await mkdir(dirname(dir), { recursive: true });
@@ -96,9 +98,10 @@ export async function createWorktree(root: string, provider: string, task: Task,
     const registered = (await git(root, ['worktree', 'list', '--porcelain'])).split('\n').some(l => l.startsWith('worktree ') && real(l.slice(9)) === real(dir));
     const hasBranch = (b: string): Promise<boolean> => git(root, ['rev-parse', '--verify', '--quiet', `refs/heads/${b}`]).then(() => true, () => false);
     const primaryExists = await hasBranch(primaryBranch);
-    const legacyExists = !primaryExists && await hasBranch(legacyBranch);
-    const branch = legacyExists ? legacyBranch : primaryBranch;
-    const branchExists = primaryExists || legacyExists;
+    const shortExists = !primaryExists && await hasBranch(shortBranch);
+    const legacyExists = !primaryExists && !shortExists && await hasBranch(legacyBranch);
+    const branch = primaryExists ? primaryBranch : shortExists ? shortBranch : legacyExists ? legacyBranch : primaryBranch;
+    const branchExists = primaryExists || shortExists || legacyExists;
     if (existsSync(dir) && !registered) throw fail('worktree_dir_occupied', 'Worktree directory exists but is not a registered worktree of this repository');
     if (registered || branchExists) {
       await fenceOrphan(dir, log);

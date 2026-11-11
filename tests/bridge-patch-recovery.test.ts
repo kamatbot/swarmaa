@@ -12,7 +12,8 @@ import { ARTIFACT_MAX_BYTES } from '../src/types.js';
 const git = (cwd: string, ...a: string[]) => execFileSync('git', ['-C', cwd, ...a], { encoding: 'utf8', env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null' } }).trim();
 const ok: ProcessResult = { exit_code: 0, signal: null, stdout: '{"type":"turn.completed"}', stderr: '', duration_ms: 1, stop_reason: null };
 const ID = '12345678-1111-4111-8111-111111111111';
-const BRANCH = 'swarmaa/codex/12345678';
+const BRANCH = `swarmaa/codex/${ID}`;
+const SHORT_BRANCH = 'swarmaa/codex/12345678';
 const LEGACY_BRANCH = 'swarma/codex/12345678';
 
 function setup() {
@@ -132,6 +133,51 @@ test('a patch worktree gets a private clone of node_modules that is never commit
     assert.equal(readFileSync(join(s.root, 'node_modules', 'dep', 'index.js'), 'utf8'), 'module.exports = 1;\n');
     assert.ok(!git(s.root, 'ls-tree', '-r', '--name-only', BRANCH).includes('node_modules'));
   } finally { rmSync(s.dir, { recursive: true, force: true }); }
+});
+
+test('recovery accepts the older 8-character swarmaa branch', async () => {
+  const s = setup();
+  try {
+    git(s.root, 'checkout', '-qb', SHORT_BRANCH);
+    writeFileSync(join(s.root, 'short.txt'), 'old\n');
+    git(s.root, 'add', '-A');
+    git(s.root, 'commit', '-qm', 'short');
+    git(s.root, 'checkout', '-q', 'main');
+    const r = await s.attempt(cwd => writeFileSync(join(cwd, 'new.txt'), 'n\n'));
+    assert.equal(r.result.continued, true);
+    assert.equal(r.result.branch, SHORT_BRANCH);
+    assert.equal(git(s.root, 'show', `${SHORT_BRANCH}:new.txt`), 'n');
+  } finally { rmSync(s.dir, { recursive: true, force: true }); }
+});
+
+test('a lost lease leaves the worktree uncommitted', async () => {
+  const s = setup();
+  const cfg = parseBridgeConfig({ service_url: 'http://localhost:8080', heartbeat_seconds: 2, agents: [{ id: 'codex', provider: 'codex', binary: '/bin/codex', enable_patch: true, sandbox: false }],
+    projects: [{ scope: 'project:demo', root: s.root, agents: ['codex'], allow_patch: true }] });
+  const task: Task = { id: ID, scope: 'project:demo', kind: 'patch', objective: 'Edit things', constraints: [], acceptance_criteria: [], resource_key: null,
+    required_capability: 'codex.patch', checkpoint: null, context_refs: [], version: 1 };
+  const calls: { name: string }[] = [];
+  const client: ToolClient = { async call<T>(name: string): Promise<T> {
+    calls.push({ name });
+    if (name === 'task_claim') return { task, lease_token: 'l', lease_generation: 1 } as T;
+    if (name === 'context_get') return { scope: task.scope, task, memories: [], conflicts: [] } as T;
+    if (name === 'task_heartbeat') throw Object.assign(new Error('gone'), { status: 409, code: 'lease_lost' });
+    return { task } as T;
+  } };
+  const home = process.env.HOME;
+  process.env.HOME = join(s.dir, 'home');
+  const work = join(s.dir, 'home', '.swarma', 'worktrees', 'demo', ID);
+  try {
+    const worker = new BridgeWorker(cfg, client, () => {}, async req => {
+      writeFileSync(join(req.cwd, 'lost.txt'), 'x\n');
+      await new Promise(r => setTimeout(r, 3000));
+      return ok;
+    });
+    await worker.claimAndRun(cfg.projects, new AbortController().signal);
+    assert.equal(calls.some(c => c.name === 'task_finish'), false);
+    assert.throws(() => git(s.root, 'show', `${BRANCH}:lost.txt`));
+    assert.equal(readFileSync(join(work, 'lost.txt'), 'utf8'), 'x\n');
+  } finally { if (home === undefined) delete process.env.HOME; else process.env.HOME = home; rmSync(s.dir, { recursive: true, force: true }); }
 });
 
 test('recovery accepts legacy swarma/<provider>/<id> branch prefix', async () => {

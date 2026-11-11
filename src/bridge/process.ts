@@ -8,6 +8,27 @@ export function processStart(pid: number): string {
   catch { return ''; }
 }
 
+const STDOUT_TAIL_BYTES = 8192;
+
+/** Last `limit` bytes of `tail` plus `chunk`, without copying the earlier transcript. */
+export function slideTail(tail: Uint8Array, chunk: Uint8Array, limit = STDOUT_TAIL_BYTES): Uint8Array {
+  if (chunk.length === 0) return tail;
+  const prev = Buffer.isBuffer(tail) ? tail : Buffer.from(tail);
+  const incoming = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+  const total = prev.length + incoming.length;
+  const size = Math.min(limit, total);
+  const start = total - size;
+  const next = Buffer.allocUnsafe(size);
+  if (start < prev.length) {
+    const fromTail = prev.length - start;
+    prev.copy(next, 0, start, prev.length);
+    incoming.copy(next, fromTail);
+  } else {
+    incoming.copy(next, 0, start - prev.length, start - prev.length + size);
+  }
+  return next;
+}
+
 /** No shell; a fixed executable + argv. POSIX process groups terminate descendants too. */
 export async function runBoundedProcess(request: ProcessRequest): Promise<ProcessResult> {
   const started = Date.now();
@@ -21,6 +42,7 @@ export async function runBoundedProcess(request: ProcessRequest): Promise<Proces
     }
     const output: Buffer[] = [];
     const errors: Buffer[] = [];
+    let stdoutTail: Uint8Array = Buffer.alloc(0);
     let bytes = 0;
     let stopReason: ProcessResult['stop_reason'] = null;
     let settled = false;
@@ -56,9 +78,11 @@ export async function runBoundedProcess(request: ProcessRequest): Promise<Proces
     const timeout = setTimeout(() => stop('timeout'), request.timeout_ms);
     const collect = (destination: Buffer[], chunk: Buffer): void => {
       const available = Math.max(0, request.max_output_bytes - bytes);
-      if (available) destination.push(chunk.subarray(0, available));
+      const kept = available ? chunk.subarray(0, available) : Buffer.alloc(0);
+      if (kept.length) destination.push(kept);
+      if (destination === output && kept.length) stdoutTail = slideTail(stdoutTail, kept);
       bytes += chunk.byteLength;
-      request.on_progress?.({ output_bytes: bytes, stdout_tail: Buffer.concat(output).subarray(-8192).toString('utf8') });
+      request.on_progress?.({ output_bytes: bytes, stdout_tail: Buffer.from(stdoutTail).toString('utf8') });
       if (bytes > request.max_output_bytes) stop('output_limit');
     };
     child.stdout.on('data', (chunk: Buffer) => collect(output, chunk));

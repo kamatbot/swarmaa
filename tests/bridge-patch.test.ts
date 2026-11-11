@@ -11,6 +11,7 @@ import { BridgeWorker } from '../src/bridge/worker.js';
 const git = (cwd: string, ...a: string[]) => execFileSync('git', ['-C', cwd, ...a], { encoding: 'utf8', env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null' } }).trim();
 const ok: ProcessResult = { exit_code: 0, signal: null, stdout: '{"type":"turn.completed"}', stderr: '', duration_ms: 1, stop_reason: null };
 const ID = '12345678-1111-4111-8111-111111111111';
+const BRANCH = `swarmaa/codex/${ID}`;
 
 async function scenario(opts: { repo: boolean; baseRef?: string }) {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'patch-')));
@@ -59,14 +60,14 @@ test('patch task: own branch + commit, worktree removed, user checkout untouched
     const head = git(s.root, 'rev-parse', 'HEAD');
     const r = s.finish.result as Record<string, unknown>;
     assert.equal(s.finish.outcome, 'completed');
-    assert.equal(r.branch, 'swarmaa/codex/12345678');
+    assert.equal(r.branch, BRANCH);
     assert.equal(r.commands_allowed, true);
     assert.equal(r.base_commit, head);
     assert.equal(r.base_ref, 'HEAD');
     assert.equal(r.changed_files, 1);
-    assert.equal(r.head_commit, git(s.root, 'rev-parse', 'swarmaa/codex/12345678'));
-    assert.equal(git(s.root, 'log', '-1', '--format=%s|%an|%ae', 'swarmaa/codex/12345678'), 'swarma(codex): Add b file|Swarmaa codex|noreply@swarmaa.com');
-    assert.equal(git(s.root, 'show', 'swarmaa/codex/12345678:b.txt'), 'new');
+    assert.equal(r.head_commit, git(s.root, 'rev-parse', BRANCH));
+    assert.equal(git(s.root, 'log', '-1', '--format=%s|%an|%ae', BRANCH), 'swarma(codex): Add b file|Swarmaa codex|noreply@swarmaa.com');
+    assert.equal(git(s.root, 'show', `${BRANCH}:b.txt`), 'new');
     assert.equal(git(s.root, 'branch', '--show-current'), 'main');
     assert.equal(git(s.root, 'status', '--porcelain'), '?? dirty.txt');
     assert.ok(!existsSync(join(s.seen!.cwd)));
@@ -79,7 +80,7 @@ test('patch task: own branch + commit, worktree removed, user checkout untouched
     const rec = s.calls.find(c => c.name === 'session_record')!.args as { harness: string; cwd: string; turns: { text: string }[] };
     assert.equal(rec.harness, 'codex');
     assert.equal(rec.cwd, s.root);
-    assert.equal(rec.turns.at(-1)!.text.split('\n').at(-1), `Branch: swarmaa/codex/12345678 @ ${String(r.head_commit).slice(0, 7)} (1 files)`);
+    assert.equal(rec.turns.at(-1)!.text.split('\n').at(-1), `Branch: ${BRANCH} @ ${String(r.head_commit).slice(0, 7)} (1 files)`);
   } finally { rmSync(s.dir, { recursive: true, force: true }); }
 });
 
@@ -88,7 +89,7 @@ test('patch task honors base_ref', async () => {
   try {
     const r = s.finish.result as Record<string, unknown>;
     assert.equal(r.base_commit, s.first);
-    assert.equal(git(s.root, 'merge-base', '--is-ancestor', s.first, 'swarmaa/codex/12345678') || 'ok', 'ok');
+    assert.equal(git(s.root, 'merge-base', '--is-ancestor', s.first, BRANCH) || 'ok', 'ok');
     assert.equal(s.finish.outcome, 'completed');
   } finally { rmSync(s.dir, { recursive: true, force: true }); }
 });

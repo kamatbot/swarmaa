@@ -150,14 +150,15 @@ final class TeamsUXRegressionTests: XCTestCase {
         XCTAssertNotNil(model.staleError)
     }
 
-    func testTaskPaginationUsesBeforeID() async throws {
+    func testTaskListReadsOnePage() async throws {
         let stub = UXTransport()
         stub.respond = { _, body in
             if body["before_id"] as? String == "one" { return (200, "{\"result\":{\"tasks\":[{\"id\":\"two\"}],\"next_before_id\":null}}") }
             return (200, "{\"result\":{\"tasks\":[{\"id\":\"one\"}],\"next_before_id\":\"one\"}}")
         }
         let tasks = try await stub.client(self).taskList(scope: "project:test")
-        XCTAssertEqual(tasks.map(\.id), ["one", "two"])
+        XCTAssertEqual(tasks.map(\.id), ["one"])
+        XCTAssertEqual(stub.requests.count, 1)
         XCTAssertNil(stub.requests.last?.1["after"])
     }
 

@@ -914,11 +914,12 @@ actor SwarmaTeamsClient {
         return try await call("task_get", ["task_id": id], as: Wrapper.self).task
     }
 
-    /// One page of a scope's tasks; `task_list` needs a scope.
-    func taskList(scope: String, status: String? = nil, resolved: Bool? = nil, limit: Int = 50) async throws -> [TeamsTask] {
-        var input: [String: Any] = ["scope": scope, "limit": min(limit, 100)]
+    /// One page of a scope's tasks. The live queue uses this (running or queued, one page).
+    /// Resolved history is `resolvedTaskPage`. Walking every page reread full checkpoints per project.
+    func taskList(scope: String, status: String? = nil, resolved: Bool? = nil, limit: Int = 100) async throws -> [TeamsTask] {
+        var input: [String: Any] = ["scope": scope, "limit": min(max(limit, 1), 100)]
         input["status"] = status; input["resolved"] = resolved
-        return try await allPages("task_list", input, as: TeamsTask.self)
+        return try await call("task_list", input, as: ListPage<TeamsTask>.self).items
     }
 
     func resolvedTaskPage(scope: String, beforeID: String? = nil) async throws -> (tasks: [TeamsTask], next: String?) {

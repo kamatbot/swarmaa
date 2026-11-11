@@ -966,7 +966,7 @@ code, .mono { font-family: var(--font-mono); }
     </div>
     <div>
       <div class="film">
-        <video id="heroFilm" src="/film/launch.mp4" poster="/film/poster.jpg" width="1920" height="1080" muted loop playsinline preload="metadata" aria-label="Swarmaa launch film: three bots split a launch across Claude, Codex and Antigravity, on the Mac and the iPhone"></video>
+        <video id="heroFilm" poster="/film/poster.jpg" width="1920" height="1080" muted loop playsinline preload="none" aria-label="Swarmaa launch film: three bots split a launch across Claude, Codex and Antigravity, on the Mac and the iPhone"></video>
         <button class="film-sound" id="filmSound" type="button" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9H4z"/><path class="on" d="M16 9a4 4 0 0 1 0 6M18.5 6.5a8 8 0 0 1 0 11"/><path class="off" d="M16 9l5 6M21 9l-5 6"/></svg><span>Sound</span></button>
       </div>
       <p class="film-cap">The launch film · Mac app and iPhone app (coming soon)</p>
@@ -1075,11 +1075,20 @@ code, .mono { font-family: var(--font-mono); }
     film.src = src;
     film.onloadedmetadata = () => { film.currentTime = t; if (resume) film.play().catch(() => {}); };
   };
-  pickSource();
-  phone.addEventListener("change", pickSource);
+  // Nothing downloads until the film is on screen (or at once for reduced motion, which shows controls).
+  // Then the cut matches the screen, and a later width change swaps it in place.
+  phone.addEventListener("change", () => { if (film.getAttribute("src")) pickSource(); });
   const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
-  if (reduced) film.controls = true;
-  else if ("IntersectionObserver" in window) new IntersectionObserver((es) => es.forEach((e) => { if (e.isIntersecting) film.play().catch(() => {}); else film.pause(); }), { threshold: 0.3 }).observe(film);
+  if (reduced) {
+    film.controls = true;
+    pickSource();
+  } else if ("IntersectionObserver" in window) new IntersectionObserver((es) => es.forEach((e) => {
+    if (e.isIntersecting) {
+      pickSource();
+      film.play().catch(() => {});
+    } else film.pause();
+  }), { threshold: 0.3 }).observe(film);
+  else pickSource();
   sound.addEventListener("click", () => {
     film.muted = !film.muted;
     sound.setAttribute("aria-pressed", String(!film.muted));
