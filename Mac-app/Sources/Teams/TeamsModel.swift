@@ -90,7 +90,7 @@ func teamsThreadRows(_ messages: [TeamsMessage]) -> [TeamsThreadRow] {
 @MainActor
 final class TeamsModel: ObservableObject {
     enum Phase: Equatable { case loading, ready, serviceTooOld, failed(String) }
-    enum Pane: Hashable { case bots, tasks, usage }
+    enum Pane: Hashable { case bots, tasks, usage, settings }
 
     @Published var phase: Phase = .loading
     @Published var pane: Pane = .bots { didSet { if pane == .bots { markSelectedRead() } } }

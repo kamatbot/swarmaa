@@ -216,6 +216,19 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         show()
     }
 
+    /// The same settings, bindings and all, as a pane of the main window.
+    func embeddedView() -> some View {
+        SettingsView(preferences: preferences,
+                     providers: providers, phoneLinkPairing: phoneLinkPairing, phoneLinkRegistry: phoneLinkRegistry, phoneLinkServerStatus: phoneLinkServerStatus,
+                     signOut: signOut, signIn: signIn, switchAccount: switchAccount, retry: retry,
+                     resetPosition: resetPosition, quit: quit, updater: updater,
+                     ollamaRelay: ollamaRelay, lmstudioMetrics: lmstudioMetrics, omlxMetrics: omlxMetrics,
+                     usageStore: usageStore,
+                     previewResetAlert: previewResetAlert, previewSessionLimitAlert: previewSessionLimitAlert,
+                     previewWeeklyLimitAlert: previewWeeklyLimitAlert, previewSwarmaUpdate: previewSwarmaUpdate,
+                     sendTestNotification: sendTestNotification, embedded: true)
+    }
+
     func show() {
         if let window {
             // Re-centered every time, not only at creation: a window is

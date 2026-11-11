@@ -195,6 +195,7 @@ struct WorkspaceTopBar: View {
         case .bots: return [L10n.t("bots")] + (model.selectedBot.map { [$0.name] } ?? [])
         case .tasks: return [L10n.t("tasks")]
         case .usage: return [L10n.t("usage")]
+        case .settings: return [L10n.t("settings")]
         }
     }
 
@@ -244,7 +245,7 @@ struct WorkspaceTopBar: View {
             }
             iconButton("point.3.connected.trianglepath.dotted", L10n.t("Swarm map"), on: model.showSwarmMap) { model.showSwarmMap.toggle() }
                 .keyboardShortcut("m", modifiers: [.command, .shift]).fixedSize()
-            iconButton("gearshape", L10n.t("Settings"), on: false) { AppDelegate.shared?.openSettings() }.fixedSize()
+            iconButton("gearshape", L10n.t("Settings"), on: model.pane == .settings) { AppDelegate.shared?.openSettings() }.fixedSize()
             Button { model.creatingBot = true } label: {
                 Text(verbatim: width >= 760 ? "+ " + L10n.t("New bot") : "+").font(KS.text(.semibold)).foregroundStyle(KS.onSignal)
                     .padding(.horizontal, 16).frame(height: 32)

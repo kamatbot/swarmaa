@@ -220,6 +220,9 @@ struct TeamsRootView: View {
             case .bots: BotsHome(model: model)
             case .tasks: TasksPane(model: model)
             case .usage: UsagePane(model: model)
+            case .settings:
+                if let pane = AppDelegate.shared?.settingsPane() { pane }
+                else { TeamsEmptyState(symbol: "gearshape", title: L10n.t("Settings are not available"), detail: nil, action: nil) }
             }
         }
     }

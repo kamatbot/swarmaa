@@ -43,6 +43,12 @@ private enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
         visible.filter { !providerPanes.contains($0) }
     }
 
+    /// What the main window's Settings pane lists (user decision). DeepSeek, Ollama, LM Studio, oMLX,
+    /// Custom Endpoints and Costs keep their code and stored preferences; they are just not shown.
+    static var embedded: [SettingsSection] {
+        [.swarma, .accounts, .phone, .remoteHosts, .notifications, .appearance, .general].filter { visible.contains($0) }
+    }
+
     var id: String { rawValue }
 
     var title: String {
@@ -481,8 +487,14 @@ struct SettingsView: View {
     var previewWeeklyLimitAlert: (() -> Void)? = nil
     var previewSwarmaUpdate: (() -> Void)? = nil
     var sendTestNotification: (() -> Void)? = nil
+    /// Shown as a pane of the main window: navy ground, no floating-panel chrome, only the kept sections.
+    var embedded = false
     @Environment(\.codenotchReduceTransparency) private var reduceTransparency
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var groundColor: Color { embedded ? KS.paper : SettingsPalette.window }
+    private var sidebarColor: Color { embedded ? KS.paperDeep : SettingsPalette.sidebar }
+    private var cornerRadius: CGFloat { embedded ? 0 : SettingsView.cornerRadius }
 
     var body: some View {
         // A plain HStack rather than `NavigationSplitView`: the sidebar here
@@ -521,8 +533,8 @@ struct SettingsView: View {
         // them across four panes, and a twelfth added later would arrive with
         // the bug and no way to notice.
         .id(preferences.language)
-        .tint(preferences.accentColor.color)
-        .environment(\.codenotchAccentColor, preferences.accentColor.color)
+        .tint(embedded ? KS.signal : preferences.accentColor.color)
+        .environment(\.codenotchAccentColor, embedded ? KS.signal : preferences.accentColor.color)
         // Fills the window rather than claiming a fixed size. Under
         // `fullSizeContentView` the content view is the whole frame — title
         // bar included — so a view sized to `SettingsView.height` left the
@@ -536,12 +548,14 @@ struct SettingsView: View {
         // Solid, not a material: the panel is dark whatever is behind it, the
         // way a pro app's own window is, so nothing from the desktop washes
         // through and every surface keeps the value it was designed at.
-        .background(SettingsPalette.window)
-        .clipShape(RoundedRectangle(cornerRadius: SettingsView.cornerRadius,
+        .background(groundColor)
+        .clipShape(RoundedRectangle(cornerRadius: cornerRadius,
                                     style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: SettingsView.cornerRadius, style: .continuous)
-                .strokeBorder(SettingsPalette.edge, lineWidth: 1)
+            if !embedded {
+                RoundedRectangle(cornerRadius: SettingsView.cornerRadius, style: .continuous)
+                    .strokeBorder(SettingsPalette.edge, lineWidth: 1)
+            }
         }
         // Always the dark look, controls included, to match the notch it sets up.
         .environment(\.colorScheme, .dark)
@@ -550,7 +564,10 @@ struct SettingsView: View {
         // rounded top is pushed down leaving a transparent band with the
         // traffic lights stranded in it.
         .ignoresSafeArea()
-        .onAppear { refreshVisibleState() }
+        .onAppear {
+            refreshVisibleState()
+            if embedded, !SettingsSection.embedded.contains(selection) { selection = .swarma }
+        }
         .onReceive(NotificationCenter.default.publisher(
             for: NSWindow.didBecomeKeyNotification
         )) { _ in refreshVisibleState() }
@@ -598,10 +615,10 @@ struct SettingsView: View {
     /// rather than coloured badges, and the selection as a soft grey pill.
     private var sidebar: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // The band the traffic lights sit in.
-            Color.clear.frame(height: SettingsView.headerHeight)
+            // The band the traffic lights sit in; the main window's top bar already holds them.
+            Color.clear.frame(height: embedded ? 16 : SettingsView.headerHeight)
 
-            HStack(spacing: 10) {
+            if !embedded { HStack(spacing: 10) {
                 Image(nsImage: NSApp.applicationIconImage)
                     .resizable()
                     .interpolation(.high)
@@ -611,21 +628,21 @@ struct SettingsView: View {
                     .foregroundStyle(.white)
             }
             .padding(.horizontal, 18)
-            .padding(.bottom, 16)
+            .padding(.bottom, 16) }
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 2) {
-                    ForEach(SettingsSection.topLevel) { section in
+                    ForEach(embedded ? SettingsSection.embedded : SettingsSection.topLevel) { section in
                         SettingsSidebarRow(
                             section: section,
                             isSelected: selection == section,
                             selectionSpace: selectionSpace,
                             count: section == .accounts ? connectedCount : nil,
                             badge: section == .general && updater.pending != nil,
-                            disclosure: section == .accounts ? $accountsExpanded : nil,
+                            disclosure: section == .accounts && !embedded ? $accountsExpanded : nil,
                             select: { selectSection(section) }
                         )
-                        if section == .accounts, accountsExpanded {
+                        if section == .accounts, accountsExpanded, !embedded {
                             ForEach(SettingsSection.providerPanes) { child in
                                 SettingsSidebarRow(section: child,
                                                    isSelected: selection == child,
@@ -673,7 +690,7 @@ struct SettingsView: View {
         }
         .frame(width: SettingsView.sidebarWidth)
         .frame(maxHeight: .infinity)
-        .background(SettingsPalette.sidebar)
+        .background(sidebarColor)
         .overlay(alignment: .trailing) {
             SettingsPalette.hairline.frame(width: 1)
         }

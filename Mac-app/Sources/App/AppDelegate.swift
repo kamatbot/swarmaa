@@ -577,7 +577,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 phoneLinkPairing: phonePairing, phoneLinkRegistry: phoneRegistry, phoneLinkServerStatus: serverStatus
             )
             // The gear toggles; everything else that opens settings opens it.
-            fleet.onOpenSettings = { [weak settings] in settings?.toggle() }
+            // Settings live in the main window now; the old panel's controller stays for its view.
+            fleet.onOpenSettings = { [weak self] in self?.openSettings() }
             // A session row answers where it runs by taking you there.
             fleet.onFocusSession = { pid in
                 Task { _ = await SessionFocus.focus(pid: pid) }
@@ -600,14 +601,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // arriving together is one to dismiss before you can read either.
             let introduce = { [weak settings] in
                 guard preferences.isFirstLaunch else { return }
-                settings?.show()
+                AppDelegate.shared?.openSettings()
             }
             whatsNew.onDismiss = introduce
             if !whatsNew.showIfNeeded() {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.6, execute: introduce)
             }
 
-            let statusItem = StatusItemController { [weak settings] in settings?.show() }
+            let statusItem = StatusItemController { AppDelegate.shared?.openSettings() }
             self.statusItem = statusItem
             // Both are somebody's own click, so neither is answered from
             // anything held: see `UsageFreshness.fromSource`.
@@ -1553,7 +1554,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return true
     }
 
-    @MainActor func openSettings() { settings?.show() }
+    /// Every "Settings…" entry point: the main window, on its Settings pane.
+    @MainActor func openSettings() {
+        openTeams()
+        teams?.model.pane = .settings
+    }
+
+    /// The settings view for the main window's pane.
+    @MainActor func settingsPane() -> AnyView? { settings.map { AnyView($0.embeddedView()) } }
 
     private var teams: TeamsWindowController?
     /// The main window, from the status item or a notch swarm/question item.
