@@ -49,6 +49,7 @@ final class TeamsWindowController: NSObject, NSWindowDelegate {
                 if model.setupRows.contains(where: { $0.state == .needsSetup }) { model.showSetup = true }
             } }
         }
+        NSApp.setActivationPolicy(.regular)  // a ⌘-Tab entry while the window is open; see AppDelegate.applyActivationPolicy
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
         positionTrafficLights()
@@ -100,6 +101,8 @@ final class TeamsWindowController: NSObject, NSWindowDelegate {
     func windowWillClose(_ notification: Notification) {
         model.isVisible = false
         model.stopStream()
+        // After the close completes, so the window no longer counts as open.
+        DispatchQueue.main.async { AppDelegate.shared?.applyActivationPolicy() }
     }
 }
 

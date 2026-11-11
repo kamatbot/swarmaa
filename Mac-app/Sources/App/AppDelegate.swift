@@ -635,8 +635,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
             preferences.$appPresence
                 .receive(on: RunLoop.main)
-                .sink { presence in
-                    NSApp.setActivationPolicy(presence.activationPolicy)
+                .sink { [weak self] presence in
+                    self?.applyActivationPolicy(presence)
                     if presence.wantsStatusItem { statusItem.show() } else { statusItem.hide() }
                 }
                 .store(in: &cancellables)
@@ -1564,6 +1564,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @MainActor func settingsPane() -> AnyView? { settings.map { AnyView($0.embeddedView()) } }
 
     private var teams: TeamsWindowController?
+
+    /// While the main window is open Swarmaa is a regular app, whatever the presence choice:
+    /// an accessory app has no ⌘-Tab entry, so switching away buried the window with no way back.
+    /// Closing the window returns to the chosen presence (menu bar or none).
+    @MainActor func applyActivationPolicy(_ presence: AppPresence? = nil) {
+        let chosen = presence ?? preferences?.appPresence ?? .dock
+        let windowOpen = teams?.window?.isVisible == true || teams?.window?.isMiniaturized == true
+        NSApp.setActivationPolicy(windowOpen ? .regular : chosen.activationPolicy)
+    }
     /// The main window, from the status item or a notch swarm/question item.
     @MainActor func openTeams(threadID: String? = nil) {
         if teams == nil {

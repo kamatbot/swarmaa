@@ -595,24 +595,24 @@ final class TeamsModel: ObservableObject {
         defer { bulkTasksBusy = false; busyTasks.subtract(ids) }
         let client = self.client
         var succeeded = 0, conflicts = 0
-        await withTaskGroup(of: SwarmaTeamsClient.Failure?.self) { group in
+        await withTaskGroup(of: (String, SwarmaTeamsClient.Failure?).self) { group in
             var pending = rows[...]
             func add(_ row: TeamsTaskRow) {
                 group.addTask {
                     do {
                         let task = try await client.taskGet(id: row.id)
                         guard ["completed", "failed", "cancelled"].contains(task.status), let version = task.version else {
-                            return .service(.serviceCode("task_active"))
+                            return (row.id, .service(.serviceCode("task_active")))
                         }
                         try await client.taskResolve(id: row.id, resolved: resolved, expectedVersion: version)
-                        return nil
-                    } catch { return SwarmaTeamsClient.Failure.map(error) }
+                        return (row.id, nil)
+                    } catch { return (row.id, SwarmaTeamsClient.Failure.map(error)) }
                 }
             }
             for _ in 0..<4 { if let row = pending.popFirst() { add(row) } }
-            for await failure in group {
+            for await (id, failure) in group {
                 if let row = pending.popFirst() { add(row) }
-                if failure == nil { succeeded += 1 }
+                if failure == nil { succeeded += 1; markCardsResolved(id, resolved) }
                 if failure == .service(.serviceCode("version_conflict")) || failure == .service(.serviceCode("task_active")) { conflicts += 1 }
                 if failure == .service(.serviceCode("owner_required")) { answeringBlocked = true }
             }
@@ -817,9 +817,22 @@ final class TeamsModel: ObservableObject {
     /// Checks or unchecks a task's Resolved box. Returns whether it took.
     @discardableResult
     func resolve(_ taskID: String, _ resolved: Bool) async -> Bool {
-        await withTask(taskID) { task in
+        let ok = await withTask(taskID) { task in
             guard !["running", "queued"].contains(task.status) else { throw SwarmaClient.Failure.serviceCode("task_active") }
             try await self.client.taskResolve(id: taskID, resolved: resolved, expectedVersion: task.version ?? 0)
+        }
+        // Thread task cards are a snapshot from thread_read and no event re-sends them on resolve,
+        // so without this the Needs-you card and the thread card keep offering "Mark resolved".
+        if ok { markCardsResolved(taskID, resolved) }
+        return ok
+    }
+
+    func markCardsResolved(_ taskID: String, _ resolved: Bool) {
+        for (thread, list) in messages where list.contains(where: { $0.task?.id == taskID }) {
+            messages[thread] = list.map { m in
+                guard m.task?.id == taskID else { return m }
+                var m = m; m.task?.resolved = resolved; return m
+            }
         }
     }
 
