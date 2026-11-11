@@ -2,6 +2,7 @@ name: Swarmaa
 options:
   deploymentTarget:
     iOS: '18.0'
+    watchOS: '10.0'
 settings:
   base:
     SWIFT_VERSION: '6.0'
@@ -18,9 +19,13 @@ targets:
     platform: iOS
     sources:
       - Sources
+      - WatchShared
       - Resources
       - path: ../Mac-app/Sources/Providers/SwarmaRelayTransport.swift
       - path: ../Mac-app/Sources/Teams/ChatMedia.swift
+    dependencies:
+      - target: SwarmaaWatch
+        embed: true
     entitlements:
       path: Swarmaa.entitlements
       properties:
@@ -44,6 +49,21 @@ targets:
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.productivity
         INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
         INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait
+        MARKETING_VERSION: '1.0'
+        CURRENT_PROJECT_VERSION: '1'
+  SwarmaaWatch:
+    type: application
+    platform: watchOS
+    sources:
+      - Watch
+      - WatchShared
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.swarmaa.ios.watchkitapp
+        TARGETED_DEVICE_FAMILY: '4'
+        INFOPLIST_KEY_CFBundleDisplayName: Swarmaa
+        INFOPLIST_KEY_WKCompanionAppBundleIdentifier: app.swarmaa.ios
+        INFOPLIST_KEY_WKApplication: YES
         MARKETING_VERSION: '1.0'
         CURRENT_PROJECT_VERSION: '1'
   SwarmaaTests:
@@ -93,3 +113,7 @@ schemes:
     test:
       targets: [SwarmaaTests, RelayCompatibilityTests, SwarmaaUITests]
       gatherCoverageData: false
+  SwarmaaWatch:
+    build:
+      targets:
+        SwarmaaWatch: all

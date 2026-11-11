@@ -51,6 +51,10 @@ struct SwarmaaShortcuts: AppShortcutsProvider {
 @MainActor final class PushDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         UNUserNotificationCenter.current().delegate = self
+        if !ProcessInfo.processInfo.arguments.contains("-demo") {
+            Runtime.model.onConnectionChanged = { WatchBridge.shared.changed() }
+            WatchBridge.shared.changed()
+        }
         Runtime.model.onFirstBotList = {
             let center = UNUserNotificationCenter.current()
             let settings = await center.notificationSettings()

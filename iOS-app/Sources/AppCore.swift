@@ -530,6 +530,7 @@ enum PushNotification {
     var pendingPushBotID: String?
     var visibleThreadBotID: String?
     var onFirstBotList: (@MainActor () async -> Void)?
+    var onConnectionChanged: (@MainActor () -> Void)?
     private var pushToken: String?
     private var signingOut = false
 
@@ -573,6 +574,7 @@ enum PushNotification {
     func attach(_ service: RelayService) {
         streamTask?.cancel(); presenceTask?.cancel()
         self.service = service; connected = true; didLoadBots = false
+        onConnectionChanged?()
         presenceTask = Task { [weak self, transport = service.transport] in
             for await p in transport.presenceStream {
                 guard !Task.isCancelled else { break }
@@ -879,6 +881,7 @@ enum PushNotification {
             _ = try? await service.call("push_unregister", ["token": .string(pushToken)])
         }
         try keychain.delete()
+        onConnectionChanged?()
         pushToken = nil; didLoadBots = false; pendingPushBotID = nil; visibleThreadBotID = nil
         streamTask?.cancel(); presenceTask?.cancel()
         if let service = service as? RelayService { await service.transport.disconnect() }
