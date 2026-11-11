@@ -258,6 +258,27 @@ func threadRows(_ messages: [Message]) -> [ThreadRow] {
     return rows
 }
 
+/// Each task's newest card in thread order, with when that card landed. A card is a snapshot of its task.
+func taskCards(_ messages: [Message]) -> [(card: JSON, at: String)] {
+    var order: [String] = [], latest: [String: (JSON, String)] = [:]
+    for m in messages where m.kind == "task" {
+        let t = m.raw["task"], id = t["id"].string
+        guard !id.isEmpty else { continue }
+        if latest[id] == nil { order.append(id) }
+        latest[id] = (t, m.raw["created_at"].string)
+    }
+    return order.compactMap { latest[$0].map { (card: $0.0, at: $0.1) } }
+}
+/// The swarm a bot view follows: the newest open one in its thread, else the newest.
+func followedSwarm(_ messages: [Message]) -> (swarm: JSON, at: String)? {
+    var seen: [(JSON, String)] = []
+    for m in messages where m.kind == "swarm" && m.raw["swarm"] != .null {
+        let s = m.raw["swarm"]
+        seen.removeAll { $0.0["id"] == s["id"] }; seen.append((s, m.raw["created_at"].string))
+    }
+    return (seen.last { !["done", "cancelled", "failed"].contains($0.0["status"].string) } ?? seen.last).map { (swarm: $0.0, at: $0.1) }
+}
+
 struct NewBotDraft {
     var name = ""
     var job = ""
@@ -533,6 +554,16 @@ enum PushNotification {
     var onConnectionChanged: (@MainActor () -> Void)?
     private var pushToken: String?
     private var signingOut = false
+    /// Tasks resolved from this device. A thread's task card is a snapshot that a re-read can bring back
+    /// unresolved, so these stay patched in memory (the Mac app's card lagged until a full reload).
+    private var resolvedTaskIDs = Set<String>()
+    private func patchResolved(_ list: [Message]) -> [Message] {
+        guard !resolvedTaskIDs.isEmpty else { return list }
+        return list.map { m in
+            guard m.kind == "task", resolvedTaskIDs.contains(m.raw["task"]["id"].string), !m.raw["task"]["resolved"].bool else { return m }
+            var m = m; m.raw["task"]["resolved"] = .bool(true); return m
+        }
+    }
 
     func receivePushTap(_ payload: [AnyHashable: Any]) {
         if let id = PushNotification.botID(payload) { pendingPushBotID = id }
@@ -636,6 +667,7 @@ enum PushNotification {
             async let swarm = service.call("swarm_status", [:])
             async let agentRows = allPages(service, "agent_list", ["limit": .number(100)], key: "agents")
             (bots, status, agents) = try await (botRows.map { Bot(raw: $0) }, swarm, agentRows)
+            clearVisibleUnread()
             if let bot = openBot {
                 if let updated = bots.first(where: { $0.id == bot.id }) { openBot = updated }
                 else { removeBot(bot.id) }
@@ -669,10 +701,11 @@ enum PushNotification {
                 if let i = merged.firstIndex(where: { $0.id == message.id }) { merged[i] = message }
                 else { merged.append(message) }
             }
-            messages = merged.sorted { $0.seq < $1.seq }; typing = page["typing"].array
+            messages = patchResolved(merged.sorted { $0.seq < $1.seq }); typing = page["typing"].array
             threadCache[bot.id] = messages
             if let seq = messages.last?.seq {
                 _ = try await service.call("thread_mark_read", ["thread_id": .string(bot.threadID), "seq": .number(Double(seq))])
+                clearUnread(bot.id)
             }
         } catch {
             // A deletion can race an in-flight thread read or arrive while the app is offline.
@@ -685,6 +718,14 @@ enum PushNotification {
         }
     }
 
+    /// The bot list's unread badge is a snapshot from bot_list. Reading a thread marks it read on the host, but the
+    /// snapshot keeps the old count until the list reloads; on iPad the list never leaves the screen, so clear it here.
+    func clearUnread(_ id: String) {
+        guard let i = bots.firstIndex(where: { $0.id == id }), bots[i].unread > 0 else { return }
+        bots[i].raw["badges"]["unread"] = .number(0)
+    }
+    /// A reload while a thread is on screen: that thread is being read, so it has nothing unread.
+    func clearVisibleUnread() { if let id = visibleThreadBotID { clearUnread(id) } }
     func open(_ bot: Bot) async {
         openBot = bot
         if isDemo { return }
@@ -730,6 +771,7 @@ enum PushNotification {
         }
         if name.hasPrefix("bot.") || name == "message.created" || name.hasPrefix("question.") {
             bots = try await allPages(service, "bot_list", ["limit": .number(100), "include_archived": .bool(true)], key: "bots").map { Bot(raw: $0) }
+            clearVisibleUnread()
             if let id = openBot?.id, let updated = bots.first(where: { $0.id == id }) { openBot = updated }
         }
     }
@@ -820,6 +862,7 @@ enum PushNotification {
         let updated = Bot(raw: try await service.call("bot_update", input)["bot"])
         // Server enforces uniqueness; refresh both the newly and previously starred rows.
         bots = try await allPages(service, "bot_list", ["include_archived": .bool(true)], key: "bots").map { Bot(raw: $0) }
+        clearVisibleUnread()
         if openBot?.id == updated.id { openBot = updated }
     }
     func archive(_ bot: Bot) async throws {
@@ -857,11 +900,27 @@ enum PushNotification {
         }
     }
     func resolve(_ id: String) async throws {
-        guard let service else { return }
+        guard let service else {
+            if isDemo { markResolved(id) }  // Demo: in memory only, no host.
+            return
+        }
         let task = try await service.call("task_get", ["task_id": .string(id)])["task"]
         _ = try await service.call("task_resolve", ["task_id": .string(id), "expected_version": task["version"], "resolved": .bool(true)])
+        // The card updates the moment the host says yes, not after the re-reads below.
+        markResolved(id)
         if let bot = openBot { try await readThread(bot) }
         try await loadTasks()
+    }
+    private func markResolved(_ id: String) {
+        resolvedTaskIDs.insert(id)
+        messages = patchResolved(messages)
+        if let bot = openBot { threadCache[bot.id] = messages }
+        for i in tasks.indices where tasks[i]["id"].string == id { tasks[i]["resolved"] = .bool(true) }
+    }
+    /// Only the swarm status, for the live map; quiet on failure (the map keeps its last picture).
+    func refreshStatus() async {
+        guard let service, !isDemo, let fresh = try? await service.call("swarm_status", [:]) else { return }
+        status = fresh
     }
     /// An open approval pauses the thread's composer until it is answered.
     var hasOpenApproval: Bool {
@@ -888,7 +947,7 @@ enum PushNotification {
         service = nil; connected = false; online = false; openBot = nil
         expandedWorkingNotes = [:]; pendingPosts = [:]
         bots = []; messages = []; typing = []; tasks = []; attention = []; agents = []; status = .null; cursor = "now"
-        threadCache = [:]; PhotoCache.clear()
+        threadCache = [:]; resolvedTaskIDs = []; PhotoCache.clear()
     }
 }
 

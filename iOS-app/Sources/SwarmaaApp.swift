@@ -326,6 +326,7 @@ struct RootView: View {
     @Environment(\.scenePhase) private var phase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.dynamicTypeSize) private var textSize
+    @Environment(\.horizontalSizeClass) private var sizeClass
     @FocusState private var searchFocused: Bool
     @FocusState private var composerFocused: Bool
     var body: some View {
@@ -335,14 +336,21 @@ struct RootView: View {
                     // A stack, like a navigation controller: home stays put underneath, deeper screens
                     // slide in from the right over it and slide back out, so going back reveals home.
                     ZStack {
+                        if sizeClass == .regular {
+                            // iPad (or any regular-width window): the Mac's three columns. Compact keeps the stack below.
+                            IPadWorkspace(model: model, screen: $screen, sheet: $sheet, search: $search, open: open,
+                                          threadBody: { threadBody }, tasksBody: { tasksView(embedded: true) }, usageBody: { usageView(embedded: true) })
+                                .accessibilityHidden(![.home, .thread, .tasks, .usage].contains(screen)).allowsHitTesting([.home, .thread, .tasks, .usage].contains(screen))
+                        } else {
                         home.accessibilityHidden(screen != .home).allowsHitTesting(screen == .home)
                         if screen == .thread || (screen == .settings && model.openBot != nil) {
                             thread.swipeBack { screen = .home; model.openBot = nil }
                                 .background(KS.ground).transition(.move(edge: .trailing))
                                 .accessibilityHidden(screen != .thread)
                         }
-                        if screen == .tasks { tasks.swipeBack { screen = .home }.background(KS.ground).transition(.move(edge: .trailing)) }
-                        if screen == .usage { usage.swipeBack { screen = .home }.background(KS.ground).transition(.move(edge: .trailing)) }
+                        }
+                        if screen == .tasks && sizeClass != .regular { tasksView().swipeBack { screen = .home }.background(KS.ground).transition(.move(edge: .trailing)) }
+                        if screen == .usage && sizeClass != .regular { usageView().swipeBack { screen = .home }.background(KS.ground).transition(.move(edge: .trailing)) }
                         if screen == .connect {
                             ConnectView(model: model) { screen = .home }.swipeBack { screen = .home }.background(KS.ground).transition(.move(edge: .trailing))
                         }
@@ -409,6 +417,9 @@ struct RootView: View {
         .onChange(of: model.bots) { _, _ in openPushBot() }
         .onChange(of: screen) { _, value in if value != .home { searchFocused = false }; if value != .thread { dictation.stop(); dictationToken = UUID(); dictationStarting = false }; updateVisibleThread() }
         .onChange(of: sheet?.id) { _, _ in updateVisibleThread() }
+        .onChange(of: sizeClass) { _, _ in updateVisibleThread() }
+        // On iPad another bot opens without leaving .home, so follow the open bot too.
+        .onChange(of: model.openBot?.id) { _, _ in updateVisibleThread(); model.clearVisibleUnread() }
         .onChange(of: model.openBot?.id) { oldID, id in
             dictation.stop(); dictationToken = UUID(); dictationStarting = false; draftGeneration = UUID()
             if let oldID, model.connected || model.isDemo { drafts[oldID] = (composer, photos) }
@@ -451,7 +462,8 @@ struct RootView: View {
         }
     }
     private func updateVisibleThread() {
-        model.visibleThreadBotID = screen == .thread && sheet == nil ? model.openBot?.id : nil
+        let shown = screen == .thread || (sizeClass == .regular && screen == .home)
+        model.visibleThreadBotID = shown && sheet == nil ? model.openBot?.id : nil
     }
     private func openPushBot() {
         guard let bot = model.takePushBot() else { return }
@@ -640,9 +652,18 @@ struct RootView: View {
                 Spacer(minLength: 0)
             }.padding(.horizontal, 8).padding(.vertical, 4).background(KS.ground)
                 .overlay(alignment: .bottom) { Rectangle().fill(KS.hairline).frame(height: 1) }
+            threadBody
+        }
+    }
+    /// Messages and composer; the iPhone puts its back header above, the iPad its bot header and tabs.
+    private var threadBody: some View {
+        VStack(spacing: 0) {
             ScrollViewReader { proxy in
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 8) {
+                    // Not lazy: a lazy stack keeps the bottom anchor on estimated row heights, and when the column
+                    // width changes (iPad map, sidebar) the offset lands past the real content: a blank thread.
+                    // A thread page is at most a few hundred rows, so measuring them all is cheap.
+                    VStack(alignment: .leading, spacing: 8) {
                         ForEach(threadRows(model.messages)) { row in
                             if row.folded {
                                 let threadID = model.openBot?.threadID ?? ""
@@ -816,9 +837,10 @@ struct RootView: View {
             }
         }
     }
-    private var tasks: some View {
+    /// `embedded`: inside the iPad's Tasks pane, which has no close header.
+    private func tasksView(embedded: Bool = false) -> some View {
         VStack(spacing: 0) {
-            header("Tasks") { screen = .home }
+            if !embedded { header("Tasks") { screen = .home } }
             HStack {
                 countCard("Need you", count: model.attention.count, color: KS.needsText)
                 countCard("Working", count: model.tasks.filter { ["running", "queued"].contains($0["status"].string) }.count, color: KS.signal)
@@ -890,9 +912,9 @@ struct RootView: View {
             .frame(maxWidth: .infinity, alignment: .leading).padding(12).card()
             .accessibilityElement(children: .combine)
     }
-    private var usage: some View {
+    private func usageView(embedded: Bool = false) -> some View {
         VStack(spacing: 0) {
-            header("Usage") { screen = .home }
+            if !embedded { header("Usage") { screen = .home } }
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 10) {
                     Text("Auto work follows your host’s routing policy and available quota.").font(KS.body()).foregroundStyle(KS.soft).fixedSize(horizontal: false, vertical: true)
@@ -1257,7 +1279,8 @@ private enum Demo {
         Bot(raw: .object(["id": .string(id), "name": .string(name), "job": .string("Plans each product launch across the crew and asks before anything goes public."), "scope": .string("project:swarma"), "thread_id": .string("thread-" + id), "lead_agent_id": .string(id), "member_agent_ids": .strings(["scout", "forge"]), "version": .number(1), "starred": .bool(star), "updated_at": .string("2026-10-28T10:10:00Z"), "badges": .object(["needs_you": .number(Double(needs)), "unread": .number(Double(unread)), "latest": .object(["line": .string(line), "at": .string("2026-10-28T10:10:00Z")])]), "rules": .object(["first_reply": .string("claude-haiku-5-5"), "approve_public": .bool(true), "review_edits": .bool(true)]), "routing": .object(["review": .object(["mode": .string("different_from_author")])])]))
     }
     static func task(_ id: String, _ title: String, _ state: String, _ provider: String) -> JSON {
-        .object(["id": .string(id), "objective": .string(title), "title": .string(title), "bot_id": .string("launch"), "scope": .string("project:swarma"), "status": .string(state), "served": .object(["provider": .string(provider)]), "branch": .string("swarmaa/claude/demo"), "changed_files": .number(7), "version": .number(1), "resolved": .bool(false)])
+        .object(["id": .string(id), "objective": .string(title), "title": .string(title), "bot_id": .string("launch"), "scope": .string("project:swarma"), "status": .string(state), "served": .object(["provider": .string(provider)]), "branch": .string("swarmaa/claude/demo"), "changed_files": .number(7), "version": .number(1), "resolved": .bool(false),
+                 "result": .object(["usage": .object(["input_tokens": .number(Double(title.count * 4100)), "output_tokens": .number(Double(title.count * 310))])])])
     }
     static func message(_ id: String, _ seq: Int, _ kind: String, _ body: JSON, human: Bool = false) -> Message {
         var raw: JSON = .object(["id": .string(id), "seq": .number(Double(seq)), "thread_id": .string("thread-launch"), "author": .object(["kind": .string(human ? "human" : "agent"), "name": .string(human ? "You" : "Atlas")]), "kind": .string(kind), "body": body])
@@ -1282,7 +1305,7 @@ private extension AppModel {
         // UI tests of push taps: ask for notification permission the way a real first bot list does.
         if ProcessInfo.processInfo.arguments.contains("-push-demo") { didLoadBots = true; Task { await onFirstBotList?() } }
         openBot = bots[0]
-        agents = [JSON.object(["id": .string("launch"), "name": .string("Atlas"), "scope": .string("project:swarma")]), .object(["id": .string("scout"), "name": .string("Scout"), "scope": .string("project:swarma")]), .object(["id": .string("forge"), "name": .string("Forge"), "scope": .string("project:swarma")])]
+        agents = [JSON.object(["id": .string("launch"), "name": .string("Atlas"), "scope": .string("project:swarma"), "runner": .object(["provider": .string("claude")])]), .object(["id": .string("scout"), "name": .string("Scout"), "scope": .string("project:swarma")]), .object(["id": .string("forge"), "name": .string("Forge"), "scope": .string("project:swarma")])]
         tasks = [Demo.task("banner", "Draft the launch banner", "completed", "claude"), Demo.task("pricing", "Summarise competitor pricing", "failed", "codex"), Demo.task("calendar", "Check the launch calendar", "running", "antigravity"), Demo.task("limits", "Fix the plan limits on the pricing page", "running", "claude")]
         attention = Array(tasks.prefix(2))
         messages = [Demo.message("m1", 1, "text", .string("Plan Friday’s launch. Ask me before anything goes public."), human: true), Demo.message("m2", 2, "text", .string("On it. Scout reads the brief, Forge drafts the banner. I’ll ask before anything goes out.")), Demo.message("m3", 3, "task", tasks[0]), Demo.message("m4", 4, "question", Demo.question)]
@@ -1293,6 +1316,12 @@ private extension AppModel {
             first.raw["created_at"] = .string("2026-10-28T10:00:00Z")
             last.raw["created_at"] = .string("2026-10-28T10:03:00Z")
             messages.insert(contentsOf: [first, last], at: 1)
+        }
+        if ProcessInfo.processInfo.arguments.contains("-long-thread-demo") {
+            // A thread taller than the screen, for layout tests; the last message is "Demo reply 100".
+            // Uneven heights, like real replies: most short, every seventh a long report.
+            messages += (5...104).map { i in Demo.message("long\(i)", i, "text", .string(i == 104 ? "Demo reply 100" : "Demo reply \(i - 4): " + String(repeating: "a longer line that wraps differently at each column width. ", count: i % 7 == 0 ? 40 : 1 + i % 3)), human: i % 3 == 0) }
+            typing = []
         }
         if ProcessInfo.processInfo.arguments.contains("-handover-demo") {
             func step(_ id: String, _ title: String, _ who: String, _ status: String, needs: [String] = [], check: String) -> JSON {
@@ -1309,7 +1338,13 @@ private extension AppModel {
             typing = []
         }
         let providers = ["antigravity", "claude", "codex"]
-        status = .object(["scopes": .array([.object(["scope": .string("project:swarma")])]), "usage": .array(zip(providers, [79, 61, 11]).map { provider, left in
+        // Workers (iPad Agents section and swarm map): two tasks running now.
+        func worker(_ provider: String, _ running: [(String, String, Double)]) -> JSON {
+            .object(["name": .string("mac-studio-" + provider), "live": .bool(true), "providers": .strings([provider]), "running": .array(running.map { id, objective, ago in
+                .object(["task_id": .string(id), "objective": .string(objective), "started_at": .string(Date().addingTimeInterval(-ago).formatted(.iso8601))]) })])
+        }
+        status = .object(["workers": .array([worker("claude", [("limits", "Fix the plan limits on the pricing page", 252)]), worker("codex", []), worker("antigravity", [("calendar", "Check the launch calendar", 71)])]),
+                          "scopes": .array([.object(["scope": .string("project:swarma"), "queued": .number(1)])]), "usage": .array(zip(providers, [79, 61, 11]).map { provider, left in
             .object(["provider": .string(provider), "ok": .bool(true), "headroom": .number(Double(left)), "plan": .string(provider == "claude" ? "MAX" : "PRO"), "windows": .array([.object(["name": .string("5 h"), "used_percent": .number(Double(100 - left))]), .object(["name": .string("Week"), "used_percent": .number(provider == "codex" ? 89 : 21)])])])
         }), "routing": .object(["reason": .string("Antigravity → Claude → Codex"), "by_kind": .object(Dictionary(uniqueKeysWithValues: ["research", "patch", "review", "summary"].map { ($0, .object(["provider": .string($0 == "research" ? "claude" : "antigravity")])) }))])])
     }
