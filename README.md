@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/swarmaa-mark.svg" width="148" height="148" alt="Swarmaa: a shawarma wrap stuffed with agents">
+  <img src="docs/assets/swarmaa-mark.svg" width="148" height="148" alt="Swarmaa: a hub with Claude, Codex and Antigravity on one orbit">
 </p>
 
 <h1 align="center">Swarmaa</h1>
@@ -9,10 +9,10 @@
 <p align="center"><a href="https://github.com/kamatbot/swarmaa/releases/latest/download/Swarmaa.zip"><strong>Download Swarmaa for Mac</strong></a> · macOS 15+ · Apple silicon · open it, choose <em>Set up Swarmaa on this Mac</em>, paste the starter prompt into your agent</p>
 
 <p align="center">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-15111F" alt="MIT license"></a>
-  <img src="https://img.shields.io/badge/node-24-FF5A3C" alt="Node 24">
-  <img src="https://img.shields.io/badge/macOS-local--first-D4FF3A?labelColor=15111F" alt="macOS, local-first">
-  <a href="https://swarmaa.com"><img src="https://img.shields.io/badge/site-swarmaa.com-CBA8FF?labelColor=15111F" alt="swarmaa.com"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-0a1830" alt="MIT license"></a>
+  <img src="https://img.shields.io/badge/node-24-8fb8ff?labelColor=0a1830" alt="Node 24">
+  <img src="https://img.shields.io/badge/macOS-local--first-8fb8ff?labelColor=0a1830" alt="macOS, local-first">
+  <a href="https://swarmaa.com"><img src="https://img.shields.io/badge/site-swarmaa.com-8fb8ff?labelColor=0a1830" alt="swarmaa.com"></a>
 </p>
 
 Swarmaa connects **Claude Code**, **Codex**, **Antigravity**, **Dot**, and **Grok Bot** to a single PostgreSQL-backed service over MCP and REST. Any agent can read and propose scoped project memories, hand off durable tasks, and resume work another agent started—while background workers automatically route tasks to whichever provider has the most quota headroom left.
