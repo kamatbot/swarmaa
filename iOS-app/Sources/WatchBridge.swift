@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 import WatchConnectivity
 import CryptoKit
 
@@ -11,7 +12,7 @@ import CryptoKit
     private var generation = ""
     private var fingerprint = ""
     private var revision: Int { get { defaults.integer(forKey: "watch.revision") } set { defaults.set(newValue, forKey: "watch.revision") } }
-    private struct Entry: Codable { var post: WatchPost; var delivered: Bool }
+    private struct Entry: Codable { var post: WatchPost; var delivered: Bool; var messageID: String? = nil }
     private var entries: [Entry] = []
     private let file = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("watch-outbox.json")
     private override init() {
@@ -68,15 +69,20 @@ import CryptoKit
         Task { await work() }
     }
     private func work() async {
-        defer { busy = false; if requested { requestWork() } }
+        // The Watch may wake this app in the background; ask iOS for time to finish the server round trip.
+        let background = UIApplication.shared.beginBackgroundTask(withName: "watch-sync")
+        defer { busy = false; if background != .invalid { UIApplication.shared.endBackgroundTask(background) }; if requested { requestWork() } }
         requested = false
         guard watchAvailable, synchronizeIdentity() else { return }
         let expected = generation
         guard !fingerprint.isEmpty, let connection = try? ConnectionKeychain().load() else {
             publish(bots: [], signedIn: false); return
         }
-        let service = RelayService(connection: connection)
-        defer { Task { await service.transport.disconnect() } }
+        // Reuse the app's live connection when it is up; open (and close) a private one only otherwise.
+        let shared = Runtime.model.connected ? Runtime.model.service : nil
+        let owned = shared == nil ? RelayService(connection: connection) : nil
+        let service: any HostService = shared ?? owned!
+        defer { if let owned { Task { await owned.transport.disconnect() } } }
         do {
             let list = try await service.call("bot_list", ["limit": .number(100)])
             guard watchAvailable, expected == generation, currentFingerprint() == fingerprint else { changed(); return }
@@ -85,16 +91,20 @@ import CryptoKit
             for post in entries.filter({ !$0.delivered }).map(\.post) {
                 guard watchAvailable, expected == generation, currentFingerprint() == fingerprint else { changed(); return }
                 guard available.contains(where: { $0.id == post.botID && $0.threadID == post.threadID }) else {
-                    send(WatchPacket(kind: "ack", generation: expected, id: post.id, status: "failed")); continue
+                    drop(post, generation: expected); continue
                 }
                 do {
                     let result = try await service.call("thread_post", ["thread_id": .string(post.threadID), "body": .string(post.body), "idempotency_key": .string(post.id)])
                     guard watchAvailable, expected == generation, currentFingerprint() == fingerprint else { changed(); return }
                     guard !result["message"]["id"].string.isEmpty else { throw AppFailure.invalidResponse }
                     guard let index = entries.firstIndex(where: { $0.post == post }) else { continue }
-                    entries[index].delivered = true
+                    entries[index].delivered = true; entries[index].messageID = result["message"]["id"].string
                     guard save() else { entries[index].delivered = false; continue }
-                    send(WatchPacket(kind: "ack", generation: expected, id: post.id, status: "delivered"))
+                    send(WatchPacket(kind: "ack", generation: expected, id: post.id, status: "delivered", message: entries[index].messageID))
+                } catch AppFailure.service(let code) where (400..<500).contains(code) && code != 408 && code != 429 {
+                    // The server refused this message for good (thread gone, conflicting retry): stop retrying it
+                    // so it cannot block the messages queued behind it or fill the outbox.
+                    drop(post, generation: expected)
                 } catch { send(WatchPacket(kind: "ack", generation: expected, id: post.id, status: "failed")); break }
             }
             let questionPage = try await service.call("question_list", ["status": .string("open"), "limit": .number(100)])
@@ -134,6 +144,10 @@ import CryptoKit
         let question = WatchQuestion(id: id, threadID: thread, details: details)
         guard let data = try? JSONEncoder().encode(question), data.count <= 6_000 else { return placeholder }
         return question
+    }
+    private func drop(_ post: WatchPost, generation: String) {
+        entries.removeAll { $0.post.id == post.id }; _ = save()
+        send(WatchPacket(kind: "ack", generation: generation, id: post.id, status: "failed"))
     }
     private func abbreviate(_ text: String) -> String {
         guard text.utf8.count > 300 else { return text }
@@ -177,7 +191,7 @@ import CryptoKit
               post.body.utf8.count <= WatchLimits.bodyBytes else { return }
         if let existing = entries.first(where: { $0.post.id == post.id }) {
             guard existing.post == post else { return }
-            if existing.delivered { send(WatchPacket(kind: "ack", generation: generation, id: post.id, status: "delivered")) }
+            if existing.delivered { send(WatchPacket(kind: "ack", generation: generation, id: post.id, status: "delivered", message: existing.messageID)) }
         } else {
             if entries.count >= WatchLimits.queue { entries.removeAll { $0.delivered } }
             guard entries.count < WatchLimits.queue else { send(WatchPacket(kind: "ack", generation: generation, id: post.id, status: "failed")); return }

@@ -38,6 +38,7 @@ struct WatchPacket: Codable, Sendable {
     var id: String? = nil
     var status: String? = nil
     var hash: String? = nil
+    var message: String? = nil // Server message id of a delivered post.
 }
 enum WatchCodec {
     static func encode(_ packet: WatchPacket) -> Data? {
