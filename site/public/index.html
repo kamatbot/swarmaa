@@ -103,7 +103,7 @@ code, .mono { font-family: var(--font-mono); }
 .pill-cta svg { inline-size: 0.85rem; block-size: 0.85rem; }
 
 /* hero: headline above, the workspace window below */
-.hero { position: relative; padding: clamp(7.5rem, 15vmin, 9.5rem) 0 clamp(3.5rem, 8vmin, 5.5rem);
+.hero { position: relative; padding: 5.5rem 0 clamp(3.5rem, 8vmin, 5.5rem);
   background:
     radial-gradient(60% 50% at 70% 0%, rgba(76, 141, 255, 0.18), transparent 70%),
     radial-gradient(40% 40% at 10% 30%, rgba(143, 184, 255, 0.07), transparent 70%),
@@ -112,14 +112,13 @@ code, .mono { font-family: var(--font-mono); }
   background-image: linear-gradient(rgba(190, 210, 240, 0.045) 1px, transparent 1px), linear-gradient(90deg, rgba(190, 210, 240, 0.045) 1px, transparent 1px);
   background-size: 56px 56px; -webkit-mask-image: radial-gradient(70% 60% at 50% 0%, #000, transparent 75%); mask-image: radial-gradient(70% 60% at 50% 0%, #000, transparent 75%); }
 .hero .shell { position: relative; }
-.hero-head { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr); gap: 1.5rem 4rem; align-items: end; margin-block-end: clamp(2rem, 4.5vmin, 3rem); }
-.hero h1 { font-size: clamp(2.6rem, 6.4vw, 5.4rem); line-height: 0.96; font-weight: 650; font-stretch: 108%; letter-spacing: -0.035em; }
+.hero-head { display: grid; grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr); gap: 1rem 3rem; align-items: end; margin-block-end: 1.25rem; }
+.hero h1 { font-size: clamp(2.4rem, 4.2vw, 4rem); line-height: 0.96; font-weight: 650; font-stretch: 108%; letter-spacing: -0.035em; }
 .hero h1 span { color: var(--signal); }
-.hero-lede { font-size: clamp(1.02rem, 1.3vw, 1.18rem); color: color-mix(in oklab, var(--paper) 80%, transparent); margin: 0 0 1.4rem; }
+.hero-lede { font-size: clamp(1.02rem, 1.3vw, 1.18rem); color: color-mix(in oklab, var(--paper) 80%, transparent); margin: 0 0 1rem; }
 .hero-ctas { display: flex; flex-wrap: wrap; gap: 0.7rem; align-items: center; }
-.hero-meta { margin: 1rem 0 0; font: 400 0.75rem var(--font-mono); letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); }
-.hero-cap { display: flex; justify-content: space-between; gap: 1rem; flex-wrap: wrap; margin: 0 0 0.7rem; font: 400 0.72rem var(--font-mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); }
-@media (min-width: 75.01rem) { .app { grid-template-columns: 16rem minmax(0, 1fr) 21rem; block-size: 48rem; } }
+.hero-meta { margin: 0 0 0 0.4rem; font: 400 0.72rem var(--font-mono); letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+.hero-cap { display: flex; justify-content: space-between; gap: 1rem; flex-wrap: wrap; margin: 0 0 0.5rem; font: 400 0.72rem var(--font-mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); }
 .hero-cap span:last-child { color: color-mix(in oklab, var(--muted) 70%, transparent); }
 
 /* cards */
@@ -443,6 +442,8 @@ code, .mono { font-family: var(--font-mono); }
 .trace-play { background: #f4f7fb; color: #0a1830; }
 
 /* ════════ Swarmaa additions to the window ════════ */
+/* the window takes the rest of the first screen: --hero-top is the measured stack above .app plus the frame's bottom padding and a small gap */
+@media (min-width: 75.01rem) { .app { --hero-top: 18rem; grid-template-columns: 16rem minmax(0, 1fr) 21rem; block-size: clamp(30rem, calc(100svh - var(--hero-top)), 48rem); } }
 .ag.cl, .vg-av.cl { background: var(--cl); } .ag.cx, .vg-av.cx { background: var(--cx); } .ag.agy, .vg-av.agy { background: var(--agy); }
 .ag { font: 700 0.6rem var(--font-mono) !important; }
 .app-agents li small { margin-inline-start: auto; color: #7c8ea8; font-size: 0.7rem; }
@@ -633,12 +634,12 @@ code, .mono { font-family: var(--font-mono); }
     <div class="hero-head">
       <h1 id="hero_title">Your AI crew,<br><span>in one thread.</span></h1>
       <div>
-        <p class="hero-lede">Swarmaa runs Claude Code, Codex and Antigravity as one crew on your Mac. Swarms split the work across parallel git worktrees, each task goes to whichever agent has quota left, and nothing merges until you approve.</p>
+        <p class="hero-lede">Claude Code, Codex and Antigravity as one crew on your Mac: parallel worktrees, quota-aware routing, and nothing merges until you approve.</p>
         <div class="hero-ctas">
           <a class="btn btn--solid" href="https://github.com/kamatbot/swarmaa/releases/latest/download/Swarmaa.zip">Download for Mac <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 8h11M9 3.5 13.5 8 9 12.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></a>
           <a class="btn" href="https://github.com/kamatbot/swarmaa">View on GitHub</a>
+          <span class="hero-meta">macOS 15+ · Apple silicon · free and open source</span>
         </div>
-        <p class="hero-meta">macOS 15+ · Apple silicon · free and open source</p>
       </div>
     </div>
 
