@@ -3,7 +3,7 @@ import WatchConnectivity
 
 @MainActor @Observable final class WatchStore: NSObject, WCSessionDelegate {
     static let shared = WatchStore()
-    struct Queued: Codable, Identifiable { let post: WatchPost; var status: String; var id: String { post.id } }
+    struct Queued: Codable, Identifiable { let post: WatchPost; var status: String; var messageID: String? = nil; var id: String { post.id } }
     private struct State: Codable { var snapshot: WatchSnapshot?; var queue: [Queued]; var oldEpochs: [String] }
     var snapshot: WatchSnapshot?
     var queue: [Queued] = []
@@ -20,7 +20,7 @@ import WatchConnectivity
             try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
             try JSONEncoder().encode(State(snapshot: snapshot, queue: queue, oldEpochs: oldEpochs)).write(to: file, options: .atomic)
             return true
-        } catch { error = "Could not save on Watch. Try again."; return false }
+        } catch { self.error = "Could not save on Watch. Try again."; return false }
     }
     func refresh() {
         transmit(WatchPacket(kind: "refresh"), durable: true)
@@ -68,7 +68,7 @@ import WatchConnectivity
                   let index = queue.firstIndex(where: { $0.id == packet.id && $0.post.generation == packet.generation }),
                   let status = packet.status, ["delivered", "failed"].contains(status) {
             // A late failure must never undo a confirmed delivery.
-            if queue[index].status != "delivered" { queue[index].status = status; _ = save() }
+            if queue[index].status != "delivered" { queue[index].status = status; queue[index].messageID = packet.message; _ = save() }
         }
     }
     nonisolated func session(_ session: WCSession, activationDidCompleteWith activationState: WCSessionActivationState, error: Error?) {
@@ -145,7 +145,8 @@ struct WatchThread: View {
                             Text(message.text)
                         }
                     }
-                    ForEach(store.queue.filter { $0.post.botID == bot.id }) { item in
+                    // A delivered message that already shows in the recent messages is not listed twice.
+                    ForEach(store.queue.filter { item in item.post.botID == bot.id && !(item.status == "delivered" && current.messages.contains { $0.id == item.messageID }) }) { item in
                         VStack(alignment: .leading) {
                             Text(item.post.body)
                             Text(item.status == "delivered" ? "Delivered" : item.status == "failed" ? "Delivery unconfirmed" : "Pending").font(.caption).foregroundStyle(.secondary)
