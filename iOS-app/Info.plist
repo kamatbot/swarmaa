@@ -29,11 +29,15 @@
 	</array>
 	<key>CFBundleVersion</key>
 	<string>1</string>
+	<key>LSSupportsOpeningDocumentsInPlace</key>
+	<true/>
 	<key>NSCameraUsageDescription</key>
 	<string>Take photos to send to your bots in chat.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Dictate messages to your bots.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>Turn speech into an editable message.</string>
+	<key>UIFileSharingEnabled</key>
+	<true/>
 </dict>
 </plist>

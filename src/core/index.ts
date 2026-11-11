@@ -1,3 +1,4 @@
+import { WatchServices, watchTransaction } from './watch-services.js';
 import { pushDevice } from '../push.js';
 import { botRoutingPreview } from './bot-routing.js';
 import type { Pool } from 'pg';
@@ -34,11 +35,13 @@ const responseReadPermissions:Partial<Record<string,Permission>> = {
   swarm_start:'task:read',swarm_update:'task:read',swarm_cancel:'task:read',question_answer:'thread:read',
   channel_create:'agent:read',channel_update:'agent:read',section_set:'thread:read',task_resolve:'task:read',
   attention_list:'thread:read',source_update:'task:read',
+  watch_memo_put:'thread:read',watch_memo_delete:'thread:read',watch_memo_status:'thread:write',watch_transaction_preview:'thread:read',watch_transaction_confirm:'thread:read',watch_transaction_get:'thread:write',
   task_subscribe:'task:read',task_unsubscribe:'task:read',task_subscriptions:'task:read',
 };
 
 /** Transport-independent authorization and one implementation shared by MCP, REST and stdio proxy. */
 export class CoreService implements ToolBackend {
+  private readonly watch:WatchServices;
   private readonly memories:MemoryService;
   private readonly tasks:TaskService;
   private readonly swarm:SwarmService;
@@ -52,6 +55,7 @@ export class CoreService implements ToolBackend {
   public readonly sources:SourceService;
 
   constructor(private readonly pool:Pool) {
+    this.watch = new WatchServices(pool);
     this.memories = new MemoryService(pool);
     this.swarms = new SwarmsService(pool);
     this.tasks = new TaskService(pool, this.swarms);
@@ -85,6 +89,12 @@ export class CoreService implements ToolBackend {
     requireCondition(!ownerTools.has(name) || principal.role === 'admin',403,'owner_required','This operation requires an owner/admin connection.');
     const input = object(args);
     switch (name) {
+      case 'watch_memo_put': return this.watch.memo(principal,'put',input);
+      case 'watch_memo_status': return this.watch.memo(principal,'status',input);
+      case 'watch_memo_delete': return this.watch.memo(principal,'delete',input);
+      case 'watch_transaction_preview': return watchTransaction(this.pool,principal,'preview',input);
+      case 'watch_transaction_confirm': return watchTransaction(this.pool,principal,'confirm',input);
+      case 'watch_transaction_get': return watchTransaction(this.pool,principal,'get',input);
       case 'push_register': return pushDevice(this.pool,principal,input,true);
       case 'push_unregister': return pushDevice(this.pool,principal,input,false);
       case 'flow_list': return this.flows.list(principal,input);

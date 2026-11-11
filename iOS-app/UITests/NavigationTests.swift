@@ -48,7 +48,7 @@ import XCTest
         app.buttons["Clear search"].tap()
         XCTAssertTrue(app.buttons["bot-launch"].exists)
         app.buttons["Usage"].tap()
-        XCTAssertTrue(app.staticTexts["USAGE."].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.staticTexts["Usage"].waitForExistence(timeout: 3))
         let refresh = app.buttons["Refresh usage"]
         for _ in 0..<8 {
             if refresh.isHittable { break }
@@ -179,15 +179,15 @@ import XCTest
         let app = XCUIApplication()
         app.launchArguments = ["-demo"]
         app.launch()
-        XCTAssertTrue(app.staticTexts["BOTS."].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["Bots"].waitForExistence(timeout: 10))
         XCTAssertEqual(app.buttons.matching(identifier: "starred-shortcut").count, 1)
         app.buttons["Tasks"].tap()
-        XCTAssertTrue(app.staticTexts["TASKS."].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.staticTexts["Tasks"].waitForExistence(timeout: 3))
         app.buttons["Working"].tap()
         XCTAssertTrue(app.staticTexts["Check the launch calendar"].exists)
         app.buttons["Close"].tap()
         app.buttons["Usage"].tap()
-        XCTAssertTrue(app.staticTexts["USAGE."].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.staticTexts["Usage"].waitForExistence(timeout: 3))
         app.buttons["Close"].tap()
         app.buttons["starred-shortcut"].tap()
         XCTAssertTrue(app.textFields["composer"].waitForExistence(timeout: 3))
@@ -205,7 +205,7 @@ import XCTest
         app.buttons["You"].tap()
         XCTAssertTrue(app.buttons.containing(.staticText, identifier: "New bot").firstMatch.waitForExistence(timeout: 3))
         app.buttons.containing(.staticText, identifier: "New bot").firstMatch.tap()
-        XCTAssertTrue(app.staticTexts["NEW BOT."].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.staticTexts["New bot"].waitForExistence(timeout: 3))
         XCTAssertFalse(app.buttons["Make bot"].isEnabled)
         let fields = app.scrollViews["new-bot-fields"]
         XCTAssertTrue(app.textFields["01 — Name"].exists)
@@ -240,7 +240,7 @@ import XCTest
         app.buttons["Answer question"].tap()
         XCTAssertTrue(app.buttons["Blog and changelog"].waitForExistence(timeout: 3))
         XCTAssertTrue(app.buttons["Blog and changelog"].isHittable)
-        XCTAssertTrue(app.staticTexts["WHICH CHANNELS SHOULD THE LAUNCH USE?"].exists)
+        XCTAssertTrue(app.staticTexts["Which channels should the launch use?"].exists)
         app.buttons["close-sheet"].tap()
     }
 
