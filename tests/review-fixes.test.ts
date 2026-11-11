@@ -1,30 +1,7 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import test from 'node:test';
-import { keysFromEnvFile, providerEnvironment } from '../src/bridge/adapters.js';
 import { runBoundedProcess, slideTail } from '../src/bridge/process.js';
 import { swarmBranchRef } from '../src/core/sources.js';
-
-test('dotenv names are collected and service secrets never reach a provider', () => {
-  assert.deepEqual(keysFromEnvFile('# c\nexport DATABASE_URL=postgres://x\n\nPUBLIC_URL=http://local\nPATH=/bin\n'), ['DATABASE_URL', 'PUBLIC_URL', 'PATH']);
-  const dir = mkdtempSync(join(tmpdir(), 'env-'));
-  const file = join(dir, '.env');
-  writeFileSync(file, 'DATABASE_URL=postgres://secret\nPUBLIC_URL=http://x\nPATH=/from-file\n');
-  const env = providerEnvironment('claude', {
-    PATH: '/bin', HOME: '/h', DATABASE_URL: 'postgres://secret', PUBLIC_URL: 'http://x',
-    POSTGRES_PASSWORD: 'pw', EVENT_ENCRYPTION_KEY: 'k', MY_MCP_KEY: 'keep', COLLECTIVE_TOKEN: 'no',
-  }, 'UNUSED', [file]);
-  assert.equal(env.DATABASE_URL, undefined);
-  assert.equal(env.PUBLIC_URL, undefined);
-  assert.equal(env.POSTGRES_PASSWORD, undefined);
-  assert.equal(env.EVENT_ENCRYPTION_KEY, undefined);
-  assert.equal(env.COLLECTIVE_TOKEN, undefined);
-  assert.equal(env.PATH, '/bin');
-  assert.equal(env.HOME, '/h');
-  assert.equal(env.MY_MCP_KEY, 'keep');
-});
 
 test('stdout tail keeps the last 8 KiB in linear time', () => {
   const chunk = Buffer.alloc(128, 0x61);

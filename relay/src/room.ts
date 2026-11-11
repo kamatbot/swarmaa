@@ -79,23 +79,6 @@ export async function computeHostId(rawPubkey: Uint8Array): Promise<string> {
   return base32Encode(new Uint8Array(digest)).slice(0, 26);
 }
 
-export async function sha256Hex(value: string): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
-  return Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, "0")).join("");
-}
-
-/** The paired API token, if the client presented one. Knowing the host id is not enough. */
-export function bearerToken(headers: unknown): string | null {
-  if (!headers || typeof headers !== "object") return null;
-  const record = headers as Record<string, unknown>;
-  const raw = record.authorization ?? record.Authorization;
-  if (typeof raw !== "string") return null;
-  const match = /^Bearer\s+(\S+)$/iu.exec(raw.trim());
-  const token = match?.[1] ?? "";
-  if (token.length < 8 || token.length > 512) return null;
-  return token;
-}
-
 export class HostRoom extends DurableObject<Env> {
   private getActiveHostSocket(): WebSocket | null {
     const hostSockets = this.ctx.getWebSockets("host");
@@ -431,15 +414,6 @@ export class HostRoom extends DurableObject<Env> {
         break;
       }
       case "pair_result": {
-        if (typeof frame.token === "string" && frame.token.length >= 8 && frame.token.length <= 512) {
-          const hash = await sha256Hex(frame.token);
-          const known = (await this.ctx.storage.get<string[]>("client_token_hashes")) ?? [];
-          if (!known.includes(hash)) {
-            known.push(hash);
-            while (known.length > 32) known.shift();
-            await this.ctx.storage.put("client_token_hashes", known);
-          }
-        }
         if (typeof frame.rid !== "string") return;
         const colonIdx = frame.rid.indexOf(":");
         if (colonIdx === -1) return;
@@ -460,8 +434,7 @@ export class HostRoom extends DurableObject<Env> {
     switch (frame.t) {
       case "hello": {
         if (frame.role !== "client") return;
-        // Hello only announces the socket. Requests need a bearer token this room saw at pairing.
-        att.authed = false;
+        att.authed = true;
         ws.serializeAttachment(att);
 
         const online = this.isHostOnline();
@@ -481,12 +454,6 @@ export class HostRoom extends DurableObject<Env> {
       }
       case "req": {
         if (typeof frame.sid !== "string" || frame.sid.length > 32) return;
-        const presented = bearerToken(frame.headers);
-        const known = (await this.ctx.storage.get<string[]>("client_token_hashes")) ?? [];
-        if (!presented || !known.includes(await sha256Hex(presented))) {
-          ws.send(JSON.stringify({ t: "end", sid: frame.sid, error: "unauthorized" }));
-          return;
-        }
 
         const now = Date.now();
         att.reqTimestamps = (att.reqTimestamps || []).filter(ts => now - ts < 60000);

@@ -1110,7 +1110,7 @@ final class TeamsModel: ObservableObject {
             // Bodies never ride the stream: fetch the one message, or the tail.
             do {
                 var after = event.name == "message.updated" ? event.seq.map { $0 - 1 } : messages[t]?.last?.seq
-                for pageIndex in 0..<2 {
+                for pageIndex in 0..<100 {
                     let page = try await client.threadRead(id: t, afterSeq: after, limit: 50)
                     if messages[t] != nil { merge(page.messages, into: t); takeTyping(page, t) }
                     else if let m = page.messages.last { previews[t] = TeamsPreview(body: m.preview, createdAt: m.createdAt) }
@@ -1120,7 +1120,7 @@ final class TeamsModel: ObservableObject {
                     guard isOpen, after != nil, event.name == "message.created", page.hasMore == true,
                           let last = page.messages.last?.seq, last > (after ?? -1) else { break }
                     guard !Task.isCancelled else { return }
-                    if pageIndex == 1 { break }
+                    if pageIndex == 99 { throw SwarmaClient.Failure.badResponse }
                     after = last
                 }
                 threadErrors[t] = nil

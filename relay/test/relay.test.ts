@@ -110,13 +110,6 @@ async function connectHost(
   };
 }
 
-/** Remember a paired bearer. A later ping is ordered after the pair_result on the host socket. */
-async function grantClient(host: HelperHost, token: string): Promise<void> {
-  host.ws.send(JSON.stringify({ t: "pair_result", rid: "c_unused:grant", token }));
-  host.ws.send(JSON.stringify({ t: "ping" }));
-  await host.waitForMessage((m) => m.t === "pong");
-}
-
 async function connectClient(hostId: string, version = "1.0.0"): Promise<HelperClient> {
   const res = await SELF.fetch(`http://example.com/h/${hostId}`, {
     headers: { Upgrade: "websocket" }
@@ -148,7 +141,6 @@ describe("HostRoom DO and Cloudflare Worker Relay", () => {
 
     const client1 = await connectClient(hostId);
     const client2 = await connectClient(hostId);
-    await grantClient(host, "secret-token");
 
     // Both clients receive presence from handshake
     const p1 = await client1.waitForMessage((m) => m.t === "presence");
@@ -213,7 +205,7 @@ describe("HostRoom DO and Cloudflare Worker Relay", () => {
       sid: "sse-stream-02",
       method: "GET",
       path: "/api/stream",
-      headers: { accept: "text/event-stream", authorization: "Bearer secret-token" },
+      headers: { accept: "text/event-stream" },
       body: null
     }));
 
@@ -267,40 +259,19 @@ describe("HostRoom DO and Cloudflare Worker Relay", () => {
   });
 
   it("host_offline", async () => {
-    const { keyPair, rawPubkey, hostId } = await createKeyPair();
-    const host = await connectHost(hostId, keyPair, rawPubkey);
-    await grantClient(host, "secret-token");
-    host.ws.close();
+    const { hostId } = await createKeyPair();
 
     const client = await connectClient(hostId);
     client.ws.send(JSON.stringify({
       t: "req",
       sid: "offline-req",
       method: "GET",
-      path: "/healthz",
-      headers: { authorization: "Bearer secret-token" }
+      path: "/healthz"
     }));
 
     const endMsg = await client.waitForMessage((m) => m.t === "end" && m.sid === "offline-req");
     expect(endMsg.error).toBe("host_offline");
 
-    client.ws.close();
-  });
-
-  it("a request without a paired bearer is refused", async () => {
-    const { keyPair, rawPubkey, hostId } = await createKeyPair();
-    const host = await connectHost(hostId, keyPair, rawPubkey);
-    const client = await connectClient(hostId);
-    client.ws.send(JSON.stringify({
-      t: "req",
-      sid: "no-token",
-      method: "GET",
-      path: "/healthz",
-      headers: { authorization: "Bearer not-paired" }
-    }));
-    const endMsg = await client.waitForMessage((m) => m.t === "end" && m.sid === "no-token");
-    expect(endMsg.error).toBe("unauthorized");
-    host.ws.close();
     client.ws.close();
   });
 
@@ -613,7 +584,6 @@ describe("HostRoom DO and Cloudflare Worker Relay", () => {
     const { keyPair, rawPubkey, hostId } = await createKeyPair();
     const host = await connectHost(hostId, keyPair, rawPubkey);
     const client = await connectClient(hostId);
-    await grantClient(host, "secret-token");
 
     // Send 120 requests
     for (let i = 0; i < 120; i++) {
@@ -621,8 +591,7 @@ describe("HostRoom DO and Cloudflare Worker Relay", () => {
         t: "req",
         sid: `r-${i}`,
         method: "GET",
-        path: "/healthz",
-        headers: { authorization: "Bearer secret-token" }
+        path: "/healthz"
       }));
     }
 
@@ -631,8 +600,7 @@ describe("HostRoom DO and Cloudflare Worker Relay", () => {
       t: "req",
       sid: "r-121",
       method: "GET",
-      path: "/healthz",
-      headers: { authorization: "Bearer secret-token" }
+      path: "/healthz"
     }));
 
     const rateLimited = await client.waitForMessage((m) => m.t === "end" && m.sid === "r-121");

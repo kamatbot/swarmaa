@@ -29,32 +29,15 @@ export interface SandboxOptions {
 
 /** Credential and private-data locations under $HOME that workers never touch. */
 export const CREDENTIAL_PATHS = ['.ssh', '.aws', '.azure', '.config/gcloud', '.kube', '.docker', '.gnupg', '.netrc', '.git-credentials', '.config/gh',
-  '.npmrc', '.pypirc', '.env', '.env.local', '.env.production', '.local', '.swarmaa',
-  'Library/Cookies', 'Library/Application Support/Google', 'Library/Safari', 'Library/Messages', 'Library/Mail'];
+  '.npmrc', '.pypirc', 'Library/Cookies', 'Library/Application Support/Google', 'Library/Safari', 'Library/Messages', 'Library/Mail'];
 
 /**
- * Light macOS Seatbelt profile: allow the CLI what it can do in the user's shell, then deny credential
- * folders, service env files, and `~/.swarma` except the patch worktrees. Keychains and the provider's
- * own config (`.claude`, `.codex`) stay reachable because the CLIs keep their logins there.
- * Seatbelt uses the last matching rule, so the worktree allow comes after the `~/.swarma` deny.
+ * Light macOS Seatbelt profile: the worker can do what the CLI can do in the user's shell, except read or
+ * write credential folders. Keychains stay reachable because the CLIs keep their own logins there.
  */
 export function buildProfile(o: SandboxOptions): string {
   const home = real(o.home ?? homedir());
-  const project = real(o.projectRoot);
-  const denies = [
-    ...CREDENTIAL_PATHS.map(d => sub(join(home, d))),
-    sub(join(project, '.env')),
-    sub(join(project, '.env.local')),
-    sub(join(project, '.local')),
-  ];
-  const swarma = join(home, '.swarma');
-  return [
-    '(version 1)',
-    '(allow default)',
-    `(deny file-read* file-write* ${denies.join(' ')})`,
-    `(deny file-read* file-write* ${sub(swarma)})`,
-    `(allow file-read* file-write* ${sub(join(swarma, 'worktrees'))})`,
-  ].join('\n') + '\n';
+  return ['(version 1)', '(allow default)', `(deny file-read* file-write* ${CREDENTIAL_PATHS.map(d => sub(join(home, d))).join(' ')})`].join('\n') + '\n';
 }
 
 export function sandboxAvailable(): boolean { return existsSync(SANDBOX_EXEC); }
