@@ -39,7 +39,10 @@
   --pressed: inset 0 1px 3px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(190, 210, 240, 0.08);
   --recessed: inset 0 2px 8px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(190, 210, 240, 0.08);
   --gutter: clamp(1rem, 4vw, 3rem);
-  --stage: min(1760px, 100vw - 2 * clamp(16px, 2.5vw, 40px));
+  /* ONE container: nav content, hero copy, the app window and every section shell share this width.
+     % resolves against the viewport-wide parent in each place (.nav is fixed full width, .shell sits in body). */
+  --wrap: 1480px;
+  --container: min(var(--wrap), 100% - 2 * var(--gutter));
   color-scheme: dark;
 }
 *, *::before, *::after { box-sizing: border-box; }
@@ -53,7 +56,7 @@ img, video, svg { display: block; max-inline-size: 100%; }
 .skip:focus { top: 1rem; }
 [hidden] { display: none !important; }
 .sr-only { position: absolute; inline-size: 1px; block-size: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
-.shell { inline-size: min(1480px, 100%); margin-inline: auto; padding-inline: var(--gutter); }
+.shell { inline-size: var(--container); margin-inline: auto; }
 
 /* type */
 h1, h2, h3 { font-family: var(--font-display); font-weight: 600; font-stretch: 104%; letter-spacing: -0.02em; margin: 0; }
@@ -79,8 +82,9 @@ code, .mono { font-family: var(--font-mono); }
 .btn:hover svg { transform: translateX(3px); }
 
 /* nav: flat at the top, a glass pill once the page moves */
-.nav { position: fixed; inset-block-start: calc(env(safe-area-inset-top, 0px) + 0.75rem); inset-inline: 0; z-index: 60; display: flex; justify-content: center; padding-inline: var(--gutter); pointer-events: none; }
-.nav-pill { pointer-events: auto; inline-size: min(1480px - 2 * var(--gutter), 100%); display: flex; align-items: center; gap: 1rem; padding: 0.4rem 0.4rem 0.4rem 1rem;
+.nav { position: fixed; inset-block-start: calc(env(safe-area-inset-top, 0px) + 0.75rem); inset-inline: 0; z-index: 60; display: flex; justify-content: center; pointer-events: none; }
+/* the pill is the container plus its 0.4rem padding and 1px border each side, so the logo and the CTA sit exactly on the container edges */
+.nav-pill { pointer-events: auto; inline-size: calc(var(--container) + 0.8rem + 2px); display: flex; align-items: center; gap: 1rem; padding: 0.4rem;
   border: 1px solid transparent; border-radius: 999px; background: transparent;
   transition: background 0.45s ease, border-color 0.45s ease, box-shadow 0.45s ease, backdrop-filter 0.45s ease; }
 .nav.is-scrolled .nav-pill { border-color: color-mix(in oklab, var(--paper) 13%, transparent); background: color-mix(in oklab, var(--bg) 70%, transparent);
@@ -115,8 +119,6 @@ code, .mono { font-family: var(--font-mono); }
 .hero-ctas { display: flex; flex-wrap: wrap; gap: 0.7rem; align-items: center; }
 .hero-meta { margin: 1rem 0 0; font: 400 0.75rem var(--font-mono); letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); }
 .hero-cap { display: flex; justify-content: space-between; gap: 1rem; flex-wrap: wrap; margin: 0 0 0.7rem; font: 400 0.72rem var(--font-mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); }
-/* wider stage: the window and its caption break out of the shell, near full-bleed */
-.hero .stage { inline-size: var(--stage); margin-inline: calc((100% - var(--stage)) / 2); }
 @media (min-width: 75.01rem) { .app { grid-template-columns: 16rem minmax(0, 1fr) 21rem; block-size: 48rem; } }
 .hero-cap span:last-child { color: color-mix(in oklab, var(--muted) 70%, transparent); }
 
@@ -586,7 +588,6 @@ code, .mono { font-family: var(--font-mono); }
 }
 @media (max-width: 52rem) { .nav-links { display: none; } }
 @media (max-width: 46rem) {
-  .nav-pill { padding-inline-start: 0.7rem; }
   .wordmark { font-size: 0.92rem; letter-spacing: 0.12em; }
   .pill-cta { block-size: 2.4rem; font-size: 0.88rem; padding-inline: 1rem 0.9rem; }
   .hero h1 { font-size: clamp(2.3rem, 11vw, 3rem); }
@@ -641,7 +642,6 @@ code, .mono { font-family: var(--font-mono); }
       </div>
     </div>
 
-    <div class="stage">
     <p class="hero-cap"><span>Illustration · the Swarmaa window</span><span>Click a bot, switch tabs, approve the merge</span></p>
     <div class="app-frame">
       <div class="app" id="app">
@@ -701,7 +701,6 @@ code, .mono { font-family: var(--font-mono); }
       </div>
     </div>
 
-    </div>
     <ol class="app-legend">
       <li><b>1</b><div><span>Bots</span>Each bot keeps one thread for one job. Talk to it like a person.</div></li>
       <li><b>2</b><div><span>Timeline</span>Every step, the agent that ran it, its branch and its tests.</div></li>
