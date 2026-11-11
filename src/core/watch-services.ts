@@ -145,7 +145,7 @@ export class WatchServices {
     });
   }
 }
-const MEMO_OBJECTIVE = 'The user just sent a voice memo (see the latest "Voice memo" message). Summarize it, list the action items, then ask the user with a structured question (question_ask) with options "Do it now", "Remind me later", "Done" so it shows as Needs you.';
+const MEMO_OBJECTIVE = 'The user just sent a voice memo (see the latest "Voice memo" message). If it directly asks for work in a project and you can send work with project_dispatch, send it now and say so. Otherwise summarize it, list the action items, then ask the user with a structured question (question_ask) with options "Do it now", "Remind me later", "Done" so it shows as Needs you.';
 
 function transactionConfig(p:Principal): {origin:string,user:string,cookieFile:string} {
   const allowed = (process.env.SWARMAA_RETIREODDS_PRINCIPALS || '').split(',').map(x => x.trim().toLowerCase()).filter(Boolean);
