@@ -138,19 +138,19 @@ struct PhoneTransactionReviewsView: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack { CloseButton(action: close); Text("TRANSACTIONS.").font(KS.display(28)) }
-            Text("Review only. Confirm eligible transactions on Watch.").font(KS.body(14))
+            HStack { CloseButton(action: close); Text("Transactions").font(KS.title()).foregroundStyle(KS.strong) }
+            Text("Review only. Confirm eligible transactions on Watch.").font(KS.body()).foregroundStyle(KS.soft)
+            if store.entries.filter({ $0.request.generation == generation }).isEmpty { Text("Transaction previews you start on Apple Watch will appear here.").font(KS.body()).foregroundStyle(KS.muted) }
             ScrollView {
                 ForEach(store.entries.filter { $0.request.generation == generation }, id: \.request.id) { entry in
                     VStack(alignment: .leading, spacing: 6) {
                         if let review = entry.review {
-                            Text("Account: " + review.accountId); Text("Operation: " + review.operation)
-                            if let before = review.before { Text("Before").fontWeight(.bold); fields(before) } else { Text("Before: none") }
-                            Text("After").fontWeight(.bold); fields(review.after); Text("Expires: " + review.expiresAt)
-                        } else { Text("Preview unconfirmed. Check the Mac transaction integration.") }
-                        Text(entry.receipt == nil ? entry.state : "Ledger updated")
-                        Divider()
-                    }.frame(maxWidth: .infinity, alignment: .leading)
+                            Text("Account: " + review.accountId).font(KS.headline()).foregroundStyle(KS.strong); Text("Operation: " + review.operation).font(KS.mono()).foregroundStyle(KS.muted)
+                            if let before = review.before { Eyebrow("Before"); fields(before) } else { Eyebrow("Before: none") }
+                            Eyebrow("After"); fields(review.after); Text("Expires: " + review.expiresAt).font(KS.mono()).foregroundStyle(KS.muted)
+                        } else { Text("Preview unconfirmed. Check the Mac transaction integration.").font(KS.body()).foregroundStyle(KS.needsText) }
+                        StatusChip(entry.receipt == nil ? entry.state : "Ledger updated")
+                    }.font(KS.body()).foregroundStyle(KS.ink).frame(maxWidth: .infinity, alignment: .leading).padding(12).card()
                 }
             }
         }

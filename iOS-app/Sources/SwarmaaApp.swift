@@ -96,33 +96,49 @@ struct SwarmaaShortcuts: AppShortcutsProvider {
 @main struct SwarmaaApp: App {
     @UIApplicationDelegateAdaptor(PushDelegate.self) private var pushDelegate
     var body: some Scene {
-        WindowGroup { RootView(model: Runtime.model).preferredColorScheme(.light) }
+        WindowGroup { RootView(model: Runtime.model).preferredColorScheme(.dark).tint(KS.signal) }
     }
 }
 
-// Kind Swarm: expressive display type, readable native text and original Moji art.
+// Swarmaa navy: the same workspace palette as the Mac app and swarmaa.com.
 enum KS {
-    static let ink = Color(hex: 0x15111F), paper = Color(hex: 0xF4EFE6), lime = Color(hex: 0xCFE08A)
-    static let coral = Color(hex: 0xE8836B), sage = Color(hex: 0xF1F5E2), coralTint = Color(hex: 0xFBEFE7)
-    static let danger = Color(hex: 0xC8452F)
-    static let attentionSurface = Color(hex: 0xFDF5F0), neutralTint = ink.opacity(0.06)
-    static let needsTint = Color(hex: 0xFBE3DA), needsText = Color(hex: 0x9B3A22)
-    static let readyText = Color(hex: 0x4A5A12)
-    static let failedTint = Color(hex: 0xF6DDD6), failedText = Color(hex: 0x8A2410)
-    static let sky = Color(hex: 0xB7CCE8), butter = Color(hex: 0xEAD9A6), lilac = Color(hex: 0xD9CDEE)
-    static let soft = Color(hex: 0x3A3347), muted = Color(hex: 0x5A5168)
-    // Semantic styles respond to the reader's text size, including accessibility sizes.
-    static func body(_ size: CGFloat = 15, _ weight: Font.Weight = .regular) -> Font {
-        let style: Font.TextStyle = size <= 12 ? .caption : size <= 13 ? .footnote : size <= 15 ? .subheadline : size <= 16 ? .callout : size <= 18 ? .body : size <= 22 ? .title3 : .title2
-        return .system(style, design: .default, weight: weight)
+    /// Screen ground, grouped/sheet ground, cards, inset wells, chips.
+    static let ground = Color(hex: 0x0B182D), grouped = Color(hex: 0x0D1C33), surface = Color(hex: 0x12233E)
+    static let inset = Color(hex: 0x081326), chip = Color(hex: 0x182C4D), mine = Color(hex: 0x1B3155)
+    static let hairline = Color(red: 200 / 255, green: 218 / 255, blue: 245 / 255).opacity(0.08)
+    static let optionLine = Color(red: 200 / 255, green: 218 / 255, blue: 245 / 255).opacity(0.14)
+    /// Text: body, titles and names, secondary.
+    static let ink = Color(hex: 0xE3E9F2), strong = Color(hex: 0xF2F5FA), muted = Color(hex: 0x8B9CB6), soft = Color(hex: 0xB3C1D4)
+    /// Signal blue: primary buttons, progress, running. Text on it is navy.
+    static let signal = Color(hex: 0x8FB8FF), onSignal = Color(hex: 0x0A1830), signalTint = Color(hex: 0x8FB8FF).opacity(0.14)
+    static let needsTint = Color(hex: 0xE0A77A).opacity(0.16), needsText = Color(hex: 0xECC09A)
+    static let readyTint = Color(hex: 0xB9C9A2).opacity(0.16), readyText = Color(hex: 0xCDDCB8)
+    static let failedTint = Color(hex: 0xE0896A).opacity(0.16), failedText = Color(hex: 0xE0896A)
+    /// A card that needs you: the card warmed a touch toward amber.
+    static let attentionSurface = Color(hex: 0x1E2C42)
+    static let neutralTint = chip
+    static let online = Color(hex: 0xCDDCB8)
+
+    // One type scale, on text styles so Dynamic Type keeps working.
+    /// 22 semibold: screen and sheet titles.
+    static func title() -> Font { .system(.title2, design: .default, weight: .semibold) }
+    /// 16 semibold: card titles, row names.
+    static func headline() -> Font { .system(.callout, design: .default, weight: .semibold) }
+    /// 15: body copy, messages, buttons.
+    static func body(_ weight: Font.Weight = .regular) -> Font { .system(.subheadline, design: .default, weight: weight) }
+    /// 13: meta lines and captions.
+    static func secondary(_ weight: Font.Weight = .regular) -> Font { .system(.footnote, design: .default, weight: weight) }
+    /// 11 semibold, upper case and tracked (see Eyebrow).
+    static func label() -> Font { .system(.caption2, design: .default, weight: .semibold) }
+    /// 12 mono: times, durations, branches, counts.
+    static func mono(_ weight: Font.Weight = .regular) -> Font { .system(.caption, design: .monospaced, weight: weight) }
+
+    static func tint(_ provider: String) -> Color {
+        switch provider { case "claude": Color(hex: 0xC99D72); case "codex": Color(hex: 0xAEB6BD); case "antigravity": Color(hex: 0x7AA7F2); default: chip }
     }
-    static func display(_ size: CGFloat) -> Font {
-        .system(size >= 38 ? .title : size >= 30 ? .title2 : size >= 24 ? .title3 : .headline, design: .default, weight: .black).width(.compressed)
+    static func monogram(_ provider: String) -> String {
+        switch provider { case "claude": "CL"; case "codex": "CX"; case "antigravity": "AG"; default: String(provider.prefix(2)).uppercased() }
     }
-    static func mono(_ size: CGFloat = 11) -> Font {
-        .system(size >= 28 ? .largeTitle : size >= 14 ? .subheadline : size >= 12 ? .caption : .caption2, design: .monospaced, weight: .medium)
-    }
-    static func tint(_ provider: String) -> Color { provider == "claude" ? lime : provider == "codex" ? coral : sky }
     // Short, interaction-driven motion; no ambient work while reading a thread.
     static let settle = Animation.spring(response: 0.28, dampingFraction: 0.78)
     static let glide = Animation.timingCurve(0.2, 0, 0, 1, duration: 0.28)
@@ -131,54 +147,48 @@ extension Color {
     init(hex: UInt32) { self.init(.sRGB, red: Double((hex >> 16) & 255) / 255, green: Double((hex >> 8) & 255) / 255, blue: Double(hex & 255) / 255, opacity: 1) }
 }
 extension View {
-    func card(_ color: Color = .white, radius: CGFloat = 16, shadow: Bool = true) -> some View {
-        background {
-            RoundedRectangle(cornerRadius: radius, style: .continuous).fill(color)
-                .shadow(color: KS.ink.opacity(shadow ? 0.06 : 0), radius: 1, y: 1)
-                .shadow(color: KS.ink.opacity(shadow ? 0.05 : 0), radius: 7, y: 4)
-        }
+    /// Navy cards part by tone and a hairline, not shadow.
+    func card(_ color: Color = KS.surface, radius: CGFloat = 12) -> some View {
+        background(RoundedRectangle(cornerRadius: radius, style: .continuous).fill(color))
+            .overlay(RoundedRectangle(cornerRadius: radius, style: .continuous).strokeBorder(KS.hairline, lineWidth: 1).allowsHitTesting(false))
     }
+    /// Agent messages are cards; yours are right-aligned bubbles.
     func bubble(human: Bool = false) -> some View {
-        background {
-            UnevenRoundedRectangle(topLeadingRadius: human ? 18 : 5, bottomLeadingRadius: 18,
-                                   bottomTrailingRadius: human ? 5 : 18, topTrailingRadius: 18)
-                .fill(human ? KS.ink : .white)
-                .shadow(color: KS.ink.opacity(human ? 0 : 0.06), radius: 1, y: 1)
-                .shadow(color: KS.ink.opacity(human ? 0 : 0.05), radius: 7, y: 4)
-        }
+        card(human ? KS.mine : KS.surface)
     }
 }
 struct StatusChip: View {
     var text: String
-    @ScaledMetric(relativeTo: .caption) private var labelSize: CGFloat = 11.5
     init(_ text: String) { self.text = text }
     private var needs: Bool { text.lowercased().hasPrefix("needs") || text == "open" }
     private var ready: Bool { ["ready for review", "resolved", "completed", "done"].contains(text.lowercased()) }
+    private var running: Bool { ["running", "queued", "working"].contains(text.lowercased()) }
+    private var failed: Bool { ["failed", "blocked"].contains(text.lowercased()) }
     var body: some View {
         Text(text.prefix(1).uppercased() + text.dropFirst())
-            .font(.system(size: labelSize, weight: .semibold))
-            .foregroundStyle(text == "failed" ? KS.failedText : needs ? KS.needsText : ready ? KS.readyText : KS.soft)
-            .padding(.horizontal, 8).frame(minHeight: 20)
-            .background(text == "failed" ? KS.failedTint : needs ? KS.needsTint : ready ? KS.sage : KS.neutralTint, in: Capsule())
+            .font(KS.secondary(.semibold))
+            .foregroundStyle(failed ? KS.failedText : needs ? KS.needsText : ready ? KS.readyText : running ? KS.signal : KS.soft)
+            .padding(.horizontal, 8).frame(minHeight: 22)
+            .background(failed ? KS.failedTint : needs ? KS.needsTint : ready ? KS.readyTint : running ? KS.signalTint : KS.neutralTint, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
             .fixedSize(horizontal: false, vertical: true)
     }
 }
 struct Pill: ButtonStyle {
-    var fill: Color = KS.neutralTint
+    var fill: Color = KS.chip
     var primary = false
     /// Hide and delete use the destructive tint.
     var danger = false
     var answerOption = false
     @Environment(\.isEnabled) var enabled
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @ScaledMetric(relativeTo: .subheadline) private var labelSize: CGFloat = 14
     func makeBody(configuration: Configuration) -> some View {
         let pressed = enabled && configuration.isPressed
-        configuration.label.font(.system(size: labelSize, weight: .semibold)).foregroundStyle(danger ? KS.failedText : KS.ink)
-            .padding(.horizontal, 12).padding(.vertical, 6).frame(minHeight: primary ? 44 : 32)
+        let filled = primary || fill == KS.signal
+        configuration.label.font(KS.body(.semibold)).foregroundStyle(danger ? KS.failedText : filled ? KS.onSignal : KS.ink)
+            .padding(.horizontal, 14).padding(.vertical, 6).frame(minHeight: primary ? 48 : 36)
             .frame(maxWidth: primary || danger ? .infinity : nil)
-            .background(danger ? KS.failedTint : primary ? KS.lime : fill, in: RoundedRectangle(cornerRadius: 20))
-            .overlay { if answerOption { RoundedRectangle(cornerRadius: 20).strokeBorder(KS.ink.opacity(0.12), lineWidth: 1).allowsHitTesting(false) } }
+            .background(danger ? KS.failedTint : primary ? KS.signal : fill, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+            .overlay { if !filled && !danger { RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(answerOption ? KS.optionLine : KS.hairline, lineWidth: 1).allowsHitTesting(false) } }
             .frame(minHeight: 44)
             .contentShape(Rectangle())
             .opacity(enabled ? 1 : 0.45)
@@ -194,26 +204,10 @@ struct PressStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         let pressed = enabled && configuration.isPressed
         configuration.label
-            .background { if icon && pressed { Circle().fill(KS.neutralTint).frame(width: 32, height: 32) } }
+            .background { if icon && pressed { Circle().fill(KS.chip).frame(width: 36, height: 36) } }
             .opacity(pressed ? 0.8 : 1)
             .scaleEffect(pressed && !reduceMotion ? 0.985 : 1)
             .animation(reduceMotion ? nil : KS.settle, value: pressed)
-    }
-}
-private struct HomeRowPressedKey: EnvironmentKey {
-    static let defaultValue = false
-}
-private extension EnvironmentValues {
-    var homeRowPressed: Bool {
-        get { self[HomeRowPressedKey.self] }
-        set { self[HomeRowPressedKey.self] = newValue }
-    }
-}
-private struct HomeRowStyle: ButtonStyle {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    func makeBody(configuration: Configuration) -> some View {
-        // Keep the usual press feedback; the avatar's squash rides on top of it.
-        PressStyle().makeBody(configuration: configuration).environment(\.homeRowPressed, configuration.isPressed && !reduceMotion)
     }
 }
 
@@ -229,15 +223,15 @@ private struct HomeBadge: View {
     var body: some View {
         Group {
             if needsYou > 0 || unread > 0 {
-                Text(needsYou > 0 ? "!" : "\(unread)").font(KS.body(11.5, .semibold)).foregroundStyle(needsYou > 0 ? KS.needsText : KS.readyText).padding(.horizontal, 8)
-                    .frame(minWidth: 24, minHeight: 24).background(needsYou > 0 ? KS.needsTint : KS.sage, in: Capsule())
+                Text(needsYou > 0 ? "Needs you" : "\(unread)").font(KS.mono(.semibold)).foregroundStyle(needsYou > 0 ? KS.needsText : KS.onSignal).padding(.horizontal, 7)
+                    .frame(minWidth: 22, minHeight: 22).background(needsYou > 0 ? KS.needsTint : KS.signal, in: Capsule())
                     .accessibilityLabel(needsYou > 0 ? "Needs you" : "\(unread) unread")
             }
         }
         .keyframeAnimator(initialValue: CGFloat(1), trigger: pop) { content, scale in
             content.scaleEffect(reduceMotion ? 1 : scale)
         } keyframes: { _ in
-            SpringKeyframe(1.25, duration: 0.12)
+            SpringKeyframe(1.15, duration: 0.12)
             SpringKeyframe(1, duration: 0.18)
         }
         .onChange(of: [unread, needsYou]) { old, new in
@@ -245,37 +239,43 @@ private struct HomeBadge: View {
         }
     }
 }
-struct Moji: View {
-    var seed: String
-    var size: CGFloat = 44
-    var mark = false
+/// A monogram circle: a bot's initials in its chosen colour, or an agent's provider (CL, CX, AG).
+struct Avatar: View {
+    var name: String
+    var size: CGFloat = 32
     var colorHex: UInt32?
-    @Environment(\.homeRowPressed) private var rowPressed
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    var provider = ""
+    private var letters: String {
+        if !provider.isEmpty { return KS.monogram(provider) }
+        let words = name.split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+        let text = words.count > 1 ? String(words[0].prefix(1) + words[1].prefix(1)) : String(name.prefix(2))
+        return text.isEmpty ? "?" : text.uppercased()
+    }
     var body: some View {
-        let character = mark ? "mark" : mojiCharacter(seed)
-        Group {
-            // UIImage's named-image cache avoids disk reads and decoding on every live update.
-            if let image = UIImage(named: "moji-" + character) {
-                Image(uiImage: image).resizable().scaledToFit()
-                    .hueRotation(.degrees(colorHex.map { mojiHueShift(character, toHex: $0) } ?? 0))
-            }
-        }.frame(width: size, height: size).accessibilityHidden(true)
-            .scaleEffect(x: rowPressed && !reduceMotion ? 1.08 : 1, y: rowPressed && !reduceMotion ? 0.92 : 1)
-            .rotationEffect(.degrees(rowPressed && !reduceMotion ? -6 : 0))
-            .animation(reduceMotion ? nil : .spring(duration: 0.3), value: rowPressed)
+        let fill = !provider.isEmpty ? KS.tint(provider) : colorHex.map { Color(hex: $0) } ?? KS.chip
+        let filled = !provider.isEmpty || colorHex != nil
+        Text(letters).font(.system(size: size * 0.34, weight: .bold, design: .monospaced))
+            .foregroundStyle(filled ? KS.onSignal : KS.ink)
+            .frame(width: size, height: size)
+            .background(fill, in: Circle())
+            .overlay { if !filled { Circle().strokeBorder(KS.optionLine, lineWidth: 1) } }
+            .accessibilityHidden(true)
     }
 }
 struct Eyebrow: View {
     var text: String
-    init(_ text: String) { self.text = text }
-    var body: some View { Text(text.uppercased()).font(KS.mono()).tracking(0.5).foregroundStyle(KS.muted).fixedSize(horizontal: false, vertical: true) }
+    var color: Color = KS.muted
+    init(_ text: String, color: Color = KS.muted) { self.text = text; self.color = color }
+    var body: some View { Text(text.uppercased()).font(KS.label()).tracking(0.9).foregroundStyle(color).fixedSize(horizontal: false, vertical: true) }
 }
 struct CloseButton: View {
     var action: () -> Void
     var body: some View {
-        Button(action: action) { Image(systemName: "xmark").font(.system(size: 14, weight: .semibold)).frame(width: 34, height: 34).frame(width: 44, height: 44).contentShape(Rectangle()) }
-            .buttonStyle(PressStyle(icon: true)).fixedSize().accessibilityLabel("Close")
+        Button(action: action) {
+            Image(systemName: "xmark").font(.system(size: 13, weight: .semibold)).foregroundStyle(KS.ink)
+                .frame(width: 32, height: 32).background(KS.chip, in: Circle()).frame(width: 44, height: 44).contentShape(Rectangle())
+        }
+            .buttonStyle(PressStyle()).fixedSize().accessibilityLabel("Close")
     }
 }
 struct ContentSheet<Content: View>: View {
@@ -288,9 +288,10 @@ struct ContentSheet<Content: View>: View {
                 .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { measured = $0 }
         }
             .scrollBounceBehavior(.basedOnSize).scrollDismissesKeyboard(.interactively)
-            .background(KS.paper).foregroundStyle(KS.ink).tint(KS.ink)
+            .background(KS.grouped).foregroundStyle(KS.ink).tint(KS.signal)
             .presentationDetents([.height(measured)])
-            .presentationDragIndicator(.hidden).presentationCornerRadius(28)
+            .presentationDragIndicator(.hidden).presentationCornerRadius(20)
+            .presentationBackground(KS.grouped)
     }
 }
 
@@ -337,38 +338,38 @@ struct RootView: View {
                         home.accessibilityHidden(screen != .home).allowsHitTesting(screen == .home)
                         if screen == .thread || (screen == .settings && model.openBot != nil) {
                             thread.swipeBack { screen = .home; model.openBot = nil }
-                                .background(KS.paper).transition(.move(edge: .trailing))
+                                .background(KS.ground).transition(.move(edge: .trailing))
                                 .accessibilityHidden(screen != .thread)
                         }
-                        if screen == .tasks { tasks.swipeBack { screen = .home }.background(KS.paper).transition(.move(edge: .trailing)) }
-                        if screen == .usage { usage.swipeBack { screen = .home }.background(KS.paper).transition(.move(edge: .trailing)) }
+                        if screen == .tasks { tasks.swipeBack { screen = .home }.background(KS.ground).transition(.move(edge: .trailing)) }
+                        if screen == .usage { usage.swipeBack { screen = .home }.background(KS.ground).transition(.move(edge: .trailing)) }
                         if screen == .connect {
-                            ConnectView(model: model) { screen = .home }.swipeBack { screen = .home }.background(KS.paper).transition(.move(edge: .trailing))
+                            ConnectView(model: model) { screen = .home }.swipeBack { screen = .home }.background(KS.ground).transition(.move(edge: .trailing))
                         }
                         if screen == .settings {
                             Group {
                                 if let bot = model.openBot ?? model.starred { SettingsView(model: model, bot: bot) { screen = model.openBot == nil ? .home : .thread }.swipeBack { screen = model.openBot == nil ? .home : .thread } }
                                 else { empty("Open a bot to change its settings.") }
-                            }.background(KS.paper).transition(.move(edge: .trailing))
+                            }.background(KS.ground).transition(.move(edge: .trailing))
                         }
                     }
                 } else { ConnectView(model: model) { screen = .home } }
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity).background(KS.paper).foregroundStyle(KS.ink)
-            .font(KS.body()).tint(KS.ink)
+            .frame(maxWidth: .infinity, maxHeight: .infinity).background(KS.ground).foregroundStyle(KS.ink)
+            .font(KS.body()).tint(KS.signal)
             .animation(reduceMotion ? nil : .spring(response: 0.34, dampingFraction: 0.9), value: screen)
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 if let error = model.error {
-                    HStack { Text(error).font(KS.body(14)); Button("Dismiss") { model.error = nil }.frame(minHeight: 44) }
-                        .padding(.horizontal, 20).background(KS.coralTint).accessibilityIdentifier("error")
+                    HStack { Text(error).font(KS.body()).foregroundStyle(KS.strong); Spacer(minLength: 8); Button("Dismiss") { model.error = nil }.font(KS.body(.semibold)).foregroundStyle(KS.signal).frame(minHeight: 44) }
+                        .padding(.horizontal, 20).background(KS.attentionSurface).overlay(alignment: .top) { Rectangle().fill(KS.failedText).frame(height: 1) }.accessibilityIdentifier("error")
                 }
             }
         }
         .sheet(item: $sheet) { item in
             if case .newBot = item {
                 NewBotView(model: model) { sheet = nil }
-                    .padding(20).background(KS.paper).foregroundStyle(KS.ink).tint(KS.ink)
-                    .presentationDetents([.large]).presentationDragIndicator(.hidden).presentationCornerRadius(28)
+                    .padding(20).background(KS.grouped).foregroundStyle(KS.ink).tint(KS.signal)
+                    .presentationDetents([.large]).presentationDragIndicator(.hidden).presentationCornerRadius(20).presentationBackground(KS.grouped)
             } else { ContentSheet {
                 switch item {
                 case .you: you
@@ -378,8 +379,8 @@ struct RootView: View {
                 case .newBot: NewBotView(model: model) { sheet = nil }
                 case .changes(let changes):
                     VStack(alignment: .leading, spacing: 14) {
-                        CloseButton { sheet = nil }; Text("CHANGES.").font(KS.display(32))
-                        ScrollView { Text(changes).font(KS.mono(12)).frame(maxWidth: .infinity, alignment: .leading) }.frame(maxHeight: 300)
+                        CloseButton { sheet = nil }; Text("Changes").font(KS.title()).foregroundStyle(KS.strong)
+                        ScrollView { Text(changes).font(KS.mono()).foregroundStyle(KS.ink).frame(maxWidth: .infinity, alignment: .leading).padding(12) }.frame(maxHeight: 300).card(KS.inset)
                     }
                 }
             } }
@@ -470,22 +471,23 @@ struct RootView: View {
     private func header(_ title: String, close: @escaping () -> Void) -> some View {
         HStack(spacing: 8) {
             CloseButton(action: close)
-            Text(title.uppercased() + ".").font(KS.display(28)).minimumScaleFactor(0.7).lineLimit(1)
-        }.frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 12).padding(.vertical, 4)
+            Text(title).font(KS.title()).foregroundStyle(KS.strong).minimumScaleFactor(0.7).lineLimit(1)
+        }.frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 8).padding(.vertical, 4)
     }
-    /// A new user's list: one big item that starts their first bot chat.
+    /// A new user's list: one big item that starts their first bot chat, pinned above the bottom bar.
     private var firstBotCard: some View {
         Button { sheet = .newBot } label: {
             HStack(spacing: 14) {
-                Image(systemName: "plus").font(.system(size: 26, weight: .bold)).frame(width: 56, height: 56).card(.white, radius: 28)
+                Image(systemName: "plus").font(.system(size: 20, weight: .semibold)).foregroundStyle(KS.onSignal)
+                    .frame(width: 44, height: 44).background(KS.signal, in: Circle())
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Make your first bot").font(KS.body(18, .bold))
-                    Text("A bot keeps one chat for one job, like research, a launch or your releases.").font(KS.body(14)).foregroundStyle(KS.soft)
+                    Text("Make your first bot").font(KS.headline()).foregroundStyle(KS.strong)
+                    Text("A bot keeps one chat for one job, like research, a launch or your releases.").font(KS.body()).foregroundStyle(KS.soft)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(minLength: 0)
-            }.padding(18).frame(maxWidth: .infinity, alignment: .leading).card(KS.lime, radius: 18, shadow: true)
-        }.buttonStyle(PressStyle()).padding(.top, 12).accessibilityIdentifier("new-bot-card")
+            }.padding(16).frame(maxWidth: .infinity, alignment: .leading).card()
+        }.buttonStyle(PressStyle()).accessibilityIdentifier("new-bot-card")
     }
     private func empty(_ text: String) -> some View {
         VStack(spacing: 12) {
@@ -493,48 +495,37 @@ struct RootView: View {
             Text(text).font(KS.body()).multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
         }.foregroundStyle(KS.muted).padding(32).frame(maxWidth: .infinity, maxHeight: .infinity)
     }
+    private func barIcon(_ symbol: String) -> some View {
+        Image(systemName: symbol).font(.system(size: 17, weight: .medium)).foregroundStyle(KS.ink)
+            .frame(width: 44, height: 44).background(KS.chip, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
     private var home: some View {
         let bots = model.sortedBots.filter(matches)
         let hidden = model.hiddenBots.filter(matches)
         let needsYou = model.sortedBots.filter { $0.needsYou > 0 }.count
+        let newUser = search.isEmpty && model.sortedBots.isEmpty && model.hiddenBots.isEmpty && !model.loading
         return VStack(spacing: 0) {
-            HStack(spacing: 10) {
-                Button { sheet = .you } label: { Text("YOU").font(.system(size: 11, weight: .semibold, design: .monospaced)).frame(width: 44, height: 44).card(KS.lilac, radius: 24) }.accessibilityLabel("You")
-                Circle().fill(model.online ? Color(hex: 0x3F7D20) : KS.coral).frame(width: 8, height: 8)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(model.isDemo ? "MAC STUDIO" : "YOUR MAC").font(KS.mono(10)).lineLimit(1)
-                    if !model.online { Text(model.lastSeen.map { "Seen " + $0.formatted(.relative(presentation: .numeric)) } ?? "Offline").font(KS.body(11)) }
-                }.frame(maxWidth: .infinity, alignment: .leading)
-                Button { screen = .tasks; perform { try await model.loadTasks() } } label: {
-                    Image(systemName: "list.bullet").font(.system(size: 20, weight: .medium)).frame(width: 44, height: 44)
-                        .overlay(alignment: .topTrailing) {
-                            if model.sortedBots.reduce(0, { $0 + $1.needsYou }) > 0 {
-                                Text("\(model.sortedBots.reduce(0, { $0 + $1.needsYou }))").font(.system(size: 11, weight: .semibold, design: .rounded)).padding(4).background(KS.coral, in: Circle())
-                            }
-                        }
-                }.accessibilityLabel("Tasks")
-                Button { screen = .usage } label: { Image(systemName: "chart.pie").font(.system(size: 20, weight: .medium)).frame(width: 44, height: 44) }.accessibilityLabel("Usage")
-                // New users get the big card in the list instead; this is the quick way for everyone else.
-                if !model.sortedBots.isEmpty || !model.hiddenBots.isEmpty {
-                    // The one filled icon in the header: making a bot is the primary action here.
-                    Button { sheet = .newBot } label: { Image(systemName: "plus").font(.system(size: 18, weight: .bold)).frame(width: 36, height: 36).background(KS.lime, in: Circle()).frame(width: 44, height: 44) }
-                        .accessibilityLabel("New bot").accessibilityIdentifier("new-bot-header")
+            // Read-only up top: host state and the title. Every control lives in the bottom bar.
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 8) {
+                    Circle().fill(model.online ? KS.online : KS.failedText).frame(width: 8, height: 8).accessibilityHidden(true)
+                    Text(model.isDemo ? "Mac Studio" : "Your Mac").font(KS.secondary(.semibold)).foregroundStyle(KS.soft).lineLimit(1)
+                    Text(model.online ? "Online" : model.lastSeen.map { "Seen " + $0.formatted(.relative(presentation: .numeric)) } ?? "Offline")
+                        .font(KS.mono()).foregroundStyle(KS.muted).lineLimit(1)
+                }.accessibilityElement(children: .combine)
+                (textSize.isAccessibilitySize ? AnyLayout(VStackLayout(alignment: .leading, spacing: 4)) : AnyLayout(HStackLayout(alignment: .firstTextBaseline, spacing: 10))) {
+                    Text("Bots").font(KS.title()).foregroundStyle(KS.strong).accessibilityAddTraits(.isHeader)
+                    Text(needsYou == 0 ? "All caught up" : "\(needsYou) need you").font(KS.body()).foregroundStyle(needsYou == 0 ? KS.muted : KS.needsText)
                 }
-            }.buttonStyle(PressStyle(icon: true)).padding(.horizontal, 20).padding(.top, 6)
-            (textSize.isAccessibilitySize ? AnyLayout(VStackLayout(alignment: .leading, spacing: 6)) : AnyLayout(HStackLayout(alignment: .firstTextBaseline, spacing: 12))) {
-                Text("BOTS.").font(KS.display(38))
-                Text(needsYou == 0 ? "All caught up" : "\(needsYou) need you").font(KS.body(14)).foregroundStyle(KS.soft)
-            }.frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 20).padding(.vertical, 14)
-            Rectangle().fill(KS.ink.opacity(0.15)).frame(height: 1)
-            if model.loading { ProgressView("Loading your bots").padding() }
+            }.frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 16).padding(.top, 8).padding(.bottom, 12)
+            if model.loading { ProgressView("Loading your bots").tint(KS.signal).foregroundStyle(KS.muted).padding() }
             ScrollView {
-                LazyVStack(spacing: 0) {
+                LazyVStack(spacing: 8) {
                     ForEach(Array(bots.enumerated()), id: \.element.id) { index, bot in
                         row(bot)
                             .opacity(reduceMotion || homeAppeared || index >= 10 ? 1 : 0)
                             .offset(y: reduceMotion || homeAppeared || index >= 10 ? 0 : 8)
                             .animation(reduceMotion || index >= 10 ? nil : .easeOut(duration: 0.3).delay(Double(index) * 0.035), value: homeAppeared)
-                        Divider().overlay(KS.ink.opacity(0.12))
                     }
                     if !hidden.isEmpty {
                         Button {
@@ -543,86 +534,112 @@ struct RootView: View {
                             HStack(spacing: 8) {
                                 Image(systemName: "chevron.right").font(.system(size: 12, weight: .bold))
                                     .rotationEffect(.degrees(model.showHidden ? 90 : 0))
-                                Text("HIDDEN · \(hidden.count)").font(KS.mono(12)).tracking(1)
+                                Eyebrow("Hidden · \(hidden.count)")
                                 Spacer()
                             }.foregroundStyle(KS.muted).frame(minHeight: 44).contentShape(Rectangle())
-                        }.buttonStyle(PressStyle()).padding(.horizontal, 4).padding(.top, 8)
+                        }.buttonStyle(PressStyle()).padding(.horizontal, 4).padding(.top, 4)
                             .accessibilityLabel("Hidden bots, \(hidden.count)").accessibilityIdentifier("hidden-section")
                         if model.showHidden {
                             ForEach(hidden) { bot in
                                 row(bot)
                                     .transition(reduceMotion ? .identity : .opacity.combined(with: .offset(y: -6)))
-                                Divider().overlay(KS.ink.opacity(0.12))
                             }
                         }
                     }
                     if bots.isEmpty && hidden.isEmpty && !model.loading {
-                        if search.isEmpty && model.sortedBots.isEmpty && model.hiddenBots.isEmpty { firstBotCard }
+                        if newUser { empty("Your bots will appear here, with what each one is doing and anything that needs you.") }
                         else { empty("No bots match “\(search)”. Try another name or job.") }
                     }
-                }.padding(.horizontal, 20).padding(.bottom, 6)
+                }.padding(.horizontal, 16).padding(.bottom, 8)
             }.scrollDismissesKeyboard(.interactively)
                 .task(id: bots.isEmpty) {
                     // Root state survives navigation; refresh and search never replay this entrance.
                     if !bots.isEmpty && !homeAppeared { homeAppeared = true }
                 }
-            HStack(spacing: 12) {
+            VStack(spacing: 10) {
+                if newUser { firstBotCard }
                 HStack(spacing: 10) {
-                    Image(systemName: "magnifyingglass").font(.system(size: 18, weight: .medium)).foregroundStyle(KS.muted)
-                    TextField("Search bots", text: $search).focused($searchFocused).accessibilityLabel("Search bots").submitLabel(.search)
-                        .onSubmit { searchFocused = false }
-                    if !search.isEmpty {
-                        Button { search = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(KS.muted).frame(minWidth: 44, minHeight: 44) }
-                            .buttonStyle(PressStyle()).accessibilityLabel("Clear search")
+                    HStack(spacing: 10) {
+                        Image(systemName: "magnifyingglass").font(.system(size: 16, weight: .medium)).foregroundStyle(KS.muted)
+                        TextField("", text: $search, prompt: Text("Search bots").foregroundStyle(KS.muted)).focused($searchFocused).accessibilityLabel("Search bots").submitLabel(.search)
+                            .onSubmit { searchFocused = false }
+                        if !search.isEmpty {
+                            Button { search = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(KS.muted).frame(minWidth: 44, minHeight: 44) }
+                                .buttonStyle(PressStyle()).accessibilityLabel("Clear search")
+                        }
+                    }
+                        .padding(.horizontal, 14).frame(minHeight: 48).card(KS.inset)
+                        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(searchFocused ? KS.signal.opacity(0.7) : .clear, lineWidth: 1).allowsHitTesting(false))
+                    if let starred = model.starred {
+                        Button { open(starred) } label: {
+                            Avatar(name: starred.name, size: 36, colorHex: starred.colorHex).frame(width: 48, height: 48).card()
+                                .overlay(alignment: .bottomLeading) { Image(systemName: "star.fill").font(.system(size: 9, weight: .bold)).foregroundStyle(KS.onSignal).padding(4).background(KS.needsText, in: Circle()).offset(x: -3, y: 3) }
+                        }.buttonStyle(PressStyle()).accessibilityLabel("Open starred bot").accessibilityIdentifier("starred-shortcut")
                     }
                 }
-                    .padding(.horizontal, 14).frame(minHeight: 48).card(.white, radius: 24, shadow: false)
-                    .overlay(RoundedRectangle(cornerRadius: 24).strokeBorder(searchFocused ? KS.lime : KS.ink.opacity(0.06), lineWidth: searchFocused ? 2 : 1).allowsHitTesting(false))
-                if let starred = model.starred {
-                    Button { open(starred) } label: {
-                        Moji(seed: starred.avatarSeed, size: 38, colorHex: starred.colorHex).frame(width: 48, height: 48).card(.white, radius: 24, shadow: true)
-                            .overlay(alignment: .bottomLeading) { Image(systemName: "star.fill").font(.system(size: 10)).padding(5).background(KS.butter, in: Circle()) }
-                    }.buttonStyle(PressStyle()).accessibilityLabel("Open starred bot").accessibilityIdentifier("starred-shortcut")
-                }
-            }.padding(.horizontal, 20).padding(.vertical, 14).background(KS.paper)
-                .overlay(alignment: .top) { Rectangle().fill(KS.ink.opacity(0.1)).frame(height: 1) }
+                HStack(spacing: 8) {
+                    Button { sheet = .you } label: { barIcon("person.crop.circle") }.accessibilityLabel("You")
+                    Button { screen = .tasks; perform { try await model.loadTasks() } } label: {
+                        barIcon("list.bullet")
+                            .overlay(alignment: .topTrailing) {
+                                if model.sortedBots.reduce(0, { $0 + $1.needsYou }) > 0 {
+                                    Text("\(model.sortedBots.reduce(0, { $0 + $1.needsYou }))").font(KS.mono(.semibold)).foregroundStyle(KS.onSignal)
+                                        .padding(.horizontal, 5).frame(minWidth: 20, minHeight: 20).background(KS.needsText, in: Capsule()).offset(x: 6, y: -6)
+                                }
+                            }
+                    }.accessibilityLabel("Tasks")
+                    Button { screen = .usage } label: { barIcon("chart.pie") }.accessibilityLabel("Usage")
+                    Spacer(minLength: 0)
+                    // New users get the big card above instead; this is the quick way for everyone else.
+                    if !model.sortedBots.isEmpty || !model.hiddenBots.isEmpty {
+                        Button { sheet = .newBot } label: { Label("New bot", systemImage: "plus") }.buttonStyle(Pill(fill: KS.signal))
+                            .accessibilityLabel("New bot").accessibilityIdentifier("new-bot-header")
+                    }
+                }.buttonStyle(PressStyle())
+            }.padding(.horizontal, 16).padding(.top, 12).padding(.bottom, 8).background(KS.grouped)
+                .overlay(alignment: .top) { Rectangle().fill(KS.hairline).frame(height: 1) }
         }
     }
     private func matches(_ bot: Bot) -> Bool {
         search.isEmpty || (bot.name + " " + bot.job).localizedCaseInsensitiveContains(search)
     }
     private func row(_ bot: Bot) -> some View {
-                        Button { open(bot) } label: {
-                            HStack(spacing: 12) {
-                                Moji(seed: bot.avatarSeed, size: 48, colorHex: bot.colorHex)
-                                VStack(alignment: .leading, spacing: 6) {
-                                    HStack {
-                                        Text(bot.name).font(KS.body(17, .semibold)).lineLimit(2).layoutPriority(1)
-                                        if bot.starred { Image(systemName: "star.fill").font(.system(size: 10, weight: .semibold)).accessibilityLabel("Starred") }
-                                        Spacer()
-                                        if !textSize.isAccessibilitySize { Text(time(bot.activity)).font(KS.mono(10)).foregroundStyle(KS.muted).fixedSize() }
-                                    }
-                                    HStack {
-                                        Text(bot.line.isEmpty ? bot.job : bot.line).lineLimit(textSize.isAccessibilitySize ? 3 : 2).font(KS.body(14)).foregroundStyle(KS.soft)
-                                        Spacer()
-                                        HomeBadge(unread: bot.unread, needsYou: bot.needsYou)
-                                    }
-                                }
-                            }.padding(.vertical, 18).contentShape(Rectangle())
-                        }.buttonStyle(HomeRowStyle()).opacity(bot.archived ? 0.55 : 1).accessibilityIdentifier("bot-" + bot.id)
+        Button { open(bot) } label: {
+            HStack(alignment: .top, spacing: 12) {
+                Avatar(name: bot.name, size: 36, colorHex: bot.colorHex)
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(alignment: .firstTextBaseline) {
+                        Text(bot.name).font(KS.headline()).foregroundStyle(KS.strong).lineLimit(2).layoutPriority(1)
+                        if bot.starred { Image(systemName: "star.fill").font(.system(size: 10, weight: .semibold)).foregroundStyle(KS.needsText).accessibilityLabel("Starred") }
+                        Spacer()
+                        if !textSize.isAccessibilitySize { Text(time(bot.activity)).font(KS.mono()).foregroundStyle(KS.muted).fixedSize() }
+                    }
+                    HStack(alignment: .top) {
+                        Text(bot.line.isEmpty ? bot.job : bot.line).lineLimit(textSize.isAccessibilitySize ? 3 : 2).font(KS.body()).foregroundStyle(KS.soft)
+                        Spacer()
+                        HomeBadge(unread: bot.unread, needsYou: bot.needsYou)
+                    }
+                }
+            }.padding(14).frame(maxWidth: .infinity, alignment: .leading)
+                .card(bot.needsYou > 0 ? KS.attentionSurface : KS.surface)
+                .overlay(alignment: .leading) { if bot.needsYou > 0 { UnevenRoundedRectangle(topLeadingRadius: 12, bottomLeadingRadius: 12).fill(KS.needsText).frame(width: 2) } }
+                .contentShape(Rectangle())
+        }.buttonStyle(PressStyle()).opacity(bot.archived ? 0.55 : 1).accessibilityIdentifier("bot-" + bot.id)
     }
     private var thread: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                Button { screen = .home; model.openBot = nil } label: { Image(systemName: "chevron.left").font(.system(size: 15, weight: .medium)).frame(width: 34, height: 34).frame(width: 44, height: 44).contentShape(Rectangle()) }.accessibilityLabel("Back to bots")
+            // Back is the only control up top; chat options sit beside the composer, in thumb reach.
+            HStack(spacing: 10) {
+                Button { screen = .home; model.openBot = nil } label: { Image(systemName: "chevron.left").font(.system(size: 15, weight: .semibold)).foregroundStyle(KS.ink).frame(width: 32, height: 32).background(KS.chip, in: Circle()).frame(width: 44, height: 44).contentShape(Rectangle()) }
+                    .buttonStyle(PressStyle()).accessibilityLabel("Back to bots")
+                Avatar(name: model.openBot?.name ?? "Bot", size: 32, colorHex: model.openBot?.colorHex)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(model.openBot?.name ?? "Bot").font(KS.headline()).foregroundStyle(KS.strong).lineLimit(1)
+                    if let job = model.openBot?.job, !job.isEmpty { Text(job).font(KS.secondary()).foregroundStyle(KS.muted).lineLimit(1) }
+                }.accessibilityElement(children: .combine).accessibilityAddTraits(.isHeader)
                 Spacer(minLength: 0)
-                HStack(spacing: 6) { Moji(seed: model.openBot?.avatarSeed ?? "", size: 24, colorHex: model.openBot?.colorHex); Text(model.openBot?.name ?? "Bot").font(KS.body(15, .semibold)).lineLimit(1) }.padding(.horizontal, 10).frame(minHeight: 34).card(.white, radius: 17, shadow: false).shadow(color: KS.ink.opacity(0.08), radius: 1, y: 1)
-                Spacer(minLength: 0)
-                Menu {
-                    Button("Earlier messages") { perform { try await model.olderMessages() } }
-                    Button("Bot settings") { screen = .settings }
-                } label: { Image(systemName: "ellipsis").frame(width: 34, height: 34).frame(width: 44, height: 44).contentShape(Rectangle()) }.accessibilityLabel("Chat options").accessibilityIdentifier("chat-options")
-            }.buttonStyle(PressStyle(icon: true)).padding(.horizontal, 8).padding(.vertical, 2)
+            }.padding(.horizontal, 8).padding(.vertical, 4).background(KS.ground)
+                .overlay(alignment: .bottom) { Rectangle().fill(KS.hairline).frame(height: 1) }
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 8) {
@@ -635,24 +652,22 @@ struct RootView: View {
                                            else { model.expandedWorkingNotes[threadID]?.remove(row.id) } }
                                 )) {
                                     ForEach(row.messages) { messageView($0).id($0.id) }
-                                } label: { Text(row.label).font(KS.body(14)).frame(minHeight: 44) }
+                                } label: { Text(row.label).font(KS.secondary()).foregroundStyle(KS.muted).frame(minHeight: 44) }
                             } else if let message = row.messages.first {
                                 messageView(message).id(message.id)
                             }
                         }
                         ForEach(Array(model.typing.enumerated()), id: \.offset) { _, typing in
                             let agent = model.replyingAgent(typing)
-                            HStack(alignment: .bottom, spacing: 8) {
-                                if let bot = model.openBot, agent.id == bot.raw["lead_agent_id"].string {
-                                    Moji(seed: bot.avatarSeed, size: 22, colorHex: bot.colorHex)
-                                } else { Moji(seed: agent.id, size: 22) }
+                            HStack(alignment: .top, spacing: 10) {
+                                Avatar(name: agent.name, size: 28, provider: provider(agent.id))
                                 VStack(alignment: .leading, spacing: 3) {
                                     HStack(alignment: .firstTextBaseline, spacing: 6) {
-                                        Text(agent.name).font(KS.body(12, .semibold))
-                                        Eyebrow("Replying live")
+                                        Text(agent.name).font(KS.body(.semibold)).foregroundStyle(KS.strong)
+                                        Text("Replying live").font(KS.mono()).foregroundStyle(KS.signal)
                                     }
-                                    Text(typing["text"].string.isEmpty ? "Thinking…" : typing["text"].string).font(KS.body(15)).lineSpacing(1).fixedSize(horizontal: false, vertical: true)
-                                }.padding(10).bubble().opacity(0.7)
+                                    Text(typing["text"].string.isEmpty ? "Thinking…" : typing["text"].string).font(KS.body()).foregroundStyle(KS.soft).lineSpacing(1).fixedSize(horizontal: false, vertical: true)
+                                }.padding(12).frame(maxWidth: .infinity, alignment: .leading).bubble()
                             }
                         }
                         Color.clear.frame(height: 1).id("bottom")
@@ -675,34 +690,38 @@ struct RootView: View {
                     ScrollView(.horizontal) { HStack { ForEach(photos) { photo in
                         if let image = UIImage(data: photo.data) {
                             Image(uiImage: image).resizable().scaledToFill().frame(width: 60, height: 60).clipped().clipShape(RoundedRectangle(cornerRadius: 10))
-                                .overlay(alignment: .topTrailing) { Button { photos.removeAll { $0.id == photo.id } } label: { Image(systemName: "xmark").font(.system(size: 11, weight: .bold)).foregroundStyle(.white).padding(5).background(KS.ink, in: Circle()).frame(width: 44, height: 44) }.accessibilityLabel("Remove photo") }
+                                .overlay(alignment: .topTrailing) { Button { photos.removeAll { $0.id == photo.id } } label: { Image(systemName: "xmark").font(.system(size: 11, weight: .bold)).foregroundStyle(KS.strong).padding(5).background(KS.inset, in: Circle()).frame(width: 44, height: 44) }.accessibilityLabel("Remove photo") }
                         }
                     } } }
                 }
                 HStack(alignment: .bottom, spacing: 6) {
+                Menu {
+                    Button("Earlier messages") { perform { try await model.olderMessages() } }
+                    Button("Bot settings") { screen = .settings }
+                } label: { Image(systemName: "ellipsis").font(.system(size: 16, weight: .semibold)).foregroundStyle(KS.ink).frame(width: 44, height: 44).background(KS.chip, in: RoundedRectangle(cornerRadius: 12, style: .continuous)).contentShape(Rectangle()) }
+                    .accessibilityLabel("Chat options").accessibilityIdentifier("chat-options")
+                HStack(alignment: .bottom, spacing: 6) {
                     if !model.hasOpenApproval {
-                    PhotosPicker(selection: $selections, maxSelectionCount: max(1, 2 - photos.count), matching: .images) { Image(systemName: "plus").font(.system(size: 18)).frame(width: 44, height: 44) }.disabled(photos.count >= 2 || preparingPhotos || dictation.isRecording || dictationStarting).accessibilityLabel("Add photo") }
-                    TextField(model.hasOpenApproval ? "Answer the approval above to continue" : "Ask your bot…", text: $composer, axis: .vertical).font(KS.body(15)).lineLimit(1...4).focused($composerFocused).padding(.vertical, 8).padding(.leading, model.hasOpenApproval ? 14 : 0).frame(minHeight: 44).disabled(dictation.isRecording || dictationStarting).accessibilityIdentifier("composer")
+                    PhotosPicker(selection: $selections, maxSelectionCount: max(1, 2 - photos.count), matching: .images) { Image(systemName: "plus").font(.system(size: 17)).foregroundStyle(KS.soft).frame(width: 44, height: 44) }.disabled(photos.count >= 2 || preparingPhotos || dictation.isRecording || dictationStarting).accessibilityLabel("Add photo") }
+                    TextField("", text: $composer, prompt: Text(model.hasOpenApproval ? "Answer the approval above to continue" : "Ask your bot…").foregroundStyle(KS.muted), axis: .vertical).font(KS.body()).foregroundStyle(KS.ink).lineLimit(1...4).focused($composerFocused).padding(.vertical, 8).padding(.leading, model.hasOpenApproval ? 14 : 0).frame(minHeight: 44).disabled(dictation.isRecording || dictationStarting).accessibilityIdentifier("composer")
                     if !model.hasOpenApproval {
                     Button {
                         if dictation.isRecording || dictationStarting { dictation.stop(); dictationToken = UUID(); dictationStarting = false }
                         else { composerFocused = false; dictationStarting = true; let token = UUID(); dictationToken = token; let prefix = composer.isEmpty ? "" : composer + " "; Task { await dictation.start { utterance in composer = prefix + utterance }; if dictationToken == token { dictationStarting = false } } }
-                    } label: { Image(systemName: (dictation.isRecording || dictationStarting) ? "stop.fill" : "mic").background { if dictation.isRecording || dictationStarting { Circle().fill(KS.lime).frame(width: 32, height: 32) } }.frame(width: 44, height: 44) }.accessibilityLabel((dictation.isRecording || dictationStarting) ? "Stop dictation" : "Dictate message")
+                    } label: { Image(systemName: (dictation.isRecording || dictationStarting) ? "stop.fill" : "mic").foregroundStyle((dictation.isRecording || dictationStarting) ? KS.onSignal : KS.soft).background { if dictation.isRecording || dictationStarting { Circle().fill(KS.signal).frame(width: 32, height: 32) } }.frame(width: 44, height: 44) }.accessibilityLabel((dictation.isRecording || dictationStarting) ? "Stop dictation" : "Dictate message")
                     }
                     Button {
                         dictation.stop(); dictationToken = UUID(); dictationStarting = false
                         let text = composer, selected = photos, thread = model.openBot?.threadID, botID = model.openBot?.id
                         perform { try await model.post(text, photos: selected); if let botID, let draft = drafts[botID], draft.text == text && draft.photos == selected { drafts[botID] = nil }; if model.openBot?.threadID == thread && composer == text && photos == selected { composer = ""; photos = [] } }
-                    } label: { Image(systemName: "arrow.up").font(.system(size: 16, weight: .semibold)).foregroundStyle(KS.paper).frame(width: 36, height: 36).background(KS.ink.opacity(composer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && photos.isEmpty ? 0.25 : 1), in: Circle()).frame(width: 44, height: 44).contentShape(Rectangle()) }.disabled((composer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && photos.isEmpty) || model.busy || preparingPhotos).accessibilityLabel("Send message")
+                    } label: { Image(systemName: "arrow.up").font(.system(size: 16, weight: .semibold)).foregroundStyle(KS.onSignal).frame(width: 36, height: 36).background(KS.signal.opacity(composer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && photos.isEmpty ? 0.3 : 1), in: RoundedRectangle(cornerRadius: 9, style: .continuous)).frame(width: 44, height: 44).contentShape(Rectangle()) }.disabled((composer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && photos.isEmpty) || model.busy || preparingPhotos).accessibilityLabel("Send message")
                 }.buttonStyle(PressStyle(icon: true)).padding(.horizontal, 2)
                     .disabled(model.hasOpenApproval)
-                    .background {
-                        RoundedRectangle(cornerRadius: 22).fill(.white)
-                            .shadow(color: KS.ink.opacity(0.06), radius: 1, y: 1)
-                            .shadow(color: KS.ink.opacity(0.07), radius: 10, y: 6)
-                    }
-                if let error = dictation.error { Text(error).font(KS.body(13)).foregroundStyle(KS.soft) }
-            }.padding(.horizontal, 12).padding(.top, 4).padding(.bottom, 6)
+                    .card(KS.inset)
+                }
+                if let error = dictation.error { Text(error).font(KS.secondary()).foregroundStyle(KS.soft) }
+            }.padding(.horizontal, 12).padding(.top, 8).padding(.bottom, 6).background(KS.ground)
+                .overlay(alignment: .top) { Rectangle().fill(KS.hairline).frame(height: 1) }
 
         }
     }
@@ -713,10 +732,13 @@ struct RootView: View {
             let task = message.raw["task"]
             VStack(alignment: .leading, spacing: 5) {
                 StatusChip(task["resolved"].bool ? "Resolved" : task["status"].string == "completed" ? "Ready for review" : task["status"].string)
-                Text(task["title"].string).font(KS.body(15, .semibold))
-                Text(task["served"]["provider"].string + " · " + task["branch"].string).font(KS.mono(11))
+                Text(task["title"].string).font(KS.headline()).foregroundStyle(KS.strong)
+                HStack(spacing: 6) {
+                    if !task["served"]["provider"].string.isEmpty { Avatar(name: "", size: 20, provider: task["served"]["provider"].string) }
+                    Text(task["served"]["provider"].string + " · " + task["branch"].string).font(KS.mono()).foregroundStyle(KS.muted)
+                }
                 (textSize.isAccessibilitySize ? AnyLayout(VStackLayout(alignment: .leading, spacing: 10)) : AnyLayout(HStackLayout(spacing: 10))) {
-                    Button("Approve") { perform { try await model.resolve(task["id"].string) } }.buttonStyle(Pill(fill: KS.lime)).disabled(task["status"].string != "completed" || task["resolved"].bool || task["check"]["status"].string == "failed" || model.busy)
+                    Button("Approve") { perform { try await model.resolve(task["id"].string) } }.buttonStyle(Pill(fill: KS.signal)).disabled(task["status"].string != "completed" || task["resolved"].bool || task["check"]["status"].string == "failed" || model.busy)
                     Button("See changes") {
                         perform {
                             var changes = ""
@@ -738,7 +760,7 @@ struct RootView: View {
                         }
                     }.buttonStyle(Pill())
                 }
-            }.padding(.horizontal, 12).padding(.vertical, 10).frame(maxWidth: .infinity, alignment: .leading).card(task["status"].string == "failed" ? KS.attentionSurface : .white)
+            }.padding(.horizontal, 12).padding(.vertical, 10).frame(maxWidth: .infinity, alignment: .leading).card(task["status"].string == "failed" ? KS.attentionSurface : KS.surface)
         } else if message.kind == "swarm", message.raw["swarm"] != .null {
             SwarmCard(swarm: message.raw["swarm"], agents: model.agents)
         } else if message.kind == "question", let action = ApprovalAction(message.question) {
@@ -746,9 +768,9 @@ struct RootView: View {
         } else if message.kind == "question" {
             VStack(alignment: .leading, spacing: 5) {
                 StatusChip("Needs your input")
-                Text(message.question["prompt"].string).font(KS.body(15, .semibold))
+                Text(message.question["prompt"].string).font(KS.headline()).foregroundStyle(KS.strong)
                 Button("Answer question") { sheet = .question(message.question) }.buttonStyle(Pill()).disabled(message.question["status"].string != "open")
-            }.padding(.horizontal, 12).padding(.vertical, 10).frame(maxWidth: .infinity, alignment: .leading).card(message.question["status"].string == "open" ? KS.attentionSurface : .white)
+            }.padding(.horizontal, 12).padding(.vertical, 10).frame(maxWidth: .infinity, alignment: .leading).card(message.question["status"].string == "open" ? KS.attentionSurface : KS.surface)
         } else if let report = message.report {
             VStack(alignment: .leading, spacing: 6) {
                 if !report.lead.isEmpty || !message.raw["attachments"].array.isEmpty { bubble(message, text: report.lead) }
@@ -756,31 +778,52 @@ struct RootView: View {
             }
         } else { bubble(message, text: message.text) }
     }
+    /// The provider that runs an agent, when the host says so (CL, CX, AG monograms).
+    private func provider(_ agentID: String) -> String {
+        model.agents.first { $0["id"].string == agentID }?["runner"]["provider"].string ?? ""
+    }
     @ViewBuilder private func bubble(_ message: Message, text: String) -> some View {
-            HStack {
-                if message.human { Spacer(minLength: 24) }
-                if message.raw["author"]["kind"].string == "agent", let bot = model.openBot, bot.colorHex != nil {
-                    Moji(seed: bot.avatarSeed, size: 22, colorHex: bot.colorHex)
-                }
-                VStack(alignment: .leading, spacing: 3) {
-                    if !message.human, !message.raw["author"]["name"].string.isEmpty { Text(message.raw["author"]["name"].string).font(KS.body(12, .semibold)) }
-                    ForEach(Array(message.raw["attachments"].array.enumerated()), id: \.offset) { _, attachment in
-                        ChatAttachmentView(service: model.service, threadID: model.openBot?.threadID ?? "", messageID: message.id, attachment: attachment)
-                    }
-                    if !text.isEmpty || message.raw["attachments"].array.isEmpty { Text(text.isEmpty ? (message.kind == "answer" ? "Answer sent" : message.kind.capitalized) : text)
-                        .font(KS.body(15)).lineSpacing(1).fixedSize(horizontal: false, vertical: true).textSelection(.enabled) }
-                }.padding(.horizontal, 12).padding(.vertical, 9).foregroundStyle(message.human ? KS.paper : KS.ink).bubble(human: message.human)
-                if !message.human { Spacer(minLength: 16) }
+        let author = message.raw["author"]["name"].string
+        let runner = provider(message.raw["author"]["id"].string)
+        let stamp = time(message.raw["created_at"].string)
+        let content = VStack(alignment: .leading, spacing: 4) {
+            ForEach(Array(message.raw["attachments"].array.enumerated()), id: \.offset) { _, attachment in
+                ChatAttachmentView(service: model.service, threadID: model.openBot?.threadID ?? "", messageID: message.id, attachment: attachment)
             }
+            if !text.isEmpty || message.raw["attachments"].array.isEmpty { Text(text.isEmpty ? (message.kind == "answer" ? "Answer sent" : message.kind.capitalized) : text)
+                .font(KS.body()).foregroundStyle(message.human ? KS.strong : KS.ink).lineSpacing(2).fixedSize(horizontal: false, vertical: true).textSelection(.enabled) }
+        }
+        if message.human {
+            HStack {
+                Spacer(minLength: 48)
+                content.padding(.horizontal, 14).padding(.vertical, 10).bubble(human: true)
+            }
+        } else {
+            HStack(alignment: .top, spacing: 10) {
+                Avatar(name: author.isEmpty ? (model.openBot?.name ?? "Bot") : author, size: 28,
+                       colorHex: runner.isEmpty ? model.openBot?.colorHex : nil, provider: runner)
+                VStack(alignment: .leading, spacing: 6) {
+                    if !author.isEmpty || !stamp.isEmpty {
+                        HStack(alignment: .firstTextBaseline, spacing: 6) {
+                            if !author.isEmpty { Text(author).font(KS.body(.semibold)).foregroundStyle(KS.strong).lineLimit(1) }
+                            if !runner.isEmpty { Text(runner.capitalized).font(KS.secondary()).foregroundStyle(KS.muted).lineLimit(1) }
+                            Spacer(minLength: 4)
+                            if !stamp.isEmpty { Text(stamp).font(KS.mono()).foregroundStyle(KS.muted).fixedSize() }
+                        }
+                    }
+                    content
+                }.padding(12).frame(maxWidth: .infinity, alignment: .leading).bubble()
+            }
+        }
     }
     private var tasks: some View {
         VStack(spacing: 0) {
             header("Tasks") { screen = .home }
             HStack {
-                countCard("NEED YOU", count: model.attention.count, color: KS.coralTint)
-                countCard("WORKING", count: model.tasks.filter { ["running", "queued"].contains($0["status"].string) }.count, color: .white)
-                countCard("DONE", count: model.tasks.filter { $0["status"].string == "completed" }.count, color: KS.sage)
-            }.padding(.horizontal, 12)
+                countCard("Need you", count: model.attention.count, color: KS.needsText)
+                countCard("Working", count: model.tasks.filter { ["running", "queued"].contains($0["status"].string) }.count, color: KS.signal)
+                countCard("Done", count: model.tasks.filter { $0["status"].string == "completed" }.count, color: KS.readyText)
+            }.padding(.horizontal, 16)
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 8) {
                     ForEach(Array(filteredTasks.enumerated()), id: \.offset) { _, row in
@@ -790,23 +833,23 @@ struct RootView: View {
                         } label: {
                             VStack(alignment: .leading, spacing: 4) {
                                 StatusChip(row["status"].string.isEmpty ? row["label"].string : row["status"].string)
-                                Text(row["objective"].string.isEmpty ? row["title"].string : row["objective"].string).font(KS.body(15, .semibold))
-                                Text(taskDetail(row)).font(KS.body(13)).foregroundStyle(KS.soft)
-                            }.frame(maxWidth: .infinity, alignment: .leading).padding(10).card(["failed", "open"].contains(row["status"].string) ? KS.attentionSurface : .white)
+                                Text(row["objective"].string.isEmpty ? row["title"].string : row["objective"].string).font(KS.headline()).foregroundStyle(KS.strong)
+                                Text(taskDetail(row)).font(KS.secondary()).foregroundStyle(KS.muted)
+                            }.frame(maxWidth: .infinity, alignment: .leading).padding(12).card(["failed", "open"].contains(row["status"].string) ? KS.attentionSurface : KS.surface)
                         }.buttonStyle(PressStyle())
                     }
                     if filteredTasks.isEmpty { empty("Nothing here right now.") }
-                }.padding(12)
+                }.padding(16)
             }.frame(maxHeight: .infinity)
             ScrollView(.horizontal, showsIndicators: false) {
               HStack(spacing: 2) {
                 ForEach(["All", "Needs you", "Working", "Done"], id: \.self) { item in
                     Button { filter = item } label: {
-                        Text(item).font(.system(size: filterLabelSize, weight: .semibold))
+                        Text(item).font(.system(size: filterLabelSize, weight: .semibold)).foregroundStyle(filter == item ? KS.onSignal : KS.soft)
                             .padding(.horizontal, 12).padding(.vertical, 6).frame(minHeight: 32)
                             .background {
                                 if filter == item {
-                                    Capsule().fill(KS.lime)
+                                    RoundedRectangle(cornerRadius: 8, style: .continuous).fill(KS.signal)
                                         .matchedGeometryEffect(id: "task-filter", in: taskFilterSelection)
                                 }
                             }
@@ -817,10 +860,10 @@ struct RootView: View {
                 }
               }
               .animation(reduceMotion ? nil : KS.glide, value: filter)
-              .padding(.horizontal, 4).card(.white, radius: 24)
-              .padding(.horizontal, 12).padding(.vertical, 4)
-            }.fixedSize(horizontal: false, vertical: true).buttonStyle(PressStyle())
-                .overlay(alignment: .top) { Rectangle().fill(KS.ink.opacity(0.12)).frame(height: 1) }
+              .padding(.horizontal, 4).card(KS.inset)
+              .padding(.horizontal, 16).padding(.vertical, 8)
+            }.fixedSize(horizontal: false, vertical: true).buttonStyle(PressStyle()).background(KS.grouped)
+                .overlay(alignment: .top) { Rectangle().fill(KS.hairline).frame(height: 1) }
         }
     }
     private var filteredTasks: [JSON] {
@@ -839,57 +882,70 @@ struct RootView: View {
     }
     private func countCard(_ name: String, count: Int, color: Color) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(String(format: "%02d", count)).font(KS.display(28)).monospacedDigit()
+            Text(String(format: "%02d", count)).font(.system(.title2, design: .monospaced, weight: .medium)).foregroundStyle(count == 0 ? KS.muted : color)
                 .contentTransition(reduceMotion ? .identity : .numericText(value: Double(count)))
                 .animation(reduceMotion ? nil : KS.glide, value: count)
-            Text(name).font(KS.mono(9))
+            Eyebrow(name)
         }
-            .frame(maxWidth: .infinity, alignment: .leading).padding(10).card(color, radius: 14)
+            .frame(maxWidth: .infinity, alignment: .leading).padding(12).card()
+            .accessibilityElement(children: .combine)
     }
     private var usage: some View {
         VStack(spacing: 0) {
             header("Usage") { screen = .home }
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 10) {
-                    Text("Auto work follows your host’s routing policy and available quota.").foregroundStyle(KS.soft).fixedSize(horizontal: false, vertical: true)
+                    Text("Auto work follows your host’s routing policy and available quota.").font(KS.body()).foregroundStyle(KS.soft).fixedSize(horizontal: false, vertical: true)
                     ForEach(Array(model.status["usage"].array.enumerated()), id: \.offset) { _, usage in
-                        (textSize.isAccessibilitySize ? AnyLayout(VStackLayout(alignment: .leading, spacing: 12)) : AnyLayout(HStackLayout(spacing: 12))) {
-                            ZStack {
-                                Circle().stroke(KS.paper, lineWidth: 10)
-                                Circle().trim(from: 0, to: max(0, min(1, (usage["headroom"].number ?? 0) / 100))).stroke(KS.tint(usage["provider"].string), lineWidth: 10).rotationEffect(.degrees(-90))
-                                Circle().stroke(KS.ink, lineWidth: 2).padding(-5)
-                                Circle().stroke(KS.ink, lineWidth: 2).padding(5)
-                                Text(usage["headroom"].number.map { "\(Int($0))%" } ?? "—").font(.system(size: 16, weight: .bold, design: .rounded)).monospacedDigit()
-                            }.frame(width: 48, height: 48).accessibilityLabel("\(usage["provider"].string), \(usage["headroom"].number.map { "\(Int($0)) percent left" } ?? "quota unavailable")")
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text(usage["provider"].string.capitalized + " · " + usage["plan"].string.uppercased()).font(KS.body(15, .semibold))
-                                ForEach(Array(usage["windows"].array.enumerated()), id: \.offset) { _, window in
-                                    Text(windowText(window)).font(KS.body(13)).foregroundStyle(KS.soft)
+                        let provider = usage["provider"].string
+                        let left = usage["headroom"].number
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack(spacing: 10) {
+                                Avatar(name: provider, size: 28, provider: provider)
+                                Text(provider.capitalized).font(KS.headline()).foregroundStyle(KS.strong)
+                                if !usage["plan"].string.isEmpty { StatusChip(usage["plan"].string.uppercased()) }
+                                Spacer(minLength: 4)
+                                Text(left.map { "\(Int($0))% left" } ?? "—").font(KS.mono(.semibold)).foregroundStyle(KS.ink)
+                            }
+                            GeometryReader { geo in
+                                ZStack(alignment: .leading) {
+                                    Capsule().fill(KS.chip)
+                                    Capsule().fill(KS.tint(provider)).frame(width: geo.size.width * max(0, min(1, (left ?? 0) / 100)))
                                 }
-                                if !usage["ok"].bool { Text("Quota reading unavailable").font(KS.body(14)) }
-                            }.frame(maxWidth: .infinity, alignment: .leading)
-                        }.padding(12).card(.white)
+                            }.frame(height: 6).accessibilityHidden(true)
+                            ForEach(Array(usage["windows"].array.enumerated()), id: \.offset) { _, window in
+                                Text(windowText(window)).font(KS.mono()).foregroundStyle(KS.muted)
+                            }
+                            if !usage["ok"].bool { Text("Quota reading unavailable").font(KS.secondary()).foregroundStyle(KS.needsText) }
+                        }.padding(14).card()
+                            .accessibilityElement(children: .combine)
+                            .accessibilityLabel("\(provider), \(left.map { "\(Int($0)) percent left" } ?? "quota unavailable")")
                     }
-                    if model.status["usage"].array.isEmpty { empty("No quota readings from the host yet.") }
+                    if model.status["usage"].array.isEmpty { empty("Quota readings for Claude, Codex and Antigravity will appear here once your host reports them.") }
                     routingSummary.padding(.top, 10)
-                }.padding(12)
+                }.padding(16)
             }
+            Button("Refresh usage") { Task { await model.refresh() } }.buttonStyle(Pill(primary: true)).disabled(model.loading)
+                .padding(.horizontal, 16).padding(.vertical, 8).background(KS.grouped)
+                .overlay(alignment: .top) { Rectangle().fill(KS.hairline).frame(height: 1) }
         }
     }
     private var routingSummary: some View {
-        VStack(alignment: .leading, spacing: 8) {
-                Eyebrow("01 — Auto order, right now")
-                Text(model.status["routing"]["reason"].string).font(KS.body(14))
+        VStack(alignment: .leading, spacing: 10) {
+                Eyebrow("Auto order, right now")
+                Text(model.status["routing"]["reason"].string).font(KS.mono()).foregroundStyle(KS.soft)
                 ForEach(["research", "patch", "review", "summary"], id: \.self) { kind in
                     let choice = model.status["routing"]["by_kind"][kind]
                     (textSize.isAccessibilitySize ? AnyLayout(VStackLayout(alignment: .leading, spacing: 4)) : AnyLayout(HStackLayout())) {
                         Text(kind.capitalized).foregroundStyle(KS.soft)
                         if !textSize.isAccessibilitySize { Spacer() }
-                        Text(choice["provider"].string.isEmpty ? "No eligible provider" : choice["provider"].string.capitalized).fontWeight(.semibold)
-                    }.font(KS.body(14))
+                        HStack(spacing: 6) {
+                            if !choice["provider"].string.isEmpty { Avatar(name: "", size: 20, provider: choice["provider"].string) }
+                            Text(choice["provider"].string.isEmpty ? "No eligible provider" : choice["provider"].string.capitalized).fontWeight(.semibold).foregroundStyle(KS.ink)
+                        }
+                    }.font(KS.body())
                 }
-                Button("Refresh usage") { Task { await model.refresh() } }.buttonStyle(Pill(primary: true)).disabled(model.loading)
-        }
+        }.padding(14).frame(maxWidth: .infinity, alignment: .leading).card()
     }
     private func windowText(_ window: JSON) -> String {
         let used = window["used_percent"].number.map { "\(Int($0))% used" } ?? "unavailable"
@@ -898,21 +954,22 @@ struct RootView: View {
     }
     private var you: some View {
         VStack(alignment: .leading, spacing: 14) {
-            HStack(spacing: 12) { CloseButton { sheet = nil }; Text("YOU.").font(KS.display(32)) }
-            Button { sheet = .newBot } label: { menuRow("New bot", "Or ask your starred bot to make one", icon: "plus") }.buttonStyle(Pill(fill: KS.lime, primary: true))
-            Button { sheet = nil; screen = .connect } label: { menuRow("Hosts and devices", model.online ? "Host online · pair another host" : "Host offline · pair another host", icon: "desktopcomputer") }.buttonStyle(Pill(primary: true))
+            HStack(spacing: 12) { CloseButton { sheet = nil }; Text("You").font(KS.title()).foregroundStyle(KS.strong) }
+            Spacer(minLength: 0)
+            Button { sheet = .newBot } label: { menuRow("New bot", "Or ask your starred bot to make one", icon: "plus") }.buttonStyle(Pill(fill: KS.signal, primary: true))
+            Button { sheet = nil; screen = .connect } label: { menuRow("Hosts and devices", model.online ? "Host online · pair another host" : "Host offline · pair another host", icon: "desktopcomputer") }.buttonStyle(Pill(fill: KS.surface))
             Button {
                 sheet = nil
                 if let bot = model.starred { model.openBot = bot; screen = .settings }
                 else { model.error = "Open a bot’s thread, then choose Bot settings." }
-            } label: { menuRow("Bot settings", "Crew, chat replies and your starred shortcut", icon: "slider.horizontal.3") }.buttonStyle(Pill(primary: true))
-            Button { sheet = .transactions } label: { menuRow("Watch transactions", "Review transaction previews", icon: "list.bullet.rectangle") }.buttonStyle(Pill(primary: true)).disabled(model.isDemo)
-            Button { sheet = .memos } label: { menuRow("Watch memos", "Play and share recordings saved on this iPhone", icon: "waveform") }.buttonStyle(Pill(primary: true)).disabled(model.isDemo)
-            Button("Sign out of this host") { perform { try await model.signOut(); sheet = nil; screen = .connect } }.frame(maxWidth: .infinity, minHeight: 44).disabled(model.isDemo)
+            } label: { menuRow("Bot settings", "Crew, chat replies and your starred shortcut", icon: "slider.horizontal.3") }.buttonStyle(Pill(fill: KS.surface))
+            Button { sheet = .transactions } label: { menuRow("Watch transactions", "Review transaction previews", icon: "list.bullet.rectangle") }.buttonStyle(Pill(fill: KS.surface)).disabled(model.isDemo)
+            Button { sheet = .memos } label: { menuRow("Watch memos", "Play and share recordings saved on this iPhone", icon: "waveform") }.buttonStyle(Pill(fill: KS.surface)).disabled(model.isDemo)
+            Button("Sign out of this host") { perform { try await model.signOut(); sheet = nil; screen = .connect } }.font(KS.body(.semibold)).foregroundStyle(KS.failedText).frame(maxWidth: .infinity, minHeight: 44).disabled(model.isDemo)
         }
     }
     private func menuRow(_ title: String, _ subtitle: String, icon: String) -> some View {
-        HStack(spacing: 12) { Image(systemName: icon); VStack(alignment: .leading) { Text(title).font(KS.body(18, .bold)); Text(subtitle).font(KS.body(14)).foregroundStyle(KS.soft) }; Spacer() }.padding(.vertical, 8)
+        HStack(spacing: 12) { Image(systemName: icon).frame(width: 24); VStack(alignment: .leading, spacing: 2) { Text(title).font(KS.headline()); Text(subtitle).font(KS.secondary()).opacity(0.8) }; Spacer() }.padding(.vertical, 8)
     }
 }
 
@@ -945,22 +1002,28 @@ struct ConnectView: View {
            VStack(alignment: .leading, spacing: 20) {
             if model.connected { CloseButton(action: close) }
             HStack(alignment: .top, spacing: 12) {
-                Moji(seed: "", size: 56, mark: true)
+                Image(systemName: "point.3.connected.trianglepath.dotted").font(.system(size: 22, weight: .semibold)).foregroundStyle(KS.onSignal)
+                    .frame(width: 48, height: 48).background(KS.signal, in: RoundedRectangle(cornerRadius: 12, style: .continuous)).accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("YOUR SWARM.").font(KS.display(38))
-                    Text("in your pocket.").font(KS.body(27)).italic()
+                    Text("Your swarm").font(KS.title()).foregroundStyle(KS.strong).accessibilityAddTraits(.isHeader)
+                    Text("in your pocket").font(KS.body()).foregroundStyle(KS.muted)
                 }
             }
-            Text("Your agents run on your Mac. This phone talks to them through the Swarmaa relay, from anywhere.").foregroundStyle(KS.soft)
-            Eyebrow("01 — On your Mac, run npm run relay:pair")
-            Text("Type the 6-digit code it shows. It works once, for five minutes.")
+            Text("Your agents run on your Mac. This phone talks to them through the Swarmaa relay, from anywhere.").font(KS.body()).foregroundStyle(KS.soft)
+            VStack(alignment: .leading, spacing: 8) {
+                Eyebrow("On your Mac, run")
+                Text("npm run relay:pair").font(KS.mono(.semibold)).foregroundStyle(KS.signal).textSelection(.enabled)
+                    .padding(.horizontal, 10).padding(.vertical, 8).frame(maxWidth: .infinity, alignment: .leading).card(KS.inset, radius: 8)
+                Text("Type the 6-digit code it shows. It works once, for five minutes.").font(KS.body()).foregroundStyle(KS.ink)
+            }.padding(14).card()
             Spacer(minLength: 0)
             Eyebrow("Pairing code")
-            TextField("000 000", text: $code)
+            TextField("", text: $code, prompt: Text("000 000").foregroundStyle(KS.muted))
                 .keyboardType(.numberPad)
                 .textContentType(.oneTimeCode)
-                .font(KS.mono(34)).multilineTextAlignment(.center)
-                .padding(.vertical, 14).frame(maxWidth: .infinity).card(.white, radius: 16)
+                .font(.system(.largeTitle, design: .monospaced, weight: .medium)).foregroundStyle(KS.strong).multilineTextAlignment(.center)
+                .padding(.vertical, 14).frame(maxWidth: .infinity).card(KS.inset)
+                .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(focused ? KS.signal.opacity(0.7) : .clear, lineWidth: 1).allowsHitTesting(false))
                 .focused($focused).privacySensitive()
                 .accessibilityLabel("6-digit pairing code")
                 .onChange(of: code) { _, value in
@@ -968,14 +1031,14 @@ struct ConnectView: View {
                     if clean != value { code = clean }
                     if clean.count == 6 { connect() }
                 }
-            if let error { Text(error).font(KS.body(14)) }
+            if let error { Text(error).font(KS.body()).foregroundStyle(KS.failedText) }
             Button(connecting ? "Connecting…" : "Connect", action: connect)
-                .buttonStyle(Pill(fill: KS.lime, primary: true))
+                .buttonStyle(Pill(fill: KS.signal, primary: true))
                 .disabled(connecting || model.isDemo || digits.count < 6)
         }
            .padding(20).frame(minHeight: geometry.size.height, alignment: .topLeading)
           }.scrollDismissesKeyboard(.interactively).scrollBounceBehavior(.basedOnSize)
-        }.background(KS.paper)
+        }.background(KS.ground)
         .onAppear { focused = !model.isDemo }
     }
 }
@@ -986,7 +1049,7 @@ struct ReplyPicker: View {
     @Binding var value: String
     var body: some View {
         Picker("Chat replies", selection: $value) { ForEach(Array(zip(replyModels, replyNames)), id: \.0) { id, name in Text(name).tag(id) } }
-            .pickerStyle(.menu).frame(maxWidth: .infinity, minHeight: 44, alignment: .leading).card(.white, radius: 14)
+            .pickerStyle(.menu).tint(KS.ink).frame(maxWidth: .infinity, minHeight: 44, alignment: .leading).padding(.horizontal, 4).card(KS.inset)
     }
 }
 struct NewBotView: View {
@@ -998,7 +1061,7 @@ struct NewBotView: View {
     @Environment(\.dynamicTypeSize) private var textSize
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            HStack { CloseButton(action: close).accessibilityIdentifier("close-sheet"); Text("NEW BOT.").font(KS.display(32)) }
+            HStack { CloseButton(action: close).accessibilityIdentifier("close-sheet"); Text("New bot").font(KS.title()).foregroundStyle(KS.strong) }
                 .fixedSize(horizontal: false, vertical: true)
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
@@ -1008,31 +1071,31 @@ struct NewBotView: View {
                     (textSize.isAccessibilitySize ? AnyLayout(VStackLayout(alignment: .leading, spacing: 16)) : AnyLayout(HStackLayout(spacing: 10))) {
                         VStack(alignment: .leading, spacing: 4) {
                         Eyebrow("Project")
-                        Picker("Project", selection: $draft.project) { Text("Choose project").tag(""); ForEach(model.scopes, id: \.self) { Text($0.replacingOccurrences(of: "project:", with: "")).tag($0) } }.pickerStyle(.menu).padding(.vertical, 8).frame(maxWidth: .infinity, minHeight: 44).card(.white, radius: 14).accessibilityIdentifier("project-picker")
+                        Picker("Project", selection: $draft.project) { Text("Choose project").tag(""); ForEach(model.scopes, id: \.self) { Text($0.replacingOccurrences(of: "project:", with: "")).tag($0) } }.pickerStyle(.menu).padding(.vertical, 8).frame(maxWidth: .infinity, minHeight: 44).tint(KS.ink).card(KS.inset).accessibilityIdentifier("project-picker")
                         }
                         VStack(alignment: .leading, spacing: 4) {
                         Eyebrow("Lead")
-                        Picker("Lead", selection: $draft.lead) { Text("A new agent").tag(""); ForEach(model.agents.filter { $0["scope"].string == draft.project }, id: \.self) { Text($0["name"].string).tag($0["id"].string) } }.pickerStyle(.menu).padding(.vertical, 8).frame(maxWidth: .infinity, minHeight: 44).card(.white, radius: 14).accessibilityIdentifier("lead-picker")
+                        Picker("Lead", selection: $draft.lead) { Text("A new agent").tag(""); ForEach(model.agents.filter { $0["scope"].string == draft.project }, id: \.self) { Text($0["name"].string).tag($0["id"].string) } }.pickerStyle(.menu).padding(.vertical, 8).frame(maxWidth: .infinity, minHeight: 44).tint(KS.ink).card(KS.inset).accessibilityIdentifier("lead-picker")
                         }
                     }
                     Eyebrow("04 — Chat replies"); ReplyPicker(value: $draft.firstReply)
                 }.padding(3)
             }.frame(maxHeight: .infinity).accessibilityIdentifier("new-bot-fields")
-            Text(error ?? draft.missing ?? "Your bot is ready to make.").font(KS.body(14)).foregroundStyle(KS.muted)
+            Text(error ?? draft.missing ?? "Your bot is ready to make.").font(KS.body()).foregroundStyle(KS.muted)
             Button(saving ? "Making bot…" : "Make bot") {
                 saving = true
                 Task {
                     defer { saving = false }
                     do { try await model.create(draft); close() } catch { self.error = safeError(error) }
                 }
-            }.buttonStyle(Pill(fill: KS.lime, primary: true)).disabled(draft.missing != nil || saving || model.isDemo)
+            }.buttonStyle(Pill(fill: KS.signal, primary: true)).disabled(draft.missing != nil || saving || model.isDemo)
         }.onChange(of: draft.project) { _, _ in draft.lead = "" }
     }
 }
 @MainActor private func field(_ label: String, text: Binding<String>, prompt: String, lines: ClosedRange<Int> = 1...1) -> some View {
     VStack(alignment: .leading, spacing: 6) {
         Eyebrow(label)
-        TextField(prompt, text: text, axis: .vertical).lineLimit(lines).padding(12).frame(minHeight: 48).card(.white, radius: 14).accessibilityLabel(label)
+        TextField("", text: text, prompt: Text(prompt).foregroundStyle(KS.muted), axis: .vertical).lineLimit(lines).foregroundStyle(KS.ink).padding(12).frame(minHeight: 48).card(KS.inset).accessibilityLabel(label)
     }
 }
 struct AnswerView: View {
@@ -1048,19 +1111,19 @@ struct AnswerView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack { CloseButton(action: close).accessibilityIdentifier("close-sheet"); Eyebrow("Your bot asks") }
-            Text(question["prompt"].string.uppercased()).font(KS.display(30)).fixedSize(horizontal: false, vertical: true)
-            Text(question["multi"].bool ? "Pick any. Nothing is posted until you approve the drafts." : "Choose one answer.").font(KS.body(15))
+            Text(question["prompt"].string).font(KS.title()).foregroundStyle(KS.strong).fixedSize(horizontal: false, vertical: true)
+            Text(question["multi"].bool ? "Pick any. Nothing is posted until you approve the drafts." : "Choose one answer.").font(KS.body()).foregroundStyle(KS.soft)
                 VStack(alignment: .leading, spacing: 10) {
                     ForEach(question["options"].array.map(\.string), id: \.self) { option in
                         Button {
                             if choices.contains(option) { choices.remove(option) }
                             else { if !question["multi"].bool { choices = [] }; choices.insert(option) }
                         } label: { HStack { Text(option); Spacer(); Image(systemName: choices.contains(option) ? "checkmark.circle.fill" : "circle") } }
-                            .buttonStyle(Pill(fill: choices.contains(option) ? KS.lime : .white, answerOption: true))
+                            .buttonStyle(Pill(fill: choices.contains(option) ? KS.signal : KS.surface, answerOption: true))
                     }
                     if question["free_text"].bool { field("Anything else", text: $text, prompt: "e.g. skip X this time") }
                 }.padding(3)
-            if let error { Text(error).font(KS.body(14)) }
+            if let error { Text(error).font(KS.body()) }
             Button(saving ? "Sending…" : "Send answer") {
                 saving = true
                 Task {
@@ -1076,7 +1139,7 @@ struct AnswerView: View {
                         close()
                     } catch { self.error = safeError(error) }
                 }
-            }.buttonStyle(Pill(fill: KS.lime, primary: true)).disabled(!valid || saving || model.isDemo)
+            }.buttonStyle(Pill(fill: KS.signal, primary: true)).disabled(!valid || saving || model.isDemo)
         }
     }
 }
@@ -1097,11 +1160,11 @@ struct SettingsView: View {
     var body: some View {
         GeometryReader { geo in
             VStack(alignment: .leading, spacing: 14) {
-                HStack { CloseButton(action: close); Moji(seed: draft.avatarSeed, size: 40, colorHex: draft.colorHex); Text(draft.name.uppercased() + ".").font(KS.display(30)) }
+                HStack(spacing: 10) { CloseButton(action: close); Avatar(name: draft.name, size: 36, colorHex: draft.colorHex); Text(draft.name).font(KS.title()).foregroundStyle(KS.strong).lineLimit(2) }
                     .fixedSize(horizontal: false, vertical: true)
                 ScrollView {
                   VStack(alignment: .leading, spacing: 12) {
-                    Text(draft.job).foregroundStyle(KS.soft).fixedSize(horizontal: false, vertical: true)
+                    Text(draft.job).font(KS.body()).foregroundStyle(KS.soft).fixedSize(horizontal: false, vertical: true)
                     VStack(alignment: .leading, spacing: 14) {
                         field("Name", text: string("name"), prompt: "Bot name")
                         field("What it does", text: string("job"), prompt: "Job", lines: 2...3)
@@ -1110,7 +1173,7 @@ struct SettingsView: View {
                         Eyebrow("02 — Crew")
                         Picker("Lead", selection: string("lead_agent_id")) {
                             ForEach(model.agents.filter { $0["scope"].string == draft.scope }, id: \.self) { agent in Text(agent["name"].string).tag(agent["id"].string) }
-                        }.frame(minHeight: 44)
+                        }.tint(KS.ink).frame(minHeight: 44)
                         ForEach(model.agents.filter { $0["scope"].string == draft.scope && $0["id"].string != draft.raw["lead_agent_id"].string }, id: \.self) { agent in
                             Toggle(agent["name"].string, isOn: Binding(get: { draft.raw["member_agent_ids"].array.contains(agent["id"]) }, set: { on in
                                 var members = draft.raw["member_agent_ids"].array.filter { $0 != agent["id"] }
@@ -1125,18 +1188,18 @@ struct SettingsView: View {
                                 Text("Auto").tag("auto"); Text("Auto").tag("")
                                 if kind == "review" { Text("Different from author").tag("different_from_author") }
                                 Text("Claude").tag("claude"); Text("Codex").tag("codex"); Text("Antigravity").tag("antigravity")
-                            }.frame(minHeight: 44)
+                            }.tint(KS.ink).frame(minHeight: 44)
                         }
-                        StatusChip("Schedule")
+                        Eyebrow("04 — Schedule")
                         TextField("Cron, e.g. 0 9 * * 1-5", text: Binding(get: { draft.raw["schedule"].string }, set: {
                             draft.raw["schedule"] = $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? .null : .string($0)
-                        })).textInputAutocapitalization(.never).autocorrectionDisabled().padding(12).card(.white, radius: 14)
-                        Text("Optional CRON_TZ=Area/City prefix. Leave blank to clear.").font(KS.body(14)).foregroundStyle(KS.muted)
+                        })).textInputAutocapitalization(.never).autocorrectionDisabled().font(KS.mono()).padding(12).card(KS.inset)
+                        Text("Optional CRON_TZ=Area/City prefix. Leave blank to clear.").font(KS.body()).foregroundStyle(KS.muted)
                         Toggle("Star this bot (your bottom-right shortcut)", isOn: Binding(get: { draft.starred }, set: { draft.raw["starred"] = .bool($0) })).frame(minHeight: 44)
                         Toggle("Ask me before anything public", isOn: rule("approve_public")).frame(minHeight: 44)
                         Toggle("Review every edit", isOn: rule("review_edits")).frame(minHeight: 44)
                         Toggle("Run tests before an edit is done", isOn: rule("require_tests")).frame(minHeight: 44)
-                    }.padding(14).card(.white).padding(4)
+                    }.padding(14).card().padding(4)
                     if textSize.isAccessibilitySize { settingsActions }
                   }
                 }.frame(maxHeight: .infinity).scrollDismissesKeyboard(.interactively)
@@ -1160,12 +1223,12 @@ struct SettingsView: View {
     }
     private var settingsActions: some View {
         VStack(alignment: .leading, spacing: 14) {
-                if let error { Text(error).font(KS.body(14)) }
-                Text("Changes apply from the next turn. Running work keeps its settings.").font(KS.body(14)).foregroundStyle(KS.muted)
+                if let error { Text(error).font(KS.body()).foregroundStyle(KS.failedText) }
+                Text("Changes apply from the next turn. Running work keeps its settings.").font(KS.body()).foregroundStyle(KS.muted)
                 Button(saving ? "Saving…" : "Save changes") {
                     saving = true
                     Task { defer { saving = false }; do { try await model.save(draft); close() } catch { self.error = safeError(error) } }
-                }.buttonStyle(Pill(fill: KS.lime, primary: true)).disabled(saving || model.isDemo || draft.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || draft.job.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }.buttonStyle(Pill(fill: KS.signal, primary: true)).disabled(saving || model.isDemo || draft.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || draft.job.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 (textSize.isAccessibilitySize ? AnyLayout(VStackLayout(spacing: 12)) : AnyLayout(HStackLayout(spacing: 12))) {
                     Button(savedBot.archived ? "Unhide" : "Hide bot") { changeVisibility() }
                         .buttonStyle(Pill(danger: !savedBot.archived)).frame(maxWidth: .infinity)
@@ -1295,11 +1358,11 @@ struct ScheduleCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
             StatusChip("Schedule")
-            Text(card["description"].string.isEmpty ? message.text : card["description"].string).font(KS.body(15, .semibold))
-            Text(card["timezone"].string).font(KS.mono(12))
-            if card["paused"].bool { Text("Paused") }
+            Text(card["description"].string.isEmpty ? message.text : card["description"].string).font(KS.headline()).foregroundStyle(KS.strong)
+            Text(card["timezone"].string).font(KS.mono()).foregroundStyle(KS.muted)
+            if card["paused"].bool { Text("Paused").font(KS.secondary(.semibold)).foregroundStyle(KS.needsText) }
             ForEach(card["next_runs"].array.map(\.string), id: \.self) { value in
-                if let run = date(value) { Text(run, format: .relative(presentation: .named)) }
+                if let run = date(value) { Text(run, format: .relative(presentation: .named)).font(KS.mono()).foregroundStyle(KS.soft) }
             }
             HStack {
                 Button(card["paused"].bool ? "Resume" : "Pause") {
@@ -1316,12 +1379,12 @@ struct ScheduleCard: View {
                             try await model.readThread(updated)
                         } catch { self.error = safeError(error); await model.refresh() }
                     }
-                }.buttonStyle(Pill(fill: KS.lime))
+                }.buttonStyle(Pill(fill: KS.signal))
                     .disabled(saving || model.isDemo || bot == nil || card["cron"] == .null)
                 Button("Edit") { if let bot { model.openBot = bot; edit() } }.buttonStyle(Pill()).disabled(bot == nil || saving)
             }
-            if let error { Text(error).font(KS.body(14)) }
-        }.padding(.horizontal, 12).padding(.vertical, 10).frame(maxWidth: .infinity, alignment: .leading).card(.white)
+            if let error { Text(error).font(KS.body()).foregroundStyle(KS.failedText) }
+        }.padding(12).frame(maxWidth: .infinity, alignment: .leading).card()
     }
 }
 
@@ -1334,7 +1397,7 @@ struct SwarmCard: View {
         case "done": ("checkmark.circle.fill", KS.readyText)
         case "failed", "blocked", "cancelled": ("xmark.circle.fill", KS.failedText)
         case "waiting_on_you": ("questionmark.circle.fill", KS.needsText)
-        case "running": ("circle.dotted", KS.ink)
+        case "running": ("circle.dotted", KS.signal)
         default: ("circle", KS.muted)
         }
     }
@@ -1346,13 +1409,21 @@ struct SwarmCard: View {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 5) {
                     StatusChip(status == "waiting_on_you" ? "Needs you" : status.isEmpty ? "Swarm" : status.replacingOccurrences(of: "_", with: " "))
-                    Text(swarm["title"].string.isEmpty ? "Swarm" : swarm["title"].string).font(KS.body(15, .semibold))
+                    Text(swarm["title"].string.isEmpty ? "Swarm" : swarm["title"].string).font(KS.headline()).foregroundStyle(KS.strong)
                 }
                 Spacer()
-                Text("\(done)/\(total)").font(KS.display(24)).monospacedDigit()
+                Text("\(done)/\(total)").font(.system(.title3, design: .monospaced, weight: .medium)).foregroundStyle(KS.ink)
+            }
+            if total > 0 {
+                GeometryReader { geo in
+                    ZStack(alignment: .leading) {
+                        Capsule().fill(KS.chip)
+                        Capsule().fill(KS.signal).frame(width: geo.size.width * min(1, Double(done) / Double(total)))
+                    }
+                }.frame(height: 4).accessibilityHidden(true)
             }
             if let line = swarmHeadline(steps, agents: agents) {
-                Text(line).font(KS.body(14, .semibold)).foregroundStyle(line.hasSuffix("waiting on you") ? KS.needsText : KS.soft)
+                Text(line).font(KS.body(.semibold)).foregroundStyle(line.hasSuffix("waiting on you") ? KS.needsText : KS.soft)
                     .fixedSize(horizontal: false, vertical: true)
             }
             if !crew.isEmpty {
@@ -1360,9 +1431,9 @@ struct SwarmCard: View {
                     HStack(spacing: 4) {
                         ForEach(Array(crew.enumerated()), id: \.offset) { i, member in
                             if i > 0 { Image(systemName: "arrow.right").font(.system(size: 9, weight: .bold)).foregroundStyle(KS.muted) }
-                            HStack(spacing: 4) { Moji(seed: member.id, size: 18); Text(member.name).font(KS.body(12, .semibold)).lineLimit(1) }
+                            HStack(spacing: 4) { Avatar(name: member.name, size: 18); Text(member.name).font(KS.secondary(.semibold)).foregroundStyle(member.active ? KS.onSignal : KS.ink).lineLimit(1) }
                                 .padding(.leading, 4).padding(.trailing, 8).frame(minHeight: 24)
-                                .background(member.active ? KS.lime : KS.neutralTint, in: Capsule())
+                                .background(member.active ? KS.signal : KS.neutralTint, in: Capsule())
                         }
                     }
                 }.accessibilityElement(children: .ignore)
@@ -1373,14 +1444,14 @@ struct SwarmCard: View {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Image(systemName: icon).font(.system(size: 13)).foregroundStyle(color)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(step["title"].string).font(KS.body(14)).fixedSize(horizontal: false, vertical: true)
-                        if let line = waitingLine(step, in: steps, agents: agents) { Text(line).font(KS.body(12)).foregroundStyle(KS.muted) }
-                        if !step["check"].string.isEmpty { Text("Done when: " + step["check"].string).font(KS.body(12)).foregroundStyle(KS.muted).fixedSize(horizontal: false, vertical: true) }
+                        Text(step["title"].string).font(KS.body()).foregroundStyle(KS.ink).fixedSize(horizontal: false, vertical: true)
+                        if let line = waitingLine(step, in: steps, agents: agents) { Text(line).font(KS.secondary()).foregroundStyle(KS.needsText) }
+                        if !step["check"].string.isEmpty { Text("Done when: " + step["check"].string).font(KS.secondary()).foregroundStyle(KS.muted).fixedSize(horizontal: false, vertical: true) }
                     }
                 }
             }
-        }.padding(.horizontal, 12).padding(.vertical, 10).frame(maxWidth: .infinity, alignment: .leading)
-            .card(["waiting_on_you", "blocked"].contains(status) ? KS.attentionSurface : .white)
+        }.padding(12).frame(maxWidth: .infinity, alignment: .leading)
+            .card(["waiting_on_you", "blocked"].contains(status) ? KS.attentionSurface : KS.surface)
     }
 }
 
@@ -1390,18 +1461,18 @@ struct ReportCard: View {
     var author = ""
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            if !author.isEmpty { Text(author).font(KS.body(12, .semibold)) }
+            if !author.isEmpty { Text(author).font(KS.body(.semibold)).foregroundStyle(KS.strong) }
             ForEach([("result", "Result"), ("checks", "Checks"), ("not checked", "Not checked"), ("files", "Files")], id: \.0) { key, label in
                 let missing = (report.parts[key] ?? "").isEmpty
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(label).font(KS.body(12, .semibold)).foregroundStyle(key == "not checked" ? KS.needsText : KS.muted)
-                    Text(missing ? "Not stated" : report.parts[key]!).font(KS.body(14)).foregroundStyle(missing ? KS.muted : KS.ink)
+                    Eyebrow(label, color: key == "not checked" ? KS.needsText : KS.muted)
+                    Text(missing ? "Not stated" : report.parts[key]!).font(KS.body()).foregroundStyle(missing ? KS.muted : KS.ink)
                         .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
                 }.frame(maxWidth: .infinity, alignment: .leading)
                     .padding(key == "not checked" ? 8 : 0)
                     .background(key == "not checked" ? KS.needsTint : .clear, in: RoundedRectangle(cornerRadius: 10))
             }
-        }.padding(12).frame(maxWidth: .infinity, alignment: .leading).card(.white)
+        }.padding(12).frame(maxWidth: .infinity, alignment: .leading).card()
     }
 }
 
@@ -1418,17 +1489,17 @@ struct ApprovalCard: View {
         let open = question["status"].string == "open"
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) { StatusChip(open ? "Needs you" : "Answered"); StatusChip(action.kind) }
-            if open { Text("Waiting for your approval").font(KS.body(13, .semibold)).foregroundStyle(KS.needsText) }
-            Text(action.summary.isEmpty ? question["prompt"].string : action.summary).font(KS.body(15, .semibold)).fixedSize(horizontal: false, vertical: true)
+            if open { Text("Waiting for your approval").font(KS.secondary(.semibold)).foregroundStyle(KS.needsText) }
+            Text(action.summary.isEmpty ? question["prompt"].string : action.summary).font(KS.headline()).foregroundStyle(KS.strong).fixedSize(horizontal: false, vertical: true)
             if !action.detail.isEmpty {
                 ScrollView {
-                    Text(action.detail).font(KS.mono(12)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading).padding(10)
+                    Text(action.detail).font(KS.mono()).foregroundStyle(KS.ink).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading).padding(10)
                         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { detailHeight = $0 }
                 }.frame(height: min(detailHeight, 180)).scrollBounceBehavior(.basedOnSize)
-                    .background(KS.neutralTint, in: RoundedRectangle(cornerRadius: 10))
+                    .card(KS.inset, radius: 8)
             }
-            if !action.where_.isEmpty { Text("Where: " + action.where_).font(KS.body(13)).foregroundStyle(KS.muted).fixedSize(horizontal: false, vertical: true) }
-            if let error { Text(error).font(KS.body(14)) }
+            if !action.where_.isEmpty { Text("Where: " + action.where_).font(KS.secondary()).foregroundStyle(KS.muted).fixedSize(horizontal: false, vertical: true) }
+            if let error { Text(error).font(KS.body()).foregroundStyle(KS.failedText) }
             if open {
                 (textSize.isAccessibilitySize ? AnyLayout(VStackLayout(spacing: 10)) : AnyLayout(HStackLayout(alignment: .top, spacing: 10))) {
                     ForEach(question["options"].array.map(\.string), id: \.self) { option in
@@ -1442,14 +1513,14 @@ struct ApprovalCard: View {
                         } label: {
                             VStack(spacing: 1) {
                                 Text(option)
-                                if !sub.isEmpty { Text(sub).font(KS.body(12)).opacity(0.8) }
+                                if !sub.isEmpty { Text(sub).font(KS.secondary()).opacity(0.8) }
                             }.frame(maxWidth: .infinity)
                         }.buttonStyle(Pill(primary: option == "Approve", danger: option == "Deny", answerOption: !["Approve", "Deny"].contains(option)))
                     }
                 }.disabled(sending).padding(.top, 4)
             }
-        }.padding(.horizontal, 12).padding(.vertical, 10).frame(maxWidth: .infinity, alignment: .leading)
-            .card(open ? KS.attentionSurface : .white)
+        }.padding(12).frame(maxWidth: .infinity, alignment: .leading)
+            .card(open ? KS.attentionSurface : KS.surface)
     }
 }
 

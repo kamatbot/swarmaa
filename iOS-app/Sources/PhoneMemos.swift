@@ -137,23 +137,32 @@ struct PhoneMemosView: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            HStack { CloseButton(action: close); Text("WATCH MEMOS.").font(KS.display(28)) }
-            Text("Memos stay on iPhone until you delete them. Mac delivery uses the selected bot.").font(KS.body(14))
-            Picker("Bot for older memos", selection: $selectedThread) { ForEach(Runtime.model.sortedBots) { bot in Text(bot.name).tag(bot.threadID) } }
-            if store.items.isEmpty { Text("No Watch memos saved on this iPhone.") }
+            HStack { CloseButton(action: close); Text("Watch memos").font(KS.title()).foregroundStyle(KS.strong) }
+            Text("Memos stay on iPhone until you delete them. Mac delivery uses the selected bot.").font(KS.body()).foregroundStyle(KS.soft)
+            if store.items.isEmpty { Text("Voice memos you record on Apple Watch will appear here.").font(KS.body()).foregroundStyle(KS.muted) }
             ScrollView {
                 ForEach(store.items) { item in
                     VStack(alignment: .leading, spacing: 8) {
-                        Text(item.date, style: .date)
-                        if let delivery = item.delivery { Text("Bot: " + (Runtime.model.bots.first(where: { $0.threadID == delivery.threadID })?.name ?? delivery.threadID)).font(KS.body(14)) }
-                        Text(item.delivery == nil ? "Choose a bot to send to Mac" : item.delivery?.state == "mac" ? "Saved on Mac" : "Mac delivery pending or unconfirmed").font(KS.body(14))
-                        if item.delivery == nil { Button("Send to Mac") { if let generation { store.assign(item, generation: generation, threadID: selectedThread) } }.disabled(selectedThread.isEmpty) }
-                        else if item.delivery?.state != "mac" { Button("Retry Mac delivery") { WatchBridge.shared.changed() } }
-                        HStack { Button("Play") { store.play(item) }; ShareLink(item: item.url) { Text("Share") }; Button("Delete", role: .destructive) { deleteItem = item } }
-                    }.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 8)
+                        Text(item.date, style: .date).font(KS.headline()).foregroundStyle(KS.strong)
+                        if let delivery = item.delivery { Text("Bot: " + (Runtime.model.bots.first(where: { $0.threadID == delivery.threadID })?.name ?? delivery.threadID)).font(KS.body()).foregroundStyle(KS.soft) }
+                        StatusChip(item.delivery == nil ? "Choose a bot to send to Mac" : item.delivery?.state == "mac" ? "Saved on Mac" : "Mac delivery pending or unconfirmed")
+                        HStack(spacing: 8) {
+                            if item.delivery == nil { Button("Send to Mac") { if let generation { store.assign(item, generation: generation, threadID: selectedThread) } }.buttonStyle(Pill(fill: KS.signal)).disabled(selectedThread.isEmpty) }
+                            else if item.delivery?.state != "mac" { Button("Retry Mac delivery") { WatchBridge.shared.changed() }.buttonStyle(Pill(fill: KS.signal)) }
+                            Button("Play") { store.play(item) }.buttonStyle(Pill())
+                            ShareLink(item: item.url) { Text("Share") }.buttonStyle(Pill())
+                            Button("Delete", role: .destructive) { deleteItem = item }.buttonStyle(Pill(danger: true))
+                        }
+                    }.frame(maxWidth: .infinity, alignment: .leading).padding(12).card()
                 }
             }
-            if let error = store.error { Text(error).font(KS.body(14)) }
+            if let error = store.error { Text(error).font(KS.body()).foregroundStyle(KS.failedText) }
+            // The bot choice is a control, so it sits at the bottom of the sheet.
+            if !store.items.isEmpty {
+                Eyebrow("Bot for older memos")
+                Picker("Bot for older memos", selection: $selectedThread) { ForEach(Runtime.model.sortedBots) { bot in Text(bot.name).tag(bot.threadID) } }
+                    .pickerStyle(.menu).tint(KS.ink).frame(maxWidth: .infinity, minHeight: 44, alignment: .leading).padding(.horizontal, 4).card(KS.inset)
+            }
         }.onAppear {
             store.refresh(generation: generation)
             if selectedThread.isEmpty { selectedThread = (Runtime.model.starred ?? Runtime.model.sortedBots.first)?.threadID ?? "" }
