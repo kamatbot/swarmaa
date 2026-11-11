@@ -1,5 +1,5 @@
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 /// Pinned to the `/alpha` documents the Command Code desktop app reads.
 /// Numbers are round; no live secrets.

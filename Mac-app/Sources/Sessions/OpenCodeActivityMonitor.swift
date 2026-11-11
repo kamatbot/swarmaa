@@ -10,7 +10,7 @@ final class OpenCodeActivityMonitor: ObservableObject, AgentActivityMonitor {
 
     nonisolated static var directory: URL {
         FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/Codenotch/OpenCode")
+            .appendingPathComponent("Library/Application Support/Swarmaa/OpenCode")
     }
 
     private let directory: URL

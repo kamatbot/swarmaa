@@ -1,5 +1,5 @@
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 final class DailyPaceTests: XCTestCase {
     private let resetsAt = Date(timeIntervalSince1970: 1_800_000_000)

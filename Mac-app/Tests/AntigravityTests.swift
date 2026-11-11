@@ -1,6 +1,6 @@
 import XCTest
 import Sparkle
-@testable import Codenotch
+@testable import Swarmaa
 
 /// Fixtures are the real thing: the keychain payload's shape and the actual
 /// `loadCodeAssist` response from a signed-in install.
@@ -585,7 +585,7 @@ final class AntigravityBridgeTests: XCTestCase {
                    "resetTime":"2026-09-08T09:12:10Z"}]}]}}
     """.utf8)
 
-    /// The server reports what is *left*; the notch shows what is spent.
+    /// The server reports what is *left*; the app shows what is spent.
     /// Inverting it here rather than in the view keeps a percentage meaning the
     /// same thing whichever provider produced it.
     func testRemainingIsTurnedIntoUsed() {
@@ -1033,7 +1033,7 @@ final class CredentialCacheTests: XCTestCase {
     /// refusal, for as long as the item's `mdat` stayed the same. Nothing
     /// touches the item again once it holds a valid token, so on a real
     /// machine one unlucky read landed during dark wake and every read for
-    /// the next three hours replayed that single failure — the notch said
+    /// the next three hours replayed that single failure — the app said
     /// "Sign in to Claude Code" long after the saved login was fine again,
     /// because nothing here ever asked macOS a second time.
     ///
@@ -1394,7 +1394,7 @@ final class MenuBarIconTests: XCTestCase {
     }
 }
 
-/// The menu bar menu when the notch is hidden: the same readings as the
+/// The menu bar menu when the app is hidden: the same readings as the
 /// tooltips, or Hide is a one-way door to numbers you can no longer see.
 @MainActor
 final class StatusMenuTests: XCTestCase {

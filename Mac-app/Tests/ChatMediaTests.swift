@@ -2,7 +2,7 @@ import XCTest
 import AppKit
 import ImageIO
 import UniformTypeIdentifiers
-@testable import Codenotch
+@testable import Swarmaa
 
 final class ChatMediaTests: XCTestCase {
     func testMessageAttachmentMetadataAndLegacyMessageDecode() throws {

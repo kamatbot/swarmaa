@@ -1,6 +1,6 @@
 import SwiftUI
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 @MainActor
 final class SettingsQuitButtonTests: XCTestCase {

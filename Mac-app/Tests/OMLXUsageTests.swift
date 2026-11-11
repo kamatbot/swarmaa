@@ -1,5 +1,5 @@
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 /// `GET /v1/models/status` as oMLX 0.7.0 answered it on 2026-10-08, cut down
 /// to the fields the parser reads plus the entries it must leave out.

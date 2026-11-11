@@ -1,9 +1,9 @@
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 /// An account is called what its owner named it, everywhere at once: the
 /// name lives in Preferences and the store writes it into every snapshot it
-/// publishes, so the notch, the menu bar and the notifications never
+/// publishes, so the app, the menu bar and the notifications never
 /// disagree with the Accounts row.
 @MainActor
 final class AccountNicknameTests: XCTestCase {

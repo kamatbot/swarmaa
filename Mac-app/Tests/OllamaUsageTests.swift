@@ -1,5 +1,5 @@
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 /// Parses the response from Ollama's `GET /api/usage` endpoint, covering both
 /// modern (Pro 20/60/100/500) and legacy plan shapes.

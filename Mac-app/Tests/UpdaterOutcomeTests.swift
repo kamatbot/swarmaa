@@ -1,6 +1,6 @@
 import Sparkle
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 /// "Checking…" is a state the settings sheet must always leave: a check that
 /// ends any other way, or never reports back, still lands somewhere.

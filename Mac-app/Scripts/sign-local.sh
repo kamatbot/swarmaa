@@ -21,7 +21,7 @@
 set -euo pipefail
 
 APP="${1:-/Applications/Swarmaa.app}"
-CN="Codenotch Local Signing"
+CN="Swarmaa Local Signing"
 
 if [ ! -d "$APP" ]; then
   echo "error: $APP not found — build and install it first (make run)." >&2
@@ -49,12 +49,12 @@ EOF
   # -legacy: OpenSSL 3 otherwise writes a PKCS#12 that `security` cannot
   # import ("MAC verification failed"). Harmless on OpenSSL that ignores it.
   openssl pkcs12 -export -legacy -inkey "$DIR/key.pem" -in "$DIR/cert.pem" \
-    -out "$DIR/id.p12" -passout pass:codenotch -name "$CN" 2>/dev/null || \
+    -out "$DIR/id.p12" -passout pass:swarmaa -name "$CN" 2>/dev/null || \
   openssl pkcs12 -export -inkey "$DIR/key.pem" -in "$DIR/cert.pem" \
-    -out "$DIR/id.p12" -passout pass:codenotch -name "$CN"
+    -out "$DIR/id.p12" -passout pass:swarmaa -name "$CN"
   # -T grants /usr/bin/codesign access to the key; -A avoids a prompt per use.
   security import "$DIR/id.p12" -k "$HOME/Library/Keychains/login.keychain-db" \
-    -P codenotch -T /usr/bin/codesign -A
+    -P swarmaa -T /usr/bin/codesign -A
 fi
 
 # Quit a running instance so the bundle can be replaced in place.

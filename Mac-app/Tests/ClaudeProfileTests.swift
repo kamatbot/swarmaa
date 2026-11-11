@@ -1,5 +1,5 @@
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 /// A second Claude Code login kept under `~/.claude-<slug>` is its own account,
 /// with its own token, its own limits and its own sessions. Reading only
@@ -68,7 +68,7 @@ final class ClaudeProfileTests: XCTestCase {
 
     /// The path is hashed as Claude Code sees it, and Claude Code does not see
     /// a trailing slash.
-    func testATrailingSlashDoesNotChangeTheHash() {
+    func testATrailingSlashLeavesUnchangedTheHash() {
         let slashed = ClaudeProfile(slug: "work",
                                     configDirectory: URL(fileURLWithPath: "/Users/vinz/.claude-work/"))
         XCTAssertEqual(slashed.keychainService, "Claude Code-credentials-19914660")

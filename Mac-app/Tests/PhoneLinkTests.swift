@@ -1,6 +1,6 @@
 import CryptoKit
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 final class PhoneLinkTests: XCTestCase {
     private struct Vector: Decodable {
@@ -232,7 +232,7 @@ final class PhoneLinkTests: XCTestCase {
         var pairRequest = URLRequest(url: URL(string: "http://127.0.0.1:\(context.port)/api/v3/pair")!)
         pairRequest.httpMethod = "POST"
         pairRequest.httpBody = pairEnvelope
-        pairRequest.setValue("application/codenotch-v3", forHTTPHeaderField: "content-type")
+        pairRequest.setValue(PhoneLinkWire.contentType, forHTTPHeaderField: "content-type")
         pairRequest.setValue(pairTS, forHTTPHeaderField: "x-cn-timestamp")
         pairRequest.setValue(pairNonce, forHTTPHeaderField: "x-cn-nonce")
         pairRequest.setValue(deviceId, forHTTPHeaderField: "x-cn-device")
@@ -250,7 +250,7 @@ final class PhoneLinkTests: XCTestCase {
         let (pairData, pairURLResponse) = try await URLSession.shared.data(for: pairRequest)
         let pairHTTPResponse = try XCTUnwrap(pairURLResponse as? HTTPURLResponse)
         XCTAssertEqual(pairHTTPResponse.statusCode, 200)
-        XCTAssertEqual(pairHTTPResponse.value(forHTTPHeaderField: "content-type"), "application/codenotch-v3")
+        XCTAssertEqual(pairHTTPResponse.value(forHTTPHeaderField: "content-type"), PhoneLinkWire.contentType)
         XCTAssertNil(pairHTTPResponse.value(forHTTPHeaderField: "x-cn-signature"))
         let pairResponsePlaintext = try PhoneLinkCrypto.open(
             pairData,
@@ -292,7 +292,7 @@ final class PhoneLinkTests: XCTestCase {
         let (snapshotData, snapshotURLResponse) = try await URLSession.shared.data(for: snapshotRequest)
         let snapshotHTTPResponse = try XCTUnwrap(snapshotURLResponse as? HTTPURLResponse)
         XCTAssertEqual(snapshotHTTPResponse.statusCode, 200)
-        XCTAssertEqual(snapshotHTTPResponse.value(forHTTPHeaderField: "content-type"), "application/codenotch-v3")
+        XCTAssertEqual(snapshotHTTPResponse.value(forHTTPHeaderField: "content-type"), PhoneLinkWire.contentType)
         XCTAssertNil(snapshotHTTPResponse.value(forHTTPHeaderField: "x-cn-signature"))
         let snapshotPlaintext = try PhoneLinkCrypto.open(
             snapshotData,
@@ -345,7 +345,7 @@ final class PhoneLinkTests: XCTestCase {
         let (refreshData, refreshURLResponse) = try await URLSession.shared.data(for: refreshRequest)
         let refreshHTTPResponse = try XCTUnwrap(refreshURLResponse as? HTTPURLResponse)
         XCTAssertEqual(refreshHTTPResponse.statusCode, 200)
-        XCTAssertEqual(refreshHTTPResponse.value(forHTTPHeaderField: "content-type"), "application/codenotch-v3")
+        XCTAssertEqual(refreshHTTPResponse.value(forHTTPHeaderField: "content-type"), PhoneLinkWire.contentType)
         XCTAssertNil(refreshHTTPResponse.value(forHTTPHeaderField: "x-cn-signature"))
         let refreshPlaintext = try PhoneLinkCrypto.open(
             refreshData,
@@ -422,7 +422,7 @@ final class PhoneLinkTests: XCTestCase {
         let (responseBody, urlResponse) = try await URLSession.shared.data(for: request)
         let response = try XCTUnwrap(urlResponse as? HTTPURLResponse)
         XCTAssertEqual(response.statusCode, 200)
-        XCTAssertEqual(response.value(forHTTPHeaderField: "content-type"), "application/codenotch-v3")
+        XCTAssertEqual(response.value(forHTTPHeaderField: "content-type"), PhoneLinkWire.contentType)
         XCTAssertEqual(
             try PhoneLinkCrypto.open(
                 responseBody,

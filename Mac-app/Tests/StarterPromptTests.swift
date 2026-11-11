@@ -1,5 +1,5 @@
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 final class StarterPromptTests: XCTestCase {
     func testNamesTheMCPServerToolsAndProjects() {

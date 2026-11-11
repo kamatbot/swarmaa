@@ -1,6 +1,6 @@
 import Foundation
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 /// A translation of a string that carries values has to take those values in
 /// a way `String(format:)` can read them. Get it wrong and nothing warns you:

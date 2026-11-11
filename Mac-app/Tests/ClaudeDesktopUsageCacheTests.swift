@@ -1,5 +1,5 @@
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 /// Reading Claude's limits out of Claude Desktop's HTTP cache.
 ///
@@ -402,7 +402,7 @@ final class ClaudeDesktopUsageCacheTests: XCTestCase {
     /// Whatever else is wrong, an absent Claude Desktop is not an error.
     func testAMissingCacheDirectoryReadsAsNothing() {
         let missing = FileManager.default.temporaryDirectory
-            .appendingPathComponent("codenotch-tests-absent-\(UUID().uuidString)")
+            .appendingPathComponent("swarmaa-tests-absent-\(UUID().uuidString)")
         XCTAssertNil(ClaudeDesktopUsageCache(directory: missing)
             .read(organization: Self.organization))
     }
@@ -648,7 +648,7 @@ final class ClaudeDesktopUsageCacheTests: XCTestCase {
                                     file: StaticString = #filePath,
                                     line: UInt = #line) -> URL {
         let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("codenotch-desktop-cache-\(UUID().uuidString)",
+            .appendingPathComponent("swarmaa-desktop-cache-\(UUID().uuidString)",
                                     isDirectory: true)
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

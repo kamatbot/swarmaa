@@ -1,5 +1,5 @@
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 /// Pinned to a response recorded from the live endpoint. `/rest/rate-limit/all`
 /// is undocumented, so this is the test that fails first if it changes.

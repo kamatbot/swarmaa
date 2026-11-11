@@ -1,5 +1,5 @@
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 /// Opening a sign-in sheet has to leave every site able to become signed in.
 ///

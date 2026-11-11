@@ -1,6 +1,6 @@
 import XCTest
 import Combine
-@testable import Codenotch
+@testable import Swarmaa
 
 /// A socket that answers from a script, so the monitor's folding of polls and
 /// log lines can be driven without LM Studio.
@@ -220,7 +220,7 @@ final class LMStudioMetricsTests: XCTestCase {
     }
 
     func testLiveLMStudioWhenExplicitlyEnabled() async throws {
-        guard ProcessInfo.processInfo.environment["CODENOTCH_LMSTUDIO_LIVE"] == "1" else {
+        guard ProcessInfo.processInfo.environment["SWARMAA_LMSTUDIO_LIVE"] == "1" else {
             throw XCTSkip("Opt-in live LM Studio check")
         }
         // The whole history of this Mac's server log, timed: half a gigabyte

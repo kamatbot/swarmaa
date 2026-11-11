@@ -211,7 +211,7 @@ private struct ServicesPage: View {
 
     private static let rows: [(SetupHarness, String)] = [
         (.claude, "Claude Code"), (.codex, "Codex"), (.agy, "Antigravity"),
-        (.grok, "Grok"), (.dot, "Dot"), (.notchtrader, "Swarmaa notch"),
+        (.grok, "Grok"), (.dot, "Dot"), (.mac, "Swarmaa for Mac"),
     ]
 
     var body: some View {
@@ -235,7 +235,7 @@ private struct ServicesPage: View {
                         Text(status(h, installed)).font(.caption).foregroundStyle(.secondary)
                     }
                     Spacer()
-                    if h == .notchtrader {
+                    if h == .mac {
                         Text("Always on").foregroundStyle(.secondary)
                     } else {
                         Toggle("Connect", isOn: binding(\.connect))
@@ -243,7 +243,7 @@ private struct ServicesPage: View {
                             .accessibilityLabel("Connect \(name)")
                     }
                 }
-                if h != .notchtrader, connected {
+                if h != .mac, connected {
                     HStack(spacing: 20) {
                         if OnboardingModel.hasWorker(h) {
                             Toggle("Background worker", isOn: binding(\.worker))
@@ -264,7 +264,7 @@ private struct ServicesPage: View {
     private func status(_ h: SetupHarness, _ installed: Bool) -> String {
         switch h {
         case .grok, .dot: return "Hosted service. Needs remote access."
-        case .notchtrader: return "This app"
+        case .mac: return "This app"
         default: return installed ? "Installed" : "Not found on this Mac"
         }
     }

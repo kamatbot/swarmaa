@@ -1,5 +1,5 @@
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 /// The mark is defined rather than traced, so its geometry is pinned: one
 /// loop, inside the unit box, reading as a compact M with stroke depth 0.2.

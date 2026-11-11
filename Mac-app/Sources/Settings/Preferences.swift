@@ -553,7 +553,7 @@ final class Preferences: ObservableObject {
         defaults.string(forKey: Keys.swarmaAuthMode) == "oauth" ? .oauth : .tokenFile
     }
     nonisolated static let defaultSwarmaServiceURL = "http://127.0.0.1:8787"
-    nonisolated static let defaultSwarmaTokenPath = "~/Projects/swarma/.local/notchtrader.json"
+    nonisolated static let defaultSwarmaTokenPath = "~/Projects/swarma/.local/swarmaa-mac.json"
 
     /// The Swarma client is an actor and asks for these on every request, so
     /// they read the store, not the `@Published` object — as custom endpoints do.

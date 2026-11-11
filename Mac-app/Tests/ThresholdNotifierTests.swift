@@ -1,5 +1,5 @@
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 /// Guards the crossing rule: 80% and 100% are announced once as they are
 /// crossed, never twice while they stay crossed, and again only after the

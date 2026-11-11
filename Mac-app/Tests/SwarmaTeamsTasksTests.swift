@@ -1,6 +1,6 @@
 import SwiftUI
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 /// Teams phase 3b. Fixtures are the live service's own answers, copied from
 /// docs/briefs/teams-shapes into Tests/Fixtures. No network: stub transports.
@@ -240,10 +240,10 @@ final class TeamsSetupProbeTests: XCTestCase {
         XCTAssertEqual(state, .needsSetup)
     }
 
-    func testAnythingElseIsNotChecked() async throws {
+    func testAnythingElseIsUnchecked() async throws {
         let state = try await probe(500, "{}")
-        XCTAssertEqual(state, .notChecked)
-        XCTAssertEqual(TeamsSetup.answerProbe(nil), .notChecked)
+        XCTAssertEqual(state, .unchecked)
+        XCTAssertEqual(TeamsSetup.answerProbe(nil), .unchecked)
     }
 
     func testMCPOwnerRequiredIsForbidden() {
@@ -254,7 +254,7 @@ final class TeamsSetupProbeTests: XCTestCase {
     }
 }
 
-final class TeamsNotchCellTests: XCTestCase {
+final class TeamsUsageCellTests: XCTestCase {
     private func question(_ id: String, thread: String?, at: String?) throws -> TeamsQuestion {
         var json: [String: Any] = ["id": id, "prompt": "p", "options": ["a"], "status": "open"]
         json["thread_id"] = thread; json["created_at"] = at
@@ -274,9 +274,9 @@ final class TeamsNotchCellTests: XCTestCase {
     func testWaitingSwarmCells() throws {
         struct R: Decodable { struct S: Decodable { let swarms: [TeamsSwarm] }; let result: S }
         var swarms = try SwarmaClient.decoder.decode(R.self, from: fixture("swarm_list")).result.swarms
-        XCTAssertTrue(SwarmaCells.notchSwarms(swarms).isEmpty, "done swarms get no cell")
+        XCTAssertTrue(SwarmaCells.listedSwarms(swarms).isEmpty, "done swarms get no cell")
         swarms[1].status = "waiting_on_you"; swarms[2].status = "blocked"   // both in thread 54b186ab…
-        let cells = SwarmaCells.notchSwarms(swarms).compactMap(SwarmaCells.swarmCellID)
+        let cells = SwarmaCells.listedSwarms(swarms).compactMap(SwarmaCells.swarmCellID)
         XCTAssertEqual(cells, ["swarm:thread:54b186ab-54ff-4c06-987a-7dabe746256c/swarm/19102a0e-c3cf-4e03-a4da-595c3ddfa293",
                                "swarm:thread:54b186ab-54ff-4c06-987a-7dabe746256c/swarm/8189aca5-f59b-4a14-b01d-dd49e617e259"])
         XCTAssertEqual(Set(cells).count, 2, "two swarms in one thread keep two cells")

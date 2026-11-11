@@ -1,5 +1,5 @@
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 /// The mark is flattened from Kiro's own SVG, so its geometry is pinned: three
 /// loops (a head and two eye holes), inside the unit box.

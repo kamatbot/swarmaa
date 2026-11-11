@@ -1,5 +1,5 @@
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 /// Pins what `kiro-cli chat --no-interactive "/usage"` prints. The CLI paints
 /// a TUI card; these fixtures are that text, including the ANSI the parser

@@ -1,5 +1,5 @@
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 /// Banked rate-limit resets. The count is its own field — the details list
 /// can be shorter than the total — and the next expiry is the soonest credit,

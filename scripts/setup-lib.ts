@@ -143,7 +143,7 @@ export function bridgeConfig({ port, tokenFile, agent, projects, edit = false, g
 }
 
 // ---- Setup plan: shared by the terminal wizard and the browser onboarding ----
-export const HARNESS_KEYS = ['claude', 'codex', 'agy', 'grok', 'dot', 'notchtrader'] as const;
+export const HARNESS_KEYS = ['claude', 'codex', 'agy', 'grok', 'dot', 'mac'] as const;
 export type HarnessKey = typeof HARNESS_KEYS[number];
 export const WORKER_HARNESSES: readonly HarnessKey[] = ['claude', 'codex', 'agy'];
 /** Apps that share chats through their own hooks (no MCP connection): Kiro, Windsurf (also Devin Desktop), Qwen Code. */

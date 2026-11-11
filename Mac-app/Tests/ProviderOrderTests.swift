@@ -1,5 +1,5 @@
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 /// The order the rings sit in is the user's, and it has to survive a provider
 /// set that changes underneath it — Claude Code contributes one provider per

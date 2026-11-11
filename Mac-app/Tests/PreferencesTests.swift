@@ -1,5 +1,5 @@
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 /// First-launch defaults. (Round-trip basics live with the other
 /// PreferencesTests.)

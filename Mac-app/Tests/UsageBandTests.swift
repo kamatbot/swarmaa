@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 final class UsageBandTests: XCTestCase {
     func testBandsMatchTheDesignFrame() {
@@ -117,7 +117,7 @@ final class UsageBandTests: XCTestCase {
     }
 }
 
-/// The palette went dynamic when the notch gained a glass surface, so the
+/// The palette went dynamic when the app gained a glass surface, so the
 /// frame's hexes are no longer visible in the source — they are one branch of
 /// a colour that only resolves against an appearance. These tests keep that
 /// branch honest: `darkAqua` must still be pixel-for-pixel the frame, and the

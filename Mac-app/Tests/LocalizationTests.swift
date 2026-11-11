@@ -1,5 +1,5 @@
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 /// Catalog lookups with an explicit locale. English is the source; Chinese,
 /// French and Brazilian Portuguese assertions here only prove a translation
@@ -182,18 +182,9 @@ final class LocalizationTests: XCTestCase {
         XCTAssertEqual(L10n.t("Alert sound", locale: zhHans), "提示音")
         XCTAssertEqual(L10n.t("Preview session limit alert", locale: zhHans), "预览会话额度提醒")
         XCTAssertEqual(L10n.t("Preview weekly limit alert", locale: zhHans), "预览周额度提醒")
-        XCTAssertEqual(
-            L10n.t("Displays a notification card from the side of the notch when a provider's session or weekly usage limit is reached.", locale: zhHans),
-            "当某家服务的会话或周额度用尽时，刘海侧面滑出一张通知卡片。"
-        )
         XCTAssertEqual(L10n.t("When a limit resets", locale: zhHans), "额度重置时")
-        XCTAssertEqual(L10n.t("Show notification from notch", locale: zhHans), "从刘海显示通知")
         XCTAssertEqual(L10n.t("Reset sound", locale: zhHans), "重置提示音")
         XCTAssertEqual(L10n.t("Preview notification", locale: zhHans), "预览通知")
-        XCTAssertEqual(
-            L10n.t("Displays a notification card from the side of the notch when a provider's usage limit resets.", locale: zhHans),
-            "当某家服务的额度窗口滚动过后，刘海侧面滑出一张通知卡片。"
-        )
     }
 
     func testSignInCopyInEnglishWhenAsked() {

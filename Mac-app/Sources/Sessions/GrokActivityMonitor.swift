@@ -29,7 +29,7 @@ final class GrokActivityMonitor: ObservableObject, AgentActivityMonitor {
     private var timer: Timer?
     /// One scan at a time: a slow one is not stacked on by the next tick.
     private var isScanning = false
-    private static let scanQueue = DispatchQueue(label: "codenotch.grok-activity", qos: .utility)
+    private static let scanQueue = DispatchQueue(label: "app.swarmaa.mac.grok-activity", qos: .utility)
 
     init(
         activeURL: URL = GrokActivity.activeURL,

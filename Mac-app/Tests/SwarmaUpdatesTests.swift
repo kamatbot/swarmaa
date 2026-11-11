@@ -1,6 +1,6 @@
 import XCTest
 import SwiftUI
-@testable import Codenotch
+@testable import Swarmaa
 
 final class SwarmaUpdatesTests: XCTestCase {
     private func status(running: [(String, String)] = [], recent: [(String, String)] = []) throws -> SwarmaStatus {

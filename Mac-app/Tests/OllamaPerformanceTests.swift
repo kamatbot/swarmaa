@@ -1,6 +1,6 @@
 import XCTest
 import SwiftUI
-@testable import Codenotch
+@testable import Swarmaa
 
 final class OllamaPerformanceTests: XCTestCase {
     func testRateUsesOutputTokensAndGenerationTimeOnly() throws {

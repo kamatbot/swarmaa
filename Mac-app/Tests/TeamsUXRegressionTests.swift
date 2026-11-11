@@ -1,6 +1,6 @@
 import AppKit
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 private final class UXTransport: @unchecked Sendable {
     private let lock = NSLock()
@@ -132,7 +132,7 @@ final class TeamsUXRegressionTests: XCTestCase {
         XCTAssertEqual(TeamsSetup.answerProbe(SwarmaClient.Failure.serviceCode("owner_required")), .needsSetup)
         XCTAssertEqual(TeamsSetup.answerProbe(SwarmaClient.Failure.serviceCode("unknown_tool")), .needsSetup)
         XCTAssertNotEqual(TeamsSetup.answerProbe(SwarmaClient.Failure.http(404)), .ready)
-        XCTAssertEqual(TeamsSetup.answerProbe(SwarmaClient.Failure.forbidden), .notChecked)
+        XCTAssertEqual(TeamsSetup.answerProbe(SwarmaClient.Failure.forbidden), .unchecked)
     }
 
     @MainActor func testFailedTaskRefreshPreservesDataAndMarksStale() async throws {

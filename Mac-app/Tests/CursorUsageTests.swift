@@ -1,6 +1,6 @@
 import SQLite3
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 /// Pinned to a response recorded from a live free account. `/api/usage-summary`
 /// is not a documented API, so this is what fails first if it changes.
@@ -126,7 +126,7 @@ final class CursorUsageTests: XCTestCase {
     }
 }
 
-/// Borrowing the editor's session is what stops the notch reporting a different
+/// Borrowing the editor's session is what stops the app reporting a different
 /// account's usage — signing into cursor.com separately made a second, empty one.
 /// The CLI session is the same cookie, reached only when the editor has none.
 final class CursorCredentialsTests: XCTestCase {

@@ -1,6 +1,6 @@
 import XCTest
 import SwiftUI
-@testable import Codenotch
+@testable import Swarmaa
 
 /// Memory sizes and token counts are printed through `Foundation`'s
 /// locale-aware formatting, so a machine set to Indonesian prints "4,5 GB"
@@ -145,7 +145,7 @@ final class LocalModelBrandTests: XCTestCase {
         XCTAssertEqual(snapshot.usageSnapshots.first?.glyph, .ollamaLocal)
     }
 
-    func testBrandIconsDoNotChangeTheRuntimeConnectionOrModelIdentity() throws {
+    func testBrandIconsStayUnchangedTheRuntimeConnectionOrModelIdentity() throws {
         let data = Data(#"{"models":[{"name":"deepseek-r1:1.5b","details":{"family":"qwen2"}}]}"#.utf8)
         let runtime = ollamaSnapshot(try OllamaLocalUsage.parse(data))
         let cell = try XCTUnwrap(runtime.usageSnapshots.first)
@@ -641,15 +641,15 @@ final class OllamaRenderTests: XCTestCase {
     }
 
     func testLiveLocalListingWhenExplicitlyEnabled() async throws {
-        guard ProcessInfo.processInfo.environment["CODENOTCH_OLLAMA_LIVE"] == "1" else {
+        guard ProcessInfo.processInfo.environment["SWARMAA_OLLAMA_LIVE"] == "1" else {
             throw XCTSkip("Opt-in live Ollama check")
         }
         let provider = OllamaLocalProvider(endpoint: try OllamaEndpoint.parse(OllamaEndpoint.defaultAddress))
         let snapshot = try await provider.fetchSnapshot()
         XCTAssertTrue(snapshot.hasReading)
         XCTAssertNil(snapshot.ringFraction)
-        if let expectedName = ProcessInfo.processInfo.environment["CODENOTCH_OLLAMA_EXPECTED_MODEL"],
-           let expectedBrand = ProcessInfo.processInfo.environment["CODENOTCH_OLLAMA_EXPECTED_BRAND"] {
+        if let expectedName = ProcessInfo.processInfo.environment["SWARMAA_OLLAMA_EXPECTED_MODEL"],
+           let expectedBrand = ProcessInfo.processInfo.environment["SWARMAA_OLLAMA_EXPECTED_BRAND"] {
             let cell = try XCTUnwrap(snapshot.usageSnapshots.first { $0.localModel?.name == expectedName })
             XCTAssertEqual(cell.localModel?.brand?.rawValue ?? "ollama", expectedBrand)
             XCTAssertEqual(cell.glyph, cell.localModel?.brand?.glyph ?? .ollamaLocal)

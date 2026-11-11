@@ -1,5 +1,5 @@
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 final class MiniMaxCredentialsTests: XCTestCase {
     func testTheCodingPlanEnvironmentKeyWinsOverTheGenericKeyAndTheKeychain() {
@@ -243,9 +243,9 @@ final class MiniMaxCredentialsTests: XCTestCase {
     func testKeychainServiceNamesDoNotCollideWithOllama() {
         XCTAssertEqual(MiniMaxCredentials.apiKeyService, "minimax-api-key")
         XCTAssertEqual(MiniMaxCredentials.cookieService, "minimax-session-cookie")
-        XCTAssertEqual(MiniMaxCredentials.keychainAccount, "codenotch")
+        XCTAssertEqual(MiniMaxCredentials.keychainAccount, "swarmaa")
         XCTAssertEqual(OllamaCredentials.keychainService, "ollama-api-key")
-        XCTAssertEqual(OllamaCredentials.keychainAccount, "codenotch")
+        XCTAssertEqual(OllamaCredentials.keychainAccount, "swarmaa")
         XCTAssertNotEqual(MiniMaxCredentials.apiKeyService, OllamaCredentials.keychainService,
                           "the same account is fine; the service name is what would overwrite Ollama's key")
         XCTAssertNotEqual(MiniMaxCredentials.cookieService, OllamaCredentials.keychainService)

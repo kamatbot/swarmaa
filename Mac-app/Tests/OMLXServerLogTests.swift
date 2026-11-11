@@ -1,5 +1,5 @@
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 /// Lines as oMLX 0.7.0 wrote them on 2026-10-07, with the surrounding chatter
 /// the parser must pass over: other loggers, the MTP summary that also says
@@ -266,8 +266,8 @@ final class OMLXServerLogTests: XCTestCase {
     }
 
     func testLiveOMLXLogWhenExplicitlyEnabled() throws {
-        guard ProcessInfo.processInfo.environment["CODENOTCH_OMLX_LIVE"] == "1" else {
-            throw XCTSkip("Opt-in live oMLX check (TEST_RUNNER_CODENOTCH_OMLX_LIVE=1)")
+        guard ProcessInfo.processInfo.environment["SWARMAA_OMLX_LIVE"] == "1" else {
+            throw XCTSkip("Opt-in live oMLX check (TEST_RUNNER_SWARMAA_OMLX_LIVE=1)")
         }
         let started = Date()
         let tail = OMLXLogTail(directory: OMLXEndpoint.serverLogsDirectory())

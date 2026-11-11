@@ -1,5 +1,5 @@
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 /// Pinned to a response recorded from a live SuperGrok CLI session. Credits
 /// is the weekly Grok Build allowance — the one number this account's own

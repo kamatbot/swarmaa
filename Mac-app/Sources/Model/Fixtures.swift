@@ -77,7 +77,7 @@ enum Fixtures {
     static func sessions(now: Date = Date()) -> [String: [AgentSession]] {
         [
             "claude": [
-                AgentSession(id: "demo.claude", name: "Claude Code", detail: "~/Projects/codenotch",
+                AgentSession(id: "demo.claude", name: "Claude Code", detail: "~/Projects/swarmaa",
                              state: .busy, waitingFor: nil, since: now.addingTimeInterval(-90))
             ],
             "openai": [

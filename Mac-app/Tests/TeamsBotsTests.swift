@@ -1,5 +1,5 @@
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 private func decode<T: Decodable>(_ type: T.Type, _ json: String) throws -> T {
     let d = JSONDecoder()

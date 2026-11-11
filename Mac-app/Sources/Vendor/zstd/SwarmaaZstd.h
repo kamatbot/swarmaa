@@ -1,4 +1,4 @@
-// The four Zstandard entry points Codenotch uses, and nothing else.
+// The four Zstandard entry points Swarmaa uses, and nothing else.
 //
 // `zstddeclib.c` beside this file is the official single-file *decoder*
 // amalgamation, and it carries the whole of `zstd.h` inside itself rather than
@@ -17,8 +17,8 @@
 // attribute for shared-library builds, and this is compiled straight into the
 // app binary.
 
-#ifndef CODENOTCH_ZSTD_H
-#define CODENOTCH_ZSTD_H
+#ifndef SWARMAA_ZSTD_H
+#define SWARMAA_ZSTD_H
 
 #include <stddef.h>
 
@@ -47,4 +47,4 @@ unsigned long long ZSTD_getFrameContentSize(const void *src, size_t srcSize);
 #define ZSTD_CONTENTSIZE_UNKNOWN (0ULL - 1)
 #define ZSTD_CONTENTSIZE_ERROR   (0ULL - 2)
 
-#endif /* CODENOTCH_ZSTD_H */
+#endif /* SWARMAA_ZSTD_H */

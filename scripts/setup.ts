@@ -22,11 +22,10 @@ import {
 import { setupTunnel } from './tunnel.js';
 
 export const ROOT = packageRoot(dirname(fileURLToPath(import.meta.url)));
-/** The notch app is installed when this setup runs from the runtime inside it, or it sits in an Applications folder
- * under its current or former name. Checking only /Applications/NotchTrader.app skipped the notch on every fresh download. */
-export function notchAppInstalled(root = ROOT, home = homedir(), exists: (p: string) => boolean = existsSync): boolean {
+/** The Mac app is installed when this setup runs from the runtime inside it, or it sits in an Applications folder. */
+export function macAppInstalled(root = ROOT, home = homedir(), exists: (p: string) => boolean = existsSync): boolean {
   return /\.app\/Contents\/Resources\/runtime\/?$/u.test(root)
-    || ['/Applications', join(home, 'Applications')].some(dir => ['Swarmaa.app', 'NotchTrader.app'].some(app => exists(join(dir, app))));
+    || ['/Applications', join(home, 'Applications')].some(dir => exists(join(dir, 'Swarmaa.app')));
 }
 const HOME = homedir();
 // Prefer a stable Homebrew symlink to this same Node so LaunchAgents survive `brew upgrade` (node@24 keg, then plain node).
@@ -44,7 +43,7 @@ const META: Record<HarnessKey, { label: string; ident: string; stem: string; mod
   agy: { label: 'Antigravity', ident: 'antigravity-interactive', stem: 'antigravity', agent: 'antigravity' },
   grok: { label: 'Grok', ident: 'grok', stem: 'grok' },
   dot: { label: 'Dot', ident: 'dot', stem: 'dot' },
-  notchtrader: { label: 'Swarmaa notch', ident: 'notchtrader', stem: 'notchtrader' },
+  mac: { label: 'Swarmaa for Mac', ident: 'swarmaa-mac', stem: 'swarmaa-mac' },
 };
 const HOOK_APPS: Record<HookAppKey, { label: string; marks: (home: string, env: NodeJS.ProcessEnv) => string[]; bin: string }> = {
   kiro: { label: 'Kiro', bin: 'kiro', marks: (h, e) => [e.KIRO_HOME?.trim() || join(h, '.kiro'), '/Applications/Kiro.app', join(h, 'Applications/Kiro.app')] },
@@ -58,7 +57,7 @@ const HOSTED = ['grok', 'dot'] as const;
 
 export interface Detected {
   clis: Partial<Record<'claude' | 'codex' | 'agy', string>>;
-  notchtrader: boolean;
+  mac: boolean;
   postgres: { found: boolean; reachable: boolean };
   envExists: boolean;
   state: State;
@@ -91,7 +90,7 @@ export async function detect(root = ROOT): Promise<Detected> {
   let reachable = false;
   if (url) { const c = await pgConnect(url); reachable = !!c; await c?.end(); }
   const hookApps = HOOK_APP_KEYS.filter(k => HOOK_APPS[k].marks(HOME, process.env).some(existsSync) || !!findCli(HOOK_APPS[k].bin));
-  return { clis, notchtrader: notchAppInstalled(), postgres: { found: reachable || !!findPgBin(), reachable }, envExists, state, captureSources: detectSources(), hookApps };
+  return { clis, mac: macAppInstalled(), postgres: { found: reachable || !!findPgBin(), reachable }, envExists, state, captureSources: detectSources(), hookApps };
 }
 
 // ---------------------------------------------------------------- the setup engine
@@ -271,7 +270,7 @@ export async function runSetup(plan: SetupPlan, opts: RunOpts): Promise<SetupSum
         if ((HOSTED as readonly string[]).includes(key) && !remote) return { skipped: 'local-only; enable remote access with your domain to connect' };
         const cli = (CLI_KEYS as readonly string[]).includes(key) ? det.clis[key as typeof CLI_KEYS[number]] : undefined;
         if ((CLI_KEYS as readonly string[]).includes(key) && !cli) return { skipped: `${m.label} was not found on this Mac` };
-        if (key === 'notchtrader' && !det.notchtrader) return { skipped: 'the Swarmaa notch app is not installed' };
+        if (key === 'mac' && !det.mac) return { skipped: 'the Swarmaa Mac app is not installed' };
         if (cli && !existsSync(join(root, 'dist/src/stdio-proxy.js'))) build();
         if (!ensureIdentity(m.ident, 'frontend', join(root, `.local/${m.stem}.json`), interactive)) throw new Error(`could not create or update the ${m.ident} identity`);
         if (key === 'claude') { run(cli!, ['mcp', 'remove', '-s', 'user', 'swarma']); run(cli!, ['mcp', 'add', '-s', 'user', 'swarma', '--', '/bin/sh', LAUNCHER, m.stem]); }
@@ -526,7 +525,7 @@ export function createOnboarding(o: OnboardingOptions) {
         const d = await detector(root);
         return send(res, 200, {
           dry: o.dry, defaultHostname: DEFAULT_HOSTNAME, state: d.state,
-          installed: { claude: !!d.clis.claude, codex: !!d.clis.codex, agy: !!d.clis.agy, notchtrader: d.notchtrader },
+          installed: { claude: !!d.clis.claude, codex: !!d.clis.codex, agy: !!d.clis.agy, mac: d.mac },
           captureSources: d.captureSources ?? [], hookApps: d.hookApps ?? [],
           postgres: d.postgres,
         });
@@ -620,9 +619,9 @@ async function cliMain(dry: boolean): Promise<number> {
       const m = META[k];
       const was = state.agents ? state.agents.includes(k) : !(HOSTED as readonly string[]).includes(k);
       if ((CLI_KEYS as readonly string[]).includes(k) && !det.clis[k as typeof CLI_KEYS[number]]) { say(`${m.label} not found; skipping.`); continue; }
-      if (k === 'notchtrader') { if (!det.notchtrader) continue; }
-      const q = k === 'notchtrader' ? 'Show Swarmaa agents and swarms in NotchTrader?' : (HOSTED as readonly string[]).includes(k) ? `Connect ${m.label} (hosted; needs remote access)?` : `Connect ${m.label} to Swarmaa shared memory?`;
-      if (!await askYes(q, k === 'notchtrader' ? true : was)) continue;
+      if (k === 'mac') { if (!det.mac) continue; }
+      const q = k === 'mac' ? 'Show Swarmaa agents and swarms in the Swarmaa Mac app?' : (HOSTED as readonly string[]).includes(k) ? `Connect ${m.label} (hosted; needs remote access)?` : `Connect ${m.label} to Swarmaa shared memory?`;
+      if (!await askYes(q, k === 'mac' ? true : was)) continue;
       const worker = WORKER_HARNESSES.includes(k) && await askYes(`Run ${k} as a background worker (read-only review/research${k === 'agy' ? ', sandboxed' : ''})?`, state.workers?.includes(k) ?? false);
       const edit = worker && await askYes(`Let the ${k} worker EDIT files and run commands in sandboxed git worktrees (commits to local swarmaa/${k}/<id> branches, never pushes)?`, state.edits?.includes(k) ?? false);
       const share = SHARING_HARNESSES.includes(k) && await askYes(`Share ${m.label} chats across harnesses?`, state.sharing ? state.sharing.includes(k) : true);

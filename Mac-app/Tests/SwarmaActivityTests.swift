@@ -1,5 +1,5 @@
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 /// The agent/project hover card's model: new wire fields, the cells that carry
 /// it, and the card height every sizing path must agree on.

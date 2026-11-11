@@ -3,20 +3,20 @@ import assert from "node:assert/strict"
 import { mkdtemp, readdir, readFile, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import plugin from "../../Sources/Resources/codenotch-opencode.mjs"
+import plugin from "../../Sources/Resources/swarmaa-opencode.mjs"
 
 async function fixture(t, options = {}) {
-  const root = await mkdtemp(join(tmpdir(), "codenotch-opencode-"))
-  const previous = process.env.CODENOTCH_ACTIVITY_DIR
-  process.env.CODENOTCH_ACTIVITY_DIR = root
+  const root = await mkdtemp(join(tmpdir(), "swarmaa-opencode-"))
+  const previous = process.env.SWARMAA_ACTIVITY_DIR
+  process.env.SWARMAA_ACTIVITY_DIR = root
   const hooks = await plugin({ directory: "/tmp/project", client: { session: {
     get: async () => ({ data: { title: "Synthetic test", parentID: options.parentID } }),
     messages: async () => ({ data: [{ info: { role: "user", model: { providerID: "llamacpp", modelID: "qwen" } } }] }),
   } } })
   t.after(async () => {
     await hooks.dispose()
-    if (previous === undefined) delete process.env.CODENOTCH_ACTIVITY_DIR
-    else process.env.CODENOTCH_ACTIVITY_DIR = previous
+    if (previous === undefined) delete process.env.SWARMAA_ACTIVITY_DIR
+    else process.env.SWARMAA_ACTIVITY_DIR = previous
     await rm(root, { recursive: true, force: true })
   })
   return {

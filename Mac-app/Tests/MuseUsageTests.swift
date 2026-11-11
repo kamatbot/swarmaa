@@ -1,5 +1,5 @@
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 /// One model_completed line in muse's session logs. `recorded_at` is
 /// microseconds since the epoch; the tests below pin that unit.
@@ -475,7 +475,7 @@ final class MuseQuotaFetchTests: XCTestCase {
     }
 
     func testLiveQuotaWhenExplicitlyEnabled() async throws {
-        guard ProcessInfo.processInfo.environment["CODENOTCH_TEST_MUSE_LIVE"] == "1" else {
+        guard ProcessInfo.processInfo.environment["SWARMAA_TEST_MUSE_LIVE"] == "1" else {
             throw XCTSkip("Opt-in live check requires a signed-in Muse CLI")
         }
         let snapshot = try await MuseLocalProvider().fetchSnapshot()

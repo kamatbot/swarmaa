@@ -550,7 +550,7 @@ test('windsurf hook: trajectory_id session, prompt and cascade response; qwen ho
 });
 
 // ---------------------------------------------------------------- setup integration
-const detected = (extra: Partial<Detected> = {}): Detected => ({ clis: { claude: '/bin/claude-fake' }, notchtrader: false, postgres: { found: true, reachable: true }, envExists: false, state: {}, ...extra });
+const detected = (extra: Partial<Detected> = {}): Detected => ({ clis: { claude: '/bin/claude-fake' }, mac: false, postgres: { found: true, reachable: true }, envExists: false, state: {}, ...extra });
 
 test('validatePlan: capture and hookApps are validated strictly and default off', () => {
   const base = { harnesses: {}, folders: [], autostart: false };
@@ -622,7 +622,7 @@ test('onboarding detect returns the new fields additively', async () => {
     const res = await fetch(`${url.origin}/api/detect`, { headers: { 'x-swarmaa-token': ob.token } });
     const j = await res.json() as any;
     assert.deepEqual([j.captureSources, j.hookApps], [['cursor'], ['kiro']]);
-    assert.deepEqual(Object.keys(j.installed).sort(), ['agy', 'claude', 'codex', 'notchtrader']);
+    assert.deepEqual(Object.keys(j.installed).sort(), ['agy', 'claude', 'codex', 'mac']);
   } finally { ob.close(); await ob.closed; }
 });
 

@@ -1,11 +1,11 @@
 import AppKit
 import SwiftUI
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 @MainActor
 final class LlamaCppGlyphTests: XCTestCase {
-    func testOfficialMarkRendersAtPickerAndNotchSizes() throws {
+    func testOfficialMarkRendersAtPickerAndCellSizes() throws {
         XCTAssertNotNil(NSImage(named: ProviderGlyph.llamaCpp.assetName))
         for size: CGFloat in [16, 28, 46] {
             let renderer = ImageRenderer(content: ProviderGlyphView(glyph: .llamaCpp, size: size)

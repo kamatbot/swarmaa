@@ -1,5 +1,5 @@
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 /// Which of the several `claude` binaries on a Mac is the right one.
 final class ClaudeCLITests: XCTestCase {

@@ -1,6 +1,6 @@
 import XCTest
 import AppKit
-@testable import Codenotch
+@testable import Swarmaa
 
 /// What the menu bar item says in place of its icon: each five-hour window as
 /// its provider's mark, the share spent, and the time until it resets.
@@ -97,7 +97,7 @@ final class StatusItemSummaryTests: XCTestCase {
     }
 
     /// Both, in the order the store keeps — which is the user's order, the
-    /// same the notch draws its rings in.
+    /// same the app draws its rings in.
     func testSeveralProvidersKeepTheStoresOrder() {
         let both = summary([codex(0.41, resetIn: 4 * hour), claude(0.72, resetIn: 2 * hour)])
         XCTAssertEqual(both.entries.map(\.id), ["codex", "claude"])
@@ -183,7 +183,7 @@ final class StatusItemSummaryTests: XCTestCase {
         XCTAssertTrue(entry.detail.hasPrefix("Codex — Monthly limit: 12% Used"), entry.detail)
     }
 
-    /// That sentence is the notch's, so it is worded the way Settings asks for
+    /// That sentence is the app's, so it is worded the way Settings asks for
     /// — the item used to word it "remaining" whatever the preference said.
     func testTheMeteredSentenceFollowsTheChosenResetWording() throws {
         let account = codex(0.12, resetIn: 20 * 86400, length: 30 * 86400)
@@ -231,9 +231,9 @@ final class StatusItemSummaryTests: XCTestCase {
         XCTAssertEqual(summary(readings, limits: on(["claude", "codex"])).entries.map(\.id), ["claude", "codex"])
     }
 
-    /// Choosing never reorders: the bar keeps the notch's order, which is the
+    /// Choosing never reorders: the bar keeps the app's order, which is the
     /// one the user dragged the rings into.
-    func testTheChosenKeepTheNotchsOrder() {
+    func testTheChosenKeepTheAppsOrder() {
         let readings = [codex(0.41, resetIn: 4 * hour), claude(0.72, resetIn: 2 * hour)]
         XCTAssertEqual(summary(readings, limits: on(["claude", "codex"])).entries.map(\.id), ["codex", "claude"])
     }
@@ -363,7 +363,7 @@ final class StatusItemSummaryTests: XCTestCase {
                        "the item changes width as the last minute counts down: \(widths)")
     }
 
-    /// A remembered reading is dimmed, as the notch dims its ring, and says
+    /// A remembered reading is dimmed, as the app dims its ring, and says
     /// how old it is.
     func testARememberedReadingIsDimmedAndAged() throws {
         let stale = claude(0.72, resetIn: 2 * hour, status: .stale(since: now.addingTimeInterval(-40 * minute)))
@@ -448,10 +448,10 @@ final class StatusItemSummaryTests: XCTestCase {
         }
     }
 
-    /// Antigravity may choose its weekly allowance as the notch headline. The
+    /// Antigravity may choose its weekly allowance as the app headline. The
     /// status item reads it by its own id, so the weekly allowance still gets
     /// its ring.
-    func testWeeklyRingStillWorksWhenTheNotchHeadlineIsWeekly() throws {
+    func testWeeklyRingStillWorksWhenTheHeadlineIsWeekly() throws {
         let snapshot = ProviderSnapshot(
             id: "antigravity", displayName: "Antigravity", glyph: .antigravity,
             fidelity: .official, status: .ok,
@@ -462,7 +462,7 @@ final class StatusItemSummaryTests: XCTestCase {
                             resetsAt: now.addingTimeInterval(3 * 86400), duration: 7 * 86400),
             ],
             headlineID: "week", weeklyID: "week")
-        XCTAssertNil(snapshot.weeklyWindow, "the notch still avoids drawing the same ring twice")
+        XCTAssertNil(snapshot.weeklyWindow, "the app still avoids drawing the same ring twice")
         XCTAssertEqual(snapshot.weeklyLimitWindow?.usedFraction, 0.67)
         let entry = try XCTUnwrap(summary([snapshot], weekly: true).entries.first)
         XCTAssertEqual(entry.percent, "67%", "the bar leads with the weekly limit")
@@ -741,7 +741,7 @@ final class StatusItemSummaryTests: XCTestCase {
     /// Opt-in visual QA fixture. The status artwork is drawn at four times its
     /// menu-bar dimensions so a reviewer can inspect its actual vector output.
     func testRenderWeeklyRingContactSheetWhenRequested() throws {
-        guard let path = ProcessInfo.processInfo.environment["CODENOTCH_WEEKLY_RENDER"] else { return }
+        guard let path = ProcessInfo.processInfo.environment["SWARMAA_WEEKLY_RENDER"] else { return }
         let levels: [(String, Double)] = [
             ("0%", 0), ("3%", 0.03), ("50%", 0.5), ("87%", 0.87), ("100%", 1),
         ]

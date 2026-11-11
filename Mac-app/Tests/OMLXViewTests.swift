@@ -1,8 +1,8 @@
 import XCTest
 import SwiftUI
-@testable import Codenotch
+@testable import Swarmaa
 
-/// What oMLX's cells show on the notch and in the menu bar's menu: speed
+/// What oMLX's cells show in the app and in the menu bar's menu: speed
 /// measured by the runtime, the context ring, today's ledger, and the phase
 /// and queue its admin endpoint reports.
 @MainActor

@@ -8,13 +8,13 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 
-const root = await mkdtemp(join(tmpdir(), "codenotch-opencode-smoke-"))
+const root = await mkdtemp(join(tmpdir(), "swarmaa-opencode-smoke-"))
 const activity = join(root, "activity")
-const plugin = fileURLToPath(new URL("../../Sources/Resources/codenotch-opencode.mjs", import.meta.url))
+const plugin = fileURLToPath(new URL("../../Sources/Resources/swarmaa-opencode.mjs", import.meta.url))
 const plugins = join(root, "config", "opencode", "plugins")
 await mkdir(plugins, { recursive: true })
 // Exercise the same global .js auto-discovery as the Settings installer.
-await writeFile(join(plugins, "codenotch.js"), await readFile(plugin))
+await writeFile(join(plugins, "swarmaa.js"), await readFile(plugin))
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms))
 const mock = http.createServer(async (req, res) => {
   let raw = ""
@@ -62,7 +62,7 @@ const child = spawn(process.env.OPENCODE_BIN || "opencode", ["serve", "--hostnam
     ...process.env,
     XDG_CONFIG_HOME: join(root, "config"), XDG_DATA_HOME: join(root, "data"),
     XDG_CACHE_HOME: join(root, "cache"), XDG_STATE_HOME: join(root, "state"),
-    OPENCODE_CONFIG_CONTENT: JSON.stringify(config), CODENOTCH_ACTIVITY_DIR: activity,
+    OPENCODE_CONFIG_CONTENT: JSON.stringify(config), SWARMAA_ACTIVITY_DIR: activity,
     OPENCODE_DISABLE_DEFAULT_PLUGINS: "true", OPENCODE_DISABLE_CLAUDE_CODE: "true",
     OPENCODE_DISABLE_EXTERNAL_SKILLS: "true", OPENCODE_DISABLE_LSP_DOWNLOAD: "true",
     OPENCODE_DISABLE_MODELS_FETCH: "true", OPENCODE_DISABLE_AUTOUPDATE: "true",

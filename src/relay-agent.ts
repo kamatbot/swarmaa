@@ -182,7 +182,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
   try {
     if (!process.env.DATABASE_URL || !process.env.PUBLIC_URL) throw new Error('configuration');
     const pool = createPool(process.env.DATABASE_URL);
-    const agent = new RelayAgent({ relayUrl: process.env.RELAY_URL ?? 'wss://relay.swarmaa.com', publicUrl: process.env.PUBLIC_URL, host: process.env.HOST ?? '127.0.0.1', port: Number(process.env.PORT ?? 8787), directory: resolve('.local'), provision: device => provisionRelayConnection(pool, process.env.RELAY_PAIR_TEMPLATE ?? 'notchtrader', device) });
+    const agent = new RelayAgent({ relayUrl: process.env.RELAY_URL ?? 'wss://relay.swarmaa.com', publicUrl: process.env.PUBLIC_URL, host: process.env.HOST ?? '127.0.0.1', port: Number(process.env.PORT ?? 8787), directory: resolve('.local'), provision: device => provisionRelayConnection(pool, process.env.RELAY_PAIR_TEMPLATE ?? 'swarmaa-mac', device) });
     process.stdout.write(`Relay host_id: ${agent.identity.id}\n`); agent.start();
     const stop = () => { agent.stop(); void pool.end(); };
     process.once('SIGTERM', stop); process.once('SIGINT', stop);

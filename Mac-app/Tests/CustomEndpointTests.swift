@@ -1,6 +1,6 @@
 import XCTest
 import SwiftUI
-@testable import Codenotch
+@testable import Swarmaa
 
 final class CustomEndpointTests: XCTestCase {
     func testCustomEndpointDefaultValues() {
@@ -792,7 +792,7 @@ final class CustomEndpointTests: XCTestCase {
     }
 
     @MainActor
-    func testConfiguredEndpointRemainsInNotchWhenModelProbeTemporarilyFails() async throws {
+    func testConfiguredEndpointRemainsListedWhenModelProbeTemporarilyFails() async throws {
         let endpoint = CustomEndpoint(
             id: "endpoint-unstable",
             name: "Custom API",

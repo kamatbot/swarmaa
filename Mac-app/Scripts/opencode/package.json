@@ -1,5 +1,5 @@
 {
   "private": true,
   "type": "module",
-  "scripts": { "test": "node --test codenotch.test.js" }
+  "scripts": { "test": "node --test swarmaa.test.js" }
 }

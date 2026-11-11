@@ -1,4 +1,4 @@
-name: Codenotch
+name: Swarmaa
 options:
   bundleIdPrefix: app.swarmaa
   deploymentTarget:
@@ -32,7 +32,7 @@ settings:
     # ordinary file access. It is the App Sandbox that would break both, which
     # is why that stays off — Developer ID distribution does not require it.
     ENABLE_HARDENED_RUNTIME: "YES"
-    CODE_SIGN_ENTITLEMENTS: Sources/Codenotch.entitlements
+    CODE_SIGN_ENTITLEMENTS: Sources/Swarmaa.entitlements
     ENABLE_APP_SANDBOX: "NO"
     ENABLE_USER_SCRIPT_SANDBOXING: "NO"
 
@@ -45,7 +45,7 @@ packages:
     from: "2.6.0"
 
 targets:
-  Codenotch:
+  Swarmaa:
     type: application
     platform: macOS
     sources:
@@ -73,8 +73,7 @@ targets:
     info:
       path: Sources/Info.plist
       properties:
-        # Deliberately a normal Dock app, not an `LSUIElement` agent. The
-        # notch is ambient, but the *app* still has to be findable: without a
+        # Deliberately a normal Dock app, not an `LSUIElement` agent: without a
         # Dock tile there is nothing to click to open it, nothing in Cmd-Tab,
         # and no obvious way to reach settings or quit.
         CFBundleName: Swarmaa
@@ -134,10 +133,8 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: app.swarmaa.notch
-        # The app is Swarmaa; the target and Swift module keep the name Codenotch
-        # so every `import Codenotch` and the project path stay as they are.
         PRODUCT_NAME: Swarmaa
-        PRODUCT_MODULE_NAME: Codenotch
+        PRODUCT_MODULE_NAME: Swarmaa
         GENERATE_INFOPLIST_FILE: "NO"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         SWIFT_EMIT_LOC_STRINGS: "YES"
@@ -148,15 +145,15 @@ targets:
         # anywhere a signed, notarized app can reach — see
         # Sources/Vendor/zstd/README.md. Delete this line and that directory
         # together if the Desktop source is ever dropped.
-        SWIFT_OBJC_BRIDGING_HEADER: Sources/Codenotch-Bridging-Header.h
+        SWIFT_OBJC_BRIDGING_HEADER: Sources/Swarmaa-Bridging-Header.h
 
-  CodenotchTests:
+  SwarmaaTests:
     type: bundle.unit-test
     platform: macOS
     sources:
       - path: Tests
     dependencies:
-      - target: Codenotch
+      - target: Swarmaa
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: app.swarmaa.notch.tests
@@ -166,14 +163,14 @@ targets:
         BUNDLE_LOADER: "$(TEST_HOST)"
 
 schemes:
-  Codenotch:
+  Swarmaa:
     build:
       targets:
-        Codenotch: all
-        CodenotchTests: [test]
+        Swarmaa: all
+        SwarmaaTests: [test]
     run:
       config: Debug
     test:
       config: Debug
       targets:
-        - CodenotchTests
+        - SwarmaaTests

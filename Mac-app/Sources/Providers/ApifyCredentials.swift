@@ -37,7 +37,7 @@ struct ApifyCredentialSources {
 enum ApifyCredentials {
     static let environmentKey = "APIFY_TOKEN"
     static let keychainService = "apify-api-token"
-    static let keychainAccount = "codenotch"
+    static let keychainAccount = "swarmaa"
 
     static var authURL: URL {
         URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".apify/auth.json")

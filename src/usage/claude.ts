@@ -82,7 +82,7 @@ export const _resetRenewal = (): void => { renewAttemptedFor = undefined; };
  * Runs from the Mac app's usage scratch folder, which its session monitor already ignores.
  */
 export async function renewClaudeToken(binary: string): Promise<void> {
-  const cwd = process.platform === 'darwin' ? `${homedir()}/Library/Application Support/Codenotch/usage-scratch` : homedir();
+  const cwd = process.platform === 'darwin' ? `${homedir()}/Library/Application Support/Swarmaa/usage-scratch` : homedir();
   await mkdir(cwd, { recursive: true }).catch(() => undefined);
   await new Promise<void>((resolve) => {
     const child = spawn(binary, ['-p', '--no-session-persistence', '--strict-mcp-config'], { cwd, stdio: ['ignore', 'ignore', 'ignore'], timeout: 30_000, killSignal: 'SIGKILL' });

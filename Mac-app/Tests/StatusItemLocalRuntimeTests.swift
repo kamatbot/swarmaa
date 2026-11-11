@@ -1,6 +1,6 @@
 import XCTest
 import AppKit
-@testable import Codenotch
+@testable import Swarmaa
 
 /// The menu bar's menu has to say about a local model what its cell says,
 /// which the store's own snapshot of the runtime cannot: speed, phase, context

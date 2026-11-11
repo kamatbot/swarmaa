@@ -1,7 +1,7 @@
 import SQLite3
 import SwiftUI
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 final class DevinUsageTests: XCTestCase {
     /// GetUserStatus quota shape, with synthetic values and no account data.
@@ -217,7 +217,7 @@ final class DevinUsageTests: XCTestCase {
     }
 
     func testLiveDevinUsageWhenExplicitlyEnabled() async throws {
-        guard ProcessInfo.processInfo.environment["CODENOTCH_TEST_DEVIN_LIVE"] == "1" else {
+        guard ProcessInfo.processInfo.environment["SWARMAA_TEST_DEVIN_LIVE"] == "1" else {
             throw XCTSkip("Opt-in live check requires a signed-in Devin Desktop")
         }
         let snapshot = try await DevinLocalProvider().fetchSnapshot()

@@ -1,6 +1,6 @@
 import AppKit
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 /// A click outside the field being edited ends its editing; a click on it, or
 /// on the few points of ring and bezel round it, must not.

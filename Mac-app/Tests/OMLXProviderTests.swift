@@ -1,6 +1,6 @@
 import XCTest
 import SwiftUI
-@testable import Codenotch
+@testable import Swarmaa
 
 @MainActor
 final class OMLXProviderTests: XCTestCase {

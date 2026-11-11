@@ -58,7 +58,7 @@ final class CostModel: ObservableObject {
         // One database and one transcript watcher per account; the default
         // account keeps the original file name so history carries over.
         let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-            .appendingPathComponent("Codenotch/costs", isDirectory: true)
+            .appendingPathComponent("Swarmaa/costs", isDirectory: true)
         // The original single-account database keeps its name for the default
         // Claude login; every other account (Codex included) gets its own file.
         let dbName = "agentcost-\(account.id).sqlite"

@@ -1,7 +1,7 @@
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
-/// What Swarmaa's `sessions` and `routing` add to the notch: a cell per service
+/// What Swarmaa's `sessions` and `routing` add to the app: a cell per service
 /// in use, and a marker on the agent that gets the next task. Both fields are
 /// optional on the wire, so an older service must still decode.
 final class SwarmaSessionsTests: XCTestCase {

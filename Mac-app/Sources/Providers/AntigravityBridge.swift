@@ -270,7 +270,7 @@ enum AntigravityBridge {
     /// answer needs no project or conversation state, and sharing the IDE's
     /// would put two writers on its SQLite files if the IDE is launched while
     /// this one is still up.
-    static func arguments(token: String, appDataDir: String = "codenotch-bridge") -> [String] {
+    static func arguments(token: String, appDataDir: String = "swarmaa-bridge") -> [String] {
         [
             "--standalone",
             "--override_ide_name", "antigravity",

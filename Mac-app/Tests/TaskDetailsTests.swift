@@ -1,5 +1,5 @@
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 final class TaskDetailsTests: XCTestCase {
     static func detail(usage: Bool = true) throws -> TeamsTaskDetails {

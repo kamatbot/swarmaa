@@ -241,7 +241,7 @@ enum SwarmaCells {
     }
 
     /// Only swarms that wait on someone get a cell.
-    static func notchSwarms(_ swarms: [TeamsSwarm]) -> [TeamsSwarm] {
+    static func listedSwarms(_ swarms: [TeamsSwarm]) -> [TeamsSwarm] {
         swarms.filter { ["waiting_on_you", "blocked"].contains($0.status) && $0.threadID != nil }
     }
 
@@ -612,7 +612,7 @@ final class SwarmaDirectory {
     nonisolated static func teamsProviders(questions: [TeamsQuestion], swarms: [TeamsSwarm],
                                            client: SwarmaTeamsClient) -> [UsageProvider] {
         (SwarmaCells.questionsCellID(questions).map { [SwarmQuestionsProvider(id: $0, client: client)] } ?? [])
-            + SwarmaCells.notchSwarms(swarms).compactMap { s in
+            + SwarmaCells.listedSwarms(swarms).compactMap { s in
                 SwarmaCells.swarmCellID(s).map { SwarmWaitingProvider(id: $0, swarm: s, client: client) }
             }
     }

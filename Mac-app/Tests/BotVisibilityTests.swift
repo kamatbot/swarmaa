@@ -1,5 +1,5 @@
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 final class BotVisibilityTests: XCTestCase {
     private func bot(_ id: String, archived: Bool = false, paused: Bool = false, schedule: String? = nil) throws -> TeamsBot {

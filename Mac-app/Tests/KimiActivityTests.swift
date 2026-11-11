@@ -1,5 +1,5 @@
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 /// The wire state machine: turn records are top-level lines with millisecond
 /// `time`, approval records may arrive wrapped in a loop-event envelope, and

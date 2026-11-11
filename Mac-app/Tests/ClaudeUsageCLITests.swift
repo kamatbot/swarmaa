@@ -1,5 +1,5 @@
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 /// `claude "/usage"` is asked before the keychain, because Claude Code files a
 /// new keychain item on every token rotation and a grant against the old one
@@ -140,7 +140,7 @@ final class ClaudeUsageCLITests: XCTestCase {
 
     /// On the hour the minutes are dropped: `3pm`, not `3:00pm`. Reading only
     /// the `h:mm` spelling left the window with no reset for one hour in
-    /// sixty — which is how this was found, by looking at the notch rather
+    /// sixty — which is how this was found, by looking at the app rather
     /// than at the tests.
     func testATimeOnTheHourHasNoMinutesToRead() {
         let reset = ClaudeUsageCLI.resetDate(from: "Sep 7 at 3pm (Asia/Jakarta)",
@@ -215,7 +215,7 @@ final class ClaudeUsageCLITests: XCTestCase {
         let second = try ClaudeUsageCLI.scratchDirectory(applicationSupport: support)
 
         XCTAssertEqual(first, second)
-        XCTAssertEqual(first.path, support.appendingPathComponent("Codenotch/usage-scratch").path)
+        XCTAssertEqual(first.path, support.appendingPathComponent("Swarmaa/usage-scratch").path)
         var isDirectory: ObjCBool = false
         XCTAssertTrue(FileManager.default.fileExists(atPath: first.path, isDirectory: &isDirectory))
         XCTAssertTrue(isDirectory.boolValue)
@@ -226,7 +226,7 @@ final class ClaudeUsageCLITests: XCTestCase {
     func testAScratchDirectoryThatCannotBeMadeThrows() throws {
         let support = try makeHome(executableAt: nil)
         // A file where the parent directory has to go.
-        FileManager.default.createFile(atPath: support.appendingPathComponent("Codenotch").path,
+        FileManager.default.createFile(atPath: support.appendingPathComponent("Swarmaa").path,
                                        contents: Data())
 
         XCTAssertThrowsError(try ClaudeUsageCLI.scratchDirectory(applicationSupport: support))

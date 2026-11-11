@@ -13,14 +13,14 @@ enum OpenCodePluginInstaller {
     /// Only called by the explicit Settings button. Preserve an earlier or
     /// user-edited bridge outside the loader's .js/.ts extension set.
     static func install(directory: URL = pluginsDirectory, source: URL? = nil) throws {
-        guard let source = source ?? Bundle.main.url(forResource: "codenotch-opencode", withExtension: "mjs")
+        guard let source = source ?? Bundle.main.url(forResource: "swarmaa-opencode", withExtension: "mjs")
         else { throw Failure.missingResource }
         let data = try Data(contentsOf: source)
-        let target = directory.appendingPathComponent("codenotch.js")
+        let target = directory.appendingPathComponent("swarmaa.js")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         if let existing = try? Data(contentsOf: target) {
             if existing == data { return }
-            let backup = directory.appendingPathComponent("codenotch.\(UUID().uuidString).backup")
+            let backup = directory.appendingPathComponent("swarmaa.\(UUID().uuidString).backup")
             try existing.write(to: backup, options: .atomic)
         }
         try data.write(to: target, options: .atomic)

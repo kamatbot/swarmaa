@@ -1,5 +1,5 @@
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 /// `GET /api/v1/models` as LM Studio 0.4.24 answered it on 2026-09-10, cut
 /// down to the fields the parser reads plus the ones it must ignore.

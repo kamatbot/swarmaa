@@ -1,5 +1,5 @@
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 /// Hiding accounts with nothing left to spend: either the headline window or
 /// the weekly allowance at 0% remaining hides the account — one spent window

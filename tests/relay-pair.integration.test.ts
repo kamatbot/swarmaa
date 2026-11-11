@@ -13,8 +13,8 @@ test('DB pairing success copies exact scopes and permissions with a sanitized fr
   const pool = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL, options: `-c search_path=${schema},public`, max: 2 });
   t.after(async () => { await pool.end(); await admin.query(`DROP SCHEMA ${schema} CASCADE`); await admin.end(); });
   await pool.query(await readFile(new URL('../db/migrations/001_identity.sql', import.meta.url), 'utf8'));
-  await provisionConnection(pool, { tenant: 'personal', name: 'notchtrader', role: 'frontend', scopes: ['project:one', 'project:two'], permissions: ['memory:read', 'thread:write'] });
-  const token = await provisionRelayConnection(pool, 'notchtrader', 'My Phone / 🚀');
+  await provisionConnection(pool, { tenant: 'personal', name: 'swarmaa-mac', role: 'frontend', scopes: ['project:one', 'project:two'], permissions: ['memory:read', 'thread:write'] });
+  const token = await provisionRelayConnection(pool, 'swarmaa-mac', 'My Phone / 🚀');
   const row = (await pool.query('SELECT * FROM principals WHERE token_hash=$1', [hashToken(token)])).rows[0];
   assert.match(row.name, /^relay-my-phone-[a-f0-9]{4}$/);
   assert.equal(row.role, 'frontend'); assert.equal(row.tenant_id, 'personal');
@@ -27,7 +27,7 @@ test('DB pairing success copies exact scopes and permissions with a sanitized fr
   await t.test('admin and disabled templates cannot provision', async () => {
     await provisionConnection(pool, { tenant: 'personal', name: 'owner', role: 'admin', scopes: ['*'], permissions: ['admin'] });
     await assert.rejects(provisionRelayConnection(pool, 'owner', 'phone'), /template_invalid/);
-    await pool.query("UPDATE principals SET disabled=true WHERE name='notchtrader'");
-    await assert.rejects(provisionRelayConnection(pool, 'notchtrader', 'phone'), /template_missing/);
+    await pool.query("UPDATE principals SET disabled=true WHERE name='swarmaa-mac'");
+    await assert.rejects(provisionRelayConnection(pool, 'swarmaa-mac', 'phone'), /template_missing/);
   });
 });

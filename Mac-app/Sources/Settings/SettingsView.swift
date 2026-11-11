@@ -514,7 +514,7 @@ struct SettingsView: View {
         // the bug and no way to notice.
         .id(preferences.language)
         .tint(embedded ? KS.signal : preferences.accentColor.color)
-        .environment(\.codenotchAccentColor, embedded ? KS.signal : preferences.accentColor.color)
+        .environment(\.swarmaaAccentColor, embedded ? KS.signal : preferences.accentColor.color)
         // Fills the window rather than claiming a fixed size. Under
         // `fullSizeContentView` the content view is the whole frame — title
         // bar included — so a view sized to `SettingsView.height` left the

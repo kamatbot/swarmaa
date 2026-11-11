@@ -8,8 +8,8 @@ export DEVELOPER_DIR := /Applications/Xcode.app/Contents/Developer
 endif
 endif
 
-PROJECT := Codenotch.xcodeproj
-SCHEME  := Codenotch
+PROJECT := Swarmaa.xcodeproj
+SCHEME  := Swarmaa
 RESOLVED_PACKAGES := $(PROJECT)/project.xcworkspace/xcshareddata/swiftpm/Package.resolved
 ARCH    ?= $(shell uname -m)
 DEST    ?= platform=macOS,arch=$(ARCH)
@@ -25,7 +25,7 @@ DEST    ?= platform=macOS,arch=$(ARCH)
 # `grep`, not `grep -c`: `-c` prints "0" rather than nothing when it matches
 # nothing, so `ifeq (,...)` was never true and a machine *without* the
 # certificate fell through to signing with an identity it does not have —
-# "Signing for Codenotch requires a development team", on every target.
+# "Signing for Swarmaa requires a development team", on every target.
 HAS_DEVELOPER_ID := $(shell security find-identity -v -p codesigning 2>/dev/null | grep "Developer ID Application")
 
 # A personal "Apple Development" certificate, where there is one, is preferred
@@ -203,7 +203,7 @@ notarize: dmg
 	xcrun stapler staple $(DMG)
 
 # Sparkle ships its tools inside the resolved package artifacts.
-SPARKLE_BIN = $(shell dirname $$(find $$HOME/Library/Developer/Xcode/DerivedData/Codenotch-*/SourcePackages/artifacts/sparkle -name generate_appcast 2>/dev/null | head -1))
+SPARKLE_BIN = $(shell dirname $$(find $$HOME/Library/Developer/Xcode/DerivedData/Swarmaa-*/SourcePackages/artifacts/sparkle -name generate_appcast 2>/dev/null | head -1))
 
 # The feed customers' copies poll. Signs each update with the EdDSA private key
 # in the login keychain — Sparkle installs nothing that key did not sign, so a

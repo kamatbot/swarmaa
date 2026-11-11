@@ -1,6 +1,6 @@
 import XCTest
 import Foundation
-@testable import Codenotch
+@testable import Swarmaa
 
 
 final class WorkingNotesTests: XCTestCase {

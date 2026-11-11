@@ -1,5 +1,5 @@
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 /// The cost layer's seams into the app: the hover card reserves room for
 /// the project rows, a credit-based Codex seat gets a Credits window, and the

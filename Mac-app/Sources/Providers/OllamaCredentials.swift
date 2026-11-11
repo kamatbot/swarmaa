@@ -9,7 +9,7 @@ import Foundation
 /// first, so a shell that already exports one works without any setup.
 enum OllamaCredentials {
     static let keychainService = "ollama-api-key"
-    static let keychainAccount = "codenotch"
+    static let keychainAccount = "swarmaa"
     static let environmentKey = "OLLAMA_API_KEY"
 
     /// Held until the item moves, for the reason spelled out in

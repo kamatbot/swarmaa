@@ -1,6 +1,6 @@
 import Combine
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 @MainActor
 final class ActivityCoordinatorTests: XCTestCase {
@@ -93,7 +93,7 @@ final class ActivityCoordinatorTests: XCTestCase {
 
     func testReconnectResubscribesAndPublishesAgain() async {
         let monitor = Monitor()
-        let received = expectation(description: "Reconnected activity reaches the notch")
+        let received = expectation(description: "Reconnected activity reaches the app")
         let coordinator = ActivityCoordinator(monitors: ["a": monitor]) { _, sessions in
             if sessions.first?.id == "new" { received.fulfill() }
         }

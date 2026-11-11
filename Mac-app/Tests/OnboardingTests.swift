@@ -1,5 +1,5 @@
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 /// Stub for the Node process: replays canned stdout/stderr, records arguments and stdin.
 private final class StubRunner: SetupProcessRunning {
@@ -50,8 +50,8 @@ final class OnboardingTests: XCTestCase {
     func testModelPlanUsesTheSixHarnessKeys() {
         let model = OnboardingModel(defaults: suite(), engine: SetupEngine(runner: StubRunner()), runOffMain: { $0() })
         let plan = model.makePlan()
-        XCTAssertEqual(Set(plan.harnesses.keys), ["claude", "codex", "agy", "grok", "dot", "notchtrader"])
-        XCTAssertEqual(plan.harnesses["notchtrader"], .init(connect: true, worker: false, share: false))
+        XCTAssertEqual(Set(plan.harnesses.keys), ["claude", "codex", "agy", "grok", "dot", "mac"])
+        XCTAssertEqual(plan.harnesses["mac"], .init(connect: true, worker: false, share: false))
         XCTAssertNil(plan.remote)
     }
 
@@ -90,7 +90,7 @@ final class OnboardingTests: XCTestCase {
 
     func testDetectDecodes() throws {
         let stub = StubRunner()
-        stub.stdout = [#"{"clis":{"claude":"/bin/claude"},"notchtrader":true,"postgres":{"found":true,"reachable":false},"envExists":true,"state":{"folders":["a=/x"],"agents":["claude"],"autostart":true,"remote":{"hostname":"h.example"}}}"#]
+        stub.stdout = [#"{"clis":{"claude":"/bin/claude"},"mac":true,"postgres":{"found":true,"reachable":false},"envExists":true,"state":{"folders":["a=/x"],"agents":["claude"],"autostart":true,"remote":{"hostname":"h.example"}}}"#]
         let d = try SetupEngine(runner: stub).detect(root: URL(fileURLWithPath: "/tmp"))
         XCTAssertEqual(stub.arguments, ["--import", "tsx", "scripts/setup.ts", "--detect-json"])
         XCTAssertTrue(d.isInstalled(.claude))

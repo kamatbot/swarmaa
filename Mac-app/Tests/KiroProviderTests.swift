@@ -1,6 +1,6 @@
 import SQLite3
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 /// Contract for `KiroProvider`'s injectable surface.
 ///
@@ -224,7 +224,7 @@ final class KiroProviderTests: XCTestCase {
         XCTAssertEqual(KiroEndpoint.requestCount, 0)
     }
 
-    func testTheInjectedDatabaseBytesDoNotChange() async throws {
+    func testTheInjectedDatabaseBytesStayUnchanged() async throws {
         KiroEndpoint.reset([(500, "")])
         let database = try makeDatabase()
         let before = try Data(contentsOf: database)

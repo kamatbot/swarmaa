@@ -1,6 +1,6 @@
 import XCTest
 import SwiftUI
-@testable import Codenotch
+@testable import Swarmaa
 
 @MainActor
 final class DeepSeekUsageTests: XCTestCase {
@@ -313,7 +313,7 @@ final class DeepSeekUsageTests: XCTestCase {
 }
 
 /// The money bar's headline reads spent by default, what is left when the
-/// notch is set that way — the same rounded-used derivation as the window
+/// app is set that way — the same rounded-used derivation as the window
 /// rows, so the two never disagree by a point.
 final class MoneyHeadlineTests: XCTestCase {
     private let balance = UsageMoneyBreakdown(currency: "CNY", spent: 9.20, remaining: 10.87)

@@ -68,7 +68,7 @@ struct WhatsNewView: View {
 /// test can actually look at.
 struct WhatsNewChanges: View {
     let changes: [ReleaseNote.Change]
-    @Environment(\.codenotchAccentColor) private var accentColor
+    @Environment(\.swarmaaAccentColor) private var accentColor
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {

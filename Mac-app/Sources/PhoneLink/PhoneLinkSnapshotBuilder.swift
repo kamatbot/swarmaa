@@ -76,7 +76,7 @@ struct PhoneLinkSnapshotBuilder {
                 PhoneLinkSnapshot.Block(reason: b.reason, resetsAt: b.resetsAt.map { formatISO($0) })
             }
             
-            let account = snap.plan.map { PhoneLinkSnapshot.Account(plan: $0, source: "Codenotch") }
+            let account = snap.plan.map { PhoneLinkSnapshot.Account(plan: $0, source: PhoneLinkWire.source) }
             
             let p = PhoneLinkSnapshot.Provider(
                 id: snap.id,
