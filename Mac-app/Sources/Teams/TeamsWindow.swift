@@ -418,8 +418,7 @@ struct UsageProviderCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text(verbatim: SwarmaCells.vendorName(usage.provider)).font(KS.section()).foregroundStyle(KS.strong)
-                if let plan = usage.plan, !plan.isEmpty { KSChip(plan, fill: KS.chip, ink: KS.textSoft) }
+                Text(verbatim: SwarmaCells.vendorName(usage.provider)).font(KS.section()).foregroundStyle(KS.strong).lineLimit(1)
                 Spacer()
                 if let plan = usage.plan, !plan.isEmpty { KSChip(plan) }
             }
