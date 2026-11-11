@@ -135,7 +135,11 @@ struct BotRow: View {
         let latest = model.botLatest(bot)
         Button { model.select(threadID: bot.threadID) } label: {
             HStack(alignment: .center, spacing: 12) {
-                StatusDot(state: model.botDot(bot))
+                // The bot's character, with its status as a dot on the corner.
+                KSMoji(seed: bot.avatar ?? bot.leadAgentID, size: 34, color: bot.color)
+                    .overlay(alignment: .bottomTrailing) {
+                        StatusDot(state: model.botDot(bot)).padding(2).background(Circle().fill(KS.paperDeep)).offset(x: 3, y: 3)
+                    }
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 6) {
                         Text(verbatim: bot.name).font(KS.text(.semibold)).foregroundStyle(KS.strong).lineLimit(1)
@@ -220,7 +224,8 @@ struct BotThreadHeader: View {
                 KSBarButton(symbol: "chevron.left", label: L10n.t("Back to thread")) { model.editingBotID = nil }
             }
             VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 6) {
+                HStack(spacing: 10) {
+                    if !settingsOpen { KSMoji(seed: bot.avatar ?? bot.leadAgentID, size: 34, color: bot.color) }
                     Text(verbatim: settingsOpen ? bot.name + " / " + L10n.t("Settings") : bot.name)
                         .font(KS.title()).tracking(-0.3).foregroundStyle(Color(hex: 0xF6F8FC)).lineLimit(1)
                     if !settingsOpen { botMenu }
