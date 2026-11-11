@@ -3,10 +3,12 @@ import SwiftUI
 
 // MARK: - Bots home
 
-/// Bots are home: the sidebar lists them, updates first; the right pane is
-/// the selected bot's thread, or its settings.
+/// Bots are home: the left column lists them, updates first; the centre is the
+/// selected bot (thread, timeline, logs) or its settings; the right column holds
+/// what needs you and what the bot made, when the window is wide enough.
 struct BotsHome: View {
     @ObservedObject var model: TeamsModel
+    @State private var width: CGFloat = 1400
 
     var body: some View {
         Group {
@@ -22,10 +24,12 @@ struct BotsHome: View {
                 }
             } else {
                 HStack(spacing: 0) {
-                    BotsSidebar(model: model).frame(width: 300)
+                    BotsSidebar(model: model).frame(width: 264)
                     Group {
                         if let id = model.editingBotID, let bot = model.bot(id: id) {
                             BotSettingsPane(model: model, bot: bot).id(id)
+                        } else if let bot = model.selectedBot {
+                            BotWorkspace(model: model, bot: bot).id(bot.id)
                         } else if let t = model.selectedThreadID {
                             ThreadView(model: model, threadID: t).id(t)
                         } else {
@@ -33,7 +37,12 @@ struct BotsHome: View {
                         }
                     }
                     .frame(minWidth: 460, maxWidth: .infinity, maxHeight: .infinity)
+                    // The right column needs room; under ~1200 pt of window it folds away.
+                    if width >= 1120, model.editingBotID == nil, let bot = model.selectedBot {
+                        BotSideColumn(model: model, bot: bot).frame(width: width >= 1300 ? 330 : 300)
+                    }
                 }
+                .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
             }
         }
     }
@@ -41,76 +50,51 @@ struct BotsHome: View {
 
 struct BotsSidebar: View {
     @ObservedObject var model: TeamsModel
-    @FocusState private var searchFocused: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         let bots = model.sortedBots
-        let updates = bots.filter { model.botHasUpdates($0) }
-        let rest = bots.filter { !model.botHasUpdates($0) }
-        VStack(spacing: 0) {
-            KSTopBar(fill: KS.paperDeep) {
-                KSSearchField(prompt: L10n.t("Search bots"), text: $model.search, height: 32)
-                    .focused($searchFocused)
-                    .frame(maxWidth: .infinity)
-                    .overlay(alignment: .trailing) {
-                        if model.search.isEmpty && !searchFocused {
-                            Text(verbatim: "⌘K").font(KS.mono(11)).foregroundStyle(KS.textMuted)
-                                .padding(.trailing, 14).allowsHitTesting(false)
-                                .accessibilityHidden(true)
-                        }
-                    }
-                KSBarButton(symbol: "plus", label: L10n.t("New bot"), fill: KS.lime) {
-                    model.creatingBot = true
-                }
-            }
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 6) {
-                    if !updates.isEmpty {
-                        HStack(spacing: 8) { KSLabel(L10n.t("01 — Updates")); KSBadge(count: updates.count) }
-                            .padding(.horizontal, 8).padding(.top, 2)
-                        ForEach(Array(updates.enumerated()), id: \.element.id) { BotRow(model: model, bot: $1, order: $0) }
-                    }
-                    if !rest.isEmpty {
-                        KSLabel(updates.isEmpty ? L10n.t("01 — All bots") : L10n.t("02 — All bots"))
-                            .padding(.horizontal, 8).padding(.top, updates.isEmpty ? 2 : 10)
-                        ForEach(Array(rest.enumerated()), id: \.element.id) { BotRow(model: model, bot: $1, order: updates.count + $0) }
-                    }
-                    let hidden = model.hiddenBots
-                    if !hidden.isEmpty {
-                        Button {
-                            withAnimation(reduceMotion ? nil : KS.motion) { model.showHiddenBots.toggle() }
-                        } label: {
-                            HStack(spacing: 6) {
-                                Image(systemName: "chevron.right").font(.system(size: 10, weight: .bold))
-                                    .rotationEffect(.degrees(model.showHiddenBots ? 90 : 0))
-                                KSLabel(L10n.t("Hidden · \(hidden.count)"))
-                                Spacer()
+        let hidden = model.hiddenBots
+        VStack(alignment: .leading, spacing: 22) {
+            VStack(alignment: .leading, spacing: 8) {
+                KSSectionLabel(text: L10n.t("Bots"), count: bots.count).padding(.leading, 6)
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 2) {
+                        ForEach(Array(bots.enumerated()), id: \.element.id) { BotRow(model: model, bot: $1, order: $0) }
+                        if !hidden.isEmpty {
+                            Button {
+                                withAnimation(reduceMotion ? nil : KS.motion) { model.showHiddenBots.toggle() }
+                            } label: {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "chevron.right").font(.system(size: 9, weight: .bold))
+                                        .rotationEffect(.degrees(model.showHiddenBots ? 90 : 0))
+                                    KSLabel(L10n.t("Hidden · \(hidden.count)"))
+                                    Spacer()
+                                }
+                                .contentShape(Rectangle())
                             }
-                            .contentShape(Rectangle())
+                            .buttonStyle(.plain).foregroundStyle(KS.textMuted)
+                            .padding(.horizontal, 8).padding(.top, 10)
+                            .accessibilityLabel(L10n.t("Hidden bots, \(hidden.count)"))
+                            if model.showHiddenBots {
+                                ForEach(hidden) { BotRow(model: model, bot: $0) }
+                                    .transition(reduceMotion ? .identity : .opacity.combined(with: .offset(y: -4)))
+                            }
                         }
-                        .buttonStyle(.plain).foregroundStyle(KS.textMuted)
-                        .padding(.horizontal, 8).padding(.top, 10)
-                        .accessibilityLabel(L10n.t("Hidden bots, \(hidden.count)"))
-                        if model.showHiddenBots {
-                            ForEach(hidden) { BotRow(model: model, bot: $0) }
-                                .transition(reduceMotion ? .identity : .opacity.combined(with: .offset(y: -4)))
+                        if bots.isEmpty && hidden.isEmpty {
+                            Text(verbatim: L10n.t("No bots match")).font(KS.body(13)).foregroundStyle(KS.textMuted).padding(10)
                         }
-                    }
-                    if bots.isEmpty && hidden.isEmpty {
-                        Text(verbatim: L10n.t("No bots match")).font(KS.body(14)).foregroundStyle(KS.textMuted).padding(10)
                     }
                 }
-                .padding(.horizontal, 12).padding(.bottom, 12)
+                .scrollIndicators(.automatic)
             }
+            SidebarAgents(model: model)
+            SidebarQuota(model: model)
         }
+        .padding(.horizontal, 12).padding(.vertical, 16)
+        .frame(maxHeight: .infinity, alignment: .top)
         .background(KS.paperDeep)
-        .background {
-            Button(L10n.t("Search bots")) { searchFocused = true }
-                .keyboardShortcut("k", modifiers: .command)
-                .hidden()
-                .accessibilityHidden(true)
-        }
+        .overlay(alignment: .trailing) { Rectangle().fill(KS.hairline).frame(width: 1) }
     }
 }
 
@@ -132,54 +116,56 @@ struct BotRow: View {
 
     private var selected: Bool { model.selectedThreadID == bot.threadID }
 
-    private var tag: String { TeamsBotList.label(bot) }
-
     private func accessibilityName(needs: Int, unread: Int) -> String {
         let hidden: String = bot.archived ? L10n.t("Hidden") + ", " : ""
         let state: String = needs > 0 ? ", " + L10n.t("needs you") : unread > 0 ? ", " + L10n.t("\(unread) new") : ""
         return hidden + bot.name + state
     }
 
+    /// "Claude · Running": who leads it, then what it is doing.
+    private func subtitle(needs: Int, unread: Int) -> String {
+        let lead = model.agent(id: bot.leadAgentID)?.runner.provider.map(SwarmaCells.vendorName) ?? TeamsBotList.label(bot)
+        let state: String = needs > 0 ? L10n.t("Needs you") : model.botIsRunning(bot) ? L10n.t("Running")
+            : unread > 0 ? L10n.t("\(unread) new") : L10n.t("Idle")
+        return lead + " · " + state
+    }
+
     var body: some View {
         let needs = model.botNeedsYou(bot), unread = model.botUnread(bot)
         let latest = model.botLatest(bot)
         Button { model.select(threadID: bot.threadID) } label: {
-            HStack(spacing: 11) {
-                // Hover wakes the avatar: a small hop and tilt that springs back.
-                KSMoji(seed: bot.avatar ?? bot.leadAgentID, size: 40, color: bot.color)
-                    .scaleEffect(hovered && !reduceMotion ? 1.08 : 1)
-                    .rotationEffect(.degrees(hovered && !reduceMotion ? -6 : 0))
-                    .offset(y: hovered && !reduceMotion ? -2 : 0)
-                    .animation(reduceMotion ? nil : .spring(response: 0.32, dampingFraction: 0.5), value: hovered)
-                VStack(alignment: .leading, spacing: 5) {
+            HStack(alignment: .center, spacing: 10) {
+                StatusDot(state: model.botDot(bot))
+                VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 6) {
-                        Text(verbatim: bot.name).font(KS.body(14, .bold)).lineLimit(1)
+                        Text(verbatim: bot.name).font(KS.body(14, .semibold)).foregroundStyle(KS.strong).lineLimit(1)
                         Spacer(minLength: 2)
                         if unread > 0, needs == 0 { KSBadge(count: unread) }
-                        if needs == 0, unread == 0, let at = latest?.at {
-                            Text(at, format: .relative(presentation: .numeric, unitsStyle: .narrow))
-                                .font(KS.mono(10)).foregroundStyle(KS.textMuted).lineLimit(1)
+                        else if let at = latest?.at {
+                            Text(verbatim: KSClock.short(at)).font(KS.mono(11, .regular)).foregroundStyle(KS.textDim).lineLimit(1)
                         }
                     }
-                    HStack(alignment: .firstTextBaseline, spacing: 6) {
-                        Text(verbatim: tag.uppercased()).font(KS.mono(10, .semibold)).tracking(0.3).foregroundStyle(KS.textMuted).lineLimit(1).fixedSize()
-                        Text(verbatim: latest?.line ?? bot.job).font(KS.body(13)).foregroundStyle(KS.textSoft).lineLimit(2)
-                    }
-                    if needs > 0 { KSChip(L10n.t("Needs you"), fill: KS.needsYouTint, ink: KS.needsYouText) }
+                    Text(verbatim: subtitle(needs: needs, unread: unread)).font(KS.body(12))
+                        .foregroundStyle(needs > 0 ? KS.needsYouText.opacity(0.85) : KS.textMuted).lineLimit(1)
                 }
             }
-            .padding(.horizontal, 10).padding(.vertical, 14)
+            .padding(.horizontal, 10).padding(.vertical, 9)
             .background {
-                RoundedRectangle(cornerRadius: 12).fill(selected ? KS.paper : hovered ? KS.paper.opacity(0.6) : .clear)
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .fill(selected ? KS.selected : hovered ? KS.chip.opacity(0.6) : .clear)
                     .animation(reduceMotion ? nil : KS.motion, value: hovered)
                     .animation(reduceMotion ? nil : KS.motion, value: selected)
             }
-            .contentShape(RoundedRectangle(cornerRadius: 12))
+            .overlay(alignment: .leading) {
+                if selected { RoundedRectangle(cornerRadius: 1).fill(KS.signal).frame(width: 2).padding(.vertical, 4) }
+            }
+            .contentShape(RoundedRectangle(cornerRadius: 9))
         }
         .buttonStyle(.plain)
+        .help(latest?.line ?? bot.job)
         .onHover { hovered = $0 }
         .opacity(bot.archived ? 0.55 : 1)
-        .opacity(shown ? 1 : 0).offset(y: shown ? 0 : 8)
+        .opacity(shown ? 1 : 0).offset(y: shown ? 0 : 6)
         .onAppear {
             guard !shown else { return }
             if reduceMotion { shown = true } else {
@@ -199,8 +185,9 @@ struct BotRow: View {
     }
 }
 
-// MARK: - Bot thread header
+// MARK: - Bot header
 
+/// The bot view's title block: name at 26 pt, a meta line, the status pill and the bot's actions.
 struct BotThreadHeader: View {
     @ObservedObject var model: TeamsModel
     let bot: TeamsBot
@@ -210,21 +197,51 @@ struct BotThreadHeader: View {
     private var settingsOpen: Bool { model.editingBotID == bot.id }
     private var starred: Bool { bot.starred }
     private var starLabel: String { L10n.t(starred ? "Unstar" : "Star") }
-    private var activeTasks: Int { model.botActiveTaskCount(bot) }
-    private var statusLabel: String {
-        activeTasks > 0 ? L10n.t("WORKING · \(activeTasks) TASKS") : L10n.t("IDLE")
-    }
     private var firstQuestionID: String? {
         model.messages[bot.threadID]?.first { $0.question?.status == "open" }?.question?.id
     }
 
+    private var meta: String {
+        var parts = [SwarmaCells.scopeLabel(bot.scope)].filter { !$0.isEmpty }
+        if let swarm = model.botSwarm(bot) {
+            parts.append(swarm.title)
+            parts.append(L10n.t("swarm of \(swarm.steps.count) steps"))
+            if let at = model.botSwarmStarted(bot, swarm) { parts.append(L10n.t("started ") + KSClock.short(at)) }
+        } else {
+            parts.append(TeamsBotList.label(bot))
+            if let runner = model.agent(id: bot.leadAgentID)?.runner { parts.append(runner.label) }
+        }
+        return parts.joined(separator: " · ")
+    }
+
     var body: some View {
-        KSTopBar {
-            GeometryReader { geometry in
-                row(compact: geometry.size.width < 650)
-                    .frame(width: geometry.size.width, height: KS.topBarHeight)
+        HStack(alignment: .top, spacing: 12) {
+            if settingsOpen {
+                KSBarButton(symbol: "chevron.left", label: L10n.t("Back to thread")) { model.editingBotID = nil }
             }
-            .frame(height: KS.topBarHeight)
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 6) {
+                    Text(verbatim: settingsOpen ? bot.name + " / " + L10n.t("Settings") : bot.name)
+                        .font(KS.body(26, .semibold)).tracking(-0.3).foregroundStyle(Color(hex: 0xF6F8FC)).lineLimit(1)
+                    if !settingsOpen { botMenu }
+                }
+                if !settingsOpen {
+                    Text(verbatim: meta).font(KS.body(14)).foregroundStyle(KS.textMuted).lineLimit(1).truncationMode(.middle)
+                }
+            }
+            .layoutPriority(1)
+            Spacer(minLength: 8)
+            TeamsConnectionStatus(model: model)
+            if !settingsOpen { statusPill }
+            if !settingsOpen {
+                KSBarButton(symbol: starred ? "star.fill" : "star", label: starLabel, on: starred) {
+                    Task { await model.setBotStarred(bot, starred: !starred) }
+                }
+                .disabled(model.savingBot || bot.isLegacyAgent || bot.archived)
+            }
+            KSBarButton(symbol: "slider.horizontal.3", label: L10n.t("Bot settings"), on: settingsOpen) {
+                model.editingBotID = settingsOpen ? nil : bot.id
+            }
         }
         .alert(L10n.t("Rename bot"), isPresented: $renaming) {
             TextField(L10n.t("Name"), text: $name)
@@ -236,45 +253,32 @@ struct BotThreadHeader: View {
         }
     }
 
-    /// The bot's name sits centred in the bar; status and actions sit at the two ends.
-    private func row(compact: Bool) -> some View {
-        ZStack {
-            sides(compact: compact)
-            if settingsOpen {
-                Text(verbatim: bot.name + " / " + L10n.t("Settings"))
-                    .font(KS.body(14, .semibold)).lineLimit(1).frame(maxWidth: 320)
-            } else {
-                botMenu
+    @ViewBuilder private var statusPill: some View {
+        let needs = model.botNeedsYou(bot)
+        if needs > 0 {
+            Button { if let q = firstQuestionID { model.botTab = .thread; model.targetQuestionID = q } } label: {
+                pill(needs > 1 ? L10n.t("\(needs) needs you") : L10n.t("Needs you"), KS.needsYouText, KS.needsYouTint)
             }
+            .buttonStyle(.plain)
+            .accessibilityLabel(L10n.t("\(needs) needs you"))
+        } else if model.botIsRunning(bot) {
+            let n = model.botActiveTaskCount(bot)
+            pill(n > 0 ? L10n.t("Running · \(n)") : L10n.t("Running"), KS.signal, KS.signal.opacity(0.14))
+        } else {
+            pill(L10n.t("Idle"), KS.textMuted, KS.chip)
         }
     }
 
-    private func sides(compact: Bool) -> some View {
-        HStack(spacing: 10) {
-            if settingsOpen {
-                KSBarButton(symbol: "chevron.left", label: L10n.t("Back to thread")) { model.editingBotID = nil }
-            } else {
-                HStack(spacing: 6) {
-                    Circle().fill(activeTasks > 0 ? Color.green : KS.textMuted).frame(width: 8, height: 8)
-                    if !compact { Text(verbatim: statusLabel).font(KS.mono(11)).tracking(0.5).fixedSize() }
-                }
-                .foregroundStyle(KS.textMuted)
-                .accessibilityElement(children: .ignore).accessibilityLabel(statusLabel)
-            }
-            TeamsConnectionStatus(model: model)
-            Spacer(minLength: 0)
-            if !settingsOpen, model.botNeedsYou(bot) > 0 { needsYou(compact: compact) }
-            if !settingsOpen {
-                KSBarButton(symbol: starred ? "star.fill" : "star", label: starLabel, on: starred) {
-                    Task { await model.setBotStarred(bot, starred: !starred) }
-                }
-                .disabled(model.savingBot || bot.isLegacyAgent || bot.archived)
-            }
-            KSBarButton(symbol: "slider.horizontal.3", label: L10n.t("Bot settings"), on: settingsOpen) {
-                model.editingBotID = settingsOpen ? nil : bot.id
-            }
+    private func pill(_ text: String, _ ink: Color, _ fill: Color) -> some View {
+        HStack(spacing: 7) {
+            Circle().fill(ink).frame(width: 7, height: 7)
+            Text(verbatim: text).font(KS.body(13, .semibold))
         }
-        .foregroundStyle(KS.ink)
+        .foregroundStyle(ink)
+        .padding(.horizontal, 12).frame(height: 28)
+        .background(Capsule().fill(fill))
+        .fixedSize()
+        .padding(.top, 4)
     }
 
     private var botMenu: some View {
@@ -290,39 +294,12 @@ struct BotThreadHeader: View {
             Button(L10n.t("Hide bot"), role: .destructive) { Task { await model.setBotHidden(bot, hidden: true) } }
                 .foregroundStyle(KS.danger).disabled(bot.isLegacyAgent || bot.archived || model.savingBot)
         } label: {
-            HStack(spacing: 7) {
-                KSMoji(seed: bot.avatar ?? bot.leadAgentID, size: 24, color: bot.color)
-                Text(verbatim: bot.name).font(KS.body(14, .semibold)).lineLimit(1).frame(maxWidth: 180)
-                Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold))
-            }
-            .padding(.horizontal, 9).frame(height: 32)
-            .background(Capsule().fill(KS.white))
-            .shadow(color: KS.shadow.opacity(0.08), radius: 1, y: 1)
+            Image(systemName: "chevron.down").font(.system(size: 11, weight: .semibold)).foregroundStyle(KS.textMuted)
+                .frame(width: 24, height: 24).contentShape(Rectangle())
         }
         // `.button` + plain keeps the label as drawn; `.borderlessButton` flattens it to an NSMenu title and image.
         .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize()
-        .accessibilityLabel(bot.name)
-    }
-
-    @ViewBuilder private func needsYou(compact: Bool) -> some View {
-        if let question = firstQuestionID {
-            Button { model.targetQuestionID = question } label: { needsYouLabel(compact: compact) }
-                .buttonStyle(.plain)
-        } else {
-            // Review cards do not yet expose a scroll target in ThreadView.
-            needsYouLabel(compact: compact)
-        }
-    }
-
-    private func needsYouLabel(compact: Bool) -> some View {
-        Text(verbatim: compact ? "\(model.botNeedsYou(bot))" : L10n.t("\(model.botNeedsYou(bot)) needs you"))
-            .font(KS.body(11.5, .semibold)).lineLimit(1)
-            .padding(.horizontal, compact ? 0 : 10)
-            .frame(minWidth: 32, minHeight: 32)
-            .background(Capsule().fill(KS.needsYouTint).frame(height: 22))
-            .foregroundStyle(KS.needsYouText)
-            .fixedSize()
-            .accessibilityLabel(L10n.t("\(model.botNeedsYou(bot)) needs you"))
+        .accessibilityLabel(L10n.t("Bot menu") + ", " + bot.name)
     }
 }
 
@@ -403,6 +380,8 @@ struct BotSettingsPane: View {
     var body: some View {
         VStack(spacing: 0) {
             BotThreadHeader(model: model, bot: bot)
+                .padding(.horizontal, 28).padding(.top, 22).padding(.bottom, 12)
+                .overlay(alignment: .bottom) { Rectangle().fill(KS.hairline).frame(height: 1) }
 
             ScrollView {
                 if bot.isLegacyAgent {

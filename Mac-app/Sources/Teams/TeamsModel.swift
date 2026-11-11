@@ -132,6 +132,9 @@ final class TeamsModel: ObservableObject {
     @Published var swarmMapWide = false
     private var mapRefresh: Task<Void, Never>?
     @Published var detailSwarmID: String?
+    /// The bot view's tab: the chat, the swarm's steps, or the raw event log.
+    enum BotTab: String, CaseIterable { case thread, timeline, logs }
+    @Published var botTab: BotTab = .thread
     @Published var error: String?
     /// The New bot sheet's own error: the window's alert sits behind the sheet.
     @Published var botError: String?

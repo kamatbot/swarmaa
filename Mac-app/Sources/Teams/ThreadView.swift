@@ -19,15 +19,15 @@ struct ThreadView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if let bot = model.bot(threadID: threadID) { BotThreadHeader(model: model, bot: bot) }
-            else { ThreadHeader(model: model, threadID: threadID) }
+            // A bot's header, progress and tabs sit above this in BotWorkspace.
+            if model.bot(threadID: threadID) == nil { ThreadHeader(model: model, threadID: threadID) }
             ScrollViewReader { proxy in
                 ZStack(alignment: .bottom) {
                     ScrollView {
                         // Not lazy: a lazy stack guesses unrendered rows' heights, and pinned to the bottom it
                         // kept re-correcting as long markdown rows settled, so the chat bounced. A thread holds
                         // a page or two of messages, so exact heights are cheap.
-                        VStack(alignment: .leading, spacing: 7) {
+                        VStack(alignment: .leading, spacing: 18) {
                             // Older history loads when you scroll up to it (below), not on appear: in this
                             // non-lazy stack the row "appears" the moment a thread opens, and that early page
                             // of history landing under you was the first-load jump.
@@ -58,7 +58,7 @@ struct ThreadView: View {
                             }
                             ForEach(model.liveTyping(threadID)) { TypingBubble(model: model, typing: $0, threadID: threadID).id("typing:" + $0.id) }
                         }
-                        .padding(.horizontal, 16).padding(.vertical, 12)
+                        .padding(.horizontal, 28).padding(.vertical, 20)
                     }
                     .opacity(settled ? 1 : 0)
                     // Opening a bot, or its messages first arriving, lays out rows, photos and the bottom anchor
@@ -124,9 +124,9 @@ struct ThreadView: View {
                                 Image(systemName: "arrow.down").font(.system(size: 10, weight: .bold))
                             }
                             .font(KS.mono(11, .semibold))
-                            .foregroundStyle(KS.ink)
+                            .foregroundStyle(KS.onSignal)
                             .padding(.horizontal, 12).padding(.vertical, 6)
-                            .background(Capsule().fill(KS.white))
+                            .background(Capsule().fill(KS.signal))
                             .shadow(color: KS.shadow.opacity(0.14), radius: 6, y: 2)
                             .offset(y: -8)
                         }
@@ -163,7 +163,7 @@ struct ThreadView: View {
                     }
                 }
                 Spacer()
-            }.padding(.horizontal, 16).padding(.top, 4)
+            }.padding(.horizontal, 28).padding(.top, 4)
             Composer(model: model, threadID: threadID).id(threadID)
         }
         .background(KS.paper)
@@ -335,25 +335,24 @@ struct TypingBubble: View {
     private var name: String { agent?.name ?? L10n.t("Agent") }
 
     var body: some View {
-        HStack(alignment: .top, spacing: 8) {
+        HStack(alignment: .top, spacing: 12) {
             BotMessageAvatar(model: model, threadID: threadID, agentID: typing.agentID)
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 6) {
-                    Text(verbatim: name).font(KS.body(12, .semibold))
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 8) {
+                    Text(verbatim: name).font(KS.body(14, .semibold)).foregroundStyle(KS.strong)
                     TypingDotsIndicator()
-                    Text(verbatim: L10n.t("typing")).font(KS.mono(10)).foregroundStyle(KS.textMuted)
+                    Text(verbatim: L10n.t("typing")).font(KS.mono(11, .regular)).foregroundStyle(KS.textDim)
                 }
                 Text(verbatim: typing.text).textSelection(.enabled)
-                    .font(KS.body(14)).lineSpacing(1)
-                    .padding(.horizontal, 12).padding(.vertical, 7)
-                    .background(UnevenRoundedRectangle(topLeadingRadius: 5, bottomLeadingRadius: 18,
-                                                       bottomTrailingRadius: 18, topTrailingRadius: 18).fill(KS.white)
-                        .shadow(color: KS.shadow.opacity(0.06), radius: 1, y: 1)
-                        .shadow(color: KS.shadow.opacity(0.05), radius: 7, y: 4))
-                    .foregroundStyle(KS.ink)
-                    .opacity(0.7)
+                    .font(KS.body(14)).lineSpacing(4)
+                    .padding(.horizontal, 14).padding(.vertical, 12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(KS.bubble))
+                    .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(KS.hairline, lineWidth: 1))
+                    .foregroundStyle(Color(hex: 0xD3DCEB))
+                    .opacity(0.75)
             }
-            Spacer(minLength: 60)
+            Spacer(minLength: 40)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .combine)
@@ -361,20 +360,15 @@ struct TypingBubble: View {
     }
 }
 
-/// Only the lead speaks as the bot; other crew members keep their own faces.
+/// An agent's provider monogram (CL, CX, AG); Auto runners show the agent's initials.
 struct BotMessageAvatar: View {
     @ObservedObject var model: TeamsModel
     let threadID: String?
     let agentID: String
 
     var body: some View {
-        let agentSeed = model.agent(id: agentID)?.avatar ?? agentID
-        let bot = model.bot(threadID: threadID)
-        if let bot, bot.leadAgentID == agentID {
-            KSMoji(seed: bot.avatar ?? agentSeed, size: 30, color: bot.color)
-        } else {
-            KSMoji(seed: agentSeed, size: 30)
-        }
+        let agent = model.agent(id: agentID)
+        ProviderMonogram(provider: agent?.runner.provider, size: 30, fallback: agent?.name ?? "")
     }
 }
 
@@ -389,16 +383,25 @@ struct TextBubble: View {
     /// Agent bodies are untrusted text: shown, never acted on. Inline
     /// Markdown only, so nothing renders as more than styled text and links.
 
+    /// "Claude · lead": the runner's provider, then the role.
+    private var authorMeta: String {
+        let agent = model.agent(id: message.author.id)
+        let lead = model.bot(threadID: message.threadID)?.leadAgentID == message.author.id
+        return [agent?.runner.provider.map(SwarmaCells.vendorName) ?? (agent == nil ? nil : L10n.t("Auto")),
+                lead ? L10n.t("lead") : agent?.role].compactMap { $0 }.joined(separator: " · ")
+    }
+
     var body: some View {
-        HStack(alignment: .top, spacing: 8) {
-            if message.isHuman { Spacer(minLength: 60) } else if let id = message.author.id {
+        HStack(alignment: .top, spacing: 12) {
+            if message.isHuman { Spacer(minLength: 120) } else if let id = message.author.id {
                 BotMessageAvatar(model: model, threadID: message.threadID, agentID: id)
             }
-            VStack(alignment: message.isHuman ? .trailing : .leading, spacing: 3) {
+            VStack(alignment: message.isHuman ? .trailing : .leading, spacing: 6) {
                 if !message.isHuman {
-                    HStack(spacing: 6) {
-                        Text(verbatim: author).font(KS.body(12, .semibold))
-                        if let date = message.createdAt { Text(date, style: .time).font(KS.mono(10)).foregroundStyle(KS.textMuted) }
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text(verbatim: author).font(KS.body(14, .semibold)).foregroundStyle(KS.strong)
+                        if !authorMeta.isEmpty { Text(verbatim: authorMeta).font(KS.body(12)).foregroundStyle(KS.textMuted) }
+                        if let date = message.createdAt { Text(verbatim: KSClock.short(date)).font(KS.mono(11, .regular)).foregroundStyle(KS.textDim) }
                     }
                 }
                 ForEach(message.attachments) { attachment in
@@ -412,21 +415,28 @@ struct TextBubble: View {
                     } else { bubble(body) }
                 }
             }
-            if !message.isHuman { Spacer(minLength: 60) }
+            if !message.isHuman { Spacer(minLength: 40) }
         }
         .frame(maxWidth: .infinity, alignment: message.isHuman ? .trailing : .leading)
     }
 
-    private func bubble(_ body: String) -> some View {
-        Text(MarkdownCache.text(body)).textSelection(.enabled)
-            .font(KS.body(14)).lineSpacing(1)
-            .padding(.horizontal, 12).padding(.vertical, 7)
-            .background(UnevenRoundedRectangle(topLeadingRadius: message.isHuman ? 18 : 5, bottomLeadingRadius: 18,
-                                               bottomTrailingRadius: message.isHuman ? 5 : 18, topTrailingRadius: 18)
-                .fill(message.isHuman ? KS.ink : KS.white)
-                .shadow(color: KS.shadow.opacity(message.isHuman ? 0 : 0.06), radius: 1, y: 1)
-                .shadow(color: KS.shadow.opacity(message.isHuman ? 0 : 0.05), radius: 7, y: 4))
-            .foregroundStyle(message.isHuman ? KS.paper : KS.ink)
+    @ViewBuilder private func bubble(_ body: String) -> some View {
+        if message.isHuman {
+            Text(MarkdownCache.text(body)).textSelection(.enabled)
+                .font(KS.body(14)).lineSpacing(3)
+                .padding(.horizontal, 14).padding(.vertical, 10)
+                .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(KS.selected))
+                .foregroundStyle(KS.strong)
+        } else {
+            Text(MarkdownCache.text(body)).textSelection(.enabled)
+                .font(KS.body(14)).lineSpacing(5)
+                .padding(.horizontal, 14).padding(.vertical, 12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(KS.bubble))
+                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(KS.hairline, lineWidth: 1))
+                .foregroundStyle(Color(hex: 0xD3DCEB))
+                .tint(KS.signal)
+        }
     }
 }
 
@@ -483,7 +493,7 @@ struct AnswerBubble: View {
         let parts = (answer?.choices ?? []) + [answer?.text].compactMap { $0 }
         Text(verbatim: parts.joined(separator: " · "))
             .font(KS.body(14))
-            .padding(.horizontal, 12).padding(.vertical, 7)
+            .padding(.horizontal, 14).padding(.vertical, 10)
             .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(KS.selected))
             .foregroundStyle(KS.strong)
             .frame(maxWidth: .infinity, alignment: .trailing)
@@ -495,10 +505,12 @@ struct ServiceLine: View {
     let symbol: String
     let text: String
     var body: some View {
-        Label { Text(verbatim: text) } icon: { Image(systemName: symbol) }
-            .font(KS.mono(11)).foregroundStyle(KS.textMuted)
-            .padding(.vertical, 2)
-            .frame(maxWidth: 640, alignment: .leading)
+        Label { Text(verbatim: text) } icon: { Image(systemName: symbol).foregroundStyle(KS.signal) }
+            .font(KS.body(13)).foregroundStyle(KS.textSoft)
+            .padding(.horizontal, 14).padding(.vertical, 10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(KS.optionLine, style: StrokeStyle(lineWidth: 1, dash: [4, 3])))
     }
 }
 
@@ -512,8 +524,8 @@ private struct CardBox<Content: View>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 7) { content }
             .padding(12)
-            .frame(maxWidth: 640, alignment: .leading)
-            .ksCard(fill: fill, radius: 16, shadow: true)
+            .frame(maxWidth: 680, alignment: .leading)
+            .ksCard(fill: fill, radius: 10, shadow: true)
     }
 }
 
@@ -907,7 +919,8 @@ struct Composer: View {
                 .accessibilityLabel(dictation.isRecording ? L10n.t("Stop dictation") : L10n.t("Start dictation"))
             ZStack(alignment: .topLeading) {
                 if text.wrappedValue.isEmpty || paused {
-                    Text(verbatim: paused ? L10n.t("Answer the approval above to continue") : L10n.t("Message · Return to send, Shift-Return for a new line"))
+                    Text(verbatim: paused ? L10n.t("Answer the approval above to continue")
+                         : model.bot(threadID: threadID).map { L10n.t("Message \($0.name) · Return to send") } ?? L10n.t("Message · Return to send, Shift-Return for a new line"))
                         .font(KS.body(14)).foregroundStyle(KS.textMuted).padding(.horizontal, 5).padding(.vertical, 5)
                         .allowsHitTesting(false)
                 }
@@ -915,7 +928,7 @@ struct Composer: View {
                     .focused($editorFocused).accessibilityLabel("Message in this thread")
                     .disabled(paused || startingDictation || dictation.isRecording)
                     .opacity(paused ? 0 : 1)
-                    .font(KS.body(14)).scrollContentBackground(.hidden)
+                    .font(KS.body(14)).foregroundStyle(KS.ink).scrollContentBackground(.hidden)
                     .frame(minHeight: 30, maxHeight: 140).fixedSize(horizontal: false, vertical: true)
                     .padding(.vertical, 5)
                     // Return sends; Shift-Return is a new line.
@@ -925,17 +938,22 @@ struct Composer: View {
                         return .handled
                     }
             }
+            if let runner = model.bot(threadID: threadID).flatMap({ model.agent(id: $0.leadAgentID)?.runner }) {
+                Text(verbatim: runner.label.lowercased()).font(KS.mono(11, .regular)).foregroundStyle(KS.textSoft)
+                    .padding(.horizontal, 8).padding(.vertical, 3)
+                    .background(RoundedRectangle(cornerRadius: 6).fill(KS.chip))
+                    .fixedSize().padding(.bottom, 12)
+            }
             Button(action: send) { Image(systemName: "arrow.up").font(.system(size: 14, weight: .semibold)) }
                 .buttonStyle(KSBarButtonStyle(send: true))
                 .disabled(paused || sending || preparingPhotos || (model.pendingSends[threadID] == nil && text.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && (model.photoDrafts[threadID]?.isEmpty ?? true)))
                 .padding(.bottom, 5).help(L10n.t("Send")).accessibilityLabel(model.pendingSends[threadID] == nil ? "Send message" : "Retry previous message")
         }
             }
-        .padding(.horizontal, 12).padding(.vertical, 4)
-        .background(RoundedRectangle(cornerRadius: 22).fill(KS.white)
-            .shadow(color: KS.shadow.opacity(0.06), radius: 1, y: 1)
-            .shadow(color: KS.shadow.opacity(0.07), radius: 10, y: 6))
-        .padding(.horizontal, 16).padding(.top, 6).padding(.bottom, 10)
+        .padding(.leading, 8).padding(.trailing, 8).padding(.vertical, 4)
+        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(KS.well))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(KS.optionLine, lineWidth: 1))
+        .padding(.horizontal, 28).padding(.top, 10).padding(.bottom, 18)
         .background(KS.paper)
         .onDisappear { dictation.stop() }
         .onChange(of: scenePhase) { _, phase in if phase != .active { dictation.stop() } }

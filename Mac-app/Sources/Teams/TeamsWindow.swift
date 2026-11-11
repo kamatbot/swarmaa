@@ -158,8 +158,10 @@ struct TeamsRootView: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            TeamsRail(model: model)
-            content
+            VStack(spacing: 0) {
+                WorkspaceTopBar(model: model)
+                content.frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
             if model.showSwarmMap { SwarmMapPanel(model: model).frame(width: model.swarmMapWide ? 560 : 380) }
         }
         .frame(minWidth: 900, minHeight: 560)
@@ -199,91 +201,6 @@ struct TeamsRootView: View {
             case .tasks: TasksPane(model: model)
             case .usage: UsagePane(model: model)
             }
-        }
-    }
-}
-
-// MARK: - Rail
-
-/// The ink rail: Bots, Tasks, Usage, then one usage ring per provider (hover
-/// for the windows, like the notch), then Settings.
-struct TeamsRail: View {
-    @ObservedObject var model: TeamsModel
-
-    var body: some View {
-        VStack(spacing: 8) {
-            // The Swarmaa mark is the Bots button: it looked clickable, so it is.
-            item(nil, L10n.t("Bots"), .bots, badge: model.botsWithUpdates).padding(.top, KS.topBarHeight + 6)
-            item("checklist", L10n.t("Tasks"), .tasks, badge: 0)
-            Button { model.showSwarmMap.toggle() } label: {
-                Image(systemName: "point.3.connected.trianglepath.dotted").font(.system(size: 17, weight: .semibold))
-                    .frame(width: 46, height: 46)
-                    .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(model.showSwarmMap ? KS.selected : .clear))
-                    .overlay(alignment: .leading) { if model.showSwarmMap { railMark } }
-                    .foregroundStyle(model.showSwarmMap ? KS.signal : KS.onInkMuted)
-                    .contentShape(Circle())
-            }
-            .buttonStyle(RailButtonStyle())
-            .keyboardShortcut("m", modifiers: [.command, .shift])
-            .help(L10n.t("Swarm map")).accessibilityLabel(L10n.t("Swarm map"))
-            .accessibilityAddTraits(model.showSwarmMap ? .isSelected : [])
-            Spacer(minLength: 12)
-            if case let usage = model.allUsage, !usage.isEmpty {
-                Text(verbatim: L10n.t("USAGE")).font(KS.mono(9)).tracking(1).foregroundStyle(KS.onInkMuted)
-                ForEach(usage, id: \.provider) { UsageRingButton(model: model, usage: $0) }
-            }
-            Button { AppDelegate.shared?.openSettings() } label: {
-                Image(systemName: "gearshape").font(.system(size: 18)).frame(width: 46, height: 46)
-            }
-            .buttonStyle(RailButtonStyle()).foregroundStyle(KS.onInkSoft)
-            .help(L10n.t("Settings")).accessibilityLabel(L10n.t("Settings"))
-            .padding(.bottom, 12)
-        }
-        .frame(width: 72)
-        .frame(maxHeight: .infinity)
-        .background(KS.rail)
-        .overlay(alignment: .trailing) { Rectangle().fill(KS.hairline).frame(width: 1) }
-    }
-
-    /// The 2 pt signal bar a selected rail item carries on its leading edge.
-    private var railMark: some View {
-        RoundedRectangle(cornerRadius: 1).fill(KS.signal).frame(width: 2, height: 22).offset(x: -1)
-    }
-
-    /// `symbol` nil draws the Swarmaa mark.
-    private func item(_ symbol: String?, _ title: String, _ pane: TeamsModel.Pane, badge: Int) -> some View {
-        let on = model.pane == pane
-        return Button { model.pane = pane } label: {
-            Group {
-                if let symbol { Image(systemName: symbol).font(.system(size: 17, weight: .semibold)) }
-                else { KSMoji(seed: "swarmaa", size: 34, kind: .mark) }
-            }
-                .frame(width: 46, height: 46)
-                .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(on ? KS.selected : .clear))
-                .overlay(alignment: .leading) { if on { railMark } }
-                .foregroundStyle(on ? KS.signal : KS.onInkMuted)
-                .overlay(alignment: .topTrailing) { if badge > 0 { KSBadge(count: badge, outlined: true).offset(x: 6, y: -4) } }
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(RailButtonStyle())
-        .help(title)
-        .accessibilityLabel(badge > 0 ? title + ", " + L10n.t("\(badge) with updates") : title)
-        .accessibilityAddTraits(on ? .isSelected : [])
-    }
-}
-
-private struct RailButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        RailButtonFace(configuration: configuration)
-    }
-
-    private struct RailButtonFace: View {
-        let configuration: ButtonStyleConfiguration
-        @State private var hovered = false
-        var body: some View {
-            configuration.label
-                .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.white.opacity(configuration.isPressed ? 0.10 : hovered ? 0.05 : 0)))
-                .onHover { hovered = $0 }
         }
     }
 }
@@ -436,6 +353,8 @@ struct UsagePane: View {
                     .font(KS.body(13)).foregroundStyle(KS.textSoft).lineLimit(1)
                 Spacer(minLength: 0)
                 TeamsConnectionStatus(model: model)
+                // Hover a ring for its windows, resets and routing.
+                ForEach(model.allUsage, id: \.provider) { UsageRingButton(model: model, usage: $0) }
             }
             ScrollView {
                 VStack(alignment: .leading, spacing: 22) {
