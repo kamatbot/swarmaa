@@ -619,6 +619,15 @@ export class TaskService {
             claimTask = { ...baseTask, ...(agent ? { agent } : {}), thread_messages: window };
           }
         }
+        if (next.kind === 'turn' && next.bot_id) {
+          // A coordinator bot sees every other project's bot so it can dispatch to them by name.
+          const own = (await db.query<{rules:Record<string,unknown>}>('SELECT rules FROM bots WHERE id=$1',[next.bot_id])).rows[0];
+          if (own?.rules?.dispatch_all_projects === true) {
+            const bots = (await db.query<{name:string;scope:string;job:string}>(
+              'SELECT name, scope, job FROM bots WHERE tenant_id=$1 AND id<>$2 AND NOT archived ORDER BY name',[p.tenantId,next.bot_id])).rows;
+            claimTask = {...claimTask, project_bots: bots.map(b => ({name:b.name.trim(),scope:b.scope,job:clipUtf8(b.job ?? '',200)}))};
+          }
+        }
         return {task:claimTask,lease_token:token,lease_generation:generation,...(route ? {route} : {})};
       }
       return {task:null};
@@ -823,6 +832,7 @@ export class TaskService {
           kind: replyKind,
           author: replyAuthor
         });
+        await copyReplyToCoordinator(db, p, row, emptyBotAnswer ? 'Finished without a summary' : answer);
       }
       if (result.native_session) {
         await db.query(
@@ -1183,4 +1193,22 @@ async function finishFollowUpTurn(db:PoolClient,p:Principal,c:FinishCtx):Promise
   if (effectiveDelegateObjective) {
     await serviceNotice(db, p, row.scope, threadId, redactSecrets(`${agentRow.name} handed this to ${delegateModel ?? 'its full model'} for a fuller answer`));
   }
+}
+
+/** A turn a coordinator bot dispatched (project_dispatch): copy the reply into the coordinator's thread. Agent posts queue no turn there. */
+async function copyReplyToCoordinator(db: PoolClient, p: Principal, row: TaskRow, answer: string): Promise<void> {
+  const from = (row.context_versions as { dispatched_from?: { thread_id?: unknown; scope?: unknown } } | null)?.dispatched_from;
+  if (!from || typeof from.thread_id !== 'string' || typeof from.scope !== 'string' || !row.bot_id) return;
+  const origin = (await db.query<{ id: string }>("SELECT id FROM threads WHERE id=$1 AND tenant_id=$2 AND scope=$3 AND kind='bot' AND NOT archived",
+    [from.thread_id, p.tenantId, from.scope])).rows[0];
+  const bot = (await db.query<{ name: string }>('SELECT name FROM bots WHERE id=$1', [row.bot_id])).rows[0];
+  if (!origin || !bot) return;
+  const seq = await assignThreadSeq(db, p.tenantId, origin.id);
+  const id = newId(), author = { kind: 'agent', id: row.agent_id };
+  await db.query(`INSERT INTO messages (id, tenant_id, scope, thread_id, seq, author, kind, body, ref)
+    VALUES ($1, $2, $3, $4, $5, $6::jsonb, 'text', $7, $8::jsonb)`,
+    [id, p.tenantId, from.scope, origin.id, seq, JSON.stringify(author), clipUtf8(`**${bot.name.trim()}:** ${answer}`, 16384),
+     JSON.stringify({ dispatched_reply: { bot_id: row.bot_id, task_id: row.id } })]);
+  await db.query('UPDATE threads SET updated_at=clock_timestamp() WHERE id=$1', [origin.id]);
+  await event(db, p, from.scope, 'message.created', id, { thread_id: origin.id, message_id: id, seq: Number(seq), kind: 'text', author });
 }

@@ -83,6 +83,13 @@ export interface TurnActionChannelPost {
   body: string;
 }
 
+/** A coordinator bot (rules.dispatch_all_projects) sends a request to another project's bot; its reply comes back. */
+export interface TurnActionProjectDispatch {
+  type: 'project_dispatch';
+  bot: string;
+  body: string;
+}
+
 export interface TurnActionBotAppearance {
   type: 'bot_appearance';
   avatar?: string;
@@ -95,7 +102,8 @@ export type TurnAction =
   | TurnActionSwarmStart
   | TurnActionSwarmUpdate
   | TurnActionQuestionAsk
-  | TurnActionChannelPost;
+  | TurnActionChannelPost
+  | TurnActionProjectDispatch;
 
 /** A git ref name a swarm's edit steps may branch from: no leading dash, spaces, control chars or `..`. */
 export const isBaseRef = (v: unknown): v is string =>
@@ -391,6 +399,16 @@ export function extractActionsBlock(text: string): ExtractedActions {
         channel_id: act.channel_id.trim(),
         body: clipUtf8(redactSecrets(act.body), 16384)
       });
+    } else if (type === 'project_dispatch') {
+      const extra = Object.keys(act).find(k => !['type', 'bot', 'body'].includes(k));
+      if (extra) return { cleanText, rawBlock, error: `unknown field '${extra}' in project_dispatch action`, rejectedAction: item };
+      if (typeof act.bot !== 'string' || !act.bot.trim() || act.bot.length > 64) {
+        return { cleanText, rawBlock, error: 'project_dispatch requires bot (a bot name or id)', rejectedAction: item };
+      }
+      if (typeof act.body !== 'string' || !act.body.trim()) {
+        return { cleanText, rawBlock, error: 'project_dispatch requires body', rejectedAction: item };
+      }
+      actions.push({ type: 'project_dispatch', bot: act.bot.trim(), body: clipUtf8(redactSecrets(act.body.trim()), 16384) });
     } else {
       return { cleanText, rawBlock, error: `unknown action type '${String(type)}'`, rejectedAction: item };
     }
@@ -414,7 +432,7 @@ export interface TurnGrantContext {
   leadMode?: 'router' | 'default';
 }
 
-const ROUTER_ACTIONS = new Set(['swarm_start', 'handoff', 'question_ask', 'bot_appearance']);
+const ROUTER_ACTIONS = new Set(['swarm_start', 'handoff', 'question_ask', 'bot_appearance', 'project_dispatch']);
 
 /**
  * Validates parsed actions against the turn grant in the database.
@@ -646,6 +664,23 @@ export async function validateTurnGrant(
           };
         }
       }
+    } else if (act.type === 'project_dispatch') {
+      // Only a bot the owner marked as a coordinator may reach other projects, and only their bots (never raw repos).
+      const own = ctx.botId ? (await db.query<{ rules: Record<string, unknown> }>(
+        'SELECT rules FROM bots WHERE id=$1 AND tenant_id=$2 AND scope=$3 AND NOT archived', [ctx.botId, ctx.tenantId, ctx.scope]
+      )).rows[0] : undefined;
+      if (own?.rules?.dispatch_all_projects !== true) {
+        return { valid: false, reason: 'this bot may not send work to other projects (rules.dispatch_all_projects is off)', action: act };
+      }
+      const target = (await db.query<{ id: string }>(
+        `SELECT id FROM bots WHERE tenant_id=$1 AND NOT archived AND id<>$2
+           AND (id::text=$3 OR lower(btrim(name))=lower(btrim($3))) ORDER BY created_at LIMIT 2`,
+        [ctx.tenantId, ctx.botId, act.bot]
+      )).rows;
+      if (target.length !== 1) {
+        return { valid: false, reason: target.length ? `bot name '${act.bot}' is ambiguous; use its id` : `bot '${act.bot}' not found`, action: act };
+      }
+      act.bot = target[0]!.id;
     } else if (act.type === 'channel_post') {
       if (!isUuid(act.channel_id)) {
         return {

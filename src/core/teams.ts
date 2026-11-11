@@ -198,16 +198,18 @@ export async function enqueueAgentTurn(
     objective?: string;
     /** The person named an agent for this turn ("use agy to …"): it runs there, whatever the bot's runner. */
     provider?: 'claude' | 'codex' | 'antigravity' | null;
+    /** A coordinator bot sent this request: the reply is copied back to its thread. */
+    dispatchedFrom?: { thread_id: string; scope: string; bot_id: string };
   }
 ): Promise<string> {
-  const { thread, agent, bot, seq, initiatorKind, hopDepth = 0, objective, provider } = opts;
+  const { thread, agent, bot, seq, initiatorKind, hopDepth = 0, objective, provider, dispatchedFrom } = opts;
   const queuedTurn = (await db.query<{ id: string; context_versions: Record<string, unknown> }>(
     "SELECT id, context_versions FROM tasks WHERE tenant_id=$1 AND agent_id=$2 AND thread_id=$3 AND kind='turn' AND status='queued' ORDER BY id ASC LIMIT 1 FOR UPDATE",
     [p.tenantId, agent.id, thread.id]
   )).rows[0];
 
   if (queuedTurn) {
-    const updatedVersions = { ...(queuedTurn.context_versions ?? {}), message_seq: Number(seq) };
+    const updatedVersions = { ...(queuedTurn.context_versions ?? {}), message_seq: Number(seq), ...(dispatchedFrom ? { dispatched_from: dispatchedFrom } : {}) };
     await db.query(
       'UPDATE tasks SET context_versions=$1::jsonb, updated_at=clock_timestamp() WHERE id=$2',
       [JSON.stringify(updatedVersions), queuedTurn.id]
@@ -236,7 +238,7 @@ export async function enqueueAgentTurn(
     read_project: true, send_messages: false, permission_changes: false, external_side_effects: false,
     ...(runnerObj ? { runner: runnerObj } : {})
   };
-  const contextVersions = { message_seq: Number(seq), hop_depth: hopDepth };
+  const contextVersions = { message_seq: Number(seq), hop_depth: hopDepth, ...(dispatchedFrom ? { dispatched_from: dispatchedFrom } : {}) };
   const reqHash = sha256(canonicalJson({
     kind: 'turn', scope: agent.scope, agent_id: agent.id, thread_id: thread.id, seq: Number(seq)
   }));
