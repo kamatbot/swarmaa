@@ -9,7 +9,9 @@ import { AppError, requireCondition } from '../errors.js';
 import { requirePermission, requireScope } from '../policy.js';
 import type { Principal } from '../types.js';
 import { integer, object, string, uuid } from '../validation.js';
-import { noExtraKeys } from './shared.js';
+import { audit, event, newId, noExtraKeys, teamsLock } from './shared.js';
+import { redactSecrets } from '../safety/redact.js';
+import { assignThreadSeq, clipUtf8, enqueueAgentTurn, type AgentRow } from './teams.js';
 
 const CHUNK = 131072, MAX = 20 * 1024 * 1024;
 const digest = (v: Buffer | string) => createHash('sha256').update(v).digest('hex');
@@ -67,18 +69,20 @@ function response(row:any, indices?:number[]): unknown {
 export class WatchServices {
   constructor(private pool:Pool) {}
   async memo(p:Principal, action:'put'|'status'|'delete', input:Record<string,unknown>):Promise<unknown> {
-    noExtraKeys(input, action === 'put' ? ['memo_id','thread_id','sha256','byte_length','captured_at','index','data_base64'] : ['memo_id','thread_id']);
+    noExtraKeys(input, action === 'put' ? ['memo_id','thread_id','sha256','byte_length','captured_at','index','data_base64','transcript'] : ['memo_id','thread_id']);
     const thread = uuid(input.thread_id,'thread_id').toLowerCase(), memo = uuid(input.memo_id,'memo_id').toLowerCase();
     requireCondition(process.platform === 'darwin',503,'memo_host_invalid','Memo storage requires the service to run on a Mac.');
     const filename = memoPath(p,thread,memo);
-    let parsed: {sha:string,length:number,captured:string,index:number,data:Buffer} | undefined;
+    let parsed: {sha:string,length:number,captured:string,index:number,data:Buffer,transcript:string} | undefined;
     if (action === 'put') {
       const sha = string(input.sha256,'sha256',64); requireCondition(/^[0-9a-f]{64}$/.test(sha),400,'invalid_arguments','Invalid SHA-256.');
       const length = integer(input.byte_length,'byte_length',1,MAX), index = integer(input.index,'index',0,Math.ceil(length/CHUNK)-1);
       const captured = string(input.captured_at,'captured_at',40); requireCondition(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,3})?Z$/.test(captured) && Number.isFinite(Date.parse(captured)),400,'invalid_arguments','Invalid captured_at.');
       const encoded = string(input.data_base64,'data_base64',Math.ceil(CHUNK/3)*4), data = Buffer.from(encoded,'base64');
       requireCondition(data.toString('base64') === encoded && data.length === Math.min(CHUNK,length-index*CHUNK),400,'invalid_arguments','Invalid canonical chunk.');
-      parsed = {sha,length,captured:new Date(captured).toISOString(),index,data};
+      const transcript = input.transcript === undefined ? '' : string(input.transcript,'transcript',16384);
+      requireCondition(Buffer.byteLength(transcript,'utf8') <= 16384,400,'invalid_arguments','transcript exceeds 16 KB.');
+      parsed = {sha,length,captured:new Date(captured).toISOString(),index,data,transcript};
     }
     const result = await transaction(this.pool,async db => {
       const scope = await authorize(db,p,thread,true);
@@ -98,6 +102,7 @@ export class WatchServices {
         requireCondition(row.scope === scope && row.sha256 === parsed.sha && row.byte_length === parsed.length && new Date(row.captured_at).toISOString() === parsed.captured,409,'memo_conflict','Memo metadata conflicts.');
         const old = (await db.query('SELECT data FROM watch_memo_chunks WHERE tenant_id=$1 AND thread_id=$2 AND memo_id=$3 AND chunk_index=$4',[p.tenantId,thread,memo,parsed.index])).rows[0];
         requireCondition(!old || old.data.equals(parsed.data),409,'memo_conflict','Memo chunk conflicts.');
+        if (parsed.transcript && !row.transcript) { await db.query('UPDATE watch_memos SET transcript=$4 WHERE tenant_id=$1 AND thread_id=$2 AND memo_id=$3',[p.tenantId,thread,memo,parsed.transcript]); row.transcript = parsed.transcript; }
         if (!old) await db.query('INSERT INTO watch_memo_chunks VALUES ($1,$2,$3,$4,$5)',[p.tenantId,thread,memo,parsed.index,parsed.data]);
       }
       if (action === 'status' && row.status === 'stored' && !await storedFileValid(filename,row.byte_length,row.sha256)) {
@@ -110,13 +115,37 @@ export class WatchServices {
         const data = Buffer.concat(chunks.map(c => c.data));
         requireCondition(data.length === row.byte_length && digest(data) === row.sha256 && data.length >= 12 && data.toString('ascii',4,8) === 'ftyp' && /^(M4A |M4B |isom|mp4[12])$/.test(data.toString('ascii',8,12)),400,'memo_invalid','Memo failed integrity or M4A validation.');
         await durableSave(filename,data);
+        await durableSave(filename.replace(/\.m4a$/,'.txt'),Buffer.from(row.transcript,'utf8')).catch(() => {}); // best effort; the DB keeps the transcript
         await db.query("UPDATE watch_memos SET status='stored' WHERE tenant_id=$1 AND thread_id=$2 AND memo_id=$3",[p.tenantId,thread,memo]); row.status = 'stored';
       }
       return response(row,action === 'status' ? (row.status === 'uploading' && chunks.length === Math.ceil(row.byte_length / CHUNK) ? [] : chunks.map(c => c.chunk_index)) : undefined);
     });
+    if ((result as any).status === 'stored' && action !== 'delete') await this.announce(p,thread,memo);
     return result;
   }
+  // Posts the memo into its thread and queues the bot turn, exactly once: the `announced` claim is taken under the thread lock.
+  private async announce(p:Principal, threadId:string, memo:string):Promise<void> {
+    await transaction(this.pool,async db => {
+      await teamsLock(db,p.tenantId);
+      const thread = (await db.query('SELECT * FROM threads WHERE id=$1 AND tenant_id=$2 FOR UPDATE',[threadId,p.tenantId])).rows[0];
+      if (!thread) return;
+      const row = (await db.query('UPDATE watch_memos SET announced=true WHERE tenant_id=$1 AND thread_id=$2 AND memo_id=$3 AND status=\'stored\' AND NOT announced RETURNING transcript,byte_length,captured_at',[p.tenantId,threadId,memo])).rows[0];
+      if (!row) return;
+      const transcript = String(row.transcript).trim();
+      const body = clipUtf8(redactSecrets(`🎙 Voice memo\n\n${transcript || '(no transcript)'}`),16384);
+      const ref = {voice_memo:{memo_id:memo,byte_length:row.byte_length,captured_at:new Date(row.captured_at).toISOString()}};
+      const seq = await assignThreadSeq(db,p.tenantId,threadId), msgId = newId(), author = {kind:'human',id:p.id};
+      await db.query(`INSERT INTO messages (id,tenant_id,scope,thread_id,seq,author,kind,body,ref,idempotency_key) VALUES ($1,$2,$3,$4,$5,$6::jsonb,'text',$7,$8::jsonb,$9)`,[msgId,p.tenantId,thread.scope,threadId,seq,JSON.stringify(author),body,JSON.stringify(ref),`voice-memo:${memo}`]);
+      await db.query('UPDATE threads SET updated_at=clock_timestamp() WHERE id=$1',[threadId]);
+      await audit(db,p,thread.scope,'message.create',msgId,{thread_id:threadId,seq:Number(seq)});
+      await event(db,p,thread.scope,'message.created',msgId,{thread_id:threadId,message_id:msgId,seq:Number(seq),kind:'text',author});
+      const bot = thread.kind === 'bot' ? (await db.query('SELECT id,routing,rules,lead_agent_id FROM bots WHERE thread_id=$1 AND tenant_id=$2 AND NOT archived',[threadId,p.tenantId])).rows[0] : undefined;
+      const agent = bot && (await db.query<AgentRow>('SELECT * FROM agents WHERE id=$1 FOR UPDATE',[bot.lead_agent_id])).rows[0];
+      if (bot && agent) await enqueueAgentTurn(db,p,{thread,agent,bot,seq,initiatorKind:'person',objective:MEMO_OBJECTIVE});
+    });
+  }
 }
+const MEMO_OBJECTIVE = 'The user just sent a voice memo (see the latest "Voice memo" message). Summarize it, list the action items, then ask the user with a structured question (question_ask) with options "Do it now", "Remind me later", "Done" so it shows as Needs you.';
 
 function transactionConfig(p:Principal): {origin:string,user:string,cookieFile:string} {
   const allowed = (process.env.SWARMAA_RETIREODDS_PRINCIPALS || '').split(',').map(x => x.trim().toLowerCase()).filter(Boolean);

@@ -156,4 +156,29 @@ describe('watch services', { skip: !connectionString, concurrency: false }, () =
     assert.equal(stored.status, 'stored'); assert.equal(stored.stored_on, 'mac');
     assert.equal((await call(user, 'watch_memo_status', { memo_id: base.memo_id, thread_id: thread })).status, 'stored');
   });
+
+  it('announces a stored memo once: transcript file, thread message and one bot turn', { skip: process.platform !== 'darwin' }, async () => {
+    const { tenant, user, thread } = await setup();
+    const data = Buffer.alloc(200_000, 7);
+    data.write('ftypM4A ', 4, 'ascii');
+    const { createHash } = await import('node:crypto');
+    const base = { memo_id: randomUUID(), thread_id: thread, sha256: createHash('sha256').update(data).digest('hex'), byte_length: data.length, captured_at: '2026-11-11T10:00:00Z' };
+    const chunk = (index: number, extra = {}) => ({ ...base, index, data_base64: data.subarray(index * 131072, (index + 1) * 131072).toString('base64'), ...extra });
+    await rejects(call(user, 'watch_memo_put', chunk(0, { transcript: 5 })), 400, 'invalid_arguments');
+    await rejects(call(user, 'watch_memo_put', chunk(0, { transcript: 'x'.repeat(16385) })), 400, 'invalid_arguments');
+    await call(user, 'watch_memo_put', chunk(0));
+    assert.equal((await call(user, 'watch_memo_put', chunk(1, { transcript: 'Call the plumber tomorrow' }))).status, 'stored');
+    await call(user, 'watch_memo_put', chunk(1, { transcript: 'Call the plumber tomorrow' }));
+    await call(user, 'watch_memo_status', { memo_id: base.memo_id, thread_id: thread });
+    const msgs = (await pool.query("SELECT body, ref FROM messages WHERE thread_id=$1 AND ref ? 'voice_memo'", [thread])).rows;
+    assert.equal(msgs.length, 1);
+    assert.match(msgs[0].body, /Voice memo[\s\S]*Call the plumber tomorrow/);
+    assert.equal(msgs[0].ref.voice_memo.memo_id, base.memo_id);
+    const turns = (await pool.query("SELECT objective FROM tasks WHERE thread_id=$1 AND kind='turn' AND status='queued'", [thread])).rows;
+    assert.equal(turns.length, 1);
+    assert.match(turns[0].objective, /question_ask/);
+    const { createHash: h } = await import('node:crypto');
+    const txt = path.join(dir, 'memos', h('sha256').update(tenant).digest('hex'), thread, `${base.memo_id}.txt`);
+    assert.equal(await readFile(txt, 'utf8'), 'Call the plumber tomorrow');
+  });
 });
