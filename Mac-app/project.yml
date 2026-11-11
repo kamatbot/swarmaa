@@ -120,7 +120,7 @@ targets:
         # refuses any update not signed by its private half, so a hijacked feed
         # or a swapped download cannot install code. Losing the private key
         # means no existing install can ever be updated again — back it up.
-        SUPublicEDKey: rmUfT5r49nR+3HdkbR5/YYLghfnAi6L49eOk3sIegSk=
+        SUPublicEDKey: MPywMG8ANX8QEl0FAACWaZxfH+UtkZ53zRIt5vCFKFc=
         # Set explicitly so Sparkle never asks on first launch. Left unset, it
         # shows a "check for updates automatically?" prompt, which is exactly
         # the permission this is meant to avoid.
