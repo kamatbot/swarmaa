@@ -55,7 +55,7 @@ targets:
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: UIInterfaceOrientationPortrait
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight
         MARKETING_VERSION: '1.0'
-        CURRENT_PROJECT_VERSION: '4'
+        CURRENT_PROJECT_VERSION: '5'
   SwarmaaWatch:
     type: application
     platform: watchOS
@@ -76,7 +76,7 @@ targets:
         INFOPLIST_KEY_WKApplication: YES
         INFOPLIST_KEY_NSMicrophoneUsageDescription: Record voice memos on your Watch.
         MARKETING_VERSION: '1.0'
-        CURRENT_PROJECT_VERSION: '4'
+        CURRENT_PROJECT_VERSION: '5'
   SwarmaaTests:
     type: bundle.unit-test
     platform: iOS
