@@ -434,12 +434,16 @@ code, .mono { font-family: var(--font-mono); }
   .trace-ctl .wp-steps button { inline-size: 2rem; block-size: 2rem; font-size: 0.9rem; }
 }
 @media (prefers-reduced-motion: reduce) { .tr-ring { animation: none; } .tr-note, .tr-wait { transition: none; } }
-.app-frame { padding: 0.5rem; background-color: #12274a; border-radius: 1.1rem; }
+/* A device-like bezel so the window lifts off the navy page: a lighter metal rim, a bright hairline, a blue glow. */
+.app-frame { padding: 1rem; border-radius: 1.9rem; background: linear-gradient(180deg, #05080f 0%, #02040a 100%);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.07), 0 0 0 1.5px rgba(170, 200, 255, 0.45), 0 0 0 7px rgba(143, 184, 255, 0.07),
+    0 50px 140px -30px rgba(76, 141, 255, 0.5), 0 30px 60px -20px rgba(0, 0, 0, 0.85); }
+.app-frame .app { border: 1px solid rgba(0, 0, 0, 0.75); box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.06); }
 .trace-play { background: #f4f7fb; color: #0a1830; }
 
 /* ════════ Swarmaa additions to the window ════════ */
 /* the window takes the rest of the first screen: --hero-top is the measured stack above .app plus the frame's bottom padding and a small gap */
-@media (min-width: 75.01rem) { .app { --hero-top: 18rem; grid-template-columns: 16rem minmax(0, 1fr) 21rem; block-size: clamp(30rem, calc(100svh - var(--hero-top)), 48rem); } }
+@media (min-width: 75.01rem) { .app { --hero-top: 19.5rem; grid-template-columns: 16rem minmax(0, 1fr) 21rem; block-size: clamp(30rem, calc(100svh - var(--hero-top)), 48rem); } }
 .ag.cl, .vg-av.cl { background: var(--cl); } .ag.cx, .vg-av.cx { background: var(--cx); } .ag.agy, .vg-av.agy { background: var(--agy); }
 .ag { font: 700 0.6rem var(--font-mono) !important; }
 .app-agents li small { margin-inline-start: auto; color: #7c8ea8; font-size: 0.7rem; }
