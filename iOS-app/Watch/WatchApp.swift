@@ -24,6 +24,7 @@ import WatchConnectivity
     }
     func refresh() {
         transmit(WatchPacket(kind: "refresh"), durable: true)
+        WatchMemos.shared.retryPending()
         for item in queue where item.status != "delivered" { transmit(WatchPacket(kind: "post", post: item.post), durable: true) }
     }
     func enqueue(bot: WatchBot, body: String) -> Bool {
@@ -60,6 +61,9 @@ import WatchConnectivity
             }
             if incoming.generation != snapshot?.generation || !incoming.signedIn { queue = [] }
             snapshot = incoming; _ = save()
+            WatchMemos.shared.setGeneration(incoming.signedIn ? incoming.generation : nil)
+        } else if packet.kind == "memo_ack", let id = packet.id, let generation = packet.generation, let hash = packet.hash, let status = packet.status {
+            WatchMemos.shared.receipt(id: id, generation: generation, hash: hash, status: status)
         } else if packet.kind == "ack", packet.generation == snapshot?.generation,
                   let index = queue.firstIndex(where: { $0.id == packet.id && $0.post.generation == packet.generation }),
                   let status = packet.status, ["delivered", "failed"].contains(status) {
@@ -69,7 +73,16 @@ import WatchConnectivity
     }
     nonisolated func session(_ session: WCSession, activationDidCompleteWith activationState: WCSessionActivationState, error: Error?) {
         let data = session.receivedApplicationContext["data"] as? Data
-        Task { @MainActor in if let data { self.receive(data) }; self.refresh() }
+        Task { @MainActor in
+            if let data { self.receive(data) }
+            self.restoreMemoGeneration()
+            self.refresh()
+        }
+    }
+    private func restoreMemoGeneration() { WatchMemos.shared.setGeneration(snapshot?.signedIn == true ? snapshot?.generation : nil) }
+    nonisolated func session(_ session: WCSession, didFinish fileTransfer: WCSessionFileTransfer, error: Error?) {
+        guard error != nil, let id = fileTransfer.file.metadata?["id"] as? String, let generation = fileTransfer.file.metadata?["generation"] as? String else { return }
+        Task { @MainActor in WatchMemos.shared.transferFailed(id: id, generation: generation) }
     }
     nonisolated func sessionReachabilityDidChange(_ session: WCSession) { Task { @MainActor in self.refresh() } }
     nonisolated func session(_ session: WCSession, didReceiveApplicationContext applicationContext: [String: Any]) {
@@ -98,6 +111,7 @@ import WatchConnectivity
                                     Label(bot.name, systemImage: bot.starred ? "star.fill" : "bubble.left")
                                 }
                             }
+                            NavigationLink("Voice memos") { WatchMemosView(store: store) }
                             Button("Refresh") { store.refresh() }
                         }.navigationTitle("Bots")
                     } else {
@@ -105,7 +119,9 @@ import WatchConnectivity
                     }
                 }
             }.onAppear { store.refresh() }
-        }.onChange(of: phase) { _, new in if new == .active { store.refresh() } }
+        }.onChange(of: phase) { _, new in
+            if new == .active { store.refresh() } else { WatchMemos.shared.stop() }
+        }
     }
 }
 struct WatchThread: View {
@@ -117,6 +133,10 @@ struct WatchThread: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 10) {
                 if let current {
+                    ForEach((store.snapshot?.questions ?? []).filter { $0.threadID == current.threadID }) { question in
+                        WatchQuestionView(question: question)
+                    }
+                    if store.snapshot?.moreQuestions == true { Text("More questions may be available on iPhone.").font(.caption).foregroundStyle(.secondary) }
                     if current.omittedMessages { Text("Some older messages omitted.").font(.caption).foregroundStyle(.secondary) }
                     if current.messages.isEmpty && !current.omittedMessages { Text("No recent messages.").foregroundStyle(.secondary) }
                     ForEach(current.messages) { message in
@@ -141,5 +161,26 @@ struct WatchThread: View {
                 } else { Text("This bot is no longer available. Refresh on iPhone.") }
             }
         }.navigationTitle(bot.name)
+    }
+}
+
+struct WatchQuestionView: View {
+    let question: WatchQuestion
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text("Question at last sync").font(.headline)
+            if let details = question.details {
+                Text(details.prompt)
+                if !details.actionKind.isEmpty { Text("Action: " + details.actionKind) }
+                if !details.actionSummary.isEmpty { Text("Summary: " + details.actionSummary) }
+                if !details.actionDetail.isEmpty { Text("Details: " + details.actionDetail) }
+                if !details.actionWhere.isEmpty { Text("Where: " + details.actionWhere) }
+                if !details.expiresAt.isEmpty { Text("Expires: " + details.expiresAt) }
+                ForEach(Array(details.options.enumerated()), id: \.offset) { entry in Text(entry.element) }
+                if details.multi { Text("Multiple choices allowed.") }
+                if details.freeText { Text("A written answer is allowed.") }
+            } else { Text("Full question unavailable on Watch.") }
+            Text("Review and answer on iPhone.").font(.caption).foregroundStyle(.secondary)
+        }.padding(.vertical, 6)
     }
 }

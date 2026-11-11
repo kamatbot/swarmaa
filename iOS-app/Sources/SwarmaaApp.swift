@@ -296,9 +296,9 @@ struct ContentSheet<Content: View>: View {
 
 enum Screen: String { case home, thread, tasks, usage, connect, settings }
 enum Sheet: Identifiable {
-    case you, question(JSON), newBot, changes(String)
+    case you, question(JSON), newBot, changes(String), memos
     var id: String {
-        switch self { case .you: "you"; case .question(let q): "question-" + q["id"].string; case .newBot: "newBot"; case .changes: "changes" }
+        switch self { case .you: "you"; case .question(let q): "question-" + q["id"].string; case .newBot: "newBot"; case .changes: "changes"; case .memos: "memos" }
     }
 }
 
@@ -372,6 +372,7 @@ struct RootView: View {
             } else { ContentSheet {
                 switch item {
                 case .you: you
+                case .memos: PhoneMemosView { sheet = nil }
                 case .question(let question): AnswerView(model: model, question: question) { sheet = nil }
                 case .newBot: NewBotView(model: model) { sheet = nil }
                 case .changes(let changes):
@@ -903,6 +904,7 @@ struct RootView: View {
                 if let bot = model.starred { model.openBot = bot; screen = .settings }
                 else { model.error = "Open a bot’s thread, then choose Bot settings." }
             } label: { menuRow("Bot settings", "Crew, chat replies and your starred shortcut", icon: "slider.horizontal.3") }.buttonStyle(Pill(primary: true))
+            Button { sheet = .memos } label: { menuRow("Watch memos", "Play and share recordings saved on this iPhone", icon: "waveform") }.buttonStyle(Pill(primary: true)).disabled(model.isDemo)
             Button("Sign out of this host") { perform { try await model.signOut(); sheet = nil; screen = .connect } }.frame(maxWidth: .infinity, minHeight: 44).disabled(model.isDemo)
         }
     }

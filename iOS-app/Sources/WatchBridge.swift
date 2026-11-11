@@ -48,6 +48,10 @@ import CryptoKit
         if entries.contains(where: { $0.post.generation != generation }) { entries.removeAll { $0.post.generation != generation }; _ = save() }
         return true
     }
+    var memoGeneration: String? {
+        guard synchronizeIdentity(), !fingerprint.isEmpty else { return nil }
+        return generation
+    }
     func changed() {
         guard synchronizeIdentity() else { return }
         if fingerprint.isEmpty { publish(bots: [], signedIn: false) }
@@ -103,6 +107,11 @@ import CryptoKit
                     drop(post, generation: expected)
                 } catch { send(WatchPacket(kind: "ack", generation: expected, id: post.id, status: "failed")); break }
             }
+            let questionPage = try await service.call("question_list", ["status": .string("open"), "limit": .number(100)])
+            guard watchAvailable, expected == generation, currentFingerprint() == fingerprint else { changed(); return }
+            let questionRows = questionPage["questions"].array.filter { row in bots.contains { $0.threadID == row["thread_id"].string } }
+            let questions = questionRows.prefix(20).compactMap { makeQuestion($0) }
+            let moreQuestions = questionPage["has_more"].bool || questionRows.count > 20
             var result: [WatchBot] = []
             for bot in bots {
                 guard watchAvailable, expected == generation, currentFingerprint() == fingerprint else { changed(); return }
@@ -113,8 +122,28 @@ import CryptoKit
                 result.append(WatchBot(id: bot.id, threadID: bot.threadID, name: String(decoding: bot.name.utf8.prefix(80), as: UTF8.self), starred: bot.starred, messages: messages))
             }
             guard watchAvailable, expected == generation, currentFingerprint() == fingerprint else { changed(); return }
-            publish(bots: result, signedIn: true)
+            publish(bots: result, signedIn: true, questions: questions, moreQuestions: moreQuestions)
         } catch { /* Keep the last snapshot and retry on the next contact. */ }
+    }
+    private func makeQuestion(_ row: JSON) -> WatchQuestion? {
+        let id = row["id"].string, thread = row["thread_id"].string
+        guard UUID(uuidString: id) != nil, UUID(uuidString: thread) != nil, row["status"].string == "open" else { return nil }
+        let placeholder = WatchQuestion(id: id, threadID: thread, details: nil)
+        guard case .string(let prompt) = row["prompt"], case .array(let rawOptions) = row["options"],
+              rawOptions.allSatisfy({ if case .string = $0 { true } else { false } }),
+              case .bool(let multi) = row["multi"], case .bool(let freeText) = row["free_text"] else { return placeholder }
+        let action = row["action"]
+        if action != .null {
+            guard case .object(let fields) = action,
+                  Set(fields.keys).isSubset(of: ["kind", "summary", "detail", "where"]),
+                  fields.values.allSatisfy({ if case .string = $0 { true } else { false } }) else { return placeholder }
+        }
+        let details = WatchQuestionDetails(prompt: prompt, options: rawOptions.map(\.string), multi: multi, freeText: freeText,
+            actionKind: action["kind"].string, actionSummary: action["summary"].string, actionDetail: action["detail"].string,
+            actionWhere: action["where"].string, expiresAt: row["expires_at"].string)
+        let question = WatchQuestion(id: id, threadID: thread, details: details)
+        guard let data = try? JSONEncoder().encode(question), data.count <= 6_000 else { return placeholder }
+        return question
     }
     private func drop(_ post: WatchPost, generation: String) {
         entries.removeAll { $0.post.id == post.id }; _ = save()
@@ -124,18 +153,21 @@ import CryptoKit
         guard text.utf8.count > 300 else { return text }
         return String(decoding: text.utf8.prefix(300), as: UTF8.self) + "…"
     }
-    private func publish(bots: [WatchBot], signedIn: Bool) {
+    private func publish(bots: [WatchBot], signedIn: Bool, questions: [WatchQuestion] = [], moreQuestions: Bool = false) {
         revision += 1
         let epoch = defaults.string(forKey: "watch.epoch") ?? UUID().uuidString
         defaults.set(epoch, forKey: "watch.epoch")
         var bounded = bots
+        var boundedQuestions = questions
         while true {
-            let packet = WatchPacket(kind: "snapshot", snapshot: WatchSnapshot(revision: revision, epoch: epoch, generation: generation, signedIn: signedIn, bots: bounded))
+            let packet = WatchPacket(kind: "snapshot", snapshot: WatchSnapshot(revision: revision, epoch: epoch, generation: generation, signedIn: signedIn, bots: bounded, questions: boundedQuestions, moreQuestions: moreQuestions))
             if let data = WatchCodec.encode(packet) {
                 guard WCSession.default.activationState == .activated else { return }
                 try? WCSession.default.updateApplicationContext(["data": data])
                 return
             }
+            // Never truncate question details: replace an oversized full question with an unavailable marker.
+            if let index = boundedQuestions.firstIndex(where: { $0.details != nil }) { boundedQuestions[index].details = nil; continue }
             // Keep all bot entries; shed the oldest messages until the encoded packet fits.
             guard let index = bounded.indices.filter({ !bounded[$0].messages.isEmpty }).max(by: { bounded[$0].messages.count < bounded[$1].messages.count }) else { return }
             bounded[index].messages.removeFirst()
@@ -167,6 +199,26 @@ import CryptoKit
             guard save() else { entries.removeLast(); send(WatchPacket(kind: "ack", generation: generation, id: post.id, status: "failed")); return }
         }
         requestWork()
+    }
+    private func receiveMemo(_ source: URL, envelope: MemoEnvelope) {
+        guard envelope.valid, memoGeneration == envelope.generation else { try? FileManager.default.removeItem(at: source); return }
+        do {
+            try PhoneMemos.shared.retain(source, envelope: envelope)
+            PhoneMemos.shared.refresh(generation: envelope.generation)
+            send(WatchPacket(kind: "memo_ack", generation: envelope.generation, id: envelope.id, status: "phone", hash: envelope.hash))
+        } catch {
+            send(WatchPacket(kind: "memo_ack", generation: envelope.generation, id: envelope.id, status: "unconfirmed", hash: envelope.hash))
+        }
+    }
+    nonisolated func session(_ session: WCSession, didReceive file: WCSessionFile) {
+        guard let metadata = file.metadata, let id = metadata["id"] as? String,
+              let generation = metadata["generation"] as? String, let hash = metadata["hash"] as? String,
+              let bytes = metadata["bytes"] as? Int else { return }
+        let envelope = MemoEnvelope(id: id, generation: generation, hash: hash, bytes: bytes)
+        guard envelope.valid, (try? file.fileURL.resourceValues(forKeys: [.fileSizeKey]).fileSize) == bytes else { return }
+        let staged = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".m4a")
+        do { try FileManager.default.copyItem(at: file.fileURL, to: staged) } catch { return }
+        Task { @MainActor in self.receiveMemo(staged, envelope: envelope) }
     }
     nonisolated func session(_ session: WCSession, activationDidCompleteWith activationState: WCSessionActivationState, error: Error?) { Task { @MainActor in self.changed() } }
     nonisolated func sessionWatchStateDidChange(_ session: WCSession) { Task { @MainActor in self.changed() } }
