@@ -159,6 +159,7 @@ struct TeamsRootView: View {
         HStack(spacing: 0) {
             TeamsRail(model: model)
             content
+            if model.showSwarmMap { SwarmMapPanel(model: model).frame(width: model.swarmMapWide ? 560 : 380) }
         }
         .frame(minWidth: 900, minHeight: 560)
         .background(alignment: .top) { TeamsTitlebarBackground().frame(height: KS.topBarHeight) }
@@ -213,6 +214,17 @@ struct TeamsRail: View {
             // The Swarmaa mark is the Bots button: it looked clickable, so it is.
             item(nil, L10n.t("Bots"), .bots, badge: model.botsWithUpdates).padding(.top, KS.topBarHeight + 6)
             item("checklist", L10n.t("Tasks"), .tasks, badge: 0)
+            Button { model.showSwarmMap.toggle() } label: {
+                Image(systemName: "point.3.connected.trianglepath.dotted").font(.system(size: 17, weight: .semibold))
+                    .frame(width: 46, height: 46)
+                    .background(Circle().fill(model.showSwarmMap ? KS.lime : .clear))
+                    .foregroundStyle(model.showSwarmMap ? KS.ink : KS.onInkSoft)
+                    .contentShape(Circle())
+            }
+            .buttonStyle(RailButtonStyle())
+            .keyboardShortcut("m", modifiers: [.command, .shift])
+            .help(L10n.t("Swarm map")).accessibilityLabel(L10n.t("Swarm map"))
+            .accessibilityAddTraits(model.showSwarmMap ? .isSelected : [])
             Spacer(minLength: 12)
             if case let usage = model.allUsage, !usage.isEmpty {
                 Text(verbatim: L10n.t("USAGE")).font(KS.mono(9)).tracking(1).foregroundStyle(KS.onInkMuted)

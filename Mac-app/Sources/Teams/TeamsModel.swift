@@ -126,6 +126,11 @@ final class TeamsModel: ObservableObject {
         }
         return reported + extra
     }
+    @Published var showSwarmMap = UserDefaults.standard.bool(forKey: "swarmMap.open") {
+        didSet { UserDefaults.standard.set(showSwarmMap, forKey: "swarmMap.open") }
+    }
+    @Published var swarmMapWide = false
+    private var mapRefresh: Task<Void, Never>?
     @Published var detailSwarmID: String?
     @Published var error: String?
     /// The New bot sheet's own error: the window's alert sits behind the sheet.
@@ -260,6 +265,12 @@ final class TeamsModel: ObservableObject {
 
     /// Just the usage readings, for the Usage pane's own timer: a full
     /// `refresh` reloads every bot and thread, which a minute's tick should not.
+    /// Tokens a finished task used (input + output), for the Swarm map. Nil when the runner reported none.
+    func taskTokens(id: String) async -> Int? {
+        guard let u = try? await client.taskDetails(id: id).result?.usage else { return nil }
+        return u.input_tokens + u.output_tokens
+    }
+
     func refreshUsage() async {
         guard hasLoaded, !refreshing, let fresh = try? await client.status() else { return }
         status = fresh
@@ -1125,6 +1136,13 @@ final class TeamsModel: ObservableObject {
             if let id = event.subjectID { markAnswered(id, nil) }
             scheduleTaskRefresh(scope: event.scope)
         case "task.updated":
+            if showSwarmMap {  // coalesced, so the map's pulses fire promptly
+                mapRefresh?.cancel()
+                mapRefresh = Task { [weak self] in
+                    try? await Task.sleep(nanoseconds: 300_000_000)
+                    if !Task.isCancelled { await self?.refreshUsage() }
+                }
+            }
             await taskUpdated(event)
         case "thread.read":
             // Stream events do not prove they belong to this principal. Only our

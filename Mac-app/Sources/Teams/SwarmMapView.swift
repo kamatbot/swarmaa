@@ -1,0 +1,276 @@
+import Combine
+import SwiftUI
+
+/// Holds the reducer and feeds it every status the model publishes.
+@MainActor
+final class SwarmMapStore: ObservableObject {
+    @Published private(set) var state = SwarmMapState()
+    private var sub: AnyCancellable?
+    func attach(_ model: TeamsModel) {
+        guard sub == nil else { return }
+        sub = model.$status.compactMap { $0 }.sink { [weak self, weak model] in
+            guard let self else { return }
+            self.state.ingest($0, at: Date())
+            let todo = self.state.unpriced
+            self.state.unpriced = []
+            guard let model, !todo.isEmpty else { return }
+            Task { @MainActor [weak self] in
+                for job in todo.prefix(30) {
+                    if let n = await model.taskTokens(id: job.id) { self?.state.addTokens(n, provider: job.provider, task: job.id) }
+                }
+            }
+        }
+    }
+}
+
+/// Live side panel: the hub, a station per provider, pulses as tasks move, and a feed.
+struct SwarmMapPanel: View {
+    @ObservedObject var model: TeamsModel
+    @StateObject private var store = SwarmMapStore()
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                Text(verbatim: L10n.t("Swarm map")).font(KS.body(14, .semibold))
+                Spacer()
+                Button { model.swarmMapWide.toggle() } label: { Image(systemName: "arrow.up.left.and.arrow.down.right") }
+                    .help(L10n.t("Resize")).accessibilityLabel(L10n.t("Resize"))
+                Button { model.showSwarmMap = false } label: { Image(systemName: "xmark") }
+                    .help(L10n.t("Close")).accessibilityLabel(L10n.t("Close"))
+            }
+            .buttonStyle(.plain).padding(.horizontal, 16).padding(.top, KS.topBarHeight / 2).padding(.bottom, 10)
+            TimelineView(.animation) { tl in
+                Canvas { ctx, size in SwarmMapDrawing.draw(&ctx, size, store.state, model.openQuestions.count, tl.date) }
+                    .aspectRatio(0.84, contentMode: .fit)
+            }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(store.state.accessibilitySummary)
+            Rectangle().fill(KS.hairline).frame(height: 1)
+            feed
+        }
+        .background(KS.white)
+        .overlay(alignment: .leading) { Rectangle().fill(KS.hairline).frame(width: 1) }
+        .onAppear { store.attach(model) }
+        .task {
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                await model.refreshUsage()
+            }
+        }
+    }
+
+    private var feed: some View {
+        let rows = store.state.feed
+        return VStack(alignment: .leading, spacing: 0) {
+            if let head = rows.first(where: { $0.kind == .running }) {
+                Text(verbatim: "\(SwarmaCells.vendorName(head.provider)): \(head.objective ?? "—") · \(L10n.t("\(store.state.runningCount) running"))")
+                    .font(KS.mono(11, .semibold)).lineLimit(1).padding(.horizontal, 16).padding(.vertical, 8)
+            } else {
+                Text(verbatim: L10n.t("Idle")).font(KS.mono(11, .semibold)).foregroundStyle(KS.textMuted)
+                    .padding(.horizontal, 16).padding(.vertical, 8)
+            }
+            ScrollView {
+                TimelineView(.periodic(from: .now, by: 1)) { tl in
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(rows) { row in
+                            Text(verbatim: Self.line(row, now: tl.date)).font(KS.mono(11))
+                                .foregroundStyle(row.kind == .failed ? KS.danger : row.kind == .running ? KS.ink : KS.textMuted)
+                                .lineLimit(1).truncationMode(.tail).frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }.padding(.horizontal, 16).padding(.bottom, 12)
+                }
+            }
+        }
+    }
+
+    private static func line(_ r: SwarmMapState.FeedRow, now: Date) -> String {
+        let who = SwarmaCells.vendorName(r.provider), what = r.objective ?? "—"
+        switch r.kind {
+        case .running: return "● \(who)  \(what)  \(elapsed(r.startedAt.map { now.timeIntervalSince($0) }))"
+        case .done: return "· \(who)  \(what)  \(elapsed(r.duration))"
+        case .failed: return "✕ \(who)  \(what)  \(elapsed(r.duration))"
+        case .handoff: return "⇄ \(SwarmaCells.vendorName(r.from ?? "")) → \(who) · \(what)"
+        }
+    }
+
+    private static func elapsed(_ s: TimeInterval?) -> String {
+        guard let s = s, s >= 0 else { return "" }
+        let n = Int(s)
+        return n < 60 ? "\(n)s" : "\(n / 60)m \(String(format: "%02d", n % 60))s"
+    }
+}
+
+private enum SwarmMapDrawing {
+    /// Pastel tints are fills; strokes and pulses need a darker accent to read on paper.
+    static func accent(_ provider: String) -> Color {
+        switch provider {
+        case "claude": return Color(hex: 0x7F9A1C)
+        case "codex": return Color(hex: 0xD9603F)
+        case "antigravity": return Color(hex: 0x3F72B5)
+        default: return Color(hex: 0xB08A2E)
+        }
+    }
+
+    static let messageSeconds = 3.5
+
+    /// What a station is doing, as short notes: each running task's objective, and for a few seconds
+    /// after a task ends, a done or failed note. One shows at a time, sliding up and fading in and out.
+    static func notes(_ n: String, _ s: SwarmMapState, _ date: Date) -> [(text: String, color: Color)] {
+        let ended = s.feed.filter { $0.provider == n && ($0.kind == .done || $0.kind == .failed) && date.timeIntervalSince($0.at) < 4 }
+            .map { ($0.kind == .failed ? "✕ " : "✓ ") + brief($0.objective) }
+        let running = (s.running[n] ?? []).map { "› " + brief($0.objective) }
+        return ended.map { ($0, $0.hasPrefix("✕") ? KS.danger : KS.readyText) } + running.map { ($0, KS.textSoft) }
+    }
+
+    static func brief(_ objective: String?) -> String {
+        let line = (objective ?? "Working").split(whereSeparator: \.isNewline).first.map(String.init) ?? "Working"
+        return line.trimmingCharacters(in: .whitespaces)
+    }
+
+    /// Mono 9 pt is about 5.5 pt a character: cut to what the bubble's width holds.
+    static func fit(_ text: String, _ width: CGFloat) -> String {
+        let n = max(8, Int(width / 5.5))
+        return text.count > n ? String(text.prefix(n - 1)) + "…" : text
+    }
+
+    static func messages(_ ctx: inout GraphicsContext, _ n: String, _ s: SwarmMapState, _ at: CGPoint, width: CGFloat, date: Date) {
+        let all = notes(n, s, date)
+        guard !all.isEmpty else { return }
+        let t = date.timeIntervalSinceReferenceDate, slot = t / messageSeconds
+        let note = all[Int(slot) % all.count], phase = slot - slot.rounded(.down)
+        // Ease in over the first 15%, out over the last 15%; drift up 6 pt across the slot.
+        let alpha = all.count == 1 ? 1 : min(1, phase / 0.15, (1 - phase) / 0.15)
+        // Side stations share the row with each other: each bubble keeps to its own 40% of the card.
+        let room = min(220, width * 0.40 - 14)
+        let text = ctx.resolve(Text(verbatim: fit(note.text, room)).font(KS.mono(9)).foregroundColor(note.color))
+        let m = text.measure(in: CGSize(width: room + 40, height: 20))
+        let w = m.width + 14, h = m.height + 8
+        let x = min(max(at.x, w / 2 + 14), width - w / 2 - 14), y = at.y + (all.count == 1 ? 0 : 3 - 6 * phase)
+        var bubble = ctx
+        bubble.opacity = alpha
+        let box = Path(roundedRect: CGRect(x: x - w / 2, y: y - h / 2, width: w, height: h), cornerRadius: h / 2)
+        bubble.fill(box, with: .color(.white.opacity(0.92)))
+        bubble.stroke(box, with: .color(KS.ink.opacity(0.10)), lineWidth: 1)
+        bubble.draw(text, at: CGPoint(x: x, y: y))
+        if all.count > 1 {
+            bubble.draw(Text(verbatim: "\(Int(slot) % all.count + 1)/\(all.count)").font(KS.mono(7)).foregroundColor(KS.textMuted),
+                        at: CGPoint(x: x, y: y + h / 2 + 7))
+        }
+    }
+
+    static func circle(_ p: CGPoint, _ r: CGFloat) -> Path { Path(ellipseIn: CGRect(x: p.x - r, y: p.y - r, width: r * 2, height: r * 2)) }
+
+    static func draw(_ ctx: inout GraphicsContext, _ size: CGSize, _ s: SwarmMapState, _ questions: Int, _ date: Date) {
+        // Taller than wide: the room under the bottom station holds its messages.
+        let side = size.width, c = CGPoint(x: size.width / 2, y: size.height / 2 - side * 0.05)
+        let ring = side * 0.31, r = side * 0.058, hub = side * 0.085
+        let t = date.timeIntervalSinceReferenceDate
+        let names = ["you"] + s.stations
+        var pos: [String: CGPoint] = ["hub": c]
+        for (i, n) in names.enumerated() {
+            let a = -Double.pi / 2 + 2 * Double.pi * Double(i) / Double(names.count)
+            pos[n] = CGPoint(x: c.x + ring * cos(a), y: c.y + ring * sin(a))
+        }
+
+        // Card and dotted orbits.
+        ctx.fill(Path(roundedRect: CGRect(origin: .zero, size: size).insetBy(dx: 10, dy: 6), cornerRadius: 14), with: .color(KS.paper))
+        for k in [0.55, 1.0, 1.32] {
+            ctx.stroke(circle(c, ring * k), with: .color(KS.ink.opacity(0.10)), style: StrokeStyle(lineWidth: 1, dash: [1.5, 4]))
+        }
+        // Spokes: hairline, worn thicker and warmer by finished work.
+        for n in names {
+            var path = Path(); path.move(to: c); path.addLine(to: pos[n]!)
+            let worn = Double(min(s.finished[n] ?? 0, 12))
+            ctx.stroke(path, with: .color(KS.ink.opacity(0.12)), lineWidth: 1)
+            if worn > 0 { ctx.stroke(path, with: .color(accent(n).opacity(0.25 + worn * 0.04)), lineWidth: 0.8 + worn * 0.35) }
+        }
+        // Hub: white disc, ink ring; a sweeping arc while anything runs.
+        ctx.fill(circle(c, hub + 7), with: .color(KS.ink.opacity(0.04)))
+        ctx.fill(circle(c, hub), with: .color(.white))
+        ctx.stroke(circle(c, hub), with: .color(KS.ink.opacity(0.85)), lineWidth: 1.5)
+        if s.runningCount > 0 {
+            var arc = Path()
+            let start = (t * 90).truncatingRemainder(dividingBy: 360)
+            arc.addArc(center: c, radius: hub + 5, startAngle: .degrees(start), endAngle: .degrees(start + 110), clockwise: false)
+            ctx.stroke(arc, with: .color(KS.ink.opacity(0.55)), style: StrokeStyle(lineWidth: 2, lineCap: .round))
+        }
+        ctx.draw(Text(verbatim: "SWARMAA").font(KS.mono(10, .semibold)).tracking(1.5).foregroundColor(KS.ink), at: CGPoint(x: c.x, y: c.y - 3))
+        ctx.draw(Text(verbatim: "\(s.runningCount) running").font(KS.mono(7.5)).foregroundColor(KS.textMuted), at: CGPoint(x: c.x, y: c.y + 9))
+        if s.queued > 0 {
+            ctx.draw(Text(verbatim: "\(s.queued) queued").font(KS.mono(8)).foregroundColor(KS.textMuted), at: CGPoint(x: c.x, y: c.y + hub + 16))
+        }
+
+        for n in names {
+            let p = pos[n]!
+            let label = CGPoint(x: p.x, y: p.y + r + 11)
+            if n == "you" {
+                if questions > 0 { ctx.fill(circle(p, r + 8), with: .color(KS.coral.opacity(0.18 + 0.08 * sin(t * 3)))) }
+                ctx.fill(circle(p, r), with: .color(.white))
+                ctx.stroke(circle(p, r), with: .color(questions > 0 ? KS.coral : KS.ink.opacity(0.18)), lineWidth: questions > 0 ? 1.8 : 1)
+                ctx.draw(Image(systemName: "person"), at: p)
+                ctx.draw(Text(verbatim: L10n.t("You")).font(KS.mono(11, .medium)).foregroundColor(KS.ink), at: label)
+                if questions > 0 {
+                    ctx.draw(Text(verbatim: L10n.t("\(questions) waiting")).font(KS.mono(9)).foregroundColor(KS.needsYouText),
+                             at: CGPoint(x: label.x, y: label.y + 13))
+                }
+                continue
+            }
+            let tint = accent(n), runs = s.running[n] ?? []
+            var cx = ctx
+            if s.offline.contains(n) { cx.opacity = 0.35 }
+            if !runs.isEmpty { cx.fill(circle(p, r + 9), with: .color(KS.providerTint(n).opacity(0.45 + 0.15 * sin(t * 3)))) }
+            cx.fill(circle(p, r), with: .color(.white))
+            cx.stroke(circle(p, r), with: .color(runs.isEmpty ? KS.ink.opacity(0.18) : tint), lineWidth: runs.isEmpty ? 1 : 1.8)
+            cx.draw(Text(verbatim: TeamsCopy.providerShort(n)).font(KS.mono(11, .bold)).foregroundColor(tint), at: p)
+            cx.draw(Text(verbatim: SwarmaCells.vendorName(n)).font(KS.mono(11, .medium)).foregroundColor(KS.ink), at: label)
+            let done = s.finished[n] ?? 0, used = s.tokens[n] ?? 0
+            if done > 0 || used > 0 {
+                let line = [done > 0 ? "\(done) done" : nil, used > 0 ? TeamsTaskBulk.tokens(used) + " tok" : nil].compactMap { $0 }.joined(separator: " · ")
+                cx.draw(Text(verbatim: line).font(KS.mono(9)).foregroundColor(KS.textMuted), at: CGPoint(x: label.x, y: label.y + 13))
+            }
+            // Clock hand: the oldest running task, one turn per minute.
+            if let oldest = runs.compactMap(\.startedAt).min() {
+                let f = date.timeIntervalSince(oldest).truncatingRemainder(dividingBy: 60) / 60
+                var arc = Path()
+                arc.addArc(center: p, radius: r + 4, startAngle: .degrees(-90), endAngle: .degrees(-90 + 360 * max(f, 0)), clockwise: false)
+                cx.stroke(arc, with: .color(tint), style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
+            }
+            // Each running task circles its station.
+            for i in runs.indices {
+                let a = t * 1.2 + 2 * Double.pi * Double(i) / Double(runs.count), o = r + 9
+                cx.fill(circle(CGPoint(x: p.x + o * cos(a), y: p.y + o * sin(a)), 2.5), with: .color(tint))
+            }
+            if runs.count > 1 {
+                let b = CGPoint(x: p.x + r * 0.8, y: p.y - r * 0.8)
+                cx.fill(circle(b, 9), with: .color(.white)); cx.stroke(circle(b, 9), with: .color(tint), lineWidth: 1.2)
+                cx.draw(Text(verbatim: "×\(runs.count)").font(KS.mono(8, .bold)).foregroundColor(KS.ink), at: b)
+            }
+            messages(&cx, n, s, CGPoint(x: label.x, y: label.y + 30), width: size.width, date: date)
+            if let f = s.failures[n], f > 0 {
+                let b = CGPoint(x: p.x - r * 0.8, y: p.y - r * 0.8)
+                cx.fill(circle(b, 8), with: .color(KS.danger))
+                cx.draw(Text(verbatim: "\(f)").font(KS.mono(8, .bold)).foregroundColor(.white), at: b)
+            }
+        }
+        // Pulses, with a short fading trail.
+        for pulse in s.pulses {
+            let k0 = date.timeIntervalSince(pulse.startedAt) / (pulse.kind == .handoff ? 0.9 : 0.6)
+            guard k0 >= 0, k0 <= 1.15, let a = pos[pulse.from], let b = pos[pulse.to] else { continue }
+            let q = CGPoint(x: (a.x + b.x) / 2 * 0.5 + c.x * 0.5, y: (a.y + b.y) / 2 * 0.5 + c.y * 0.5)
+            let tint = pulse.kind == .failed ? KS.danger : accent(pulse.from == "hub" ? pulse.to : pulse.from)
+            if pulse.kind == .handoff {
+                var curve = Path(); curve.move(to: a); curve.addQuadCurve(to: b, control: q)
+                ctx.stroke(curve, with: .color(tint.opacity(0.35 * max(0, 1 - k0))), lineWidth: 1.2)
+            }
+            for j in 0..<5 {
+                let k = min(1, k0) - Double(j) * 0.05
+                guard k >= 0 else { continue }
+                let u = 1 - k
+                let pt = pulse.kind == .handoff
+                    ? CGPoint(x: u * u * a.x + 2 * u * k * q.x + k * k * b.x, y: u * u * a.y + 2 * u * k * q.y + k * k * b.y)
+                    : CGPoint(x: a.x + (b.x - a.x) * k, y: a.y + (b.y - a.y) * k)
+                ctx.fill(circle(pt, 4.5 - CGFloat(j) * 0.7), with: .color(tint.opacity(1 - Double(j) * 0.18)))
+            }
+        }
+    }
+}
