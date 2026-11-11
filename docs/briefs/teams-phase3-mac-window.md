@@ -1,12 +1,12 @@
 # Brief: Teams phase 3, the Swarmaa main window (Mac app)
 
-**Repo:** `~/Documents/Claude/Projects/NotchTrader`, on current `main`. This is the Swarmaa.app Mac app, built on Codenotch (SwiftUI and AppKit, XcodeGen `project.yml`, scheme `Codenotch`, product `Swarmaa.app`).
+**Repo:** `~/Documents/Claude/Projects/Swarmaa`, on current `main`. This is the Swarmaa.app Mac app, built on Swarmaa (SwiftUI and AppKit, XcodeGen `project.yml`, scheme `Swarmaa`, product `Swarmaa.app`).
 **Spec:** Swarmaa's `docs/TEAMS.md`, at `/Users/mk/Projects/swarma/docs/TEAMS.md`. Read §1–§4 first. The service side is being built in parallel, so build against the protocol in §4 exactly.
 **Reference UX:** OpenBot's main window, described in TEAMS.md §1. Ideas only: copy no OpenBot code or assets.
 
 ## Goal
 
-A main window, opened from the menu bar ("Open Swarmaa") and from a click on the notch. Its layout:
+A main window, opened from the menu bar ("Open Swarmaa") and from a click on the Mac app. Its layout:
 - **Left rail:**
   - Agents, Flows and Usage icons;
   - the per-provider quota rings, using the existing usage data from `SwarmaClient.status()`;
@@ -44,7 +44,7 @@ A main window, opened from the menu bar ("Open Swarmaa") and from a click on the
 3. **Live updates.** One shared stream subscription refreshes the affected thread, sidebar row, unread badge and card. A `message.created` for the open thread appends the message; for other threads it bumps that row's badge and preview.
 4. **Entry points.**
    - Add "Open Swarmaa" to the menu-bar menu (`StatusItemController`).
-   - A click on a swarm or question item in the notch opens the window on that thread. Leave the existing notch layout unchanged otherwise.
+   - A click on a swarm or question item in the Mac app opens the window on that thread. Leave the existing Mac app layout unchanged otherwise.
 5. **Tests** (`Tests/`):
    - decoding every message kind and swarm/question payload from JSON fixtures, written to match TEAMS.md §4;
    - the SSE parser, including split chunks, heartbeat comments and reconnecting with the cursor;
@@ -54,7 +54,7 @@ A main window, opened from the menu bar ("Open Swarmaa") and from a click on the
 
 ## Rules
 
-- Change no notch behaviour or layout beyond the two entry points above.
+- Change no Mac app behaviour or layout beyond the two entry points above.
 - No new dependencies (SPM or otherwise). Use SwiftUI and AppKit only.
 - **Write no build output inside the repo.** Use the default DerivedData, or `-derivedDataPath "$TMPDIR/teams-dd"`. The Swarmaa bridge commits everything in the worktree, and gigabytes of build output broke an earlier task.
 - Put `timeout 900` on every `xcodebuild`. If the sandbox blocks package or macro plugin sandboxes, pass `-IDEPackageSupportDisableManifestSandbox=YES -IDEPackageSupportDisablePluginExecutionSandbox=YES OTHER_SWIFT_FLAGS='$(inherited) -disable-sandbox'`. A test run hosted in the app hangs in this sandbox: use `build-for-testing` plus `test-without-building` with `TEST_HOST="" BUNDLE_LOADER=""`, or `xcrun xctest`.
@@ -64,6 +64,6 @@ A main window, opened from the menu bar ("Open Swarmaa") and from a click on the
 
 ## Acceptance
 
-- `timeout 900 xcodebuild -project Codenotch.xcodeproj -scheme Codenotch -configuration Debug -destination 'platform=macOS' build` gives `BUILD SUCCEEDED`. Sign it, or build with `CODE_SIGNING_ALLOWED=NO` if signing is blocked, and say which.
+- `timeout 900 xcodebuild -project Swarmaa.xcodeproj -scheme Swarmaa -configuration Debug -destination 'platform=macOS' build` gives `BUILD SUCCEEDED`. Sign it, or build with `CODE_SIGNING_ALLOWED=NO` if signing is blocked, and say which.
 - The new test classes pass, and the existing `AntigravityHeadlineTests` still passes. Report the exact result lines.
 - List every new file, and say which TEAMS.md §4 calls the client implements.

@@ -8,7 +8,7 @@ Three tasks on three branches, built against this contract. Shared rules:
 - No new dependencies. Never create an iOS simulator; use "Piano Review iPhone SE" `B2EE62FA-1CD0-4F71-8FCD-9FE73EA59B56`. Run `xcodegen` only inside your own worktree, and only if you add files.
 - Change only the UI named here. Destructive controls go at the bottom of Bot settings, below everything else, in the app's existing destructive/danger style if there is one (else a plain red-text button). Thumb rule on iOS: actions in the lower half.
 - Commit on your branch, conventional message ending `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`. Don't push or merge.
-- Acceptance: `npx tsc --noEmit`; `npm test`; database tests with a throwaway DB: `TEST_DATABASE_URL=… npm run test:integration` (serial). Swift: Mac builds (`xcodebuild -project Mac-app/Codenotch.xcodeproj -scheme Codenotch -configuration Debug build`), iOS tests pass (`xcodebuild test -project iOS-app/Swarmaa.xcodeproj -scheme Swarmaa -destination 'id=B2EE62FA-1CD0-4F71-8FCD-9FE73EA59B56' -only-testing:SwarmaaTests`). Add at least one test that fails without your change. End with a short report.
+- Acceptance: `npx tsc --noEmit`; `npm test`; database tests with a throwaway DB: `TEST_DATABASE_URL=… npm run test:integration` (serial). Swift: Mac builds (`xcodebuild -project Mac-app/Swarmaa.xcodeproj -scheme Swarmaa -configuration Debug build`), iOS tests pass (`xcodebuild test -project iOS-app/Swarmaa.xcodeproj -scheme Swarmaa -destination 'id=B2EE62FA-1CD0-4F71-8FCD-9FE73EA59B56' -only-testing:SwarmaaTests`). Add at least one test that fails without your change. End with a short report.
 
 ## Contract
 

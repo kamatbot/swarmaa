@@ -39,9 +39,6 @@ credentials only the maintainer has. You won't need it to contribute.
 - New behavior has a test. `Tests/` mirrors `Sources/` by concern, not by
   file — look for the existing test class closest to what you're changing
   before adding a new one.
-- If you're changing layout math in `Sources/Notch/NotchLayout.swift`, check it
-  against `docs/design/frame-124-hover-tooltip.png` — every constant there is
-  quoted from that frame in design-frame pixels via `Design.px(_:)`.
 
 ## Code style
 
@@ -66,7 +63,7 @@ credentials only the maintainer has. You won't need it to contribute.
 - Don't freeze `L10n.t` in a `static let` — lookup has to see the current
   language.
 - Follow System plus the in-app Language setting; don't set `AppleLanguages`.
-- Windows `windows/codenotch/src/i18n.rs` is a separate system — don't merge
+- Windows `windows/swarmaa/src/i18n.rs` is a separate system — don't merge
   the two.
 
 ## Adding a provider
@@ -88,5 +85,5 @@ minimum:
 Include the unified log around the time it happened:
 
 ```sh
-/usr/bin/log show --last 10m --predicate 'subsystem == "app.swarmaa.notch"' --info --debug
+/usr/bin/log show --last 10m --predicate 'subsystem == "app.swarmaa.mac"' --info --debug
 ```

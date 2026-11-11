@@ -28,13 +28,13 @@ Some rules matter too much to leave to a prompt: "two independent reviews before
    - `files_within` (glob list).
 
    A check result is a fact recorded by the bridge (exit code, tail of output), not model text.
-3. **`approve` steps** create a pending item in the owner's inbox and the notch: "Flow X needs your approval: …". Approve or reject through a `flow_approve` tool restricted to the owner's identity.
+3. **`approve` steps** create a pending item in the owner's inbox and the Mac app: "Flow X needs your approval: …". Approve or reject through a `flow_approve` tool restricted to the owner's identity.
 4. **Built-in flows:**
    - `independent-review`: two `review` steps on different providers, pinned to the same commit, then a `review` synthesis that needs both.
    - `verified-patch`: a `patch` step, then `check: tests_pass` on its branch. The flow completes only if the check passes; otherwise it is `blocked` with the check output.
    - `patch-then-review`: `verified-patch`, then `independent-review` of the resulting branch.
 5. **Tools:** `flow_list`, `flow_start {flow, scope, inputs}`, `flow_get`, `flow_cancel`, `flow_approve`.
-   - Each step becomes a normal task, so routing, slots, quota, notifications and the notch all keep working.
+   - Each step becomes a normal task, so routing, slots, quota, notifications and the Mac app all keep working.
    - The flow's status is derived from its tasks.
 6. **Tests:**
    - dependency activation, so a step can't be claimed before its `needs` complete;

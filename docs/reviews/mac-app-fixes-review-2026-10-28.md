@@ -39,9 +39,9 @@ Static review of swarmaa/codex/99127914 (0681863). Line numbers refer to that br
 4. **Unread:** finding 3. The visibility check itself (`isVisible && pane == .agents`, plus resign-key) is correct.
 5. **Resolve:** finding 6.
 6. **Dock click:** finding 7.
-7. **Notch files:** nothing beyond what the brief allowed.
+7. **Mac app files:** nothing beyond what the brief allowed.
    - `ProviderRing.swift` adds only a button trait and an accessibility action. It calls `AppDelegate.shared` directly rather than the fleet's `onOpenThread` callback (harmless).
-   - `NotchWindowController.swift:1576` now passes the cell's `/swarm/<id>` suffix, so a press also opens that swarm. That changes what `onOpenThread` receives, but its only consumer, `AppDelegate.openTeams` (`AppDelegate.swift:313`), handles both forms.
+   - The overlay window controller (since removed) now passes the cell's `/swarm/<id>` suffix, so a press also opens that swarm. That changes what `onOpenThread` receives, but its only consumer, `AppDelegate.openTeams` (`AppDelegate.swift:313`), handles both forms.
 8. **Main thread and retain cycles:** no retain cycles. The stream and setup closures capture `self` weakly; `scheduleTaskRefresh` and `markSelectedRead` hold it strongly only briefly. No main-thread blocking beyond finding 8.
 
 The service-code mapping is also fine. Over REST an unknown tool returns 404 `unknown_tool` (`core/index.ts:67`), which still maps to "service too old", and routing's "read-only" state still works because `routing_set` doesn't return `owner_required`.

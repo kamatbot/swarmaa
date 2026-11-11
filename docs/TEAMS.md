@@ -33,8 +33,8 @@ The reference screens are OpenBot's main window and its channel view.
 
 ### Where it lives
 
-- **Mac app: a new main window** in Swarmaa.app (the Codenotch base), opened from the menu bar and the notch. It holds the sidebar, threads and channels described above, and it is the primary UI.
-- **Notch:** stays glanceable. It shows the quota rings, open swarms with their progress (`3/5`), and a badge when an agent is waiting on your answer. Clicking one opens it in the main window.
+- **Mac app: a new main window** in Swarmaa.app, opened from the menu bar and the Dock. It holds the sidebar, threads and channels described above, and it is the primary UI.
+- **Menu bar:** stays glanceable. It shows quota limits; open swarms with their progress (`3/5`) and questions waiting on your answer are in the main window.
 - **Harnesses** (Claude Code, Codex, Antigravity): use the same objects through MCP, so `/swarm` can list swarms and post to a thread.
 - **Grok, through the gateway:** can post to threads and answer questions. Webhook sinks get the new event types.
 
@@ -72,7 +72,7 @@ An agent is not tied to one provider. Like OpenBot, we keep **the thread** (ours
 
 Agent-written bodies are untrusted data. They render as text, never as instructions to another agent's tools, and every prompt built from a thread says so. This follows the inbox rule.
 
-**Turn.** One exchange: a new message reaches an agent, and the agent answers. A turn runs as a normal **task** of the new kind `turn`, so routing, quota, slots, leases, failure codes, rerouting, the notch and the inbox all apply unchanged. The worker builds the turn prompt from:
+**Turn.** One exchange: a new message reaches an agent, and the agent answers. A turn runs as a normal **task** of the new kind `turn`, so routing, quota, slots, leases, failure codes, rerouting, the Mac app and the inbox all apply unchanged. The worker builds the turn prompt from:
 - the agent's instructions;
 - the thread window: the last 40 messages, or up to 24 KB, plus a rolling thread summary;
 - the new message.
@@ -93,7 +93,7 @@ Swarms and flows: a flow is a reusable template, and `flow_start` creates a swar
 **Question.** An agent asks the human something it can't decide: `{id, thread_id, agent_id, prompt, options[], multi, free_text, swarm_step_id?, status:'open'|'answered'|'expired'}`. While a question is open:
 - its agent shows "Waiting on you";
 - its swarm step reads `waiting_on_you`;
-- the notch shows a badge.
+- the Mac app shows a badge.
 
 The answer is posted as an `answer` message and starts the agent's next turn. Questions replace "ask in chat and hope someone sees it".
 
@@ -122,7 +122,7 @@ The answer is posted as an `answer` message and starts the agent's next turn. Qu
    - queues a turn for each step whose `needs` are complete;
    - posts a `handoff` line into each assignee's thread ("Atlas gave you: Draft the banner").
 4. When each step's turn ends, the result is linked to the step (`result_message_id`). The step moves to `done`, `failed` or `blocked`, the card re-renders, and newly unblocked steps start.
-5. Pulse outputs a `question_ask` action ("Which channels should the launch use?"). The step reads `waiting_on_you`, a question card appears in Atlas's thread, and the notch shows a badge. The user's answer resumes Pulse.
+5. Pulse outputs a `question_ask` action ("Which channels should the launch use?"). The step reads `waiting_on_you`, a question card appears in Atlas's thread, and the Mac app shows a badge. The user's answer resumes Pulse.
 6. When every step is done, the owner agent gets a final turn to summarise, and the swarm reads `done 5/5`.
 
 **Turn grant.** A worker's turn token is scoped to that turn. It can post only to that agent's threads and the channels that agent belongs to, start or update only swarms that agent owns or holds a step in, and ask only on its own behalf. A model can't post as another agent or into another project. This is enforced in the service, not in the prompt.
@@ -165,7 +165,7 @@ All new ids are UUIDs with a readable prefix in the UI only.
 | `swarm_start` | `task:submit` | `title, goal, scope, thread_id, steps[]` (each `{title, assignee_agent_id, needs[], instructions?, check}`, check ≤ 512 required), `flow?`, `inputs?`, `idempotency_key` | Validates the step graph (no cycles, assignees in scope), creates the card and starts the ready steps. |
 | `swarm_update` | `task:submit` | `swarm_id, expected_version, ops[]` | Ops: `add_step`, `reassign {step, agent}`, `retry {step}`, `cancel_step {step}`, `edit {title?, goal?}`, `close`. Changes are atomic, versioned and posted as notices. |
 | `swarm_get` | `task:read` | `swarm_id` | Swarm, steps, their task states, failure codes, served providers and progress `{done, total}`. |
-| `swarm_list` | `task:read` | `scope?, status?=open, after?, limit?` | Open swarms first; the notch reads this. |
+| `swarm_list` | `task:read` | `scope?, status?=open, after?, limit?` | Open swarms first; the Mac app reads this. |
 | `swarm_cancel` | `task:submit` | `swarm_id, expected_version` | Cancels running and pending step tasks, using the flows cancellation fencing. |
 
 `flow_start` keeps its signature and now returns `swarm_id` as well; a flow run is a swarm.
@@ -176,7 +176,7 @@ All new ids are UUIDs with a readable prefix in the UI only.
 |---|---|---|---|
 | `question_ask` | turn grant only | `prompt ≤ 500, options[] ≤ 8 (each ≤ 80), multi, free_text, expires_in?, action?` | Agents only, from inside a turn. |
 | `question_answer` | `thread:write` + `answer_questions` (owner) | `question_id, choices[], text?, idempotency_key` | Posts the `answer` message and queues the agent's next turn. |
-| `question_list` | `thread:read` | `status?=open` | Everything waiting on you; the notch badge counts these. |
+| `question_list` | `thread:read` | `status?=open` | Everything waiting on you; the main window badge counts these. |
 
 ### Live stream for the UI
 
@@ -210,12 +210,12 @@ That bridges this layer into the CLIs people already use.
 - Tasks stay the unit of execution. A turn is a task with `kind:'turn'`. Routing, quota limits, failure codes, rerouting, leases, slots and receipts apply unchanged.
 - Workers keep their own config and environment, and `src/bridge/sandbox.ts` and `providerEnvironment` stay unchanged, as the owner decided.
 - Memory and lessons stay project-wide. An agent reads them like any task does, and they are not per-agent.
-- Existing tools, `/swarm` and the notch views keep working.
+- Existing tools, `/swarm` and the Mac app views keep working.
 
 ## 6. Phases
 
 1. **Service foundation [Implemented]:** agents, threads, messages, turns (including the turn prompt and the turn grant), read cursors, the SSE stream, migration 024, and tests. Acceptance: create Atlas, post to it, get a reply on two different providers, switch the runner mid-thread with the thread kept, all under tenant isolation.
-2. **Swarms, handoffs and questions [Implemented]:** the tools above; `flow_start` returns a swarm; the notch shows open swarms and the question badge. Acceptance: the Friday-launch scenario runs end to end with one question answered, one step reassigned while running, and a restart in the middle.
+2. **Swarms, handoffs and questions [Implemented]:** the tools above; `flow_start` returns a swarm; the Mac app shows open swarms and the question badge. Acceptance: the Friday-launch scenario runs end to end with one question answered, one step reassigned while running, and a restart in the middle.
 3. **Mac app main window:** sidebar sections, agent and channel threads, the four card types, a runner picker that shows quota, and an unread badge. Acceptance: every control is clicked in the real app and its result observed.
 4. **Later:** channels with invited humans (gateway tenants already exist), scheduled agent routines, side threads, Slack and Discord bridges.
 

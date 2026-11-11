@@ -3,7 +3,7 @@
 Swarmaa connects your agent CLIs and chat agents to one shared memory and task queue. Claude Code,
 Codex and Antigravity read and write the same project memory over MCP. Claude, Codex and Antigravity can also
 run as background workers that pick up read-only review/research tasks. Dot and Grok use the same
-service over HTTPS. The Swarmaa macOS app shows the agents and swarms in the notch.
+service over HTTPS. The Swarmaa macOS app shows the agents and swarms in its main window.
 
 ## First launch
 
@@ -13,7 +13,7 @@ npm run setup
 ```
 
 `npm run setup` opens a one-page onboarding in your browser (`-- --cli` for terminal prompts). It asks which project folders the swarm may read, which installed CLIs to connect, which
-ones to run as background workers, whether to show Swarmaa in the macOS notch app, and whether to start
+ones to run as background workers, whether to show Swarmaa in the macOS app, and whether to start
 everything at login. It is safe to re-run; answers are remembered in `.local/setup.json`.
 `npm run setup -- --dry-run` prints every action without changing anything.
 
@@ -144,9 +144,9 @@ Finished chats become reviewed, reusable guidance: distill, review, reuse.
 
 Run `npm run migrate` (migration `008_lessons.sql`) before restarting the service.
 
-## macOS notch view
+## macOS app view
 
-With the Swarmaa view enabled, the macOS notch app shows one cell per worker (quota ring, current task or
+With the Swarmaa view enabled, the macOS app shows one cell per worker (quota ring, current task or
 idle/offline) and one per swarm (running, queued, done today). It uses its dedicated local frontend
 identity and `http://127.0.0.1:8787`.
 

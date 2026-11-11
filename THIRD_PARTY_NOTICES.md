@@ -226,3 +226,12 @@ Swarmaa is an independent open-source project and is not affiliated with, endors
 - **Changes:** Reimplemented in TypeScript with a bounded conservative VT observer, a 1,500-byte
   whole-notice cap, one extra CR, Swarmaa inbox receipts and explicit unconfirmed verdicts. No Relay
   broker, messaging transport or account integration is bundled or executed.
+
+---
+
+## 6. Vinz — Codenotch (MIT License)
+
+- **Source:** https://github.com/vinzdg/codenotch
+- **License:** MIT License (full text in `Mac-app/LICENSE`)
+- **Copyright:** `Copyright (c) 2026 Vinz`
+- **Where used in Swarmaa:** the Swarmaa Mac app in `Mac-app/` is built on it.

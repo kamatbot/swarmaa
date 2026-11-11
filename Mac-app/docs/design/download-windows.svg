@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="262" height="56" viewBox="0 0 262 56" role="img" aria-label="Download for Windows">
   <title>Download for Windows</title>
-  <!-- Drawn to match download-macos.svg: the notch's black, the ring track as
+  <!-- Drawn to match download-macos.svg: the Mac app's black, the ring track as
        its edge, and the same tray glyph rather than the Windows logo, which is
        Microsoft's mark to spend, not ours. -->
   <rect x="0.75" y="0.75" width="260.5" height="54.5" rx="13.25"

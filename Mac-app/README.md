@@ -1,17 +1,17 @@
 <div align="center">
 
-![Swarmaa](docs/design/codenotch-banner.png)
+![Swarmaa](docs/design/swarmaa-banner.png)
 
-[![CI](https://github.com/vinzdg/codenotch/actions/workflows/ci.yml/badge.svg)](https://github.com/vinzdg/codenotch/actions/workflows/ci.yml)
+[![CI](https://github.com/vinzdg/swarmaa/actions/workflows/ci.yml/badge.svg)](https://github.com/vinzdg/swarmaa/actions/workflows/ci.yml)
 ![Platform](https://img.shields.io/badge/platform-macOS%2026%2B-black)
 ![Swift](https://img.shields.io/badge/swift-5-orange)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
-**Swarmaa is a macOS app that pins a small black notch to a screen edge, showing how much
+**Swarmaa is a macOS app that pins a small black Mac app to a screen edge, showing how much
 of each coding assistant's usage limit you have burned — and whether it is
 still working, done, or waiting on you.**
 
-![Collapsed notch with hover tooltip](docs/design/frame-124-hover-tooltip.png)
+![Collapsed Mac app with hover tooltip](docs/design/frame-124-hover-tooltip.png)
 
 </div>
 
@@ -48,10 +48,10 @@ instead, see [Building](#building).
 
 ## Windows
 
-[![Download for Windows](docs/design/download-windows.svg)](../../releases/latest/download/Codenotch-Setup.exe)
+[![Download for Windows](docs/design/download-windows.svg)](../../releases/latest/download/Swarmaa-Setup.exe)
 
 A Windows port — Rust/Tauri 2, same design and providers — lives in [`windows/`](windows/README.md).
-The button is the installer itself, named `Codenotch-Setup.exe` in every release for the same
+The button is the installer itself, named `Swarmaa-Setup.exe` in every release for the same
 reason the dmg keeps one name. It installs for the current user without administrator rights,
 and fetches WebView2 if Windows does not already have it.
 
@@ -62,8 +62,8 @@ installer on its [Windows Package run](../../actions/workflows/windows-package.y
 ## Connect your phone
 
 The Swarmaa phone app (iOS and Android) can show the same usage
-percentages, reset times and session states as the notch on your Mac.
-It reads only what the notch already displays — never tokens, credentials
+percentages, reset times and session states as the Mac app on your Mac.
+It reads only what the Mac app already displays — never tokens, credentials
 or raw API responses.
 
 To pair, open **Settings › Phone › Connect a Phone…** (or the menu item)
@@ -123,7 +123,7 @@ and forgets its readings; borrowed accounts stay signed in to the tools that
 own them.
 
 **Local Ollama is detected automatically.** Configure its address or stop monitoring in **Settings → Ollama**.
-Each loaded model gets a notch cell; reorder or hide it in **Settings → Accounts**.
+Each loaded model gets the Mac app cell; reorder or hide it in **Settings → Accounts**.
 Hover for RAM/VRAM, unload time, context limit and quantization.
 
 For generation speed (**tok/s**) and live **Thinking**, enable **Measure speed and thinking**
@@ -140,7 +140,7 @@ See [Ollama details](docs/plans/2026-09-07-local-llm-provider-plan.md).
 
 **Local LM Studio is detected automatically** on the port LM Studio's own settings name
 (1234 unless you moved it). Configure the address or stop monitoring in **Settings → LM Studio**.
-Each loaded language model gets a notch cell; embedding models are left out. The cell shows the
+Each loaded language model gets the Mac app cell; embedding models are left out. The cell shows the
 last response's **tok/s** and its ring fills with how much of the loaded **context** the last
 request used. A white arc turns while the model reads a prompt or generates, and becomes a ring
 of dots when requests are queued behind it. Hover for context used, tokens and requests today,
@@ -160,7 +160,7 @@ default). The API key is borrowed from the same file, or from `OMLX_API_KEY`, an
 stored or logged by Swarmaa. Configure the address or stop monitoring in **Settings → oMLX**.
 See [oMLX details](docs/plans/2026-10-08-omlx-provider-plan.md).
 
-Settings lists the connected providers in the order the notch draws them, and
+Settings lists the connected providers in the order the Mac app draws them, and
 you can drag one by its handle to move it. The order is remembered across
 launches. A provider you switch back on joins the end of that list rather than
 reclaiming an older position, so nothing you cannot currently see jumps ahead
@@ -222,7 +222,7 @@ ring only. Swarmaa never copies, refreshes or writes these logins.
 
 ## When a session ends
 
-The notch opens itself for five seconds when an agent stops working, or stops
+The Mac app opens itself for five seconds when an agent stops working, or stops
 to ask you something, and sounds the system alert. Clicking it while it is open
 brings that session's application to the front.
 
@@ -262,31 +262,31 @@ is asked on the first real alert rather than at launch.
 
 ## Placement
 
-The notch lives on any of the four screen edges. Right and left keep a
+The Mac app lives on any of the four screen edges. Right and left keep a
 vertical column; top and bottom lay the readings out side by side. It pins
 itself to the physical screen edge, so showing or hiding the Dock does not
 move it. Hold Option and drag to move along the selected edge; each edge
-remembers its position. On a Mac with a hardware notch, the top
+remembers its position. On a Mac with a hardware Mac app, the top
 placement takes its exact shape, so the two read as one rather than as a bar
 parked underneath it.
 
-Along that edge it sits wherever you put it: hold ⌥ and drag the notch to
-slide it, and each edge remembers where you left it, so moving the notch to the
+Along that edge it sits wherever you put it: hold ⌥ and drag the Mac app to
+slide it, and each edge remembers where you left it, so moving the Mac app to the
 top and back does not lose the place you chose on the right. **Recentre** in
 Settings → Appearance puts the current edge back in the middle.
 
-**Size** in the same place draws the whole notch — rings, text, tooltip and all
+**Size** in the same place draws the whole Mac app — rings, text, tooltip and all
 — smaller or larger. Medium is the size it was designed at.
 
 At rest it is a small pill on the screen edge that unfolds when the pointer
 reaches it — configurable in Settings to always show, or to hide entirely.
-Settings live in an orb below the notch: an arc at rest, a gear on hover.
+Settings live in an orb below the Mac app: an arc at rest, a gear on hover.
 
-Clicking the notch while it is open keeps it open, so it stays put while you
+Clicking the Mac app while it is open keeps it open, so it stays put while you
 read it; clicking it again lets it fold away as usual. That click has to land
 on the body itself, since a ring takes its own click to refetch that provider
 and the orb takes one to open Settings. Right-clicking offers the same thing as
-a menu item, **Keep open**, ticked while the notch is being held open, which is
+a menu item, **Keep open**, ticked while the Mac app is being held open, which is
 the surer way to release one that was kept open by accident. The item is
 greyed out when Settings says Always show, because that choice is Settings' to
 change.
@@ -338,11 +338,11 @@ development, sign the built app with a stable self-signed identity:
 Scripts/sign-local.sh   # signs /Applications/Swarmaa.app (pass a path to override)
 ```
 
-It creates a reusable `Codenotch Local Signing` certificate in your login
+It creates a reusable `Swarmaa Local Signing` certificate in your login
 keychain (no Apple Developer account needed) and re-signs the app. Grant the
 keychain prompt once more after signing; it will not ask again.
 
-Run with `CODENOTCH_DEMO=1` to see fixed sample data instead of live readings.
+Run with `SWARMAA_DEMO=1` to see fixed sample data instead of live readings.
 
 ## Architecture
 
@@ -353,14 +353,9 @@ presents a guess as if a vendor had published it. `UsageStore`
 launches, and degrades every failure to a visible status rather than a
 made-up percentage.
 
-The notch itself works in one-dimensional **stack space** (`along`/`across`)
-regardless of which screen edge it's on; `NotchPlacement` is the only place
-that maps that back onto real screen coordinates. `NotchLayout` holds every
-measurement, quoted from `docs/design/frame-124-hover-tooltip.png` so the
-layout can be checked against the design frame directly.
-
-- Design spec: [`docs/specs/2026-08-28-usage-notch-design.md`](docs/specs/2026-08-28-usage-notch-design.md)
-- Implementation history: [`TASKS.md`](TASKS.md)
+The UI is the main window (`Sources/Teams/`) and the menu bar item
+(`Sources/App/StatusItemController.swift`); `UsageBoard` feeds the menu bar
+and the phone link the same decorated readings.
 
 ## The honest caveat
 
@@ -420,7 +415,7 @@ unhelpful `Retry-After: 0`. The back-off treats that as a floor-raiser only —
 60s, doubling per consecutive 429, capped at 15 minutes — and the deadline is
 persisted, so relaunching during a penalty waits instead of spending an
 attempt on it. Polling drops to every 5 minutes when nothing is running, and
-right-clicking the notch offers **Refresh now**.
+right-clicking the Mac app offers **Refresh now**.
 
 **How current the figures are.** Your usage cannot move while nothing is
 running, so the schedule spends its budget where the number actually changes:
@@ -454,7 +449,7 @@ schedule.
 unified log.
 
 ```sh
-/usr/bin/log stream --predicate 'subsystem == "app.swarmaa.notch"' --level debug
+/usr/bin/log stream --predicate 'subsystem == "app.swarmaa.Mac app"' --level debug
 ```
 
 ## Contributing

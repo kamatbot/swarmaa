@@ -19,7 +19,7 @@
      - durable tasks routed by quota (Claude first, then Codex …)
      - parallel swarms with slots per worker
      - local git-worktree patches that are never pushed
-     - the Swarmaa notch app for macOS
+     - the Swarmaa Mac app for macOS
      - Keep each point short. Check every claim against the code and `docs/SWARMA.md`, and don't invent features.
    - **"Quick start (local, no account)":** clone, `npm install`, `npm run setup`, then what to expect.
      - Check the real commands and prerequisites in `package.json`, `scripts/setup.ts` and `docs/SWARMA.md`. Postgres is bundled or installed by setup; say whichever is actually true.

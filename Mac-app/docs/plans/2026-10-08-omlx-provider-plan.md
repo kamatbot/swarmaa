@@ -1,6 +1,6 @@
 # oMLX monitoring plan
 
-Prepared 2026-10-08 against Codenotch 1.22.0, as the second local runtime after
+Prepared 2026-10-08 against Swarmaa 1.22.0, as the second local runtime after
 [LM Studio](2026-09-10-lm-studio-provider-plan.md), built the same way. Target
 is oMLX 0.7.0 (bundle `app.omlx`, `omlx-server` on `127.0.0.1:8000`, state in
 `~/.omlx`). The API key is never printed, logged, stored or quoted anywhere in
@@ -172,6 +172,6 @@ Not done, deliberately:
 Recorded payloads from this Mac are quoted in `OMLXUsage`, `OMLXLink` and
 `OMLXServerLog`, and used as the test fixtures. The test fixtures use a
 placeholder key, never a real one. The opt-in live checks
-(`TEST_RUNNER_CODENOTCH_OMLX_LIVE=1`) read the real log history and log in to
+(`TEST_RUNNER_SWARMAA_OMLX_LIVE=1`) read the real log history and log in to
 the admin session once. The result of the full suite is recorded with the
 release that ships this connector.

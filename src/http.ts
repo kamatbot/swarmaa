@@ -361,7 +361,7 @@ export function createHttpHandler(dependencies: HttpDependencies): (request: Inc
       response.setHeader('Access-Control-Expose-Headers', 'WWW-Authenticate, X-Request-Id');
     }
     // Per-address limit for visitors (through the tunnel, keyed by their own address). Same-machine clients
-    // (bridges, the notch, stdio proxies) share 127.0.0.1, so they skip it; each identity keeps its own limit below.
+    // (bridges, the Mac app, stdio proxies) share 127.0.0.1, so they skip it; each identity keeps its own limit below.
     if (!loopback) limiter.accept(`ip:${remote}`, 600);
     if (path.startsWith('/hooks/github/')) {
       if (request.method === 'OPTIONS') throw new AppError(404, 'not_found', 'Endpoint not found.');

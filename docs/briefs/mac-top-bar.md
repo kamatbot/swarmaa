@@ -9,11 +9,11 @@ Three tasks on three branches. Shared primitives are already on `main` in `Mac-a
 ## Shared rules
 
 - Read the code you touch end to end first; match the surrounding style (terse SwiftUI, `KS.*` colours and fonts, `L10n.t` for copy).
-- Change only what this brief names. Don't touch bot settings content, the thread's messages or composer, the notch, or Settings windows.
+- Change only what this brief names. Don't touch bot settings content, the thread's messages or composer, the Mac app, or Settings windows.
 - Don't modify `src/bridge/sandbox.ts` or `providerEnvironment`. Don't run `npm run deploy:local`, restart launchd jobs or touch running bridges. No new dependencies.
 - Run `xcodegen` only inside your own worktree, and only if you add files (prefer not to).
 - Commit on your branch, conventional message ending `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`. Don't push or merge.
-- Acceptance: the Mac app builds (`cd Mac-app && xcodebuild -project Codenotch.xcodeproj -scheme Codenotch -configuration Debug build`); the Mac tests pass (`xcodebuild test -project Codenotch.xcodeproj -scheme Codenotch -destination 'platform=macOS'`, with `TEST_RUNNER_SWARMAA_SNAPSHOT_DIR=<dir>` so `TeamsSnapshotRender` renders); add or update a `TeamsSnapshotRender` case so your bar is rendered, and look at the PNG. End with a short report listing the PNG paths.
+- Acceptance: the Mac app builds (`cd Mac-app && xcodebuild -project Swarmaa.xcodeproj -scheme Swarmaa -configuration Debug build`); the Mac tests pass (`xcodebuild test -project Swarmaa.xcodeproj -scheme Swarmaa -destination 'platform=macOS'`, with `TEST_RUNNER_SWARMAA_SNAPSHOT_DIR=<dir>` so `TeamsSnapshotRender` renders); add or update a `TeamsSnapshotRender` case so your bar is rendered, and look at the PNG. End with a short report listing the PNG paths.
 
 ## Task A — window chrome, rail, Tasks/Usage bars
 

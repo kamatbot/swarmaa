@@ -1,6 +1,6 @@
 # Brief: Mac app fixes from the UX review
 
-**Repo:** `~/Projects/swarma`, on current `main`. Touch `Mac-app/` only; never `src/`, `tests/` or `db/` at the repo root, which a parallel service task owns. The app is Swarmaa.app (scheme `Codenotch`, XcodeGen `Mac-app/project.yml`).
+**Repo:** `~/Projects/swarma`, on current `main`. Touch `Mac-app/` only; never `src/`, `tests/` or `db/` at the repo root, which a parallel service task owns. The app is Swarmaa.app (scheme `Swarmaa`, XcodeGen `Mac-app/project.yml`).
 **The review to fix:** `docs/reviews/mac-app-ux-2026-10-28.md`, 16 ranked findings with file:line. Paths there are relative to `Mac-app/Sources`.
 **Service shapes:** `docs/briefs/teams-shapes/*.json` (live). The parallel service task changes two things the app must use:
 - `thread_read` with no cursor now returns the **newest** page, ascending, and `has_more` means older messages exist;
@@ -40,7 +40,7 @@ Add tests for:
 
 - No new dependencies. No demo data in real views.
 - **Write no build output inside the repo.** Use `-derivedDataPath "$TMPDIR/mac-dd"`.
-- Package resolution hangs in the sandbox. Copy an existing `~/Library/Developer/Xcode/DerivedData/Codenotch-*/SourcePackages` to `$TMPDIR/mac-sp`, and pass `-clonedSourcePackagesDirPath "$TMPDIR/mac-sp" -disableAutomaticPackageResolution -skipPackageUpdates`.
+- Package resolution hangs in the sandbox. Copy an existing `~/Library/Developer/Xcode/DerivedData/Swarmaa-*/SourcePackages` to `$TMPDIR/mac-sp`, and pass `-clonedSourcePackagesDirPath "$TMPDIR/mac-sp" -disableAutomaticPackageResolution -skipPackageUpdates`.
 - Run `cd Mac-app && xcodegen`; the generated `.xcodeproj` is gitignored.
 - Put `timeout 900` on every `xcodebuild`, and pass `-IDEPackageSupportDisableManifestSandbox=YES -IDEPackageSupportDisablePluginExecutionSandbox=YES OTHER_SWIFT_FLAGS='$(inherited) -disable-sandbox'` if needed. A test run hosted in the app may hang in the sandbox; if it does, use a throwaway test project in `$TMPDIR`.
 - Don't install, launch or kill apps, and don't touch signing or keychains. Don't push.

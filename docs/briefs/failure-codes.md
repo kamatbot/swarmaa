@@ -11,7 +11,7 @@ Ideas only. Credit it in `THIRD_PARTY_NOTICES.md` if any text or code is adapted
 
 1. **No reason.** A failed task today carries `outcome: 'failed'`, an exit code, a stop reason and free text. Nothing machine-readable says *why*, so nothing can act on it.
 2. **No rerouting.** A Codex task that dies because the weekly quota ran out fails outright, even though Antigravity and Claude have headroom. Routing around spent quota is Swarmaa's core promise.
-3. **No stamp.** Nothing records which provider and model actually served a task. Flows' "different provider than step X" rule, and the notch, trust the worker's configured provider. Antigravity in particular can fall back to another model silently.
+3. **No stamp.** Nothing records which provider and model actually served a task. Flows' "different provider than step X" rule, and the Mac app, trust the worker's configured provider. Antigravity in particular can fall back to another model silently.
 
 ## Do this
 

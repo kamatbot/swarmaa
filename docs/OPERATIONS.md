@@ -158,7 +158,7 @@ in five minutes and can be redeemed once. Only its SHA-256 hash and expiry are
 written to `.local/relay-pairing.json` (0600). The running agent notices new codes
 and reannounces pending codes after reconnecting. Pairing creates a separate
 frontend identity with the scopes and permissions of `RELAY_PAIR_TEMPLATE`
-(default `notchtrader`); the template must be an enabled frontend, uniquely named
+(default `swarmaa-mac`, the Mac app's identity); the template must be an enabled frontend, uniquely named
 across tenants. Admin and wildcard templates are refused. Revoke paired devices
 with the existing `admin revoke --name relay-...` command. Tokens and codes must
 never be copied into logs or source control.

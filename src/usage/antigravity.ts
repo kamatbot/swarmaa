@@ -78,7 +78,7 @@ export function parseAntigravityQuota(json: unknown, now: Date = new Date()): Us
 }
 
 /** Only the quota group `model` draws from (Gemini 4 Argon, Claude/GPT "3p", else the shared Gemini group), named 5h/weekly like
- *  other providers, so headroom, routing and the notch never read another group's limit. Unknown shapes pass through unchanged. */
+ *  other providers, so headroom, routing and the Mac app never read another group's limit. Unknown shapes pass through unchanged. */
 export function windowsForModel(ws: UsageWindow[], model = ''): UsageWindow[] {
   const m = model.toLowerCase();
   const fam = m.includes('argon') ? 'gemini-argon' : /claude|gpt/.test(m) ? '3p' : 'gemini';

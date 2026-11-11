@@ -11,7 +11,7 @@ Two tasks on two branches.
 
 - Read the code you touch end to end first; match the surrounding style (terse TypeScript; SwiftUI with `KS.*` colours and fonts and `L10n.t` copy). The Mac app has just moved to soft shades instead of hard ink lines between sections, so don't add ink dividers.
 - Change only what this brief names. Don't modify `src/bridge/sandbox.ts` or `providerEnvironment`. Don't run `npm run deploy:local`, restart launchd jobs or touch running bridges. No new dependencies.
-- If `Mac-app/Codenotch.xcodeproj` is missing in your worktree, run `xcodegen` in `Mac-app/` in your own worktree (never in the main checkout).
+- If `Mac-app/Swarmaa.xcodeproj` is missing in your worktree, run `xcodegen` in `Mac-app/` in your own worktree (never in the main checkout).
 - Commit on your branch, conventional message ending `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`. Don't push or merge.
 
 ## Contract between the two tasks
@@ -33,4 +33,4 @@ Files: `Mac-app/Sources/Teams/TasksViews.swift`, `Mac-app/Sources/Teams/TeamsMod
 1. Selection and bulk actions as described above. Bulk resolve calls the existing `task_resolve` once per task with its `expected_version`, at most 4 at a time. It reports partial failure in one line ("Resolved 3 of 4. 1 changed since you loaded it; try again."), then refreshes.
 2. Task detail panel as described above. Decode what you need from `result` (`agent`, `summary`, `branch`, `changed_files`, `duration_ms`, `usage`), `served` (`provider`, `model`), `runs` (`worker_id`, `status`, `started_at`, `ended_at`) and `permission_envelope.runner` (`model`, `effort`). Format token counts as 12.4k. For a task that belongs to a bot or swarm, show the bot or swarm name and the crew agent if the model already knows it.
 3. Unit-test the bulk-action rules as pure functions (which tasks can be resolved or unresolved; the partial-failure message) and the token formatting. Render snapshots of selection mode with 3 selected, and of the detail panel with and without usage.
-4. Acceptance: the Mac app builds (`xcodebuild -project Codenotch.xcodeproj -scheme Codenotch -configuration Debug build`), and `xcodebuild test … -only-testing:CodenotchTests/TeamsSnapshotRender` plus your new tests pass with `TEST_RUNNER_SWARMAA_SNAPSHOT_DIR` set. End with a short report listing the PNG paths.
+4. Acceptance: the Mac app builds (`xcodebuild -project Swarmaa.xcodeproj -scheme Swarmaa -configuration Debug build`), and `xcodebuild test … -only-testing:SwarmaaTests/TeamsSnapshotRender` plus your new tests pass with `TEST_RUNNER_SWARMAA_SNAPSHOT_DIR` set. End with a short report listing the PNG paths.
