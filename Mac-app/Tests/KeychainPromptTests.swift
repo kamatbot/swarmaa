@@ -1,5 +1,5 @@
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 /// The permission a person grants by clicking "Allow access…": one read may
 /// show the keychain dialogue, and nothing on a timer ever may.

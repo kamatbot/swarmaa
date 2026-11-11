@@ -27,7 +27,7 @@ struct ActivitySummary: Equatable {
         self.queued = max(0, queued)
         self.note = note
         // Anything blocked on you outranks anything merely busy: it is the only
-        // state where the notch is asking for something.
+        // state where the app is asking for something.
         if sessions.contains(where: { $0.state == .waiting }) {
             state = .waiting
         } else if sessions.contains(where: { $0.state == .busy }) {

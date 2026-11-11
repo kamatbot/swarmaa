@@ -1,5 +1,5 @@
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 final class StepReportTests: XCTestCase {
     func testBoldLabelsAndLead() throws {
@@ -15,14 +15,14 @@ final class StepReportTests: XCTestCase {
         XCTAssertEqual(lead, "Done with the banner.")
         XCTAssertEqual(r[.result], "Banner drafted.")
         XCTAssertEqual(r[.checks], "Built it;\nran the snapshot.")
-        XCTAssertEqual(r[.notChecked], "Dark mode")
+        XCTAssertEqual(r[.unchecked], "Dark mode")
         XCTAssertEqual(r[.files], "banner.swift")
     }
 
     func testHeadingsPlainAndCase() throws {
         let headed = try XCTUnwrap(StepReport.parse("## Result\nShipped\n### not checked\nNone"))
         XCTAssertEqual(headed.report[.result], "Shipped")
-        XCTAssertEqual(headed.report[.notChecked], "None")
+        XCTAssertEqual(headed.report[.unchecked], "None")
         XCTAssertEqual(headed.lead, "")
         let plain = try XCTUnwrap(StepReport.parse("RESULT: ok\r\nfiles: a.ts"))
         XCTAssertEqual(plain.report[.result], "ok")
@@ -31,7 +31,7 @@ final class StepReportTests: XCTestCase {
 
     func testMissingPartIsNil() throws {
         let r = try XCTUnwrap(StepReport.parse("Result: ok\nChecks: tests pass")).report
-        XCTAssertNil(r[.notChecked])
+        XCTAssertNil(r[.unchecked])
         XCTAssertNil(r[.files])
     }
 

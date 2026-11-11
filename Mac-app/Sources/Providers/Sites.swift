@@ -261,7 +261,7 @@ enum Sites {
         // the same window (see `QianwenUsage`). Consumers resolve by id
         // (`ProviderSnapshot.headline`, `weeklyLimitWindow`/`weeklyWindow`), so
         // renaming this to match a period would resolve to nothing and draw an
-        // empty ring. The same id in both means the notch draws one ring for
+        // empty ring. The same id in both means the app draws one ring for
         // the one allowance rather than the same fact twice.
         headlineID: "week",
         weeklyID: "week",

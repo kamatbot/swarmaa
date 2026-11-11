@@ -1,5 +1,5 @@
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 final class OMLXCredentialsTests: XCTestCase {
     private var home: URL!

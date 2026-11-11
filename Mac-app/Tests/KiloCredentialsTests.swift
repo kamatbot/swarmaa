@@ -1,5 +1,5 @@
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 /// The token is borrowed from the Kilo CLI's own sign-in file, so only the
 /// `kilo` entry may ever be claimed, and only its access token or API key.

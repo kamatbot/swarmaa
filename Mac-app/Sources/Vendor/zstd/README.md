@@ -9,7 +9,7 @@ Brotli, LZBITMAP) and not as a dylib in `/usr/lib`. Linking Homebrew's
 notarized bundle cannot load a library from `/opt/homebrew`.
 
 Only `Sources/Providers/ClaudeDesktopUsageCache.swift` uses it, through the four
-declarations in `CodenotchZstd.h`. Nothing compresses.
+declarations in `SwarmaaZstd.h`. Nothing compresses.
 
 ## Provenance
 
@@ -33,7 +33,7 @@ python3 ./combine.py -r ../../lib -x legacy/zstd_legacy.h -o zstddeclib.c zstdde
 
 That is exactly what upstream's own `create_single_file_decoder.sh` runs. Copy
 the result over `zstddeclib.c`, copy the release's `LICENSE` over `LICENSE`,
-update the table above, and re-check `CodenotchZstd.h` against the release's
+update the table above, and re-check `SwarmaaZstd.h` against the release's
 `lib/zstd.h`.
 
 `-x legacy/zstd_legacy.h` drops support for frames written by zstd 0.x, which

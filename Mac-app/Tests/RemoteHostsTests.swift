@@ -1,5 +1,5 @@
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 private func remoteHost(id: String = "host-1", kind: RemoteHostKind = .claude,
                         name: String = "Work GPU",

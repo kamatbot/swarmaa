@@ -18,7 +18,7 @@ struct UsageAlertEvent: Equatable {
     let currentFraction: Double
     let resetsAt: Date?
     /// Set for a notice that is not a reset or a limit (a threshold crossing
-    /// on the notch channel, a test): the card shows these words instead of
+    /// in the app channel, a test): the card shows these words instead of
     /// the kind's own.
     var noticeTitle: String? = nil
     var noticeSubtitle: String? = nil

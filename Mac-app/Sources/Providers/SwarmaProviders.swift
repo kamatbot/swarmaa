@@ -135,7 +135,7 @@ enum SwarmaCells {
     }
 
     /// Tooltip rows a harness cell lists before summarising the rest, so a busy
-    /// day cannot grow the card past the room the notch reserves for it.
+    /// day cannot grow the card past the room the app reserves for it.
     static let maxSessionRows = 5
 
     static func harnessSnapshot(harness: String, in status: SwarmaStatus, now: Date = Date()) -> ProviderSnapshot {
@@ -241,7 +241,7 @@ enum SwarmaCells {
     }
 
     /// Only swarms that wait on someone get a cell.
-    static func notchSwarms(_ swarms: [TeamsSwarm]) -> [TeamsSwarm] {
+    static func listedSwarms(_ swarms: [TeamsSwarm]) -> [TeamsSwarm] {
         swarms.filter { ["waiting_on_you", "blocked"].contains($0.status) && $0.threadID != nil }
     }
 
@@ -573,7 +573,7 @@ final class SwarmaDirectory {
                 announce(updates)
             }
         case .failure:
-            // Nothing has ever answered: one cell, so the notch says it.
+            // Nothing has ever answered: one cell, so the app says it.
             // Otherwise the cells already up flip to offline on refresh.
             providers = registered.isEmpty ? [SwarmAgentProvider(name: SwarmaCells.serviceName, client: client)] : nil
         }
@@ -598,7 +598,7 @@ final class SwarmaDirectory {
 
     nonisolated static func providers(for status: SwarmaStatus, client: SwarmaClient,
                                       showsChats: Bool = true) -> [UsageProvider] {
-        // A worker gets a cell only while it runs a task: idle and offline workers are noise in the notch.
+        // A worker gets a cell only while it runs a task: idle and offline workers are noise in the app.
         status.workers.filter { !$0.running.isEmpty }.map(\.name).sorted().map { SwarmAgentProvider(name: $0, client: client) }
             + (showsChats ? SwarmaCells.activeHarnesses(in: status).map { SwarmHarnessProvider(harness: $0, client: client) } : [])
             // Only active swarms: a project gets a cell while it has queued, running or blocked work.
@@ -612,7 +612,7 @@ final class SwarmaDirectory {
     nonisolated static func teamsProviders(questions: [TeamsQuestion], swarms: [TeamsSwarm],
                                            client: SwarmaTeamsClient) -> [UsageProvider] {
         (SwarmaCells.questionsCellID(questions).map { [SwarmQuestionsProvider(id: $0, client: client)] } ?? [])
-            + SwarmaCells.notchSwarms(swarms).compactMap { s in
+            + SwarmaCells.listedSwarms(swarms).compactMap { s in
                 SwarmaCells.swarmCellID(s).map { SwarmWaitingProvider(id: $0, swarm: s, client: client) }
             }
     }

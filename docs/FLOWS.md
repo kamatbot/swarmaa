@@ -56,7 +56,7 @@ Step kinds are `research`, `review`, `patch`, `check`, `approve`. Model capabili
 
 Objectives accept `{{objective}}`, `{{inputs.name}}` (or `{{name}}`) and `{{steps.<dependency-id>.result}}`. Inputs are bounded strings; rendering never executes expressions. Dependency results remain untrusted excerpts and cannot expand authority.
 
-A ready approval produces one `flow_approval` item in `src/core/inbox.ts` for the tenant's scoped admin named `owner`, or its sole scoped admin when no `owner` exists. Ambiguous or missing owners prevent start. The owner's inbox uses the existing durable notification trigger. The approval task's objective carries “Flow X needs your approval: …” for task/notch consumers; its `task.updated` event includes `approval_required: true` and flow/step IDs, keeping callbacks metadata-only. No native Mac application code is in this repository; actual notch rendering still needs a manual smoke check in that app.
+A ready approval produces one `flow_approval` item in `src/core/inbox.ts` for the tenant's scoped admin named `owner`, or its sole scoped admin when no `owner` exists. Ambiguous or missing owners prevent start. The owner's inbox uses the existing durable notification trigger. The approval task's objective carries “Flow X needs your approval: …” for task/Mac app consumers; its `task.updated` event includes `approval_required: true` and flow/step IDs, keeping callbacks metadata-only. No native Mac application code is in this repository; actual Mac app rendering still needs a manual smoke check in that app.
 
 ## Owner-configured bridge checks
 

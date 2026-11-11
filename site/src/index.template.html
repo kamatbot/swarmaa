@@ -57,8 +57,8 @@ a { color: inherit; }
 img, video, svg { display: block; max-inline-size: 100%; }
 ::selection { background: var(--signal); color: var(--bg); }
 :focus-visible { outline: 2px solid var(--signal); outline-offset: 3px; border-radius: 4px; }
-.skip { position: absolute; left: 1rem; top: -4rem; z-index: 100; padding: 0.6rem 1rem; border-radius: 0.5rem; background: var(--paper); color: var(--bg); transition: top 0.2s; }
-.skip:focus { top: 1rem; }
+a.skip { position: absolute; left: 1rem; top: -4rem; z-index: 100; padding: 0.6rem 1rem; border-radius: 0.5rem; background: var(--paper); color: var(--bg); transition: top 0.2s; }
+a.skip:focus { top: 1rem; }
 [hidden] { display: none !important; }
 .sr-only { position: absolute; inline-size: 1px; block-size: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .shell { inline-size: var(--container); margin-inline: auto; }
@@ -520,7 +520,7 @@ code, .mono { font-family: var(--font-mono); }
 .vg-quota::after { content: ""; position: absolute; inset-block: -3px; inset-inline-start: var(--cap); border-inline-start: 1px dashed #e0a77a; }
 .vg-quota.full i { background: #e0a77a; }
 .vg-pct { inline-size: 2.4rem; text-align: end; font: 500 0.66rem var(--font-mono); color: #c9d4e4; flex: none; }
-.vg-agents li.skip { opacity: 0.55; }
+.vg-agents li.capped { opacity: 0.55; }
 
 /* swarm map */
 .map-wrap { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr); gap: clamp(1.5rem, 4vw, 3.5rem); align-items: center; }
@@ -589,6 +589,7 @@ code, .mono { font-family: var(--font-mono); }
 .dl-req a { color: var(--signal); }
 .film { position: relative; overflow: hidden; aspect-ratio: 16 / 9; border-radius: 1.1rem; background: #071328 url(/film/poster.jpg) center / cover; box-shadow: var(--raised); }
 .film video { inline-size: 100%; block-size: 100%; object-fit: cover; }
+@media (max-width: 46rem) { .film { aspect-ratio: 9 / 16; background-image: url(/film/poster-vertical.jpg); } }
 .film-sound { position: absolute; right: 0.8rem; bottom: 0.8rem; display: inline-flex; align-items: center; gap: 0.4rem; padding: 0.5rem 0.85rem; border: 1px solid var(--rule-strong); border-radius: 999px;
   background: rgba(8, 20, 40, 0.75); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); color: var(--paper); font: 500 0.82rem var(--font-body); cursor: pointer; }
 .film-sound svg { inline-size: 1rem; block-size: 1rem; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
@@ -965,7 +966,7 @@ code, .mono { font-family: var(--font-mono); }
     </div>
     <div>
       <div class="film">
-        <video id="heroFilm" poster="/film/poster.jpg" data-src="/film/launch.mp4" width="1280" height="720" muted loop playsinline preload="none" aria-label="Swarmaa launch film: three bots split a launch across Claude, Codex and Antigravity, on the Mac and the iPhone"></video>
+        <video id="heroFilm" poster="/film/poster.jpg" width="1920" height="1080" muted loop playsinline preload="none" aria-label="Swarmaa launch film: three bots split a launch across Claude, Codex and Antigravity, on the Mac and the iPhone"></video>
         <button class="film-sound" id="filmSound" type="button" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9H4z"/><path class="on" d="M16 9a4 4 0 0 1 0 6M18.5 6.5a8 8 0 0 1 0 11"/><path class="off" d="M16 9l5 6M21 9l-5 6"/></svg><span>Sound</span></button>
       </div>
       <p class="film-cap">The launch film · Mac app and iPhone app (coming soon)</p>
@@ -1064,16 +1065,30 @@ code, .mono { font-family: var(--font-mono); }
 (function () {
   const film = document.getElementById("heroFilm"), sound = document.getElementById("filmSound");
   if (!film) return;
+  const phone = matchMedia("(max-width: 46rem)");
+  const pickSource = () => {
+    const vertical = phone.matches, src = vertical ? "/film/launch-vertical.mp4" : "/film/launch.mp4";
+    if (film.getAttribute("src") === src) return;
+    const t = film.currentTime, resume = !film.paused;
+    film.poster = vertical ? "/film/poster-vertical.jpg" : "/film/poster.jpg";
+    film.width = vertical ? 1080 : 1920; film.height = vertical ? 1920 : 1080;
+    film.src = src;
+    film.onloadedmetadata = () => { film.currentTime = t; if (resume) film.play().catch(() => {}); };
+  };
+  // Nothing downloads until the film is on screen (or at once for reduced motion, which shows controls).
+  // Then the cut matches the screen, and a later width change swaps it in place.
+  phone.addEventListener("change", () => { if (film.getAttribute("src")) pickSource(); });
   const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
   if (reduced) {
     film.controls = true;
-    if (film.dataset.src) film.src = film.dataset.src;
+    pickSource();
   } else if ("IntersectionObserver" in window) new IntersectionObserver((es) => es.forEach((e) => {
     if (e.isIntersecting) {
-      if (!film.getAttribute("src") && film.dataset.src) film.src = film.dataset.src;
+      pickSource();
       film.play().catch(() => {});
     } else film.pause();
   }), { threshold: 0.3 }).observe(film);
+  else pickSource();
   sound.addEventListener("click", () => {
     film.muted = !film.muted;
     sound.setAttribute("aria-pressed", String(!film.muted));
@@ -1190,7 +1205,7 @@ ${c("→")}
       r.querySelector(".vg-quota i").style.setProperty("--l", Math.min(1, use[k]).toFixed(2));
       r.querySelector(".vg-quota").classList.toggle("full", full);
       r.querySelector(".vg-pct").textContent = Math.round(use[k] * 100) + "%";
-      r.classList.toggle("skip", full);
+      r.classList.toggle("capped", full);
     });
     for (let k = 0; k < 4; k++) chip();
     if (!reduced) every(1700, team, () => {

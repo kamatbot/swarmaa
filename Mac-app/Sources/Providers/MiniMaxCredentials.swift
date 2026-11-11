@@ -75,7 +75,7 @@ enum MiniMaxCredentials {
 
     static let apiKeyService = "minimax-api-key"
     static let cookieService = "minimax-session-cookie"
-    static let keychainAccount = "codenotch"
+    static let keychainAccount = "swarmaa"
 
     /// Held until the item moves, for the reason spelled out in
     /// `CredentialCache`: a data read can prompt, and usage polling reaches

@@ -6,9 +6,9 @@ import { randomUUID } from "node:crypto"
 // This is an OpenCode plugin. Only export the plugin: OpenCode treats each
 // exported function as an entry point. No prompts, answers, keys or tool
 // arguments are written to the status channel.
-export default async function Codenotch({ client }) {
-  const root = process.env.CODENOTCH_ACTIVITY_DIR ||
-    join(homedir(), "Library", "Application Support", "Codenotch", "OpenCode")
+export default async function Swarmaa({ client }) {
+  const root = process.env.SWARMAA_ACTIVITY_DIR ||
+    join(homedir(), "Library", "Application Support", "Swarmaa", "OpenCode")
   const instanceID = randomUUID()
   const file = join(root, `${instanceID}.json`)
   const startedAt = Math.round(Date.now() - process.uptime() * 1000)

@@ -1,6 +1,6 @@
 import Combine
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 @MainActor
 final class ProviderDisconnectionTests: XCTestCase {
@@ -231,7 +231,7 @@ final class ProviderDisconnectionTests: XCTestCase {
 
     /// The one assertion that fails the moment anyone goes back to sorting at
     /// one consumer instead of at the store.
-    func testTheNotchAndTheSettingsListOpenInTheSameOrder() {
+    func testTheMenuAndTheSettingsListOpenInTheSameOrder() {
         let (store, _) = makeStore(providers, order: ["codex", "claude"])
 
         XCTAssertEqual(store.snapshots.map(\.id), ["codex", "claude", "cursor"])
@@ -262,7 +262,7 @@ final class ProviderDisconnectionTests: XCTestCase {
     /// Settings splits the rows into connected and not, and the second group is
     /// built by filtering the first list rather than by keeping a list of its
     /// own. That only works because a switched-off provider still has a place
-    /// in the summaries — it is missing from the notch, never from the order.
+    /// in the summaries — it is missing from the app, never from the order.
     func testASwitchedOffProviderKeepsItsPlaceInTheSettingsList() {
         let (store, _) = makeStore(providers,
                               disconnected: ["cursor"],
@@ -271,7 +271,7 @@ final class ProviderDisconnectionTests: XCTestCase {
         XCTAssertEqual(store.providerSummaries.map(\.id), ["codex", "cursor", "claude"])
     }
 
-    /// A provider switched off is not in the notch at all, so its place in the
+    /// A provider switched off is not in the app at all, so its place in the
     /// order must simply be skipped rather than leaving a gap.
     func testADisconnectedProviderDoesNotLeaveAGap() {
         let (store, _) = makeStore(providers,

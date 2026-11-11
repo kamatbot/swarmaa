@@ -1,6 +1,6 @@
 // Load test: hundreds of swarms against the real CoreService on a throwaway schema in TEST_DATABASE_URL.
 // Workers behave like the bridge (one claim over up to 64 projects, claim while a slot is free, heartbeat, finish),
-// frontends poll swarm_status and events_poll like notches and agents do. Prints per-tool latency and errors.
+// frontends poll swarm_status and events_poll like the Mac app and agents do. Prints per-tool latency and errors.
 //   node --env-file=.env.test --import tsx scripts/load.ts [--scopes 100] [--tasks 500] [--workers 6] [--slots 16] [--pollers 30] [--pool 12]
 import { randomUUID } from 'node:crypto';
 import { readFile, readdir } from 'node:fs/promises';
@@ -32,7 +32,7 @@ const scopes = Array.from({ length: N.scopes }, (_, i) => `project:p${i}`);
 const make = (name: string, role: Principal['role']): Principal => ({ id: randomUUID(), tenantId, name, role, scopes, permissions: [...ROLE_PERMISSIONS[role]] });
 const front = make('front', 'frontend');
 const workers = Array.from({ length: N.workers }, (_, i) => make(`worker-${i}`, 'worker'));
-const pollers = Array.from({ length: N.pollers }, (_, i) => make(`notch-${i}`, 'frontend'));
+const pollers = Array.from({ length: N.pollers }, (_, i) => make(`frontend-${i}`, 'frontend'));
 for (const p of [front, ...workers, ...pollers]) await pool.query(
   'INSERT INTO principals(id,tenant_id,name,role,scopes,permissions,token_hash) VALUES($1,$2,$3,$4,$5,$6,$7)',
   [p.id, p.tenantId, p.name, p.role, p.scopes, p.permissions, randomUUID()]);

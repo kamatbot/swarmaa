@@ -45,7 +45,7 @@ enum Fixtures {
                 ]
             ),
             // A runtime snapshot, split into the `lmstudio:model:<name>` cell
-            // by `notchSnapshots` on its way to the notch, as a live poll is.
+            // by `usageSnapshots` on its way to the app, as a live poll is.
             ProviderSnapshot(
                 id: "lmstudio",
                 displayName: "LM Studio",
@@ -77,7 +77,7 @@ enum Fixtures {
     static func sessions(now: Date = Date()) -> [String: [AgentSession]] {
         [
             "claude": [
-                AgentSession(id: "demo.claude", name: "Claude Code", detail: "~/Projects/codenotch",
+                AgentSession(id: "demo.claude", name: "Claude Code", detail: "~/Projects/swarmaa",
                              state: .busy, waitingFor: nil, since: now.addingTimeInterval(-90))
             ],
             "openai": [

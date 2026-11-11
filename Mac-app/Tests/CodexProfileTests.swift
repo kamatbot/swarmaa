@@ -1,6 +1,6 @@
 import SQLite3
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 final class CodexProfileTests: XCTestCase {
     private func home(_ layout: [String: [String]] = [:]) throws -> URL {

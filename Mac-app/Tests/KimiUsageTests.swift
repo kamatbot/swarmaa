@@ -1,5 +1,5 @@
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 /// The managed account's windows, pinned to the live response (user id
 /// redacted) — the same figures the CLI's `/usage` leads with.

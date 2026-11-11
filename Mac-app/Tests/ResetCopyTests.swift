@@ -1,5 +1,5 @@
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 final class ResetCopyTests: XCTestCase {
     private let now = Date(timeIntervalSince1970: 1_700_000_000)
@@ -255,7 +255,7 @@ final class ResetCopyDistantDateTests: XCTestCase {
 }
 
 /// Vendors disagree on which end of the figure to show — Codex writes "87%
-/// remaining", Claude writes a percentage used. A notch that picks one side
+/// remaining", Claude writes a percentage used. An app that picks one side
 /// makes the user convert in their head, and "12% Used" beside Codex's own
 /// "87% remaining" reads as two different numbers rather than one seen from
 /// either end. That is what made a correct reading look wrong.
@@ -323,7 +323,7 @@ final class WindowSummaryTests: XCTestCase {
     }
 
     /// Both ends stay on the line — the card is the detailed view — but the
-    /// remaining figure leads when the notch is set that way.
+    /// remaining figure leads when the app is set that way.
     func testRemainingLeadsWhenSet() {
         XCTAssertEqual(window(0.12).summary(showingRemaining: true), "88% left · 12% Used")
     }

@@ -1,5 +1,5 @@
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 /// Lines as LM Studio 0.4.24 wrote them on 2026-09-10, one block per endpoint
 /// family, with the reply text shortened. The reply is there on purpose: the

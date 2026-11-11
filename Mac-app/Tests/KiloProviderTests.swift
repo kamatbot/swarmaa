@@ -1,5 +1,5 @@
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 /// Contract for `KiloProvider`'s injectable surface.
 ///

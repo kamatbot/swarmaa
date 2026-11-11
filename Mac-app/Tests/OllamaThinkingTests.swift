@@ -3,7 +3,7 @@ import SwiftUI
 import NIOCore
 import NIOHTTP1
 import NIOPosix
-@testable import Codenotch
+@testable import Swarmaa
 
 final class OllamaThinkingStreamTests: XCTestCase {
     func testFragmentedNativeThinkingStopsAtAnswerAndCompletion() {
@@ -77,31 +77,6 @@ final class OllamaThinkingActivityTests: XCTestCase {
         XCTAssertFalse(relay.ready)
     }
 
-    func testOnlyMatchingModelUsesExistingActivityArcOnEveryEdge() throws {
-        let reading = try OllamaLocalUsage.parse(Data(#"{"models":[{"name":"gemma4:e4b","size":9610000000},{"name":"qwen3:0.6b","size":675576545}]}"#.utf8))
-        let snapshot = ProviderSnapshot(id: "ollama-local", displayName: "Ollama", glyph: .ollama,
-            fidelity: .official, status: .ok, windows: [], kind: .localRuntime, localRuntime: reading)
-        let model = NotchViewModel()
-        model.updateSnapshots([snapshot])
-        let gemma = model.snapshots[0], qwen = model.snapshots[1]
-        model.thinkingModels = ["gemma4:e4b": Date()]
-        XCTAssertEqual(model.activity(for: gemma)?.state, .working)
-        XCTAssertNil(model.activity(for: qwen))
-        XCTAssertNil(model.activity(for: "ollama-local"))
-        let directory = ProcessInfo.processInfo.environment["OLLAMA_THINKING_RENDER_DIRECTORY"]
-        for edge in NotchEdge.allCases {
-            let renderer = ImageRenderer(content: TooltipCard(snapshot: gemma, activity: model.activity(for: gemma),
-                now: Date(), direction: edge.tooltipDirection))
-            renderer.scale = 2
-            let image = try XCTUnwrap(renderer.nsImage)
-            if let directory {
-                try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
-                let bitmap = try XCTUnwrap(NSBitmapImageRep(data: XCTUnwrap(image.tiffRepresentation)))
-                try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
-                    .write(to: URL(fileURLWithPath: directory).appendingPathComponent("thinking-\(edge.rawValue).png"))
-            }
-        }
-    }
 }
 
 private final class RelayEvidence: @unchecked Sendable {

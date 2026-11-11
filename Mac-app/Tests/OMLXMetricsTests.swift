@@ -1,6 +1,6 @@
 import XCTest
 import Combine
-@testable import Codenotch
+@testable import Swarmaa
 
 /// An activity endpoint that answers from a script, so the monitor's folding
 /// of polls and log lines can be driven without oMLX.
@@ -345,8 +345,8 @@ final class OMLXMetricsTests: XCTestCase {
     }
 
     func testLiveOMLXActivityWhenExplicitlyEnabled() async throws {
-        guard ProcessInfo.processInfo.environment["CODENOTCH_OMLX_LIVE"] == "1" else {
-            throw XCTSkip("Opt-in live oMLX check (TEST_RUNNER_CODENOTCH_OMLX_LIVE=1)")
+        guard ProcessInfo.processInfo.environment["SWARMAA_OMLX_LIVE"] == "1" else {
+            throw XCTSkip("Opt-in live oMLX check (TEST_RUNNER_SWARMAA_OMLX_LIVE=1)")
         }
         let endpoint = try OMLXEndpoint.parse(OMLXEndpoint.configuredAddress() ?? OMLXEndpoint.defaultAddress)
         let link = OMLXLink(endpoint: endpoint)

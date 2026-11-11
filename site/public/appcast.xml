@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+    <channel>
+        <title>Swarmaa</title>
+        <item>
+            <title>1.27.1</title>
+            <pubDate>Wed, 11 Nov 2026 19:56:50 +0700</pubDate>
+            <sparkle:version>55</sparkle:version>
+            <sparkle:shortVersionString>1.27.1</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/kamatbot/swarmaa/releases/download/v1.27.1/Swarmaa-1.27.1.dmg" length="13097184" type="application/octet-stream" sparkle:edSignature="a1dwu9aG7DL5D/vVQ2iMz4g3a/jXHRpGmYtdG9mgJ+bbtaoa/XOWa8DzjOzktFD0yPZcSf1Wmuzh4YgyiMzcDA=="/>
+        </item>
+    </channel>
+</rss>

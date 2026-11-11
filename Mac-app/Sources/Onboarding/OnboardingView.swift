@@ -94,7 +94,7 @@ private struct WelcomePage: View {
 
     var body: some View {
         PageHeader(title: "Welcome to Swarmaa",
-                   subtitle: "Swarmaa watches your coding agents from the notch: how much quota each has left, and what every chat and project is doing. Choose where your Swarmaa lives. You can also skip this and just see usage.")
+                   subtitle: "Swarmaa watches your coding agents: how much quota each has left, and what every chat and project is doing. Choose where your Swarmaa lives. You can also skip this and just see usage.")
         option(.setUpHere, "Set up Swarmaa on this Mac",
                model.bundledRuntime == nil
                ? "This build doesn't include the Swarmaa runtime. Choose another option, or skip."
@@ -179,7 +179,7 @@ private struct ConnectedPage: View {
     @ObservedObject var model: OnboardingModel
     var body: some View {
         PageHeader(title: "You're connected",
-                   subtitle: "This Mac now shows your Swarmaa agents and swarms in the notch. Nothing was installed on this Mac.")
+                   subtitle: "This Mac now shows your Swarmaa agents and swarms in the main window. Nothing was installed on this Mac.")
         StarterPromptBox(text: StarterPrompt.text(projects: [], remoteMCP: (try? SwarmaOAuth.origin(model.remoteAddress)).map(SwarmaOAuth.resource)))
     }
 }
@@ -211,7 +211,7 @@ private struct ServicesPage: View {
 
     private static let rows: [(SetupHarness, String)] = [
         (.claude, "Claude Code"), (.codex, "Codex"), (.agy, "Antigravity"),
-        (.grok, "Grok"), (.dot, "Dot"), (.notchtrader, "Swarmaa notch"),
+        (.grok, "Grok"), (.dot, "Dot"), (.mac, "Swarmaa for Mac"),
     ]
 
     var body: some View {
@@ -235,7 +235,7 @@ private struct ServicesPage: View {
                         Text(status(h, installed)).font(.caption).foregroundStyle(.secondary)
                     }
                     Spacer()
-                    if h == .notchtrader {
+                    if h == .mac {
                         Text("Always on").foregroundStyle(.secondary)
                     } else {
                         Toggle("Connect", isOn: binding(\.connect))
@@ -243,7 +243,7 @@ private struct ServicesPage: View {
                             .accessibilityLabel("Connect \(name)")
                     }
                 }
-                if h != .notchtrader, connected {
+                if h != .mac, connected {
                     HStack(spacing: 20) {
                         if OnboardingModel.hasWorker(h) {
                             Toggle("Background worker", isOn: binding(\.worker))
@@ -264,7 +264,7 @@ private struct ServicesPage: View {
     private func status(_ h: SetupHarness, _ installed: Bool) -> String {
         switch h {
         case .grok, .dot: return "Hosted service. Needs remote access."
-        case .notchtrader: return "This app"
+        case .mac: return "This app"
         default: return installed ? "Installed" : "Not found on this Mac"
         }
     }

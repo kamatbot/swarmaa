@@ -1,5 +1,5 @@
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 final class ClaudeSessionRecordTests: XCTestCase {
     private func record(_ json: String) -> ClaudeSessionRecord? {
@@ -12,16 +12,16 @@ final class ClaudeSessionRecordTests: XCTestCase {
     /// A real file, trimmed. Unknown keys must not cost us the session.
     func testDecodesALiveSession() throws {
         let s = try XCTUnwrap(session("""
-        { "pid": 2678, "sessionId": "c85d4247", "cwd": "/Users/vinz/usage-notch",
+        { "pid": 2678, "sessionId": "c85d4247", "cwd": "/Users/vinz/usage-demo",
           "startedAt": 1787894126697, "procStart": "Fri Aug 28 05:15:20 2026",
-          "kind": "interactive", "entrypoint": "cli", "name": "usage-notch-bc",
+          "kind": "interactive", "entrypoint": "cli", "name": "usage-demo-bc",
           "status": "busy", "statusUpdatedAt": 1787897225305,
           "peerFeatures": ["notify_idle"], "somethingNew": 42 }
         """))
         XCTAssertEqual(s.id, "claude.2678")
-        XCTAssertEqual(s.name, "usage-notch-bc")
+        XCTAssertEqual(s.name, "usage-demo-bc")
         XCTAssertEqual(s.state, .busy)
-        XCTAssertEqual(s.detail, "Terminal · usage-notch")
+        XCTAssertEqual(s.detail, "Terminal · usage-demo")
     }
 
     func testWaitingCarriesWhatItIsWaitingFor() throws {
@@ -50,8 +50,8 @@ final class ClaudeSessionRecordTests: XCTestCase {
 
     func testFallsBackToTheFolderWhenUnnamed() throws {
         XCTAssertEqual(try XCTUnwrap(session("""
-        { "pid": 1, "cwd": "/Users/vinz/notch-app", "status": "idle" }
-        """)).name, "notch-app")
+        { "pid": 1, "cwd": "/Users/vinz/demo-app", "status": "idle" }
+        """)).name, "demo-app")
     }
 
     func testRejectsRecordsWithoutAPidOrCwd() {
@@ -177,7 +177,7 @@ final class ClaudeSessionStateSourceTests: XCTestCase {
     }
 
     /// With no transcript to read, the record's own answer stands — which is
-    /// exactly what the notch did before any of this existed.
+    /// exactly what the app did before any of this existed.
     func testWithNoTranscriptTheRecordStands() throws {
         XCTAssertEqual(
             ClaudeSessionMonitor.state(of: try record(desktop), transcripts: reader).state, .idle
@@ -238,7 +238,7 @@ final class ClaudeSessionStateSourceTests: XCTestCase {
 
 /// A record with nothing to date itself by must still answer the same thing
 /// twice. It used to answer `Date()`, so every rescan produced a session that
-/// compared unequal to the one before it and the notch re-animated at 2 Hz.
+/// compared unequal to the one before it and the app re-animated at 2 Hz.
 extension ClaudeSessionRecordTests {
     func testARecordWithNoTimestampHoldsStill() throws {
         let json = """
@@ -253,7 +253,7 @@ extension ClaudeSessionRecordTests {
     }
 }
 
-/// The session Swarmaa starts itself must never reach the notch.
+/// The session Swarmaa starts itself must never reach the app.
 ///
 /// Renewing the OAuth token runs the Claude CLI, and the CLI registers a
 /// session file for the second or so it is alive — verified on a real machine:
@@ -312,7 +312,7 @@ final class ClaudeOwnSessionFilterTests: XCTestCase {
         XCTAssertTrue(found.isEmpty, "the session Swarmaa started is not the user's")
     }
 
-    /// Ignoring one must not hide the rest — the notch still has to show every
+    /// Ignoring one must not hide the rest — the app still has to show every
     /// session the user actually has open.
     func testEveryOtherSessionSurvives() throws {
         try writeSession(pid: livePID, name: "ours")

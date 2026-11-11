@@ -7,10 +7,10 @@ import os
 @MainActor
 final class UsageStore: ObservableObject {
     @Published private(set) var snapshots: [ProviderSnapshot] = [] {
-        didSet { updateNotchSnapshots() }
+        didSet { updateUsageSnapshots() }
     }
     /// Settings and every display share the same ordered, visible model cells.
-    @Published private(set) var notchSnapshots: [ProviderSnapshot] = []
+    @Published private(set) var usageSnapshots: [ProviderSnapshot] = []
     /// Providers with a fetch in flight, so the cell can show it happening.
     @Published private(set) var refreshing: Set<String> = []
     /// Providers whose last fetch was refused by macOS, cleared as soon as one
@@ -33,7 +33,7 @@ final class UsageStore: ObservableObject {
     private var providers: [UsageProvider]
 
     /// Names chosen in Settings, by provider id. Applied to every snapshot the
-    /// store publishes, so the notch, the menu bar, the cards and the
+    /// store publishes, so the app, the menu bar, the cards and the
     /// notifications all call an account what its owner does.
     var nicknames: [String: String] = [:] {
         didSet {
@@ -85,7 +85,7 @@ final class UsageStore: ObservableObject {
         for provider in swarm where !shown.contains(provider.id) {
             publish(Self.placeholder(provider))
         }
-        updateNotchSnapshots()
+        updateUsageSnapshots()
         refreshSwarm()
     }
 
@@ -129,7 +129,7 @@ final class UsageStore: ObservableObject {
     /// The order the user has put the rings in, as provider ids.
     ///
     /// Held here rather than at each consumer because there are two consumers —
-    /// the notch reads `notchSnapshots`, settings reads `providerSummaries` — and
+    /// the app reads `usageSnapshots`, settings reads `providerSummaries` — and
     /// they have to agree. Sorting each of them separately makes that agreement
     /// something two call sites have to keep remembering.
     @Published var order: [String] = [] {
@@ -216,7 +216,7 @@ final class UsageStore: ObservableObject {
     private var timer: Timer?
     private var localTimer: Timer?
     /// Menu-bar-only: one pass every `lightweightInterval`, local runtimes
-    /// included, and nothing in between. Switched on while the notch is off.
+    /// included, and nothing in between. Switched on while the app is off.
     var isLightweight = false {
         didSet { if isLightweight != oldValue, timer != nil { scheduleTimers() } }
     }
@@ -313,18 +313,18 @@ final class UsageStore: ObservableObject {
             snapshot.status = .stale(since: remembered.fetchedAt)
             return snapshot
         }
-        updateNotchSnapshots()
+        updateUsageSnapshots()
     }
 
-    private func updateNotchSnapshots() {
-        let cells = ProviderOrder.cells(from: snapshots, keeping: notchSnapshots)
-        notchSnapshots = ProviderOrder.arrange(cells, by: order, id: \.id)
+    private func updateUsageSnapshots() {
+        let cells = ProviderOrder.cells(from: snapshots, keeping: usageSnapshots)
+        usageSnapshots = ProviderOrder.arrange(cells, by: order, id: \.id)
             .filter { !disconnected.contains($0.id) }
     }
 
     /// Model discovery does not need to re-read any cloud account's credential.
     var localModelSummaries: [ProviderSummary] {
-        ProviderOrder.cells(from: snapshots, keeping: notchSnapshots).compactMap { cell in
+        ProviderOrder.cells(from: snapshots, keeping: usageSnapshots).compactMap { cell in
             guard let model = cell.localModel else { return nil }
             let runtime = providers.first { $0.id == cell.providerID }?.displayName ?? cell.displayName
             return ProviderSummary(kind: .localRuntime, localModel: model,
@@ -602,7 +602,7 @@ final class UsageStore: ObservableObject {
             guard let provider = providers.first(where: { $0.id == id }) else { continue }
             // The same two outcomes any other failure has: a provider worth
             // showing without a reading ages in place, one that is not drops
-            // out of the notch entirely.
+            // out of the app entirely.
             if let stale = degraded(provider: provider, error: UsageProviderError.timedOut) {
                 publish(stale)
             } else {
@@ -776,7 +776,7 @@ final class UsageStore: ObservableObject {
     }
 
     /// Tell consumers that a provider has just confirmed authentication. The
-    /// refresh updates the notch; the revision updates Settings' account row.
+    /// refresh updates the app; the revision updates Settings' account row.
     func providerAuthenticationChanged(providerID: String) {
         providerAccountRevision &+= 1
         refresh(providerID: providerID)
@@ -854,7 +854,7 @@ final class UsageStore: ObservableObject {
                 snapshot.headlineID = ag.resolveHeadlineID(for: snapshot.windows)
                 snapshot.weeklyID = ag.resolveWeeklyID(for: snapshot.windows)
                 snapshots[idx] = snapshot
-                updateNotchSnapshots()
+                updateUsageSnapshots()
             }
         }
     }

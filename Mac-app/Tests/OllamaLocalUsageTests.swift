@@ -1,5 +1,5 @@
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 final class OllamaMemoryTests: XCTestCase {
     func testGPUAndCPUAllocationRemainDistinctFromQuota() throws {
@@ -15,7 +15,7 @@ final class OllamaMemoryTests: XCTestCase {
         let snapshot = ProviderSnapshot(id: "ollama-local", displayName: "Ollama", glyph: .ollamaLocal,
                                         fidelity: .official, status: .ok, windows: [],
                                         kind: .localRuntime, localRuntime: reading)
-        XCTAssertTrue(snapshot.notchSnapshots.allSatisfy { $0.usedFraction == nil && $0.windows.isEmpty })
+        XCTAssertTrue(snapshot.usageSnapshots.allSatisfy { $0.usedFraction == nil && $0.windows.isEmpty })
     }
 
     func testUnloadTimeDoesNotInventAnExpirationOrReset() throws {

@@ -1,6 +1,6 @@
 import XCTest
 import SwiftUI
-@testable import Codenotch
+@testable import Swarmaa
 
 /// Guards the QianwenAI Token Plan answer and the site that fetches it.
 ///

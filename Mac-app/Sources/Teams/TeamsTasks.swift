@@ -186,7 +186,7 @@ enum TeamsTaskGrouping {
 // MARK: - Setup checklist
 
 struct TeamsSetupRow: Identifiable, Equatable {
-    enum State: Equatable { case ready, notChecked, needsSetup }
+    enum State: Equatable { case ready, unchecked, needsSetup }
     let id: String
     let title: String
     var state: State
@@ -195,14 +195,14 @@ struct TeamsSetupRow: Identifiable, Equatable {
 }
 
 enum TeamsSetup {
-    static let grantCommand = "npm run admin -- grant --name notchtrader --permission answer_questions"
+    static let grantCommand = "npm run admin -- grant --name swarmaa-mac --permission answer_questions"
 
     /// Only a structured resource-not-found proves permission; HTTP status alone does not.
     static func answerProbe(_ error: Error?) -> TeamsSetupRow.State {
         switch error.map(SwarmaTeamsClient.Failure.map) {
         case .service(.serviceCode("not_found"))?: return .ready
         case .serviceTooOld?, .service(.serviceCode("owner_required"))?: return .needsSetup
-        default: return .notChecked   // success can't happen for a made-up id; anything else proves nothing
+        default: return .unchecked   // success can't happen for a made-up id; anything else proves nothing
         }
     }
 
@@ -221,15 +221,15 @@ enum TeamsSetup {
     /// Runs every probe; each row reads Not checked until its probe proves it.
     static func check(client: SwarmaTeamsClient = .shared, base: SwarmaClient = .shared,
                       progress: @escaping ([TeamsSetupRow]) async -> Void = { _ in }) async -> [TeamsSetupRow] {
-        var reach = TeamsSetupRow(id: "reachable", title: L10n.t("The service is reachable"), state: .notChecked,
+        var reach = TeamsSetupRow(id: "reachable", title: L10n.t("The service is reachable"), state: .unchecked,
                                   fix: L10n.t("Start the Swarmaa service, or check the service URL in Settings → Swarmaa."))
-        var token = TeamsSetupRow(id: "token", title: L10n.t("The token is valid"), state: .notChecked,
+        var token = TeamsSetupRow(id: "token", title: L10n.t("The token is valid"), state: .unchecked,
                                   fix: L10n.t("Choose Change connection… in Settings → Swarmaa to sign in again."))
-        var tools = TeamsSetupRow(id: "teams", title: L10n.t("Teams tools exist"), state: .notChecked,
+        var tools = TeamsSetupRow(id: "teams", title: L10n.t("Teams tools exist"), state: .unchecked,
                                   fix: L10n.t("Update the Swarmaa service to use teams"))
-        var stream = TeamsSetupRow(id: "stream", title: L10n.t("The live stream connects"), state: .notChecked,
+        var stream = TeamsSetupRow(id: "stream", title: L10n.t("The live stream connects"), state: .unchecked,
                                    fix: L10n.t("Update the service so it serves /api/stream."))
-        var answer = TeamsSetupRow(id: "answer", title: L10n.t("Answering questions is allowed"), state: .notChecked,
+        var answer = TeamsSetupRow(id: "answer", title: L10n.t("Answering questions is allowed"), state: .unchecked,
                                    fix: L10n.t("Ask the owner to allow answering questions from this Mac: \(grantCommand)"))
         var providers: [TeamsSetupRow] = []
 
@@ -247,7 +247,7 @@ enum TeamsSetup {
         await progress([reach, token, tools] + providers + [stream, answer])
         if token.state == .ready {
             do { _ = try await client.agentList(); tools.state = .ready }
-            catch { tools.state = SwarmaTeamsClient.Failure.map(error) == .serviceTooOld ? .needsSetup : .notChecked }
+            catch { tools.state = SwarmaTeamsClient.Failure.map(error) == .serviceTooOld ? .needsSetup : .unchecked }
         }
         await progress([reach, token, tools] + providers + [stream, answer])
         if tools.state == .ready {

@@ -3,7 +3,7 @@ import SwiftUI
 /// A swarm step's four-part report (Result, Checks, Not checked, Files), read out of an agent's reply.
 /// A part the reply left out is nil and shows as "Not stated".
 struct StepReport: Equatable {
-    enum Part: CaseIterable { case result, checks, notChecked, files }
+    enum Part: CaseIterable { case result, checks, unchecked, files }
     var parts: [Part: String] = [:]
 
     subscript(_ part: Part) -> String? { parts[part] }
@@ -22,7 +22,7 @@ struct StepReport: Equatable {
                 let part: Part = switch m.name.lowercased() {
                 case "result": .result
                 case "checks": .checks
-                case "not checked": .notChecked
+                case "not checked": .unchecked
                 default: .files
                 }
                 current = part
@@ -51,7 +51,7 @@ struct StepReportCard: View {
         switch part {
         case .result: L10n.t("Result")
         case .checks: L10n.t("Checks")
-        case .notChecked: L10n.t("Not checked")
+        case .unchecked: L10n.t("Not checked")
         case .files: L10n.t("Files")
         }
     }
@@ -59,7 +59,7 @@ struct StepReportCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             ForEach(Array(StepReport.Part.allCases.enumerated()), id: \.offset) { index, part in
-                let flagged = part == .notChecked
+                let flagged = part == .unchecked
                 if index > 0 { Rectangle().fill(KS.hairline).frame(height: 1) }
                 HStack(alignment: .firstTextBaseline, spacing: 12) {
                     Text(verbatim: title(part)).font(KS.secondary(.semibold))

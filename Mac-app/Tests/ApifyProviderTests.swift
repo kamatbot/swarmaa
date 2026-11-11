@@ -1,6 +1,6 @@
 import SwiftUI
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 @MainActor
 final class ApifyProviderTests: XCTestCase {
@@ -60,7 +60,7 @@ final class ApifyProviderTests: XCTestCase {
     }
 
     func testLiveApifyUsageWhenExplicitlyEnabled() async throws {
-        guard ProcessInfo.processInfo.environment["CODENOTCH_TEST_APIFY_LIVE"] == "1" else {
+        guard ProcessInfo.processInfo.environment["SWARMAA_TEST_APIFY_LIVE"] == "1" else {
             throw XCTSkip("Opt-in live check requires an Apify login or APIFY_TOKEN")
         }
         let liveSession = URLSession(configuration: .ephemeral)
@@ -230,7 +230,7 @@ final class ApifyProviderTests: XCTestCase {
                        "the file is re-read on every fetch, so a new login needs no relaunch")
     }
 
-    func testSwitchingOffForgetsOnlyTheTokenCodenotchHolds() async throws {
+    func testSwitchingOffForgetsOnlyTheTokenSwarmaaHolds() async throws {
         var deleted = 0
         let provider = provider(sources: sources(settings: "pasted", deleteSettingsToken: { deleted += 1 }))
         await provider.signOut()

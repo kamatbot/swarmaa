@@ -1,5 +1,5 @@
 {
-  "_comment": "credit_usd = money per credit for credit-based seats (Codex Business/Team); cost there = credits used × credit_usd. Subscription plans as the vendors report them (Claude: organization.rate_limit_tier; Codex: plan_type). Prices per month; the Mac's currency is used when listed, else USD converted at the daily rate. Copied to ~/Library/Application Support/Codenotch/costs/plans.json on first run: edit that file, or point Settings → Costs at a remote catalog URL.",
+  "_comment": "credit_usd = money per credit for credit-based seats (Codex Business/Team); cost there = credits used × credit_usd. Subscription plans as the vendors report them (Claude: organization.rate_limit_tier; Codex: plan_type). Prices per month; the Mac's currency is used when listed, else USD converted at the daily rate. Copied to ~/Library/Application Support/Swarmaa/costs/plans.json on first run: edit that file, or point Settings → Costs at a remote catalog URL.",
   "plans": {
     "default_claude_free":      { "name": "Free",     "prices": { "USD": 0 } },
     "default_claude_pro":       { "name": "Pro",      "prices": { "USD": 20 } },

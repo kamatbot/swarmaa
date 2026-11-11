@@ -33,7 +33,7 @@ actor ApifyProvider: UsageProvider {
     }
 
     nonisolated var signInRoute: SignInRoute {
-        .guidance(L10n.t("Run apify login in Terminal — the notch reads that login — or paste an Apify API token below."))
+        .guidance(L10n.t("Run apify login in Terminal — Swarmaa reads that login — or paste an Apify API token below."))
     }
 
     nonisolated func account() -> ProviderAccount? { ApifyCredentials.account(sources) }

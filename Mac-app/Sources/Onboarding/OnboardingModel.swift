@@ -120,7 +120,7 @@ final class OnboardingModel: ObservableObject {
             && !RuntimeInstaller.isBundledLayout(URL(fileURLWithPath: (stored as NSString).expandingTildeInPath))
         self.choice = storedIsDev ? .useService : .setUpHere
         for h in SetupHarness.allCases { choices[h] = ServiceChoice() }
-        choices[.notchtrader] = ServiceChoice(connect: true)
+        choices[.mac] = ServiceChoice(connect: true)
         rootChanged()
     }
 
@@ -179,7 +179,7 @@ final class OnboardingModel: ObservableObject {
     func apply(detection d: SetupDetection) {
         detection = d
         let state = d.state
-        for h in SetupHarness.allCases where h != .notchtrader {
+        for h in SetupHarness.allCases where h != .mac {
             let installed = d.isInstalled(h)
             let hosted = h == .grok || h == .dot
             var c = ServiceChoice()
@@ -212,7 +212,7 @@ final class OnboardingModel: ObservableObject {
     static func canConnect(_ h: SetupHarness, installed: Bool) -> Bool {
         switch h {
         case .claude, .codex, .agy: return installed
-        case .grok, .dot, .notchtrader: return true
+        case .grok, .dot, .mac: return true
         }
     }
     static func hasWorker(_ h: SetupHarness) -> Bool { h == .claude || h == .codex }
@@ -249,7 +249,7 @@ final class OnboardingModel: ObservableObject {
         var harnesses: [String: SetupPlan.Harness] = [:]
         for h in SetupHarness.allCases {
             let c = choices[h] ?? ServiceChoice()
-            let connect = h == .notchtrader ? true : c.connect
+            let connect = h == .mac ? true : c.connect
             harnesses[h.rawValue] = .init(connect: connect,
                                           worker: connect && Self.hasWorker(h) && c.worker,
                                           share: connect && Self.hasSharing(h) && c.share)
@@ -426,12 +426,12 @@ final class OnboardingModel: ObservableObject {
 
     // MARK: Finish
 
-    /// Point the notch at the service that was just set up.
+    /// Point the app at the service that was just set up.
     private func applyToApp(_ summary: SetupSummary) {
         defaults.set(serviceRoot, forKey: Preferences.serviceRootKey)
         defaults.set("token", forKey: Preferences.authModeKey)
         defaults.set(true, forKey: "swarmaEnabled")
-        defaults.set(rootURL.appendingPathComponent(".local/notchtrader.json").path, forKey: "swarmaTokenPath")
+        defaults.set(rootURL.appendingPathComponent(".local/swarmaa-mac.json").path, forKey: "swarmaTokenPath")
         if let url = summary.serviceUrl, !url.isEmpty { defaults.set(url, forKey: "swarmaServiceURL") }
     }
 

@@ -9,7 +9,7 @@ new users enable it separately in Settings → Ollama. Existing local integratio
 IDs and connection choices migrate once. Other runtimes and cumulative token
 totals remain future work. The integration onto upstream `6f0eb97` passed 919
 tests (918 passed, one opt-in live listing skipped), including loopback relay
-fixtures, preference migration, three notch sizes and all four edges. Rendered
+fixtures, preference migration, three Mac app sizes and all four edges. Rendered
 Settings and tooltip fixtures were inspected. No live inference was run for
 this integration; earlier live results below describe the pre-integration branch.
 
@@ -26,7 +26,7 @@ unloading a model updates the list without closing the window or re-reading
 cloud credentials. The store applies the same saved order to model cells and
 cloud providers, and each display receives that ordered projection.
 
-Model switches hide or show individual notch cells. Hidden loaded models move
+Model switches hide or show individual Mac app cells. Hidden loaded models move
 to Not connected, while the shared Ollama monitor continues polling. Re-enabling
 a model appends it to the connected list. Switching off the Ollama connection
 stops all of its monitoring and clears detected models. Neither switch starts
@@ -37,15 +37,15 @@ Local inventory polling runs every second independently of cloud quota polling,
 so a model stopped through the ordinary Ollama address leaves the UI on the next
 poll. Speed still requires a completed native response through port 11435;
 direct requests to 11434 cannot be observed. The separate Ollama page exposes
-this requirement and the listener's current status. Closing Codenotch closes
+this requirement and the listener's current status. Closing Swarmaa closes
 the measurement connection too.
 
 The 2026-09-09 correction passed 816 tests (815 passed, one opt-in live listing
 test skipped). A running-app check then generated a short native response through
 11435: 3 output tokens in 25,359,000 ns appeared as 118.3 tok/s in the model's
-notch accessibility reading. The newly loaded Ministral row appeared in
+Mac app accessibility reading. The newly loaded Ministral row appeared in
 Connected. Unloading it through the ordinary 11434 endpoint removed the row
-from the still-open Accounts page and from the notch without manual refresh.
+from the still-open Accounts page and from the Mac app without manual refresh.
 The test started and ended with an empty model inventory. This confirms the
 measurement path, not a sustained performance benchmark.
 
@@ -103,7 +103,7 @@ The final runtime listing was empty; downloaded weights remain installed.
 
 The full build ran 575 tests: 574 passed, the opt-in live test was skipped,
 and none failed. The live test then passed once for each of the five models.
-Native brand fixtures were inspected on all four notch edges. Asset regression
+Native brand fixtures were inspected on all four Mac app edges. Asset regression
 coverage detects the solid-square rendering failure caused by web SVG root
 attributes. Source and new-file whitespace checks passed.
 
@@ -125,7 +125,7 @@ models, the managed Ollama service was restarted with
 was restored immediately afterward; the Homebrew service file was unchanged.
 
 All five models then remained present in the same `/api/ps` response. The
-unlocked Mac's running Codenotch UI showed five distinct brand icons and their
+unlocked Mac's running Swarmaa UI showed five distinct brand icons and their
 RAM readings, alongside the existing Codex cell. This directly verifies the
 brand-specific display in the running app as well as the provider render tests.
 
@@ -133,20 +133,20 @@ A second batch sent requests to all five already loaded models within 0.14 ms.
 Each streamed 256 output tokens, with all five first-to-last token intervals
 overlapping for 3.64 seconds. The output cap bounded the demonstration; these
 were not complete long-form answers or a performance benchmark. Models were
-left loaded with a 15-minute idle timeout so the user could inspect the notch.
+left loaded with a 15-minute idle timeout so the user could inspect the Mac app.
 The request responses, residency timeline and overlap measurements are in the
 ignored `build/ollama-concurrent-demo/five` directory.
 
 ## Recommended first increment
 
-The first increment is an **Ollama runtime monitor**, with one notch cell per loaded model.
+The first increment is an **Ollama runtime monitor**, with one Mac app cell per loaded model.
 Show reported RAM in each cell and model name, RAM and context limit in its
 tooltip. Settings holds server reachability and the aggregate loaded-model count.
 Default to `http://127.0.0.1:11434`, with a loopback address
 and port setting. The user selected Ollama first.
 LM Studio can follow through the same display model.
 
-This interpretation follows the current product: Codenotch monitors other tools.
+This interpretation follows the current product: Swarmaa monitors other tools.
 A prompt composer, choosing a model to run, and tool execution remain outside
 the app. The later-approved thinking relay forwards client requests with its
 own lifecycle, as recorded below.
@@ -175,7 +175,7 @@ model unloading, not a subscription reset. Optional unload-time display can wait
 
 ## Desired UI behavior
 
-| State | Notch | Tooltip / Settings |
+| State | Mac app | Tooltip / Settings |
 | --- | --- | --- |
 | Monitoring disabled | Cell absent | "Monitoring off"; endpoint setting retained; no polling |
 | Connecting / first read | No model cells | Settings: "Connecting to Ollama…" |
@@ -187,9 +187,9 @@ model unloading, not a subscription reset. Optional unload-time display can wait
 These are the implemented display states. RAM has no quota arc; unknown RAM
 shows a dash. Values use binary units with at most one decimal, using the app's
 GB/MB convention. Context limit is capacity, not current token consumption.
-Refresh animation only means Codenotch is fetching a reading. Model names take
+Refresh animation only means Swarmaa is fetching a reading. Model names take
 up to two tooltip lines, with middle truncation and the full accessibility label.
-The standard notch spacing is retained when it fits; vertical stacks reduce
+The standard Mac app spacing is retained when it fits; vertical stacks reduce
 their gaps on smaller displays. Extremely long stacks can still exceed a small
 display even with zero gaps and do not yet scroll. Models are not silently capped
 or grouped.
@@ -305,11 +305,11 @@ separate residency check. [Ollama cloud routing behavior](https://docs.ollama.co
 | Scheduling | Local ticks never fetch cloud adapters or starve their idle schedule; no duplicate request for one provider; wake/manual refresh works |
 | Persistence | Local runtime reading is not restored; other providers' archived readings and disabled choices survive the migration |
 | Rendering | One RAM cell per loaded model; empty/error removes cells; unknown RAM; long names; mixed cloud/local cells; all four edges; hover and click use model identity/runtime refresh respectively |
-| Live proof | With an already running local server: compare the same API listing to the notch, check Settings updates without refocus, then demonstrate unreachable/recovery using a controlled test endpoint |
+| Live proof | With an already running local server: compare the same API listing to the Mac app, check Settings updates without refocus, then demonstrate unreachable/recovery using a controlled test endpoint |
 
 Use isolated defaults and stubbed URLSession responses for automated tests.
 Add focused Ollama tests and extend the existing lifecycle/render suites listed
-in the [provider integration map](../../.agents/skills/codenotch-providers/references/provider-integration.md).
+in the [provider integration map](../../.agents/skills/swarmaa-providers/references/provider-integration.md).
 Run the repository tests and whitespace checks. A fixture render proves layout;
 a live API response proves runtime data; only comparing both proves the end-to-end
 integration. Loading a large model or changing the user's runtime is unnecessary
@@ -352,21 +352,21 @@ indicator described below; the app still has no model loading/download controls.
 XcodeGen 2.46.0 was installed after the initial planning pass. The app builds on
 Xcode 26.6 using the local ad-hoc signing override. Provider, store, projection,
 hover identity, unknown-memory and native render checks cover this increment.
-Native tooltip, Settings, and notch render artifacts are generated under the
+Native tooltip, Settings, and Mac app render artifacts are generated under the
 ignored `build/ollama-verification` directory. The opt-in live test calls the
 local Ollama server and renders each model returned by its actual listing.
 Multiple-model display is checked with fixtures and the live two-model check
 recorded above.
 
-The tests use `TEST_RUNNER_CODENOTCH_OLLAMA_LIVE=1` to opt into the live check and
+The tests use `TEST_RUNNER_SWARMAA_OLLAMA_LIVE=1` to opt into the live check and
 `TEST_RUNNER_OLLAMA_RENDER_DIRECTORY` to choose an existing render output folder
 when invoking xcodebuild. Ordinary test runs skip the live check. The standalone
 Debug app was launched from the build directory and the user confirmed the
 initial monitor worked; it has not been installed or published.
 
 For brand assertions, the live check also accepts
-`TEST_RUNNER_CODENOTCH_OLLAMA_EXPECTED_MODEL` and
-`TEST_RUNNER_CODENOTCH_OLLAMA_EXPECTED_BRAND` (`qwen`, `gemma`, `llama`,
+`TEST_RUNNER_SWARMAA_OLLAMA_EXPECTED_MODEL` and
+`TEST_RUNNER_SWARMAA_OLLAMA_EXPECTED_BRAND` (`qwen`, `gemma`, `llama`,
 `deepseek`, `mistral`, or `ollama` for an unrecognized name).
 
 The final per-model build passed all 570 tests, including the opt-in live check.
@@ -494,9 +494,9 @@ Verification: 595 tests completed with 594 passed, one opt-in live listing test
 skipped and no failures. New coverage includes exact thresholds, official
 metrics versus network chunks, malformed/absent metrics, both native response
 modes, OpenAI limitations, per-model scoping across polls, reset behavior,
-compact label bounds and all four notch edges. Real HTTP fixture responses
+compact label bounds and all four Mac app edges. Real HTTP fixture responses
 retain exact bytes while delivering one speed measurement for both native
-modes. Four-edge notch and tooltip renders were inspected.
+modes. Four-edge Mac app and tooltip renders were inspected.
 
 The newly built standalone app then forwarded a bounded Qwen 0.6B native stream
 at `11435`. Ollama returned 128 generated tokens and 532,124,000 ns, or

@@ -154,10 +154,9 @@ enum ResetCopy {
     /// A formatter for `template`, kept across calls.
     ///
     /// `setLocalizedDateFormatFromTemplate` rebuilds the formatter's ICU state
-    /// on every call — milliseconds a throw — and the notch's hover path asks
-    /// for the same handful of templates on every mouse event (see
-    /// `NotchWindowController.cursorMoved`), so building a fresh formatter
-    /// there cost real CPU even at idle. The key carries everything a caller
+    /// on every call — milliseconds a throw — and hover paths ask for the same
+    /// handful of templates on every mouse event, so building a fresh
+    /// formatter there cost real CPU even at idle. The key carries everything a caller
     /// could otherwise set after the fact, so a cached formatter is never
     /// mutated again. Per-thread because `DateFormatter` is not thread-safe.
     static func formatter(template: String, calendar: Calendar,

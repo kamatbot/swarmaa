@@ -33,7 +33,7 @@ struct UsageMoneyBreakdown: Codable, Equatable, Sendable {
         return min(max(spent / funded, 0), 1)
     }
 
-    /// The bar's headline: spent by default, what is left when the notch is
+    /// The bar's headline: spent by default, what is left when the app is
     /// set that way. The left half derives from the *rounded* spent figure,
     /// the same rule as the window rows, so the two never disagree by a
     /// point. The Spent/Remaining/Funded stats below stay labeled either way.
@@ -106,7 +106,7 @@ enum Percent {
     }
 
     /// The share of the allowance the meters draw: spent by default, what is
-    /// left when the notch is set that way. The one rule behind the ring's
+    /// left when the app is set that way. The one rule behind the ring's
     /// sweep, the card's bars, and every flipped figure — callers clamp to
     /// what they draw, so an overspent limit reads empty rather than
     /// negative. Bands and pace never come through here: how bad a reading
@@ -244,14 +244,14 @@ struct LimitWindow: Identifiable, Codable, Equatable {
 
     /// Both ends stay on the line either way — the card is the detailed view,
     /// and dropping a figure there would hide information. The setting only
-    /// decides which end leads: the remaining figure first when the notch is
+    /// decides which end leads: the remaining figure first when the app is
     /// set that way, so the bar, the line, and the figure under the ring all
     /// read from the same end.
     func summary(locale: Locale = L10n.locale, showingRemaining: Bool = false) -> String {
         if let usedFraction {
             // Both ends of the same figure. Vendors do not agree on which to
             // show — Codex writes "87% remaining", Claude writes "% used" — so
-            // a notch that picks one side leaves the user converting in their
+            // the app that picks one side leaves the user converting in their
             // head, and "12% Used" beside Codex's "87% remaining" reads as two
             // different numbers rather than one seen from either end. That is
             // what made a correct reading look wrong.
@@ -353,7 +353,7 @@ struct ProviderSnapshot: Identifiable, Equatable {
 
     var providerID: String { sourceProviderID ?? id }
 
-    var notchSnapshots: [ProviderSnapshot] {
+    var usageSnapshots: [ProviderSnapshot] {
         guard kind == .localRuntime, localModel == nil else { return [self] }
         return (localRuntime?.models ?? []).map { model in
             ProviderSnapshot(id: "\(id):model:\(model.id)", displayName: displayName,
@@ -437,7 +437,7 @@ struct ProviderSnapshot: Identifiable, Equatable {
     /// The provider-declared weekly allowance, whether or not another surface
     /// is already using it as its headline.
     ///
-    /// Kept separate from `weeklyWindow`: the notch deliberately suppresses a
+    /// Kept separate from `weeklyWindow`: the app deliberately suppresses a
     /// duplicate second ring when the weekly allowance is already its headline,
     /// while compact summaries still need to know that a valid weekly reading
     /// exists alongside their own five-hour figure.
@@ -506,7 +506,7 @@ struct ProviderSnapshot: Identifiable, Equatable {
     }
 
     /// What the cell prints under the ring: the used percentage, unless the
-    /// notch is set to show what is left instead.
+    /// app is set to show what is left instead.
     var headlineText: String { headlineText(showingRemaining: false) }
 
     /// The same figure from the other end. Only the percentage line flips —
@@ -520,7 +520,7 @@ struct ProviderSnapshot: Identifiable, Equatable {
         if headline?.prefersUsedText == true, let usedText = headline?.usedText { return usedText }
         if let usedFraction {
             // The tooltip's own left half, not one minus the fraction: it
-            // derives from the *rounded* used figure, so the notch and the
+            // derives from the *rounded* used figure, so the app and the
             // card never disagree by a point. See `Percent.halves`.
             if showingRemaining { return Percent.halves(for: usedFraction).left + "%" }
             return Percent.text(for: usedFraction) + "%"

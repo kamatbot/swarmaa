@@ -1,5 +1,5 @@
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 /// `GET /v1/models/status` as oMLX 0.7.0 answered it on 2026-10-08, cut down
 /// to the fields the parser reads plus the entries it must leave out.
@@ -59,8 +59,8 @@ final class OMLXUsageTests: XCTestCase {
 
         let snapshot = OMLXFixtures.snapshot(reading)
         XCTAssertTrue(snapshot.hasReading)
-        XCTAssertEqual(snapshot.notchSnapshots.map(\.id), ["omlx:model:Qwen3.8-27B-oQ8e-mtp"])
-        let cell = try XCTUnwrap(snapshot.notchSnapshots.first)
+        XCTAssertEqual(snapshot.usageSnapshots.map(\.id), ["omlx:model:Qwen3.8-27B-oQ8e-mtp"])
+        let cell = try XCTUnwrap(snapshot.usageSnapshots.first)
         XCTAssertEqual(cell.glyph, .qwen)
         XCTAssertEqual(cell.providerID, "omlx")
         XCTAssertTrue(cell.localRuntimeMeasuresSpeed)
@@ -103,7 +103,7 @@ final class OMLXUsageTests: XCTestCase {
         let reading = try OMLXUsage.parse(Data(#"{"models":[]}"#.utf8))
         let snapshot = OMLXFixtures.snapshot(reading)
         XCTAssertTrue(snapshot.hasReading)
-        XCTAssertTrue(snapshot.notchSnapshots.isEmpty)
+        XCTAssertTrue(snapshot.usageSnapshots.isEmpty)
         XCTAssertTrue(snapshot.statusMessage?.contains("No models loaded") == true)
     }
 

@@ -43,7 +43,7 @@ final class ClaudeTokenRefresher: ObservableObject {
     @Published private(set) var outcome: Outcome = .idle
     /// Set while the command runs. `ClaudeSessionMonitor.ignoredPIDs` reads
     /// this: the CLI registers a session file of its own for the second it
-    /// lives, and it must never show up in the notch as work.
+    /// lives, and it must never show up in the app as work.
     private(set) var launchedPID: Int32?
 
     /// How close to expiry is close enough.

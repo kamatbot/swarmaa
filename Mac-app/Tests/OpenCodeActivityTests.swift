@@ -1,6 +1,6 @@
 import Combine
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 @MainActor
 final class OpenCodeActivityTests: XCTestCase {
@@ -189,12 +189,12 @@ final class OpenCodeActivityTests: XCTestCase {
     func testInstallerBundlesPluginAndPreservesAnExistingFile() throws {
         let root = try directory()
         let existing = Data("// user customization".utf8)
-        try existing.write(to: root.appendingPathComponent("codenotch.js"))
+        try existing.write(to: root.appendingPathComponent("swarmaa.js"))
         try OpenCodePluginInstaller.install(directory: root)
         let files = try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
         let backup = try XCTUnwrap(files.first { $0.pathExtension == "backup" })
         XCTAssertEqual(try Data(contentsOf: backup), existing)
-        let installed = try String(contentsOf: root.appendingPathComponent("codenotch.js"), encoding: .utf8)
+        let installed = try String(contentsOf: root.appendingPathComponent("swarmaa.js"), encoding: .utf8)
         XCTAssertTrue(installed.contains("permission.v2.asked"))
         try OpenCodePluginInstaller.install(directory: root)
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root.path).count, 2)

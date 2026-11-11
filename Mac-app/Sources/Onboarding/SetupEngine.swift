@@ -6,7 +6,7 @@ import Foundation
 
 /// Harness keys, exactly as the engine spells them.
 enum SetupHarness: String, CaseIterable {
-    case claude, codex, agy, grok, dot, notchtrader
+    case claude, codex, agy, grok, dot, mac
 }
 
 // MARK: - Detect
@@ -39,7 +39,7 @@ struct SetupDetection: Decodable, Equatable {
     }
 
     var clis: [String: String] = [:]
-    var notchtrader = false
+    var mac = false
     var postgres: Postgres?
     var envExists = false
     var state: State?
@@ -48,12 +48,12 @@ struct SetupDetection: Decodable, Equatable {
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
         clis = (try? c.decodeIfPresent([String: String].self, forKey: .clis)) ?? [:]
-        notchtrader = (try? c.decodeIfPresent(Bool.self, forKey: .notchtrader)) ?? false
+        mac = (try? c.decodeIfPresent(Bool.self, forKey: .mac)) ?? false
         postgres = try? c.decodeIfPresent(Postgres.self, forKey: .postgres)
         envExists = (try? c.decodeIfPresent(Bool.self, forKey: .envExists)) ?? false
         state = try? c.decodeIfPresent(State.self, forKey: .state)
     }
-    private enum Keys: String, CodingKey { case clis, notchtrader, postgres, envExists, state }
+    private enum Keys: String, CodingKey { case clis, mac, postgres, envExists, state }
 
     func isInstalled(_ harness: SetupHarness) -> Bool { clis[harness.rawValue] != nil }
 }

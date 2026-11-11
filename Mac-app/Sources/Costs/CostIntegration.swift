@@ -3,30 +3,14 @@ import Combine
 import SwiftUI
 
 /// Where the cost layer plugs into the app: the cost models watch the usage
-/// store's snapshots, a Claude card borrows the token chart the Codex card
-/// has, and the Activity window opens from the menu.
+/// store's snapshots, and the Activity window opens from the menu.
 @MainActor
 enum Costs {
     private static var subscription: AnyCancellable?
     private static var activityWindow: NSWindow?
-    /// Whether anything on screen shows costs: the notch, or the Activity window.
-    /// Off, no cost model is built or fed, so a menu-bar-only app never scans
-    /// transcripts. Set from the notch's visibility.
-    static var notchShowsCosts = false
-    private static var isNeeded: Bool { notchShowsCosts || activityWindow?.isVisible == true }
-
-    /// What a Claude login's card gains before the notch draws it: the daily
-    /// token chart and summary the Codex server publishes for Codex, built
-    /// here from the transcripts Claude Code writes.
-    static func decorate(_ snapshot: ProviderSnapshot) -> ProviderSnapshot {
-        // The suite compares cells to what it fed in; the machine's own
-        // accounts and transcripts must not leak into that.
-        guard !Runtime.isUnderTest, isNeeded, snapshot.tokenUsage == nil,
-              let usage = CostModels.model(for: snapshot.id)?.tokenUsage else { return snapshot }
-        var snapshot = snapshot
-        snapshot.tokenUsage = usage
-        return snapshot
-    }
+    /// Whether the Activity window shows costs. Off, no cost model is built
+    /// or fed, so the app never scans transcripts unasked.
+    private static var isNeeded: Bool { activityWindow?.isVisible == true }
 
     static func attach(to store: UsageStore) {
         _ = PlanCatalog.shared

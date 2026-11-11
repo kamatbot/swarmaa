@@ -68,13 +68,13 @@ struct WhatsNewView: View {
 /// test can actually look at.
 struct WhatsNewChanges: View {
     let changes: [ReleaseNote.Change]
-    @Environment(\.codenotchAccentColor) private var accentColor
+    @Environment(\.swarmaaAccentColor) private var accentColor
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             ForEach(Array(changes.enumerated()), id: \.offset) { _, change in
                 HStack(alignment: .top, spacing: 10) {
-                    // The colour a healthy reading takes in the notch, at the
+                    // The colour a healthy reading takes in the app, at the
                     // size a list can carry.
                     Circle()
                         .fill(accentColor)

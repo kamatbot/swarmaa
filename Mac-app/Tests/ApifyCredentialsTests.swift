@@ -1,5 +1,5 @@
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 /// Where the Apify token comes from, and which account the settings row
 /// names for it. Every keychain is stood in for by a closure: there is no

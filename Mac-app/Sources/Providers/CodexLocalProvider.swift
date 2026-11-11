@@ -184,7 +184,7 @@ enum CodexStore {
     /// Codex's *rollouts* are written by the CLI and by the VS Code extension.
     /// The desktop app — ChatGPT.app, which is what most people mean by "Codex"
     /// now — writes none of them; it keeps its threads here instead, with
-    /// `source_kind = 'chatgpt'`. Watching only the rollouts meant the notch
+    /// `source_kind = 'chatgpt'`. Watching only the rollouts meant the app
     /// could never see the desktop app working at all.
     static var desktopStoreURL: URL {
         CodexProfile.default().desktopStoreURL
@@ -369,7 +369,7 @@ struct CodexThread: Equatable {
         return parent
     }
 
-    /// What to call this conversation on the notch.
+    /// What to call this conversation in the app.
     ///
     /// Codex's own name first, because it is the one a person gave or saw.
     /// Then the first line of what was asked, which is how the desktop app
@@ -455,7 +455,7 @@ struct CodexThread: Equatable {
         return out + rest
     }
 
-    /// A preview is a whole message, and a notch row is one line. Long enough
+    /// A preview is a whole message, and a menu row is one line. Long enough
     /// to recognise a request by; the full text is one click away in Codex.
     static let longestPreview = 48
 

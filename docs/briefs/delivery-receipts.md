@@ -20,7 +20,7 @@
   Write each receipt **before** responding to the hook, as Relay does before writing to a worker.
 - **Redelivery.** `unconfirmed` items are offered again at most twice, with the same `delivery_id`, then surfaced in `swarm_status` as "stuck".
   - `accepted` items are never re-offered to that session.
-- **Visibility.** `inbox_get` and `swarm_status` show per-item state. Sinks and the notch see receipt counts, never bodies.
+- **Visibility.** `inbox_get` and `swarm_status` show per-item state. Sinks and the Mac app see receipt counts, never bodies.
 - **Tests:**
   - an exact retry stays read-only;
   - a lost response becomes `unconfirmed` and then is re-offered;

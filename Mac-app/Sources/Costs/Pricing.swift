@@ -29,7 +29,7 @@ final class PriceTable: ObservableObject {
 
     static let fileURL: URL = {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        return base.appendingPathComponent("Codenotch/costs/prices.json")
+        return base.appendingPathComponent("Swarmaa/costs/prices.json")
     }()
 
     /// Fallback prices from the bundle (Resources/prices-default.json); replaced
@@ -247,7 +247,7 @@ struct CostEstimator: Sendable {
 
 
 /// Subscription plans and their list prices, from a JSON catalog the user can
-/// edit (Application Support/Codenotch/costs/plans.json, seeded from the bundle) or point
+/// edit (Application Support/Swarmaa/costs/plans.json, seeded from the bundle) or point
 /// at a URL that is re-read once a day. Nothing about plans lives in code.
 @MainActor
 final class PlanCatalog: ObservableObject {
@@ -259,7 +259,7 @@ final class PlanCatalog: ObservableObject {
 
     static let fileURL: URL = {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        return base.appendingPathComponent("Codenotch/costs/plans.json")
+        return base.appendingPathComponent("Swarmaa/costs/plans.json")
     }()
     static let remoteKey = "plansURL"
     var remoteURL: String {

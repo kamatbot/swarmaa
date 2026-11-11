@@ -6,7 +6,7 @@ import Foundation
 /// credential the owning tool already holds, and there is nothing stopping that
 /// credential belonging to a different account than the one you are sitting in
 /// front of. It happened during development: a browser sign-in created a second,
-/// empty Cursor account, and the notch spent an afternoon faithfully reporting
+/// empty Cursor account, and the app spent an afternoon faithfully reporting
 /// somebody else's zero. A visible email would have caught it in seconds.
 struct ProviderAccount: Equatable {
     /// Email or display name, where the credential carries one.
@@ -67,7 +67,7 @@ enum SignInRoute: Equatable {
             }
             return command.hasSuffix("login")
                 ? L10n.t("Runs \(command) in your terminal; it opens the browser to sign in and saves the session this reads.")
-                : L10n.t("Runs \(command) in your terminal; sign in there with /login and the notch reads the session.")
+                : L10n.t("Runs \(command) in your terminal; sign in there with /login and Swarmaa reads the session.")
         }
     }
 
@@ -79,8 +79,8 @@ enum SignInRoute: Equatable {
     var switchHint: String {
         switch self {
         case .modal(let name):      return L10n.t("Sign out in the \(name) window to use another account.")
-        case .openApp(_, let name): return L10n.t("Switch accounts in \(name); the notch follows.")
-        case .guidance, .command:   return L10n.t("Switch accounts in the tool that owns it; the notch follows.")
+        case .openApp(_, let name): return L10n.t("Switch accounts in \(name); Swarmaa follows.")
+        case .guidance, .command:   return L10n.t("Switch accounts in the tool that owns it; Swarmaa follows.")
         }
     }
 

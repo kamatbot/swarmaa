@@ -1,5 +1,5 @@
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 @MainActor
 final class CodexOpenRolloutTests: XCTestCase {

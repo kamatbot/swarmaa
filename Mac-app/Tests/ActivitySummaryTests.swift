@@ -1,6 +1,6 @@
 import SQLite3
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 final class ActivitySummaryTests: XCTestCase {
     private func session(_ state: AgentSession.State, name: String = "s") -> AgentSession {
@@ -92,7 +92,7 @@ final class CursorActivityTests: XCTestCase {
     }
 
     /// The bug this exists to stop: Cursor is killed mid-run, `unfinishedRunAt`
-    /// is never cleared, and the notch reports three agents working a day later
+    /// is never cleared, and the app reports three agents working a day later
     /// with the editor not even open.
     func testARunIsNotBusyWhenCursorIsNotRunning() {
         XCTAssertNil(session(header(), launchedAt: nil))
@@ -176,7 +176,7 @@ final class CursorActivityTests: XCTestCase {
     }
 
     /// Nested composers (continual-learning, explore, …) are not their own
-    /// notch rows. The parent chat already carries the busy/waiting state,
+    /// menu rows. The parent chat already carries the busy/waiting state,
     /// and finished subagents are what left the blocking flag set for months.
     func testASubagentRowIsNotListedEvenWhenItLooksLive() {
         XCTAssertNil(session(header(subagent: true)))

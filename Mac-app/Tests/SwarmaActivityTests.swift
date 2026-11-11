@@ -1,5 +1,5 @@
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 /// The agent/project hover card's model: new wire fields, the cells that carry
 /// it, and the card height every sizing path must agree on.
@@ -123,32 +123,4 @@ final class SwarmaActivityTests: XCTestCase {
         return a
     }
 
-    func testHeightGrowsWithRowsAndStaysWithinTheBudget() throws {
-        let one = NotchLayout.activityCardHeight(many(1))
-        XCTAssertGreaterThan(NotchLayout.activityCardHeight(many(3)), one)
-        XCTAssertEqual(NotchLayout.activityCardHeight(many(40)), NotchLayout.activityCardHeight(many(5)) , accuracy: 0.001,
-                       "past the cap only the '+N more' line is drawn")
-        let worst = NotchLayout.activityCardHeight(many(40))
-        XCTAssertLessThanOrEqual(worst, NotchLayout.defaultMaxCardHeight)
-        XCTAssertEqual(NotchLayout.cardHeight(windowCount: 1, swarmActivity: many(2)), NotchLayout.activityCardHeight(many(2)))
-    }
-
-    @MainActor func testHoverRegionUsesTheActivityHeight() throws {
-        struct Screen: ScreenDescribing {
-            var frameValue = CGRect(x: -1920, y: 100, width: 1920, height: 1080)
-            var visibleFrameValue: CGRect { frameValue }
-            var hardwareNotch: HardwareNotch?
-            var displayIdentifier: String? { "same-display" }
-        }
-        let activity = try XCTUnwrap(SwarmaCells.scopeSnapshot(scope: "project:demo", in: try SwarmaActivityFixture.status()).swarmActivity)
-        let model = NotchViewModel()
-        model.edge = .right
-        model.snapshots = [SwarmaCells.scopeSnapshot(scope: "project:demo", in: try SwarmaActivityFixture.status())]
-        model.adopt(screen: Screen())
-        model.isExpanded = true
-        let rect = try XCTUnwrap(CursorGeometry(model: model, placement: NotchPlacement(edge: .right, panelSize: model.panelSize))
-            .tooltipRect(index: 0))
-        XCTAssertEqual(rect.height, NotchLayout.activityCardHeight(activity), accuracy: 0.5)
-        XCTAssertGreaterThanOrEqual(model.maxCardHeight(cellCount: 1), NotchLayout.activityCardHeight(activity))
-    }
 }

@@ -1,5 +1,5 @@
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 /// Lesson review: wire shapes, request bodies, the forbidden message, the
 /// cell, and the window model's refresh. No network; the token is made up.
@@ -191,7 +191,7 @@ final class LessonReviewTests: XCTestCase {
     }
 
     @MainActor
-    func testApprovalRefreshesTheListAndTellsTheNotch() async throws {
+    func testApprovalRefreshesTheListAndTellsTheApp() async throws {
         let service = FakeService([SwarmaLesson(id: "a", title: "A"), SwarmaLesson(id: "b", title: "B")])
         var changed = 0
         let model = LessonReviewModel(service: service) { changed += 1 }

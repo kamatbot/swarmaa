@@ -1,7 +1,7 @@
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
-/// What Swarmaa's `sessions` and `routing` add to the notch: a cell per service
+/// What Swarmaa's `sessions` and `routing` add to the app: a cell per service
 /// in use, and a marker on the agent that gets the next task. Both fields are
 /// optional on the wire, so an older service must still decode.
 final class SwarmaSessionsTests: XCTestCase {
@@ -143,16 +143,16 @@ final class SwarmaSessionsTests: XCTestCase {
 
         var status = try full()
         store.registerSwarmProviders(SwarmaDirectory.providers(for: status, client: client))
-        XCTAssertTrue(store.notchSnapshots.map(\.id).contains("swarm:harness:dot"))
+        XCTAssertTrue(store.usageSnapshots.map(\.id).contains("swarm:harness:dot"))
 
         status.sessions.removeAll { $0.harness == "dot" }
         store.registerSwarmProviders(SwarmaDirectory.providers(for: status, client: client))
-        XCTAssertFalse(store.notchSnapshots.map(\.id).contains("swarm:harness:dot"))
-        XCTAssertTrue(store.notchSnapshots.map(\.id).contains("swarm:harness:codex"))
+        XCTAssertFalse(store.usageSnapshots.map(\.id).contains("swarm:harness:dot"))
+        XCTAssertTrue(store.usageSnapshots.map(\.id).contains("swarm:harness:codex"))
 
         status.sessions = []
         store.registerSwarmProviders(SwarmaDirectory.providers(for: status, client: client))
-        XCTAssertEqual(store.notchSnapshots.map(\.id).filter { $0.hasPrefix("swarm:harness:") }, [])
+        XCTAssertEqual(store.usageSnapshots.map(\.id).filter { $0.hasPrefix("swarm:harness:") }, [])
     }
 
     // MARK: Routing on agent cells

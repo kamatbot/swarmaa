@@ -171,7 +171,7 @@ protocol SwarmaTokenStore: Sendable {
 
 /// Keychain generic password under the app's bundle id.
 struct KeychainTokenStore: SwarmaTokenStore {
-    var service = "app.swarmaa.notch"
+    var service = "app.swarmaa.mac"
     var account = "swarmaa-oauth"
 
     private var query: [String: Any] {

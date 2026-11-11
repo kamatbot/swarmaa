@@ -1,5 +1,5 @@
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 /// Fixtures written to TEAMS.md §2 and §4. No network: the client gets stub
 /// transports, and the only token is a made-up one in a temporary file.

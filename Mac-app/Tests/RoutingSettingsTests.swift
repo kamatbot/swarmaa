@@ -1,5 +1,5 @@
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 /// Routing rules: wire shapes, the exact routing_set body, reorder, validation,
 /// the 403/400 mapping, dirty/Save state and the slider marker. No network.

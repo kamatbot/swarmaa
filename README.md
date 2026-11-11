@@ -106,7 +106,7 @@ Detailed guides: [Agent & Worker Setup](docs/AGENT_SETUP.md), [Operations & HTTP
 
 ## Mac App
 
-The Swarmaa notch app for macOS shows each agent's quota, the swarms running in each project and live task updates, right in your Mac's notch. Its source is in **[`Mac-app/`](Mac-app/)** in this repo, built on **[Codenotch](https://github.com/vinzdg/codenotch)** by Vinz, the open-source macOS app that pins Claude Code, Cursor, Codex and Antigravity usage limits to a screen edge. The service in this repo works without it; the app is the easiest way to watch it.
+The Swarmaa Mac app shows each agent's quota, the swarms running in each project and live task updates in its main window and menu bar. Its source is in **[`Mac-app/`](Mac-app/)** in this repo, built on an MIT-licensed open-source macOS usage app by Vinz (see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)). The service in this repo works without it; the app is the easiest way to watch it.
 
 ---
 
@@ -165,7 +165,7 @@ Read [SECURITY.md](SECURITY.md) for vulnerability disclosure instructions (`mayu
 
 Swarmaa builds upon and integrates with open-source work from the community:
 
-- **[Codenotch](https://github.com/vinzdg/codenotch) by Vinz** (MIT License) — The Swarmaa Mac app ([kamatbot/NotchTrader](https://github.com/kamatbot/NotchTrader)) is built on Codenotch.
+- **Vinz's open-source macOS usage app** (MIT License) — The Swarmaa Mac app in `Mac-app/` is built on it; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) §6.
 - **[agent-beacon](https://github.com/asymptote-labs/agent-beacon) by Asymptote Labs** (MIT License) — Local chat-history readers in `src/capture/` and single-event safety lint rules in `src/safety/lint.ts` and `tests/fixtures/beacon-lint-fixtures.json` are adapted from `agent-beacon`.
 - **[Reason Network](https://github.com/reason-machines/reason-network) by Reason Machines, Inc. and the tincan contributors** (MIT OR Apache-2.0) — Vendored under `vendor/reason-network` as an optional peer-discovery and notification layer.
 - **IBM Plex** (Copyright © 2017 IBM Corp.) and **Stardos Stencil** (Copyright © 2010 Vernon Adams) — Web fonts distributed under the SIL Open Font License 1.1 (`site/public/fonts/`).

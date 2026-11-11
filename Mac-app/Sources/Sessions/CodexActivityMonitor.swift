@@ -163,7 +163,7 @@ final class CodexActivityMonitor: ObservableObject, AgentActivityMonitor {
         let found = Self.settled(read, entered: &entered)
         guard found != sessions else { return }
         // Only on a change, as the Claude monitor does, and for the same
-        // reason: it is the one way to see what the notch thinks is running
+        // reason: it is the one way to see what the app thinks is running
         // without hovering over it.
         let summary = found.map { "\($0.name)=\($0.state)" }.joined(separator: " ")
         Log.sessions.debug("\(self.profile.id, privacy: .public): \(summary, privacy: .public)")
@@ -174,7 +174,7 @@ final class CodexActivityMonitor: ObservableObject, AgentActivityMonitor {
     ///
     /// This used to be one row at most, called "Codex": the newest rollout or
     /// the newest desktop thread, whichever moved last. Two conversations
-    /// running at once drew as one, and nothing on the notch said which
+    /// running at once drew as one, and nothing in the app said which
     /// request was being worked on — while the Claude rows beside it named
     /// every session. Codex does name its conversations; the name is in the
     /// same `threads` row the rollout path was already being read from.

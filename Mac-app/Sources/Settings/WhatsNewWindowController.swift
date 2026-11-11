@@ -53,7 +53,7 @@ final class WhatsNewWindowController {
         window.contentView = NSHostingView(
             rootView: WhatsNewView(note: note) { [weak self] in self?.dismiss() }
                 .tint(preferences.accentColor.color)
-                .environment(\.codenotchAccentColor, preferences.accentColor.color)
+                .environment(\.swarmaaAccentColor, preferences.accentColor.color)
         )
         window.center()
         window.isReleasedWhenClosed = false

@@ -1,6 +1,6 @@
 import XCTest
 import Sparkle
-@testable import Codenotch
+@testable import Swarmaa
 
 /// Fixtures are the real thing: the keychain payload's shape and the actual
 /// `loadCodeAssist` response from a signed-in install.
@@ -585,7 +585,7 @@ final class AntigravityBridgeTests: XCTestCase {
                    "resetTime":"2026-09-08T09:12:10Z"}]}]}}
     """.utf8)
 
-    /// The server reports what is *left*; the notch shows what is spent.
+    /// The server reports what is *left*; the app shows what is spent.
     /// Inverting it here rather than in the view keeps a percentage meaning the
     /// same thing whichever provider produced it.
     func testRemainingIsTurnedIntoUsed() {
@@ -1033,7 +1033,7 @@ final class CredentialCacheTests: XCTestCase {
     /// refusal, for as long as the item's `mdat` stayed the same. Nothing
     /// touches the item again once it holds a valid token, so on a real
     /// machine one unlucky read landed during dark wake and every read for
-    /// the next three hours replayed that single failure — the notch said
+    /// the next three hours replayed that single failure — the app said
     /// "Sign in to Claude Code" long after the saved login was fine again,
     /// because nothing here ever asked macOS a second time.
     ///
@@ -1225,7 +1225,6 @@ final class FirstRunCopyTests: XCTestCase {
                             signOut: { _ in }, signIn: { _ in true },
                             switchAccount: { _ in true },
                             retry: { _ in },
-                            resetPosition: {},
                             quit: {},
                             updater: Updater())
     }
@@ -1282,40 +1281,31 @@ final class AntigravityFallbackTests: XCTestCase {
     }
 }
 
-final class AuthorCreditTests: XCTestCase {
-    /// Pinned because a wrong handle in a credit is worse than none, and it is
-    /// the kind of string nobody re-reads once it looks right.
-    func testTheCreditPointsAtTheRightAccount() {
-        XCTAssertEqual(SettingsView.authorURL.absoluteString, "https://x.com/hivinz_")
-        XCTAssertEqual(SettingsView.authorURL.scheme, "https")
-    }
-}
-
-/// Where the app shows itself, apart from the notch. Only one of the three has
-/// a Dock tile, and only one makes a menu bar item — get either mapping wrong
-/// and the app is either unreachable or in two places at once.
+/// Where the app shows itself. Only one of the two has a Dock tile, and only
+/// one makes a menu bar item — get either mapping wrong and the app is either
+/// unreachable or in two places at once.
 final class AppPresenceTests: XCTestCase {
     func testOnlyTheDockOptionIsARegularApp() {
         XCTAssertEqual(AppPresence.dock.activationPolicy, .regular)
         XCTAssertEqual(AppPresence.menuBar.activationPolicy, .accessory)
-        XCTAssertEqual(AppPresence.hidden.activationPolicy, .accessory)
     }
 
     /// What separates the two accessory modes.
     func testOnlyTheMenuBarOptionMakesAStatusItem() {
         XCTAssertFalse(AppPresence.dock.wantsStatusItem)
         XCTAssertTrue(AppPresence.menuBar.wantsStatusItem)
-        XCTAssertFalse(AppPresence.hidden.wantsStatusItem)
     }
 
-    /// Choosing this removes every visible way back into settings, so the
-    /// option itself has to say where the door is.
-    func testHidingExplainsHowToGetBack() {
-        XCTAssertTrue(AppPresence.hidden.explanation.contains("Applications"))
+    /// The retired "neither" choice must never leave the app unreachable.
+    func testTheRetiredHiddenChoiceLandsOnTheMenuBar() {
+        XCTAssertEqual(AppPresence(stored: "hidden"), .menuBar)
+        XCTAssertEqual(AppPresence(stored: "dock"), .dock)
+        XCTAssertNil(AppPresence(stored: "bogus"))
+        XCTAssertNil(AppPresence(stored: nil))
     }
 
     func testEveryModeIsNamedAndExplained() {
-        XCTAssertEqual(AppPresence.allCases.count, 3)
+        XCTAssertEqual(AppPresence.allCases.count, 2)
         for mode in AppPresence.allCases {
             XCTAssertFalse(mode.title.isEmpty)
             XCTAssertFalse(mode.explanation.isEmpty)
@@ -1404,7 +1394,7 @@ final class MenuBarIconTests: XCTestCase {
     }
 }
 
-/// The menu bar menu when the notch is hidden: the same readings as the
+/// The menu bar menu when the app is hidden: the same readings as the
 /// tooltips, or Hide is a one-way door to numbers you can no longer see.
 @MainActor
 final class StatusMenuTests: XCTestCase {

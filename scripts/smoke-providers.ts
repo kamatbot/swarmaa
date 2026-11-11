@@ -1,7 +1,7 @@
 // Provider support matrix: a live smoke test against real CLIs and running Swarmaa swarm.
 // Scenarios per provider: answer, served, continue, patch, cancel, notify.
 // Exit 1 on any FAIL; output table + JSON report in .local/smoke-providers/<timestamp>.json.
-// Usage: npm run smoke:providers [-- --providers claude,codex,antigravity] [--scope project:general] [--patch-scope <scope>] [--timeout 300] [--as notchtrader]
+// Usage: npm run smoke:providers [-- --providers claude,codex,antigravity] [--scope project:general] [--patch-scope <scope>] [--timeout 300] [--as swarmaa-mac]
 import { execSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
@@ -495,7 +495,7 @@ export class TaskTracker {
 
 export function getHelpText(): string {
   return [
-    'Usage: npm run smoke:providers [-- --providers claude,codex,antigravity] [--scope project:general] [--patch-scope <scope>] [--timeout 300] [--as notchtrader]',
+    'Usage: npm run smoke:providers [-- --providers claude,codex,antigravity] [--scope project:general] [--patch-scope <scope>] [--timeout 300] [--as swarmaa-mac]',
     '',
     'Live provider support matrix smoke test against the running Swarmaa swarm on this Mac.',
     'Drives each provider through six scenarios: answer, served, continue, patch, cancel, notify.',
@@ -505,7 +505,7 @@ export function getHelpText(): string {
     '  --scope        Task scope for research/review/cancel/continue tasks (default: project:general)',
     '  --patch-scope  Scope whose bridge project has allow_patch enabled (required for patch scenario)',
     '  --timeout      Per-scenario timeout in seconds (default: 300)',
-    '  --as           Identity token file in .local/<as>.json (default: notchtrader)',
+    '  --as           Identity token file in .local/<as>.json (default: swarmaa-mac)',
     '  -h, --help     Show this help message and exit',
     '',
     'Scenarios:',
@@ -554,7 +554,7 @@ if (isDirectExecution()) {
       scope: { type: 'string', default: 'project:general' },
       'patch-scope': { type: 'string' },
       timeout: { type: 'string', default: '300' },
-      as: { type: 'string', default: 'notchtrader' },
+      as: { type: 'string', default: 'swarmaa-mac' },
       help: { type: 'boolean', short: 'h', default: false },
     },
     allowPositionals: true,

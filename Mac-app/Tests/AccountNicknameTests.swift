@@ -1,9 +1,9 @@
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 /// An account is called what its owner named it, everywhere at once: the
 /// name lives in Preferences and the store writes it into every snapshot it
-/// publishes, so the notch, the menu bar and the notifications never
+/// publishes, so the app, the menu bar and the notifications never
 /// disagree with the Accounts row.
 @MainActor
 final class AccountNicknameTests: XCTestCase {
@@ -38,7 +38,7 @@ final class AccountNicknameTests: XCTestCase {
         XCTAssertEqual(store.snapshots.map(\.displayName), ["Claude (work)"])
         store.nicknames = ["claude-work": "Acme"]
         XCTAssertEqual(store.snapshots.map(\.displayName), ["Acme"])
-        XCTAssertEqual(store.notchSnapshots.map(\.displayName), ["Acme"])
+        XCTAssertEqual(store.usageSnapshots.map(\.displayName), ["Acme"])
     }
 
     func testClearingTheNameGoesBackToTheProviders() {

@@ -4,4 +4,4 @@
 // the vendored Zstandard decoder, needed because Claude Desktop's HTTP cache
 // stores bodies as zstd and macOS ships no decoder for it. See
 // Sources/Vendor/zstd/README.md.
-#import "Vendor/zstd/CodenotchZstd.h"
+#import "Vendor/zstd/SwarmaaZstd.h"

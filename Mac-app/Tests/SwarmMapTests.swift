@@ -1,5 +1,5 @@
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 final class SwarmMapTests: XCTestCase {
     private let t0 = Date(timeIntervalSince1970: 1_000_000)

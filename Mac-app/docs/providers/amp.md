@@ -1,15 +1,15 @@
 # Amp
 
-Codenotch for macOS reads the Amp CLI login from
-`~/.local/share/amp/secrets.json`. Run `amp login`, then refresh Codenotch.
+Swarmaa for macOS reads the Amp CLI login from
+`~/.local/share/amp/secrets.json`. Run `amp login`, then refresh Swarmaa.
 Enable or disable Amp in **Settings → Accounts** like any other provider.
-Disabling it stops polling and forgets Codenotch's readings; it leaves the
+Disabling it stops polling and forgets Swarmaa's readings; it leaves the
 Amp login file untouched.
 
 ## Readings
 
 - **Subscription:** Agent usage is the headline ring. Orb usage is a separate
-  tooltip row. Amp reports percentages remaining; Codenotch shows the
+  tooltip row. Amp reports percentages remaining; Swarmaa shows the
   complementary percentages used with `.official` fidelity. Both the older
   `Amp … Subscription` format and the current `Amp … Tier` format are supported.
   The latter includes dollar balances and orb-hour allowances; the ring uses
@@ -48,12 +48,12 @@ Content-Type: application/json
 Only the `apiKey@https://ampcode.com/` entry (also accepted without the trailing
 slash) is used. Keys for other servers in the same file are ignored. The file
 is re-read on refresh, so logging in again or rotating the key needs no app
-restart. No credential is copied, refreshed, logged, or written by Codenotch.
+restart. No credential is copied, refreshed, logged, or written by Swarmaa.
 
 OAuth-based CLI logins can store a short-lived access token in that entry.
 This adapter does not use the CLI's refresh token or renew access tokens.
 If a previously working account returns an authentication error, run
-`amp usage` in Terminal to let the CLI renew its token, then refresh Codenotch.
+`amp usage` in Terminal to let the CLI renew its token, then refresh Swarmaa.
 If the CLI also needs authentication, run `amp login`. Automatic OAuth renewal
 is not included in this adapter.
 
@@ -64,7 +64,7 @@ Unknown or invalid responses show an error, never a fabricated 0%.
 Missing credentials and HTTP 401/403 show `amp login` guidance. Unreadable or
 malformed credential files show a storage error. HTTP 429 persists a wait of at
 least one minute and honors `Retry-After`, including HTTP dates. Other failures
-use Codenotch's normal last-good-reading/stale behavior.
+use Swarmaa's normal last-good-reading/stale behavior.
 
 ## References
 
@@ -85,7 +85,7 @@ temporary files, URL sessions, and preference stores by default.
 After `amp login`, explicitly enable the live provider/store check with:
 
 ```sh
-TEST_RUNNER_CODENOTCH_TEST_AMP_LIVE=1 make test
+TEST_RUNNER_SWARMAA_TEST_AMP_LIVE=1 make test
 ```
 
 That check reads the actual CLI credential and requests live usage. It prints

@@ -1,5 +1,5 @@
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 @MainActor
 final class UsageResetWatcherTests: XCTestCase {
@@ -137,30 +137,5 @@ final class UsageResetWatcherTests: XCTestCase {
 
         XCTAssertEqual(alerts.count, 2)
         XCTAssertEqual(alerts[1].providerID, "cursor")
-    }
-}
-
-/// A hidden notch has nowhere to put the card, and used to swallow the alert
-/// without a word — so the caller has to be able to tell, and reach for a
-/// system notification instead.
-@MainActor
-final class ResetAlertVisibilityTests: XCTestCase {
-    private let event = UsageResetEvent(
-        providerID: "claude",
-        providerName: "Claude",
-        windowLabel: "5-hour limit",
-        glyph: .claude,
-        previousFraction: 0.95,
-        currentFraction: 0.0,
-        resetsAt: Date().addingTimeInterval(5 * 3600)
-    )
-
-    /// Deliberately only the hidden case. Showing a real panel here perturbs the
-    /// arrival-animation timing `EdgeArrivalTests` measures, and the branch that
-    /// matters — the one that used to lose the alert — is this one.
-    func testAControllerWithNoPanelSaysItDidNotShow() {
-        let controller = NotchWindowController()
-        XCTAssertFalse(controller.showResetAlert(event, duration: 0.1))
-        XCTAssertNil(controller.model.activeResetAlert)
     }
 }

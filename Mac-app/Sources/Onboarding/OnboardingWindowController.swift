@@ -1,7 +1,7 @@
 import SwiftUI
 import AppKit
 
-/// The first-launch / "Run Setup…" window: a regular, centered window, not the notch.
+/// The first-launch / "Run Setup…" window: a regular, centered window, not the app.
 @MainActor
 final class OnboardingWindowController: NSObject, NSWindowDelegate {
     private var window: NSWindow?

@@ -27,7 +27,7 @@ enum PhoneLinkCrypto {
         }
         let key = SymmetricKey(data: codeBytes)
         return Data(HMAC<SHA256>.authenticationCode(
-            for: Data("codenotch-device-v3:\(deviceId)".utf8),
+            for: Data("\(PhoneLinkWire.deviceKeyPrefix):\(deviceId)".utf8),
             using: key
         ))
     }
@@ -36,8 +36,8 @@ enum PhoneLinkCrypto {
         let material = SymmetricKey(data: secret)
         return DeviceKeys(
             secret: secret,
-            signature: derive(material, info: "codenotch/v3/sig"),
-            encryption: derive(material, info: "codenotch/v3/enc")
+            signature: derive(material, info: PhoneLinkWire.info("sig")),
+            encryption: derive(material, info: PhoneLinkWire.info("enc"))
         )
     }
 
@@ -47,8 +47,8 @@ enum PhoneLinkCrypto {
         }
         let material = SymmetricKey(data: codeBytes)
         return PairingKeys(
-            signature: derive(material, info: "codenotch/v3/pair-sig"),
-            encryption: derive(material, info: "codenotch/v3/pair-enc")
+            signature: derive(material, info: PhoneLinkWire.info("pair-sig")),
+            encryption: derive(material, info: PhoneLinkWire.info("pair-enc"))
         )
     }
 

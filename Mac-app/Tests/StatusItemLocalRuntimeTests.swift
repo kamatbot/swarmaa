@@ -1,10 +1,10 @@
 import XCTest
 import AppKit
-@testable import Codenotch
+@testable import Swarmaa
 
 /// The menu bar's menu has to say about a local model what its cell says,
 /// which the store's own snapshot of the runtime cannot: speed, phase, context
-/// and today's tokens are put on the cells by the view model.
+/// and today's tokens are put on the cells by `UsageBoard`.
 @MainActor
 final class StatusItemLocalRuntimeTests: XCTestCase {
     private let qwen = LMStudioMetrics.cellID(instance: "qwen3.8-27b")
@@ -22,28 +22,27 @@ final class StatusItemLocalRuntimeTests: XCTestCase {
                                       localRuntime: try OllamaLocalUsage.parse(ollamaData))
         let cloud = Fixtures.snapshots()[0]
 
-        // No `show()`: the fleet has no panels, and the menu's model is fed anyway.
-        let fleet = NotchFleet(scope: .mainDisplay, edge: .right)
-        fleet.setSnapshots([cloud, runtime, ollama])
+        let board = UsageBoard()
+        board.setSnapshots([cloud, runtime, ollama])
         var ledger = LocalTokenLedger()
         ledger.record(LocalPrediction(instance: "qwen3.8-27b", at: Date().addingTimeInterval(-60),
                                       inputTokens: 20_000, outputTokens: 1_200), as: qwen)
-        fleet.setLedger(ledger)
-        fleet.setPerformances([qwen: try XCTUnwrap(LocalModelPerformance(outputTokens: 1200, tokensPerSecond: 24.1))],
+        board.setLedger(ledger)
+        board.setPerformances([qwen: try XCTUnwrap(LocalModelPerformance(outputTokens: 1200, tokensPerSecond: 24.1))],
                               source: "lmstudio")
-        fleet.setLocalActivities([qwen: LocalModelActivity(phase: .processingPrompt, queued: 1, since: Date())])
-        fleet.setThinkingModels(["gemma4:e4b": Date()])
+        board.setLocalActivities([qwen: LocalModelActivity(phase: .processingPrompt, queued: 1, since: Date())])
+        board.setThinkingModels(["gemma4:e4b": Date()])
 
         let controller = StatusItemController(onOpenSettings: {})
         controller.snapshots = [cloud, runtime, ollama]
-        controller.cells = { fleet.menuModel.snapshots }
-        controller.activity = { fleet.menuModel.activity(for: $0) }
+        controller.cells = { board.snapshots }
+        controller.activity = { board.activity(for: $0) }
         let menu = NSMenu()
         controller.rebuild(menu: menu, now: Date())
         let titles = menu.items.map(\.title)
         let joined = titles.joined(separator: "\n")
 
-        let cell = try XCTUnwrap(fleet.menuModel.snapshots.first { $0.id == qwen })
+        let cell = try XCTUnwrap(board.snapshots.first { $0.id == qwen })
         XCTAssertTrue(titles.contains("LM Studio — 2 models loaded"), joined)
         XCTAssertTrue(titles.contains("qwen3.8-27b: \(cell.headlineText) · Prompt · 1 queued · Context 61% · Today 20k in · 1200 out"), joined)
         XCTAssertTrue(titles.contains("flash-next-test: — tok/s"), joined)
@@ -57,8 +56,8 @@ final class StatusItemLocalRuntimeTests: XCTestCase {
         XCTAssertNil(try XCTUnwrap(menu.items.first { $0.title.hasPrefix("qwen3.8-27b") }).action)
 
         // A hidden model has no cell, so it has no line; the count still counts it.
-        fleet.setSnapshots([cloud, ollama, runtime])
-        fleet.menuModel.updateSnapshots(runtime.notchSnapshots.filter { $0.id == qwen } + [cloud])
+        board.setSnapshots([cloud, ollama, runtime])
+        board.setSnapshots(runtime.usageSnapshots.filter { $0.id == qwen } + [cloud])
         controller.rebuild(menu: menu, now: Date())
         XCTAssertFalse(menu.items.map(\.title).contains { $0.hasPrefix("flash-next-test") })
     }

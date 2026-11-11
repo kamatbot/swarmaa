@@ -31,7 +31,7 @@ enum ClaudeRemoteCredentials {
     /// Printed by the renewal command when no `claude` was found to run. The
     /// only thing the caller reads out of that run's output — everything else
     /// is Claude refusing the empty prompt, which is the success shape.
-    static let noCLISentinel = "CODENOTCH_NO_CLI"
+    static let noCLISentinel = "SWARMAA_NO_CLI"
 
     /// The remote command that renews a rotted token the way the local token
     /// renewal does: start the server's own Claude Code with no prompt, so it

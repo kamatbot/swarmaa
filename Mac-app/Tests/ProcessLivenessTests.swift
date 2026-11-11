@@ -1,5 +1,5 @@
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 /// The pid check that decides whether a session file tells the truth. Its
 /// whole subtlety is pid reuse: a recycled pid would resurrect a dead session,

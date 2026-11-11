@@ -43,7 +43,7 @@ Run the dedicated motion test suite:
 ```bash
 cd Mac-app
 xcodegen generate
-xcodebuild test -project Codenotch.xcodeproj -scheme Codenotch -destination 'platform=macOS,arch=arm64' -only-testing:CodenotchTests/TeamsMotionTests
+xcodebuild test -project Swarmaa.xcodeproj -scheme Swarmaa -destination 'platform=macOS,arch=arm64' -only-testing:SwarmaaTests/TeamsMotionTests
 ```
 
 ### 3. Core Repository Invariants

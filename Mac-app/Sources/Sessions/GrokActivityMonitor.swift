@@ -29,7 +29,7 @@ final class GrokActivityMonitor: ObservableObject, AgentActivityMonitor {
     private var timer: Timer?
     /// One scan at a time: a slow one is not stacked on by the next tick.
     private var isScanning = false
-    private static let scanQueue = DispatchQueue(label: "codenotch.grok-activity", qos: .utility)
+    private static let scanQueue = DispatchQueue(label: "app.swarmaa.mac.grok-activity", qos: .utility)
 
     init(
         activeURL: URL = GrokActivity.activeURL,
@@ -59,7 +59,7 @@ final class GrokActivityMonitor: ObservableObject, AgentActivityMonitor {
 
     /// Off the main thread. Finding headless `grok -p` runs lists every
     /// process on the Mac and asks the kernel about each — hundreds of calls a
-    /// tick — which is not work to put between the notch and its next frame.
+    /// tick — which is not work to put between the app and its next frame.
     private func rescan() {
         guard !isScanning else { return }
         isScanning = true

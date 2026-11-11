@@ -1,5 +1,5 @@
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 /// The SDK socket's frames, checked against what LM Studio 0.4.24 accepted
 /// and answered on 2026-09-10.
@@ -13,7 +13,7 @@ final class LMStudioWireTests: XCTestCase {
 
     func testWithoutATokenAFreshPairNamesTheConnection() {
         let frame = LMStudioWire.authFrame(token: nil, random: { "abcdefghijklmnopqrst" })
-        XCTAssertEqual(frame["clientIdentifier"] as? String, "codenotch-abcdefgh")
+        XCTAssertEqual(frame["clientIdentifier"] as? String, "swarmaa-abcdefgh")
         XCTAssertEqual(frame["clientPasskey"] as? String, "abcdefghijklmnopqrst")
         let real = LMStudioWire.authFrame(token: nil)
         XCTAssertEqual((real["clientPasskey"] as? String)?.count, 20)
@@ -23,7 +23,7 @@ final class LMStudioWireTests: XCTestCase {
 
     func testAMalformedTokenIsStillSentSoTheServerCanRefuseIt() {
         let frame = LMStudioWire.authFrame(token: "not-a-token")
-        XCTAssertEqual(frame["clientIdentifier"] as? String, "codenotch")
+        XCTAssertEqual(frame["clientIdentifier"] as? String, "swarmaa")
         XCTAssertEqual(frame["clientPasskey"] as? String, "not-a-token")
     }
 

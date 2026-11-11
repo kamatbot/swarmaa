@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 /// Renders the main window's screens to PNGs off-screen (no Screen Recording
 /// needed) from example data. Writes only when SWARMAA_SNAPSHOT_DIR is set.

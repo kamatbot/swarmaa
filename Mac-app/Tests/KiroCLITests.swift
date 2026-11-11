@@ -1,5 +1,5 @@
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 /// `kiro-cli chat --no-interactive /usage` is asked of the binary, because
 /// the CLI owns the login and this app does not. These pin how that binary

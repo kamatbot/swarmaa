@@ -295,19 +295,19 @@ final class WebSessionProvider: NSObject, UsageProvider {
         // document start, because the interesting calls happen during load.
         configuration.userContentController.addUserScript(WKUserScript(
             source: #"""
-            window.__notchCalls = [];
+            window.__swarmaaCalls = [];
             (function () {
                 const fetchImpl = window.fetch;
                 window.fetch = function (...args) {
                     try {
                         const url = args[0] && args[0].url ? args[0].url : args[0];
-                        window.__notchCalls.push(String(url));
+                        window.__swarmaaCalls.push(String(url));
                     } catch (e) {}
                     return fetchImpl.apply(this, args);
                 };
                 const openImpl = XMLHttpRequest.prototype.open;
                 XMLHttpRequest.prototype.open = function (method, url) {
-                    try { window.__notchCalls.push(String(url)); } catch (e) {}
+                    try { window.__swarmaaCalls.push(String(url)); } catch (e) {}
                     return openImpl.apply(this, arguments);
                 };
             })();
@@ -434,7 +434,7 @@ final class WebSessionProvider: NSObject, UsageProvider {
         try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
         isLoaded = false   // the page moved; the next refresh reloads its own
         let result = try? await webView.callAsyncJavaScript(
-            "return JSON.stringify(window.__notchCalls || []);",
+            "return JSON.stringify(window.__swarmaaCalls || []);",
             arguments: [:], in: nil, contentWorld: .page
         )
         guard let text = result as? String,

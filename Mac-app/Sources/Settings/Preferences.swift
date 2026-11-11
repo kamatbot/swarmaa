@@ -6,10 +6,7 @@ import os
 /// What the user has chosen, kept in `UserDefaults`.
 @MainActor
 final class Preferences: ObservableObject {
-    static let showUsagePaceKey = "showUsagePace"
-    /// Beside `showUsagePaceKey` rather than inside `Keys`: the tooltip card
-    /// reads it straight from the store, and `Keys` is private.
-    static let showsRemainingInNotchKey = "showsRemainingInNotch"
+    static let showsRemainingKey = "showsRemaining"
 
     /// Provider IDs that currently have a ring. Stored as the ones that are
     /// on, so a provider added later stays off until someone switches it on —
@@ -80,12 +77,6 @@ final class Preferences: ObservableObject {
         didSet { defaults.set(swarmaTokenPath, forKey: Keys.swarmaTokenPath) }
     }
 
-    /// Whether each harness with a chat in progress gets a cell.
-    /// Silent chat-style cards in the notch when a Swarmaa task starts, finishes or fails.
-    @Published var swarmaUpdates: Bool {
-        didSet { defaults.set(swarmaUpdates, forKey: Keys.swarmaUpdates) }
-    }
-
     @Published var swarmaShowsChats: Bool {
         didSet { defaults.set(swarmaShowsChats, forKey: Keys.swarmaShowsChats) }
     }
@@ -137,92 +128,6 @@ final class Preferences: ObservableObject {
         didSet { defaults.set(providerOrder, forKey: Keys.order) }
     }
 
-    /// Whether the notch is on at all. Off by default: the main window is home,
-    /// and the notch would duplicate it. `notchVisibility` applies once it is on.
-    @Published var showsNotch: Bool {
-        didSet { defaults.set(showsNotch, forKey: Keys.showsNotch) }
-    }
-
-    /// How much of itself the notch shows at rest.
-    @Published var notchVisibility: NotchVisibility {
-        didSet { defaults.set(notchVisibility.rawValue, forKey: Keys.visibility) }
-    }
-
-    /// Whether a frontmost full-screen app folds the notch away.
-    @Published var foldsForFullScreen: Bool {
-        didSet { defaults.set(foldsForFullScreen, forKey: Keys.foldsForFullScreen) }
-    }
-
-    /// Which screen edge the notch is welded to.
-    @Published var notchEdge: NotchEdge {
-        didSet { defaults.set(notchEdge.rawValue, forKey: Keys.edge) }
-    }
-
-    /// How large the notch is drawn, as one of three named sizes.
-    ///
-    /// Ignored while `usesCustomNotchScale` is on — the two are kept apart
-    /// rather than collapsed into one number so that switching back to the
-    /// presets returns to the preset you last chose, instead of to whichever
-    /// preset happens to sit nearest the slider.
-    @Published var notchSize: NotchSize {
-        didSet { defaults.set(notchSize.rawValue, forKey: Keys.size) }
-    }
-
-    /// Whether the slider decides the size rather than the three presets.
-    @Published var usesCustomNotchScale: Bool {
-        didSet { defaults.set(usesCustomNotchScale, forKey: Keys.usesCustomSize) }
-    }
-
-    /// The slider's own multiplier, honoured only when the slider is in
-    /// charge. Clamped on the way in: a value typed straight into `defaults`
-    /// could otherwise shrink the notch to nothing or blow it off the screen.
-    @Published var customNotchScale: Double {
-        didSet {
-            let clamped = min(max(customNotchScale, Self.customScaleRange.lowerBound),
-                              Self.customScaleRange.upperBound)
-            if clamped != customNotchScale { customNotchScale = clamped; return }
-            defaults.set(customNotchScale, forKey: Keys.customSize)
-        }
-    }
-
-    /// Where the slider may go. Wider than the presets at both ends, but not
-    /// unbounded.
-    ///
-    /// The floor was three quarters, because below that the percentage under
-    /// each ring stopped being readable — and that is the one thing the notch
-    /// exists for. The reading is a setting of its own now (`showsNotchReadings`),
-    /// so anyone who wants the notch smaller than the type allows can turn the
-    /// type off and keep the rings, which read as colour and fill at any size.
-    /// Half is as small as a ring stays legible as a ring.
-    static let customScaleRange: ClosedRange<Double> = 0.5...1.5
-
-    /// What the notch is actually drawn at, whichever control is in charge.
-    var notchScale: CGFloat {
-        usesCustomNotchScale ? CGFloat(customNotchScale) : notchSize.scale
-    }
-
-    /// The display the notch stays on, or the original focus-following behaviour.
-    ///
-    /// Only meaningful in `NotchScreenScope.main` — pinning a display and
-    /// drawing on every display are two different questions, and this answers
-    /// the first one. `all` ignores it entirely: there is no "the" display to
-    /// pin when every one of them gets its own notch.
-    @Published var displayPreference: DisplayPreference {
-        didSet {
-            switch displayPreference {
-            case .followActiveWindow:
-                defaults.removeObject(forKey: Keys.display)
-            case .display(let id):
-                defaults.set(id, forKey: Keys.display)
-            }
-        }
-    }
-
-    /// Which displays get a notch when more than one is connected.
-    @Published var notchScope: NotchScreenScope {
-        didSet { defaults.set(notchScope.rawValue, forKey: Keys.scope) }
-    }
-
     /// The preferred limit window to show for Antigravity provider (automatic, 5h, or weekly).
     @Published var antigravityHeadlineLimit: AntigravityHeadlineLimit {
         didSet { defaults.set(antigravityHeadlineLimit.rawValue, forKey: Keys.antigravityHeadlineLimit) }
@@ -233,27 +138,8 @@ final class Preferences: ObservableObject {
         didSet { defaults.set(antigravityHeadlineModel.rawValue, forKey: Keys.antigravityHeadlineModel) }
     }
 
-    /// Where along that edge the notch sits, nudged from the centred default
-    /// by ⌥-dragging the pill. One value per edge — moving it on the right
-    /// should not silently relocate it on the top too — so this is read and
-    /// written through `offset(for:)`/`setOffset(_:for:)` rather than exposed
-    /// as a single published value the way the other settings are.
-    func offset(for edge: NotchEdge) -> CGFloat {
-        CGFloat(defaults.double(forKey: Self.offsetKey(for: edge)))
-    }
-
-    func setOffset(_ offset: CGFloat, for edge: NotchEdge) {
-        defaults.set(Double(offset), forKey: Self.offsetKey(for: edge))
-    }
-
-    private static func offsetKey(for edge: NotchEdge) -> String { "notchOffset.\(edge.rawValue)" }
-
     @Published var resetTimeFormat: ResetTimeFormat {
         didSet { defaults.set(resetTimeFormat.rawValue, forKey: Keys.resetTimeFormat) }
-    }
-
-    @Published var showUsagePace: Bool {
-        didSet { defaults.set(showUsagePace, forKey: Self.showUsagePaceKey) }
     }
 
     /// Whether pointing at a ring, or opening the menu bar's menu, refuses every
@@ -316,42 +202,13 @@ final class Preferences: ObservableObject {
         deepSeekPricingSchedule = .current
     }
 
-    /// Whether the weekly limit gets a ring of its own, and where it sits.
-    /// Whether each ring carries its percentage under it, on every edge.
-    ///
-    /// On by default, which is what the notch has always drawn everywhere but
-    /// the strip beside a Mac's own cutout. There it costs ring size, because
-    /// the bar is the cutout's depth and one ring already fills it — see
-    /// `NotchViewModel.showsCellReading`.
-    @Published var showsNotchReadings: Bool {
-        didSet { defaults.set(showsNotchReadings, forKey: Keys.showsNotchReadings) }
+    /// Whether the menu bar reads what is left rather than what is spent.
+    /// Off by default; bands still judge by what is spent.
+    @Published var showsRemaining: Bool {
+        didSet { defaults.set(showsRemaining, forKey: Self.showsRemainingKey) }
     }
 
-    /// Whether the notch reads what is left rather than what is spent: the
-    /// figure under each ring, the arcs' sweep, and the card's bars and
-    /// percentages.
-    ///
-    /// Off by default: used is what the notch has always drawn, and flipping
-    /// it changes what every meter means. Bands still judge by what is
-    /// spent — colour answers how bad, sweep answers how much — and the
-    /// usage pace still compares spent against elapsed, which is the only
-    /// comparison a deficit can be computed from.
-    @Published var showsRemainingInNotch: Bool {
-        didSet { defaults.set(showsRemainingInNotch, forKey: Self.showsRemainingInNotchKey) }
-    }
-
-    /// Whether a spent window shuts the rings beside it. A spent 5-hour with
-    /// a healthy week, or the reverse, leaves rings that read usable and are
-    /// not: with this on, both rings say shut instead — dark grey where the
-    /// notch reads what is left, the red 100% earns where it reads spent.
-    ///
-    /// On by default: a spent window pretending its rings are usable is the
-    /// worse surprise.
-    @Published var shutRingsWhenSpent: Bool {
-        didSet { defaults.set(shutRingsWhenSpent, forKey: Keys.shutRingsWhenSpent) }
-    }
-
-    /// Whether the notch sorts rings by what is left instead of the manual
+    /// Whether the menu sorts accounts by what is left instead of the manual
     /// order: most remaining first, by the window that leads each ring. A
     /// high number that cannot be spent yet sinks below usable accounts but
     /// stays above empty ones; the Accounts list keeps the manual order,
@@ -363,7 +220,7 @@ final class Preferences: ObservableObject {
         didSet { defaults.set(autoOrderByRemaining, forKey: Keys.autoOrderByRemaining) }
     }
 
-    /// Whether accounts with nothing left to spend leave the notch: the
+    /// Whether accounts with nothing left to spend leave the menu: the
     /// headline window or the weekly allowance at 0% remaining. Stale
     /// readings stay — an old number is not proof the account is empty.
     ///
@@ -373,55 +230,10 @@ final class Preferences: ObservableObject {
         didSet { defaults.set(hideDepletedAccounts, forKey: Keys.hideDepletedAccounts) }
     }
 
-    @Published var weeklyRingDashed: Bool {
-        didSet { defaults.set(weeklyRingDashed, forKey: Keys.weeklyRingDashed) }
-    }
-
-    /// Whether the reading under each ring adds the weekly ring's percentage,
-    /// as "30%/70%". Only while the weekly ring is on.
-    @Published var weeklyReading: Bool {
-        didSet { defaults.set(weeklyReading, forKey: Keys.weeklyReading) }
-    }
-
-    @Published var weeklyRing: WeeklyRing {
-        didSet { defaults.set(weeklyRing.rawValue, forKey: Keys.weeklyRing) }
-    }
-
 
     /// The colour used for positive usage and active-work indicators.
     @Published var accentColor: AccentColorChoice {
         didSet { defaults.set(accentColor.rawValue, forKey: Keys.accentColor) }
-    }
-
-    /// The material the expanded notch, tooltip and settings orb are painted with.
-    @Published var notchSurfaceStyle: NotchSurfaceStyle {
-        didSet { defaults.set(notchSurfaceStyle.rawValue, forKey: Keys.notchSurfaceStyle) }
-    }
-
-    @Published var watchLimit: Double {
-        didSet {
-            let clamped = min(max(watchLimit, 0.01), criticalLimit - 0.01)
-            if clamped != watchLimit { watchLimit = clamped; return }
-            defaults.set(watchLimit, forKey: Keys.watchLimit)
-        }
-    }
-
-    @Published var criticalLimit: Double {
-        didSet {
-            let clamped = min(max(criticalLimit, watchLimit + 0.01), 1.0)
-            if clamped != criticalLimit { criticalLimit = clamped; return }
-            defaults.set(criticalLimit, forKey: Keys.criticalLimit)
-        }
-    }
-
-    /// Hard step or continuous ramp — see `ColorTransitionStyle`.
-    @Published var colorTransitionStyle: ColorTransitionStyle {
-        didSet { defaults.set(colorTransitionStyle.rawValue, forKey: Keys.colorTransitionStyle) }
-    }
-
-    /// Spinning arc or breathing disc — see `BusyIndicatorStyle`.
-    @Published var busyIndicatorStyle: BusyIndicatorStyle {
-        didSet { defaults.set(busyIndicatorStyle.rawValue, forKey: Keys.busyIndicatorStyle) }
     }
 
     /// The language the app itself speaks.
@@ -432,23 +244,17 @@ final class Preferences: ObservableObject {
         didSet { L10n.apply(language) }
     }
 
-    /// Where the app itself shows up: Dock, menu bar, or nowhere.
+    /// Where the app itself shows up: Dock or menu bar.
     @Published var appPresence: AppPresence {
         didSet { defaults.set(appPresence.rawValue, forKey: Keys.presence) }
-    }
-
-    /// Where every notification goes: the notch, or a banner. One choice for
-    /// all of them; which events notify stays a switch per event.
-    @Published var notificationChannel: NotificationChannel {
-        didSet { defaults.set(notificationChannel.rawValue, forKey: Keys.notificationChannel) }
     }
 
     /// Whether the menu bar item shows five-hour limits instead of its icon.
     ///
     /// Off unless switched on. The item is the way into an app that has left
     /// the Dock, and an update that swapped it for a readout several times as
-    /// wide — pushing everything beside it along, and on a notched MacBook
-    /// perhaps off the bar altogether — would be a change nobody asked for.
+    /// wide — pushing everything beside it along, and on a MacBook with a camera
+    /// housing perhaps off the bar altogether — would be a change nobody asked for.
     @Published var showsLimitsInMenuBar: Bool {
         didSet { defaults.set(showsLimitsInMenuBar, forKey: Keys.showsLimitsInMenuBar) }
     }
@@ -483,27 +289,12 @@ final class Preferences: ObservableObject {
         MenuBarLimits(isOn: showsLimitsInMenuBar, chosen: menuBarProviders)
     }
 
-    /// Open the notch for a few seconds when an agent stops working.
-    ///
-    /// On by default: the app already knows the moment a session ends, and a
-    /// user who installed a thing that watches sessions is unlikely to want
-    /// that particular fact kept from them. It is a peek, not a notification —
-    /// nothing to dismiss, and it takes no focus.
+    /// A notification when an agent stops working. On by default.
     @Published var announceSessionEnd: Bool {
         didSet { defaults.set(announceSessionEnd, forKey: Keys.announceSessionEnd) }
     }
 
-    /// How long that peek lasts.
-    @Published var peekDuration: PeekDuration {
-        didSet { defaults.set(peekDuration.rawValue, forKey: Keys.peekDuration) }
-    }
-
-    /// Sound the system alert alongside the peek.
-    ///
-    /// Separate from the peek because they fail differently: the peek is no use
-    /// on another Space or behind a full-screen window, and the sound is no use
-    /// in a meeting. Kept switchable on its own so neither one forces the
-    /// other.
+    /// Sound the system alert alongside the notification, switchable on its own.
     @Published var sessionEndSound: Bool {
         didSet { defaults.set(sessionEndSound, forKey: Keys.sessionEndSound) }
     }
@@ -522,7 +313,7 @@ final class Preferences: ObservableObject {
         didSet { defaults.set(sessionBlockedSoundName, forKey: Keys.sessionBlockedSoundName) }
     }
 
-    /// Show a notification modal from the notch when a provider's limit resets.
+    /// Show a notification when a provider's limit resets.
     @Published var announceUsageReset: Bool {
         didSet { defaults.set(announceUsageReset, forKey: Keys.announceUsageReset) }
     }
@@ -537,12 +328,12 @@ final class Preferences: ObservableObject {
         didSet { defaults.set(usageResetSoundName, forKey: Keys.usageResetSoundName) }
     }
 
-    /// Show a notification modal from the notch when a provider's session limit is reached.
+    /// Show a notification when a provider's session limit is reached.
     @Published var announceSessionLimitReached: Bool {
         didSet { defaults.set(announceSessionLimitReached, forKey: Keys.announceSessionLimitReached) }
     }
 
-    /// Show a notification modal from the notch when a provider's weekly limit is reached.
+    /// Show a notification when a provider's weekly limit is reached.
     @Published var announceWeeklyLimitReached: Bool {
         didSet { defaults.set(announceWeeklyLimitReached, forKey: Keys.announceWeeklyLimitReached) }
     }
@@ -624,7 +415,6 @@ final class Preferences: ObservableObject {
         static let swarmaServiceURL = "swarmaServiceURL"
         static let swarmaTokenPath = "swarmaTokenPath"
         static let swarmaShowsChats = "swarmaShowsChats"
-        static let swarmaUpdates = "swarmaUpdates"
         static let swarmaaOnboardingComplete = "swarmaaOnboardingComplete"
         static let swarmaaServiceRoot = "swarmaaServiceRoot"
         static let swarmaAuthMode = "swarmaAuthMode"
@@ -634,39 +424,17 @@ final class Preferences: ObservableObject {
         static let mutedAlerts = "mutedAlertProviders"
         static let accountNicknames = "accountNicknames"
         static let hasLaunched = "hasLaunchedBefore"
-        static let visibility = "notchVisibility"
-        static let showsNotch = "showsNotch"
-        static let foldsForFullScreen = "foldsForFullScreen"
         static let presence = "appPresence"
-        static let notificationChannel = "notificationChannel"
         static let showsLimitsInMenuBar = "showsLimitsInMenuBar"
         static let showsWeeklyLimitInMenuBar = "showsWeeklyLimitInMenuBar"
         static let menuBarProviders = "menuBarProviders"
-        static let edge = "notchEdge"
-        // A new key, so there is nothing under the old app name to migrate.
-        static let size = "notchSize"
-        static let usesCustomSize = "usesCustomNotchScale"
-        static let customSize = "customNotchScale"
-        static let display = "notchDisplay"
         static let resetTimeFormat = "resetTimeFormat"
         static let asksProviderOnLook = "asksProviderOnLook"
-        static let scope = "notchScope"
         static let accentColor = "accentColor"
-        // A new key, so there is nothing under the old app name to migrate.
-        static let weeklyRing = "weeklyRing"
-        static let weeklyRingDashed = "weeklyRingDashed"
-        static let showsNotchReadings = "showsNotchReadings"
-        static let weeklyReading = "weeklyReading"
-        static let shutRingsWhenSpent = "shutRingsWhenSpent"
         static let autoOrderByRemaining = "autoOrderByRemaining"
         static let hideDepletedAccounts = "hideDepletedAccounts"
         static let claudeDailyPaceRing = "claudeDailyPaceRing"
         static let weeklyHeadline = "weeklyHeadline"
-        static let notchSurfaceStyle = "notchSurfaceStyle"
-        static let watchLimit = "watchLimit"
-        static let criticalLimit = "criticalLimit"
-        static let colorTransitionStyle = "colorTransitionStyle"
-        static let busyIndicatorStyle = "busyIndicatorStyle"
         static let customEndpoints = "customEndpoints"
         static let remoteHosts = "remoteHosts"
         /// Entries written when remote hosts were Claude-only. Read once on
@@ -677,7 +445,6 @@ final class Preferences: ObservableObject {
         static let order = "providerOrder"
         static let announceSessionEnd = "announceSessionEnd"
         static let sessionEndSound = "sessionEndSound"
-        static let peekDuration = "peekDuration"
         static let sessionEndSoundName = "sessionEndSoundName"
         static let sessionBlockedSoundName = "sessionBlockedSoundName"
         static let announceUsageReset = "announceUsageReset"
@@ -786,7 +553,7 @@ final class Preferences: ObservableObject {
         defaults.string(forKey: Keys.swarmaAuthMode) == "oauth" ? .oauth : .tokenFile
     }
     nonisolated static let defaultSwarmaServiceURL = "http://127.0.0.1:8787"
-    nonisolated static let defaultSwarmaTokenPath = "~/Projects/swarma/.local/notchtrader.json"
+    nonisolated static let defaultSwarmaTokenPath = "~/Projects/swarma/.local/swarmaa-mac.json"
 
     /// The Swarma client is an actor and asks for these on every request, so
     /// they read the store, not the `@Published` object — as custom endpoints do.
@@ -874,49 +641,6 @@ final class Preferences: ObservableObject {
     /// them to the app every launch would be worse than never introducing them
     /// at all.
     let isFirstLaunch: Bool
-
-    /// The bundle identifier before the app was renamed to Swarmaa.
-    ///
-    /// A bundle id is the name of the defaults domain, so renaming the app
-    /// silently moved every setting to a new, empty one — connection choices,
-    /// the notch's mode, the archived readings, all apparently lost. Copying
-    /// the old domain across once is the difference between a rename and what
-    /// looks like a reset.
-    private static let previousDomain = "com.vinz.usagenotch"
-
-    static func migrateFromPreviousName(into defaults: UserDefaults = .standard,
-                                        from domain: String = previousDomain) {
-        // The emptiness test has to be about the object being written to, not
-        // about `Bundle.main` — under test those are different domains, and the
-        // first version happily copied real settings into a test's scratch
-        // suite. `hasLaunched` is the sentinel: `Preferences.init` sets it, so
-        // its absence means nothing has ever used this domain.
-        guard defaults.object(forKey: Keys.hasLaunched) == nil,
-              let old = defaults.persistentDomain(forName: domain), !old.isEmpty
-        else { return }
-
-        for (key, value) in old { defaults.set(value, forKey: key) }
-        Log.usage.info("migrated \(old.count) settings from the previous app name")
-    }
-
-    /// The bundle id before the move to app.swarmaa.notch. Another id is another
-    /// defaults domain, so every setting would otherwise start empty.
-    static let codenotchDomain = "com.vinz.codenotch"
-    static let migratedFromCodenotchKey = "didMigrateFromCodenotch"
-
-    /// Copies the old id's settings across once. Keys already present in the new
-    /// domain win, so nothing newer is overwritten; the flag stops a second run.
-    static func migrateFromCodenotch(into defaults: UserDefaults = .standard,
-                                     from domain: String = codenotchDomain) {
-        guard !defaults.bool(forKey: migratedFromCodenotchKey) else { return }
-        if let old = UserDefaults(suiteName: domain)?.persistentDomain(forName: domain) {
-            for (key, value) in old where defaults.object(forKey: key) == nil {
-                defaults.set(value, forKey: key)
-            }
-            Log.usage.info("migrated \(old.count) settings from \(domain, privacy: .public)")
-        }
-        defaults.set(true, forKey: migratedFromCodenotchKey)
-    }
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -1006,24 +730,10 @@ final class Preferences: ObservableObject {
         ).absoluteString) ?? OMLXEndpoint.defaultAddress
         self.mutedAlertProviders = Set(defaults.stringArray(forKey: Keys.mutedAlerts) ?? [])
         self.accountNicknames = defaults.dictionary(forKey: Keys.accountNicknames) as? [String: String] ?? [:]
-        // Absent means never chosen, which is the hover behaviour the app was
-        // designed around — not hidden, which would make a fresh install look
-        // like it failed to start.
-        self.showsNotch = defaults.object(forKey: Keys.showsNotch) as? Bool ?? false
-        self.notchVisibility = defaults.string(forKey: Keys.visibility)
-            .flatMap(NotchVisibility.init(rawValue:)) ?? .onHover
-        // Absent means the fold that has shipped since full-screen detection
-        // exists — the setting silences it, it does not introduce it.
-        self.foldsForFullScreen = defaults.object(forKey: Keys.foldsForFullScreen) as? Bool ?? true
         // Absent means never chosen. The Dock is the default because it is the
         // findable one — a new user who cannot see the app anywhere has no way
         // to learn it is running.
-        self.appPresence = defaults.string(forKey: Keys.presence)
-            .flatMap(AppPresence.init(rawValue:)) ?? .dock
-        // The notch, because that is what every earlier version did; a banner
-        // is the choice of someone who found the notch too quiet.
-        self.notificationChannel = defaults.string(forKey: Keys.notificationChannel)
-            .flatMap(NotificationChannel.init(rawValue:)) ?? .notch
+        self.appPresence = AppPresence(stored: defaults.string(forKey: Keys.presence)) ?? .dock
         // Absent means never chosen, which is the icon every earlier version
         // drew — see `showsLimitsInMenuBar`.
         self.showsLimitsInMenuBar = defaults.bool(forKey: Keys.showsLimitsInMenuBar)
@@ -1032,26 +742,8 @@ final class Preferences: ObservableObject {
         self.showsWeeklyLimitInMenuBar = defaults.bool(forKey: Keys.showsWeeklyLimitInMenuBar)
         // Absent is kept distinct from empty: never chosen is not choosing none.
         self.menuBarProviders = defaults.stringArray(forKey: Keys.menuBarProviders).map(Set.init)
-        // The right edge is where the notch has always been, and it is the one
-        // side of a Mac that no system chrome claims by default.
-        self.notchEdge = defaults.string(forKey: Keys.edge)
-            .flatMap(NotchEdge.init(rawValue:)) ?? .right
-        // Medium is the design frame at 1:1, so an install that predates this
-        // choice keeps exactly the notch it already had.
-        self.notchSize = defaults.string(forKey: Keys.size)
-            .flatMap(NotchSize.init(rawValue:)) ?? .medium
-        // Absent means never chosen, and the presets are what every earlier
-        // version had — so the slider is opt-in rather than the default.
-        self.usesCustomNotchScale = defaults.bool(forKey: Keys.usesCustomSize)
-        let stored = defaults.object(forKey: Keys.customSize) as? Double
-        self.customNotchScale = stored.map {
-            min(max($0, Self.customScaleRange.lowerBound), Self.customScaleRange.upperBound)
-        } ?? 1
-        self.displayPreference = defaults.string(forKey: Keys.display)
-            .map(DisplayPreference.display) ?? .followActiveWindow
         self.resetTimeFormat = defaults.string(forKey: Keys.resetTimeFormat)
             .flatMap(ResetTimeFormat.init(rawValue:)) ?? .automatic
-        self.showUsagePace = defaults.bool(forKey: Self.showUsagePaceKey)
         // Off by default: see the property. A request spent on every look is a
         // choice, and on a rate-limited provider it can cost freshness rather
         // than buy it.
@@ -1069,47 +761,18 @@ final class Preferences: ObservableObject {
         } else {
             self.deepSeekPricingSchedule = .current
         }
-        // Absent means never chosen. Main display only, because that is what a
-        // single-panel setup always did — all-displays on a fresh install
-        // would put notches where none were expected.
-        self.notchScope = defaults.string(forKey: Keys.scope)
-            .flatMap(NotchScreenScope.init(rawValue:)) ?? .mainDisplay
         self.antigravityHeadlineLimit = defaults.string(forKey: Keys.antigravityHeadlineLimit)
             .flatMap(AntigravityHeadlineLimit.init(rawValue:)) ?? .automatic
         self.antigravityHeadlineModel = defaults.string(forKey: Keys.antigravityHeadlineModel)
             .flatMap(AntigravityHeadlineModel.init(rawValue:)) ?? .gemini
-        // Follow the Mac unless the user explicitly chooses a Swarmaa colour.
-        // Off by default: an extra arc in a 44pt circle is a change to how
-        // every reading looks, and nobody asked for it on their behalf.
-        self.weeklyRingDashed = defaults.object(forKey: Keys.weeklyRingDashed) as? Bool ?? false
-        self.showsNotchReadings = defaults.object(forKey: Keys.showsNotchReadings) as? Bool ?? true
-        self.weeklyReading = defaults.object(forKey: Keys.weeklyReading) as? Bool ?? false
         // Off by default: it swaps what every meter means, and that is a
         // choice for whoever budgets from the other end.
-        self.showsRemainingInNotch = defaults.bool(forKey: Self.showsRemainingInNotchKey)
-        self.shutRingsWhenSpent = defaults.object(forKey: Keys.shutRingsWhenSpent) as? Bool ?? true
+        self.showsRemaining = defaults.bool(forKey: Self.showsRemainingKey)
         self.autoOrderByRemaining = defaults.bool(forKey: Keys.autoOrderByRemaining)
         self.hideDepletedAccounts = defaults.bool(forKey: Keys.hideDepletedAccounts)
 
-        self.weeklyRing = defaults.string(forKey: Keys.weeklyRing)
-            .flatMap(WeeklyRing.init(rawValue:)) ?? .off
-        // On unless turned off: it is how the notch is carried to another edge,
-        // and a control that is missing by default is one nobody finds.
         self.accentColor = defaults.string(forKey: Keys.accentColor)
             .flatMap(AccentColorChoice.init(rawValue:)) ?? .system
-        self.notchSurfaceStyle = defaults.string(forKey: Keys.notchSurfaceStyle)
-            .flatMap(NotchSurfaceStyle.init(rawValue:)) ?? .glass
-        let storedWatchLimit = defaults.object(forKey: Keys.watchLimit) as? Double ?? 0.50
-        let storedCriticalLimit = defaults.object(forKey: Keys.criticalLimit) as? Double ?? 0.70
-        // `didSet` does the clamping, and it does not run for these assignments,
-        // so a stored pair that crossed over is repaired here instead.
-        let critical = min(max(storedCriticalLimit, 0.02), 1.0)
-        self.criticalLimit = critical
-        self.watchLimit = min(max(storedWatchLimit, 0.01), critical - 0.01)
-        self.colorTransitionStyle = defaults.string(forKey: Keys.colorTransitionStyle)
-            .flatMap(ColorTransitionStyle.init(rawValue:)) ?? .hardStep
-        self.busyIndicatorStyle = defaults.string(forKey: Keys.busyIndicatorStyle)
-            .flatMap(BusyIndicatorStyle.init(rawValue:)) ?? .arc
         // Absent means never chosen, which is follow-the-Mac.
         self.language = defaults.string(forKey: L10n.languageDefaultsKey)
             .flatMap(AppLanguage.init(rawValue:)) ?? .system
@@ -1123,8 +786,6 @@ final class Preferences: ObservableObject {
         // key that was never written — cannot stand in for the default.
         self.announceSessionEnd = defaults.object(forKey: Keys.announceSessionEnd) as? Bool ?? true
         self.sessionEndSound = defaults.object(forKey: Keys.sessionEndSound) as? Bool ?? true
-        self.peekDuration = defaults.string(forKey: Keys.peekDuration)
-            .flatMap(PeekDuration.init(rawValue:)) ?? .standard
         self.sessionEndSoundName = defaults.string(forKey: Keys.sessionEndSoundName)
             ?? SessionChime.defaultFinished
         self.sessionBlockedSoundName = defaults.string(forKey: Keys.sessionBlockedSoundName)
@@ -1152,7 +813,6 @@ final class Preferences: ObservableObject {
         self.swarmaServiceURL = Self.storedSwarmaServiceURL(defaults: defaults)
         self.swarmaTokenPath = Self.storedSwarmaTokenPath(defaults: defaults)
         self.swarmaShowsChats = Self.storedSwarmaShowsChats(defaults: defaults)
-        self.swarmaUpdates = defaults.object(forKey: Keys.swarmaUpdates) as? Bool ?? true
         // Read from the system rather than from our own store: the user can turn
         // this off in System Settings, and a remembered `true` would then be a lie.
         self.launchAtLogin = Self.isRegisteredForLogin
@@ -1399,10 +1059,8 @@ final class Preferences: ObservableObject {
     /// update, and wiping data on every Sparkle update would be catastrophic.
     /// It has to be something the user asks for.
     static func eraseAllData() {
-        let bundleID = Bundle.main.bundleIdentifier ?? "app.swarmaa.notch"
+        let bundleID = Bundle.main.bundleIdentifier ?? "app.swarmaa.mac"
         UserDefaults.standard.removePersistentDomain(forName: bundleID)
-        // Or the next launch would copy the old id's settings straight back.
-        UserDefaults.standard.removePersistentDomain(forName: codenotchDomain)
         UserDefaults.standard.synchronize()
 
         let library = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first

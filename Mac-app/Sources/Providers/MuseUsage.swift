@@ -269,7 +269,7 @@ enum MuseUsage {
 /// seen. Re-parsing months of logs every minute would be absurd; the
 /// remembered offsets make a refresh cost the kilobytes written since. Files
 /// untouched for longer than the window are never reopened, and samples older
-/// than the window are dropped: the notch reports the recent past, and
+/// than the window are dropped: the app reports the recent past, and
 /// anything older is out of the question rather than slowly accumulated.
 struct MuseUsageLog: Sendable {
     /// How far back a scan reaches, in days. Past this the logs are not

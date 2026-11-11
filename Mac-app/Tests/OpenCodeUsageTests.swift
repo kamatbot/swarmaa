@@ -1,6 +1,6 @@
 import XCTest
 import SQLite3
-@testable import Codenotch
+@testable import Swarmaa
 
 /// The Go plan windows, pinned to the live response (secret redacted) — the
 /// same figures the OpenCode dashboard shows.

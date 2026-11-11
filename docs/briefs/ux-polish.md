@@ -52,7 +52,7 @@ Files: `Mac-app/Sources/Teams/KS.swift`, `ThreadView.swift`, `BotsViews.swift`, 
 
 1. Update the primitives in `KS.swift`: `ksCard` (no border by default, soft shadow), `KSButtonStyle` kinds (primary lime, white/paper → secondary tint, ink stays, danger → destructive tint, all borderless), `KSChip` (tints and sentence case per the spec), `KSBarButton` (no ring, hover circle), `KSSearchField` (hairline instead of ink outline). Add the needed colours to `KS` as named tokens.
 2. Apply the spec to bubbles, live reply, swarm/task/question cards, answer options and the composer in `ThreadView.swift`; to the bot pill in `BotsViews.swift`; to task cards and chips in `TasksViews.swift`; and to the Tasks detail panel and bot settings cards where they draw ink outlines.
-3. Re-render with `TEST_RUNNER_SWARMAA_SNAPSHOT_DIR=<dir> xcodebuild test … -only-testing:CodenotchTests/TeamsSnapshotRender` and look at the PNGs: `1-bots-home`, `2-bot-settings`, `3-tasks`, `task-detail-usage`, `thread-bar-default`. Acceptance: the Mac app builds; `TeamsSnapshotRender` and `TeamsBotsTests` pass. Report the PNG paths.
+3. Re-render with `TEST_RUNNER_SWARMAA_SNAPSHOT_DIR=<dir> xcodebuild test … -only-testing:SwarmaaTests/TeamsSnapshotRender` and look at the PNGs: `1-bots-home`, `2-bot-settings`, `3-tasks`, `task-detail-usage`, `thread-bar-default`. Acceptance: the Mac app builds; `TeamsSnapshotRender` and `TeamsBotsTests` pass. Report the PNG paths.
 
 ## Task 2: iOS
 

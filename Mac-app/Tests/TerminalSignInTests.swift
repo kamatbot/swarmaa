@@ -1,5 +1,5 @@
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 /// A CLI-backed account signs in from its own login command, so the Accounts
 /// row can offer a button rather than a sentence to copy into a terminal.
@@ -24,9 +24,9 @@ final class TerminalSignInTests: XCTestCase {
     }
 
     func testExplanationPointsAtTheInstallPageWhenTheToolIsMissing() {
-        let route = SignInRoute.command("codenotch-no-such-tool login", name: "Example",
+        let route = SignInRoute.command("swarmaa-no-such-tool login", name: "Example",
                                         install: URL(string: "https://example.com"))
-        XCTAssertFalse(TerminalCommand.isInstalled(command: "codenotch-no-such-tool login"))
+        XCTAssertFalse(TerminalCommand.isInstalled(command: "swarmaa-no-such-tool login"))
         XCTAssertTrue(route.explanation.contains("Install"), route.explanation)
     }
 

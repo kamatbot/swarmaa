@@ -1,6 +1,6 @@
 import SwiftUI
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 @MainActor
 final class SettingsQuitButtonTests: XCTestCase {
@@ -16,7 +16,6 @@ final class SettingsQuitButtonTests: XCTestCase {
             signIn: { _ in false },
             switchAccount: { _ in false },
             retry: { _ in },
-            resetPosition: {},
             quit: { didQuit = true },
             updater: Updater()
         )

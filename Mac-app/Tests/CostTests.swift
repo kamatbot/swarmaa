@@ -1,5 +1,5 @@
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 /// The cost layer's seams into the app: the hover card reserves room for
 /// the project rows, a credit-based Codex seat gets a Credits window, and the
@@ -18,16 +18,6 @@ final class CostTests: XCTestCase {
         XCTAssertEqual(credits.used, 310)
         XCTAssertEqual(credits.remaining, 2190)
         XCTAssertEqual(credits.resetsAt, Date(timeIntervalSince1970: 1_789_430_400))
-    }
-
-    /// Cost rows on the card add exactly what the section draws.
-    func testCardHeightGrowsWithCostRows() {
-        let base = NotchLayout.cardHeight(windowCount: 2)
-        let withRows = NotchLayout.cardHeight(windowCount: 2, costRows: 3)
-        let expected = NotchLayout.blockSpacing + NotchLayout.cardBodyLineHeight
-            + 3 * (NotchLayout.cardBodyLineHeight + NotchLayout.sessionRowGap)
-        XCTAssertEqual(withRows - base, expected, accuracy: 0.01)
-        XCTAssertEqual(NotchLayout.cardHeight(windowCount: 2, costRows: 0), base)
     }
 
     /// Money for subscription work is the weekly share of the plan; a credit

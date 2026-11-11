@@ -1,5 +1,5 @@
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 /// The coding-plan windows, pinned to the schema the Kilo CLI validates the
 /// same answers against — the same figures the Kilo dashboard shows.

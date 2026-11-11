@@ -163,7 +163,7 @@ enum AntigravityBridge {
 
     /// Turns the quota summary into limit windows.
     ///
-    /// The server reports what is **left**, not what is spent — the notch shows
+    /// The server reports what is **left**, not what is spent — the app shows
     /// the opposite, so every fraction is inverted here rather than in the view,
     /// where it would be a percentage whose meaning depended on the provider.
     static func windows(in data: Data, now: Date = Date()) -> [LimitWindow] {
@@ -270,7 +270,7 @@ enum AntigravityBridge {
     /// answer needs no project or conversation state, and sharing the IDE's
     /// would put two writers on its SQLite files if the IDE is launched while
     /// this one is still up.
-    static func arguments(token: String, appDataDir: String = "codenotch-bridge") -> [String] {
+    static func arguments(token: String, appDataDir: String = "swarmaa-bridge") -> [String] {
         [
             "--standalone",
             "--override_ide_name", "antigravity",

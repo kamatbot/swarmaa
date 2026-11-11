@@ -178,7 +178,7 @@ const SERVICES = [
   { key: 'agy', label: 'Antigravity', kind: 'cli', cmd: 'agy', worker: true, share: true },
   { key: 'grok', label: 'Grok', kind: 'hosted' },
   { key: 'dot', label: 'Dot', kind: 'hosted' },
-  { key: 'notchtrader', label: 'NotchTrader', kind: 'app' },
+  { key: 'mac', label: 'Swarmaa for Mac', kind: 'app' },
 ];
 let det, folders = [];
 const sv = {}; // key -> { card, connect, worker, share }
@@ -196,8 +196,8 @@ function buildServices() {
     const connect = h('input', { type: 'checkbox', id: `c-${s.key}`, checked: installed && wasOn, disabled: !installed, onchange: sync });
     const pill = s.kind === 'hosted' ? h('span', { class: 'pill warn' }, 'Hosted, needs remote access')
       : h('span', { class: 'pill ' + (installed ? 'ok' : '') }, installed ? 'Installed' : 'Not found');
-    const hint = installed ? (s.kind === 'cli' ? `Registers the swarma MCP server in ${s.label}.` : s.kind === 'hosted' ? `Creates a ${s.label} identity; ${s.label} connects over HTTPS.` : 'Shows agents and swarms in the notch.')
-      : s.kind === 'cli' ? `The ${s.cmd} command was not found on this Mac. Install ${s.label}, then run setup again.` : 'NotchTrader.app is not in /Applications.';
+    const hint = installed ? (s.kind === 'cli' ? `Registers the swarma MCP server in ${s.label}.` : s.kind === 'hosted' ? `Creates a ${s.label} identity; ${s.label} connects over HTTPS.` : 'Shows agents and swarms in the Swarmaa Mac app.')
+      : s.kind === 'cli' ? `The ${s.cmd} command was not found on this Mac. Install ${s.label}, then run setup again.` : 'Swarmaa.app is not in /Applications.';
     const card = h('section', { class: 'card', 'aria-label': s.label });
     card.append(h('div', { class: 'row' },
       h('label', { class: 't', for: `c-${s.key}` }, h('span', { class: 'name' }, s.label), pill, h('div', { class: 'hint' }, hint)),

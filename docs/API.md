@@ -394,7 +394,7 @@ transport, where uncertain delivery is represented honestly.
 
 `swarm_status` includes `inbox: {counts, items}` for the caller's permitted receipts. Counts are `offered`,
 `accepted`, `unconfirmed`, `read`, and `stuck`; items are at most 50 metadata records, stuck first. No inbox
-body appears in dashboard/notch status. Generic terminal-task sinks include only `inbox_receipts` counts for
+body appears in dashboard/Mac app status. Generic terminal-task sinks include only `inbox_receipts` counts for
 the subscriber's receipts for that task, never bodies, session IDs, or per-item details. Neither surface grants
 access to another principal's inbox. Existing MCP event callbacks remain metadata-only invalidation hints.
 

@@ -7,9 +7,8 @@ import SwiftUI
 /// with no Dock tile there is otherwise nothing to right-click, and an app you
 /// cannot quit is a worse problem than one you cannot see.
 ///
-/// It also carries the same readings as the notch tooltips, so `NotchVisibility`
-/// hidden stays usable: with the notch off screen the menu is where the
-/// percentages, resets and stale ages live.
+/// It also carries the usage readings: the menu is where the percentages,
+/// resets and stale ages live when the main window is closed.
 ///
 /// The item itself is the plain icon unless Settings switches on limits in
 /// the menu bar. Then it shows each chosen provider's five-hour window at a
@@ -53,7 +52,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
             updateButton()
         }
     }
-    /// How a reset time is worded, from Settings. The notch follows this, and
+    /// How a reset time is worded, from Settings. The app follows this, and
     /// the item's tooltip is the same sentence, so it follows it too.
     var resetTimeFormat: ResetTimeFormat = .automatic {
         didSet {
@@ -86,7 +85,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     /// a local runtime is re-read every second — redraws nothing.
     private var summary: StatusItemSummary?
     /// Normalized activity from the same provider monitors that feed the
-    /// notch. Kept separate from usage snapshots: a usage refresh is not work,
+    /// app. Kept separate from usage snapshots: a usage refresh is not work,
     /// and activity never asks a provider to refresh its limits.
     private(set) var activeProviderIDs: Set<String> = []
     /// Pulses the marks of the entries that are working without drawing a
@@ -108,7 +107,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     /// run down between readings. One-shot and re-armed on every update: a
     /// minute's precision is all the bar shows.
     private var countdownTimer: Timer?
-    /// The notch's decorated cells, read when the menu opens. A local runtime's
+    /// The app's decorated cells, read when the menu opens. A local runtime's
     /// own snapshot only lists its models; what each one is doing, how fast it
     /// answered and what it cost today are put on the cells by the view model,
     /// and the menu says the same things the cells do.

@@ -8,7 +8,7 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { parseBridgeConfig } from '../src/bridge/config.js';
 import { projectCapabilities } from '../src/bridge/adapters.js';
-import { createOnboarding, notchAppInstalled, runSetup, type Detected, type SetupSummary } from '../scripts/setup.js';
+import { createOnboarding, macAppInstalled, runSetup, type Detected, type SetupSummary } from '../scripts/setup.js';
 import { AGY_TOOLS, DEFAULT_HOSTNAME, GENERAL_SCOPE, PlanError, WORKER_HARNESSES, bridgeConfig, identityScopes, mergeAgyPermissions, parseEnv, plist, slugScopes, stateFile, validHostname, validatePlan, yes } from '../scripts/setup-lib.js';
 import { setupTunnel, validHostname as validTunnelHostname } from '../scripts/tunnel.js';
 
@@ -145,7 +145,7 @@ test('setup.json carries projects as [{scope, root}] including project:demo', ()
   assert.ok(!s.projects!.some(p => p.scope === GENERAL_SCOPE));
 });
 
-const fakeDetected = (): Detected => ({ clis: { claude: '/bin/claude-fake', codex: '/bin/codex-fake' }, notchtrader: false, postgres: { found: true, reachable: true }, envExists: false, state: {} });
+const fakeDetected = (): Detected => ({ clis: { claude: '/bin/claude-fake', codex: '/bin/codex-fake' }, mac: false, postgres: { found: true, reachable: true }, envExists: false, state: {} });
 
 test('runSetup dry-run assigns scopes by identity kind and only plans', async () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'swarmaa-root-')));
@@ -277,7 +277,7 @@ test('server: page needs the token, Host and Origin are enforced', async () => {
     assert.equal((await req(base, '/api/detect', { headers: t({ 'sec-fetch-site': 'cross-site' }) })).status, 403);
     const ok = await req(base, '/api/detect', { headers: t({ origin: base }) });
     assert.equal(ok.status, 200);
-    assert.deepEqual(ok.json().installed, { claude: true, codex: true, agy: false, notchtrader: false });
+    assert.deepEqual(ok.json().installed, { claude: true, codex: true, agy: false, mac: false });
     assert.equal(ok.json().defaultHostname, '');
     assert.equal(ok.body.includes('/bin/claude-fake'), false, 'binary paths are not sent to the page');
   });
@@ -405,10 +405,9 @@ test('demo project is planned as a standalone git repo', async () => {
   assert.ok(lines.some(l => /demo-project -c commit\.gpgsign=false commit/.test(l)));
 });
 
-test('the notch app counts as installed when setup runs from inside it or it is in Applications', () => {
+test('the Mac app counts as installed when setup runs from inside it or it is in Applications', () => {
   const none = () => false;
-  assert.equal(notchAppInstalled('/Users/u/Downloads/Swarmaa.app/Contents/Resources/runtime', '/Users/u', none), true);
-  assert.equal(notchAppInstalled('/Users/u/code/swarmaa', '/Users/u', p => p === '/Users/u/Applications/Swarmaa.app'), true);
-  assert.equal(notchAppInstalled('/Users/u/code/swarmaa', '/Users/u', p => p === '/Applications/NotchTrader.app'), true);
-  assert.equal(notchAppInstalled('/Users/u/code/swarmaa', '/Users/u', none), false);
+  assert.equal(macAppInstalled('/Users/u/Downloads/Swarmaa.app/Contents/Resources/runtime', '/Users/u', none), true);
+  assert.equal(macAppInstalled('/Users/u/code/swarmaa', '/Users/u', p => p === '/Users/u/Applications/Swarmaa.app'), true);
+  assert.equal(macAppInstalled('/Users/u/code/swarmaa', '/Users/u', none), false);
 });

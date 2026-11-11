@@ -19,7 +19,7 @@ struct StatusItemSummary: Equatable {
         /// "2h 18m", or `unknown` when the reset is unknown or already past.
         let countdown: String
         /// A remembered reading rather than a fresh one, dimmed the way the
-        /// notch dims its ring.
+        /// app dims its ring.
         let isStale: Bool
         /// Weekly allowance consumed (or left, when showing remaining), for the compact ring. Nil means the
         /// provider did not publish a valid current weekly percentage.
@@ -59,7 +59,7 @@ struct StatusItemSummary: Equatable {
             || snapshot.headline != nil || isFiveHourFamily(snapshot.id))
     }
 
-    /// The chosen providers the bar can summarise, in the order the notch shows
+    /// The chosen providers the bar can summarise, in the order the app shows
     /// them. None at all while the feature is off — or when nothing chosen has
     /// a limit to show — which gives the item its icon back.
     @MainActor
@@ -350,7 +350,7 @@ struct StatusItemArtwork {
             }
             let inset = glyphBox.width * (1 - glyph.opticalScale) / 2
             let rect = glyphBox.insetBy(dx: inset, dy: inset)
-            // The same preference as the notch: a bundled asset over the trace,
+            // The same preference as the app: a bundled asset over the trace,
             // fitted rather than stretched, since not every mark is square.
             if let asset = NSImage(named: glyph.assetName), asset.size.width > 0, asset.size.height > 0 {
                 let scale = min(rect.width / asset.size.width, rect.height / asset.size.height)

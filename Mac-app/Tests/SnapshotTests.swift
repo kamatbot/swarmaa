@@ -1,5 +1,5 @@
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 final class SnapshotTests: XCTestCase {
     private func window(_ id: String, _ used: Double) -> LimitWindow {
@@ -70,7 +70,7 @@ final class SnapshotTests: XCTestCase {
     }
 }
 
-/// The notch can show what is left instead of what is spent. The figure is
+/// The app can show what is left instead of what is spent. The figure is
 /// the tooltip's own left half, so the two never disagree by a point.
 final class RemainingHeadlineTests: XCTestCase {
     private func snapshot(_ windows: [LimitWindow]) -> ProviderSnapshot {
@@ -89,7 +89,7 @@ final class RemainingHeadlineTests: XCTestCase {
     }
 
     /// The left half derives from the *rounded* used figure — 9.5% used is
-    /// "10% Used · 90% left" in the card, so the notch reads 90, not the 91
+    /// "10% Used · 90% left" in the card, so the app reads 90, not the 91
     /// one-minus-the-fraction would give.
     func testRemainingAgreesWithTheTooltipLeftHalf() {
         for (used, expected) in [(0.0, "100%"), (0.095, "90%"), (0.003, "99.7%"),
@@ -126,7 +126,7 @@ final class RemainingHeadlineTests: XCTestCase {
 }
 
 /// The one rule behind the ring's sweep, the card's bars, and every flipped
-/// figure: spent by default, what is left when the notch is set that way.
+/// figure: spent by default, what is left when the app is set that way.
 final class MeteredFractionTests: XCTestCase {
     func testSpentPassesThrough() {
         XCTAssertEqual(Percent.metered(0.125, showingRemaining: false), 0.125, accuracy: 1e-9)

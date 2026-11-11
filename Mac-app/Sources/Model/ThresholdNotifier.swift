@@ -114,10 +114,10 @@ enum ThresholdAlerts {
     }
 }
 
-/// The out-of-notch end of the usage reset and limit alerts.
+/// The out-of-app end of the usage reset and limit alerts.
 ///
-/// The card in the notch is the primary form; this is what is owed when there
-/// is no notch open to put it in — a hidden notch used to swallow the alert
+/// The card in the app is the primary form; this is what is owed when there
+/// is no app open to put it in — a hidden app used to swallow the alert
 /// silently, which for a weekly limit is the one alert worth not missing.
 enum UsageAlertNotifications {
     static func deliver(_ event: UsageAlertEvent) {

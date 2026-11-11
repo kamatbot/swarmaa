@@ -1,5 +1,5 @@
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 /// Guards the shape of MiniMax Coding Plan / Token Plan remains JSON. It is
 /// not a published schema, so these are the tests that fail first if the

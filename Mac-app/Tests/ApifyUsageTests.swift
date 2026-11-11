@@ -1,5 +1,5 @@
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 /// Pinned to the shape `GET /v2/users/me/limits` is documented with — the
 /// same three blocks the Console's Billing page draws its "Custom usage

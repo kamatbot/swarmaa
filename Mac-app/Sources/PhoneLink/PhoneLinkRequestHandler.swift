@@ -127,7 +127,7 @@ final class PhoneLinkRequestHandler: ChannelInboundHandler {
             let version = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "1.0.0"
             respondPlaintext(
                 channel,
-                jsonBody: Data("{\"ok\":true,\"app\":\"codenotch\",\"api\":3,\"version\":\"\(version)\"}".utf8)
+                jsonBody: Data("{\"ok\":true,\"app\":\"\(PhoneLinkWire.name)\",\"api\":3,\"version\":\"\(version)\"}".utf8)
             )
             return
         }
@@ -446,7 +446,7 @@ final class PhoneLinkRequestHandler: ChannelInboundHandler {
     private func respondEncrypted(_ channel: Channel, plaintext: Data, key: SymmetricKey, aad: Data) {
         do {
             let envelope = try PhoneLinkCrypto.seal(plaintext, key: key, aad: aad)
-            respond(channel, status: .ok, contentType: "application/codenotch-v3", body: envelope)
+            respond(channel, status: .ok, contentType: PhoneLinkWire.contentType, body: envelope)
         } catch {
             fail(channel, status: .internalServerError)
         }

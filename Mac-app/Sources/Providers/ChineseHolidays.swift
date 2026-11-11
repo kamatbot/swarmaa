@@ -81,7 +81,7 @@ final class ChineseHolidays: ObservableObject {
 
     static let cacheDirectory: URL = {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        return base.appendingPathComponent("Codenotch/holidays-cn", isDirectory: true)
+        return base.appendingPathComponent("Swarmaa/holidays-cn", isDirectory: true)
     }()
 
     /// Every holiday-cn file shipped in Resources, named holiday-cn-<year>.json.

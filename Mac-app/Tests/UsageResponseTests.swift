@@ -1,6 +1,6 @@
 import SQLite3
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 /// Guards the shape of `GET /api/oauth/usage`. It is not a published API, so
 /// these are the tests that will fail first if Anthropic changes it.
@@ -1107,7 +1107,7 @@ final class SingleProviderRefreshTests: XCTestCase {
 
 /// Overnight the Claude token ages out, because this app deliberately does not
 /// refresh a credential it does not own — Claude Code rotates it whenever it
-/// next runs. What must not happen is the notch demanding a sign-in for a token
+/// next runs. What must not happen is the app demanding a sign-in for a token
 /// that is merely old.
 @MainActor
 final class ExpiredCredentialTests: XCTestCase {
@@ -1128,7 +1128,7 @@ final class ExpiredCredentialTests: XCTestCase {
 
 /// Both Cursor and Codex keep their state in another app's SQLite database, and
 /// both run it in WAL mode. How that database is opened decides whether the
-/// notch works after a restart.
+/// app works after a restart.
 final class SQLiteStoreTests: XCTestCase {
     private func makeDatabase() throws -> URL {
         let url = FileManager.default.temporaryDirectory
@@ -1487,7 +1487,7 @@ final class SwitchAccountTests: XCTestCase {
     }
 }
 
-/// Switching a provider off has to make it gone — from the notch, from memory,
+/// Switching a provider off has to make it gone — from the app, from memory,
 /// and from the archive. Dropping it from the visible list alone left the
 /// reading in `lastGood`, which is written to the archive on every fetch, so a
 /// switched-off provider came back at the next launch with its old ring.

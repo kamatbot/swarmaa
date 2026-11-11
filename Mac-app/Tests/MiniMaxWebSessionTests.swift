@@ -1,5 +1,5 @@
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 /// MiniMax is signed into from Swarmaa's own WKWebView, the same way
 /// DeepSeek is. These pin the regional platform origin, the absolute www

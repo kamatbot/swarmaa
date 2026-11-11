@@ -1,13 +1,13 @@
 // End-to-end check of the running swarm on this Mac: every project an app can submit to has a live
-// worker, and a real task submitted the way Grok or the notch would goes queued → running → completed,
+// worker, and a real task submitted the way Grok or the Mac app would goes queued → running → completed,
 // shows in swarm_status while active and as a swarm chat afterwards. Prints PASS/FAIL per step; exit 1 on any FAIL.
-//   npm run smoke [-- --scope project:general] [--as notchtrader]
+//   npm run smoke [-- --scope project:general] [--as swarmaa-mac]
 import { readFileSync, readdirSync } from 'node:fs';
 import { basename } from 'node:path';
 import { parseArgs } from 'node:util';
 import pg from 'pg';
 
-const { values } = parseArgs({ options: { scope: { type: 'string', default: 'project:general' }, as: { type: 'string', default: 'notchtrader' } } });
+const { values } = parseArgs({ options: { scope: { type: 'string', default: 'project:general' }, as: { type: 'string', default: 'swarmaa-mac' } } });
 const base = `http://127.0.0.1:${process.env.PORT ?? 8787}`;
 const token = (JSON.parse(readFileSync(`.local/${values.as}.json`, 'utf8')) as { token: string }).token;
 let failed = 0;
@@ -34,7 +34,7 @@ const expected = readdirSync('.local').filter(f => /^bridge-.+\.json$/u.test(f))
   .map(f => basename(String((JSON.parse(readFileSync(`.local/${f}`, 'utf8')) as { token_file?: string }).token_file ?? ''), '.json')).filter(Boolean);
 const down = expected.filter(n => !rows.some(r => r.name === n && r.live));
 expected.length && !down.length ? pass(`workers live: ${expected.join(', ')}`) : fail(`workers down: ${down.join(', ') || 'none configured'}`);
-const main = new Set(['grok', 'notchtrader', 'macbook', 'claude-interactive', 'codex-interactive', 'antigravity-interactive']);
+const main = new Set(['grok', 'swarmaa-mac', 'macbook', 'claude-interactive', 'codex-interactive', 'antigravity-interactive']);
 for (const f of rows.filter(r => r.role === 'frontend')) {
   const missing = f.scopes.filter(s => s !== '*' && !served.has(s));
   if (!missing.length) continue;
@@ -83,12 +83,12 @@ for (const t of tasks) {
     : fail(`${t.label}: ended ${t.status} on ${who}${t.task?.result?.exit_code !== undefined ? ` (exit ${t.task.result.exit_code})` : ''}`);
 }
 tasks.length > 1 && (peak > 1 ? pass(`ran in parallel: up to ${peak} tasks at once`) : warn('never saw two tasks running at the same moment (they may simply have been fast)'));
-seenActive ? pass('notch status showed the project as active while it ran') : warn('finished before a status poll caught it active');
+seenActive ? pass('swarm status showed the project as active while it ran') : warn('finished before a status poll caught it active');
 
 const ok = tasks.filter(t => t.status === 'completed');
 if (ok.length) {
   const recent = (await call<{ recent: { id: string }[] }>('swarm_status', {})).recent;
-  ok.every(t => recent.some(r => r.id === t.id)) ? pass('all appear in swarm_status.recent (notch activity card)') : fail('some missing from swarm_status.recent');
+  ok.every(t => recent.some(r => r.id === t.id)) ? pass('all appear in swarm_status.recent (Mac app activity)') : fail('some missing from swarm_status.recent');
   const chats = await Promise.all(ok.map(t => call<{ sessions: unknown[] }>('session_list', { scope: values.scope, swarm_only: true, task_id: t.id })));
   chats.every(c => c.sessions.length) ? pass('all recorded as swarm chats (/swarm)') : fail('some have no swarm chat');
 }

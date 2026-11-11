@@ -60,9 +60,9 @@
 	<key>SUEnableAutomaticChecks</key>
 	<true/>
 	<key>SUFeedURL</key>
-	<string>https://hivinz.com/appcast.xml</string>
+	<string>https://swarmaa.com/appcast.xml</string>
 	<key>SUPublicEDKey</key>
-	<string>rmUfT5r49nR+3HdkbR5/YYLghfnAi6L49eOk3sIegSk=</string>
+	<string>MPywMG8ANX8QEl0FAACWaZxfH+UtkZ53zRIt5vCFKFc=</string>
 	<key>SUScheduledCheckInterval</key>
 	<integer>86400</integer>
 </dict>

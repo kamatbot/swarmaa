@@ -476,7 +476,7 @@ struct SetupRowView: View {
     private var badge: (String, Color) {
         switch row.state {
         case .ready: return (L10n.t("Ready"), KS.sage)
-        case .notChecked: return (L10n.t("Not checked"), .secondary)
+        case .unchecked: return (L10n.t("Not checked"), .secondary)
         case .needsSetup: return (L10n.t("Needs setup"), KS.amber)
         }
     }

@@ -21,8 +21,8 @@ echo "runtime $(cat "$SWARMAA_RUNTIME_SRC/RUNTIME_VERSION")"
 stamp "build: Release"
 make gen >/dev/null 2>&1
 SIGNFLAGS=$(grep -m1 "^DEV_SIGN" Makefile | sed 's/^DEV_SIGN *[:?]*= *//')
-eval timeout 900 xcodebuild -project Codenotch.xcodeproj -scheme Codenotch -destination "'platform=macOS'" -configuration Release "$SIGNFLAGS" build 2>&1 | grep -E "BUILD (SUCCEEDED|FAILED)" || true
-APP=$(xcodebuild -project Codenotch.xcodeproj -scheme Codenotch -configuration Release -showBuildSettings 2>/dev/null | awk -F' = ' '/ BUILT_PRODUCTS_DIR/ {print $2; exit}')/Swarmaa.app
+eval timeout 900 xcodebuild -project Swarmaa.xcodeproj -scheme Swarmaa -destination "'platform=macOS'" -configuration Release "$SIGNFLAGS" build 2>&1 | grep -E "BUILD (SUCCEEDED|FAILED)" || true
+APP=$(xcodebuild -project Swarmaa.xcodeproj -scheme Swarmaa -configuration Release -showBuildSettings 2>/dev/null | awk -F' = ' '/ BUILT_PRODUCTS_DIR/ {print $2; exit}')/Swarmaa.app
 [ -x "$APP/Contents/Resources/runtime/node" ] || { echo "build has no embedded runtime"; exit 1; }
 W=$(mktemp -d); A=$W/Swarmaa.app; ditto "$APP" "$A"
 

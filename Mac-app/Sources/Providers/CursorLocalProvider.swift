@@ -5,7 +5,7 @@ import os
 /// Reads Cursor usage as the account already signed in on this Mac.
 ///
 /// This replaced a WebView sign-in, and the reason is worth keeping: signing
-/// into cursor.com inside the app created a second, empty account, so the notch
+/// into cursor.com inside the app created a second, empty account, so the app
 /// faithfully reported zero usage for someone who was not the user. Borrowing
 /// the editor's own session — or, when that is missing, the `cursor-agent`
 /// login — removes the question. There is only ever one account, the one

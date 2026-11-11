@@ -59,7 +59,7 @@ enum L10n {
 
     /// One bundle per language, resolved once.
     ///
-    /// `t` is called from view bodies that the notch's 0.3s cursor poll
+    /// `t` is called from view bodies that the app's 0.3s cursor poll
     /// repaints, so its cost is paid a few hundred times a second.
     private static let bundlesLock = NSLock()
     private static var bundles: [String: Bundle] = [:]

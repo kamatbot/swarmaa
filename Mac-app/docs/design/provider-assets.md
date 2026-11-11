@@ -9,7 +9,7 @@ retrieved on 2026-09-07. Its original 17:25 aspect ratio is preserved.
 The asset catalog preserves its vector representation and marks it as a
 template. `ProviderGlyphView` applies the same foreground color, fixed frame
 and asset lookup used by the other providers, so the mark works on both the
-dark notch and the Settings background.
+dark Mac app and the Settings background.
 
 ## Devin
 
@@ -103,7 +103,7 @@ All five image sets preserve vector data and use template rendering.
 The upstream MIT copyright and license are included in
 `Sources/Resources/LobeIcons-LICENSE.txt` and copied into the app bundle.
 `LocalModelBrandTests` verifies asset lookup, nonempty nonrectangular native
-rendering and the bundled license; notch and tooltip fixtures cover all marks.
+rendering and the bundled license; Mac app and tooltip fixtures cover all marks.
 
 ## Apify
 

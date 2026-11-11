@@ -1,5 +1,5 @@
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 /// The token path of `GrokLocalProvider`: what it presents to the billing
 /// endpoint once the session in `~/.grok/auth.json` has expired.

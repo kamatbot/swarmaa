@@ -1,8 +1,8 @@
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 /// Swarma agents and swarms as cells: the wire shape, how it reads as a
-/// reading, and what the notch says when the service is not there. Nothing
+/// reading, and what the app says when the service is not there. Nothing
 /// here touches the network — the client gets a stub transport — and the only
 /// token is a made-up one in a temporary file.
 final class SwarmaTests: XCTestCase {
@@ -284,7 +284,7 @@ final class SwarmaTests: XCTestCase {
         XCTAssertEqual(cell.displayName, "Codex worker")
     }
 
-    func testLowQuotaDoesNotChangeAgentCell() throws {
+    func testLowQuotaLeavesUnchangedAgentCell() throws {
         var status = try status()
         status.usage[0] = .init(provider: "claude", ok: true, headroom: 8, windows: [], plan: nil, error: nil, fetchedAt: nil)
         let cell = SwarmaCells.agentSnapshot(name: "worker-claude", in: status)
@@ -407,14 +407,14 @@ final class SwarmaTests: XCTestCase {
         store.registerSwarmProviders([SwarmAgentProvider(name: "worker-claude", client: client),
                                       SwarmScopeProvider(scope: "project:demo", client: client)])
         try await Task.sleep(nanoseconds: 400_000_000)
-        XCTAssertEqual(Set(store.notchSnapshots.map(\.id)), ["swarm:agent:worker-claude", "swarm:scope:project:demo"])
-        XCTAssertEqual(store.notchSnapshots.first { $0.id == "swarm:agent:worker-claude" }?.headline?.usedText, "running")
+        XCTAssertEqual(Set(store.usageSnapshots.map(\.id)), ["swarm:agent:worker-claude", "swarm:scope:project:demo"])
+        XCTAssertEqual(store.usageSnapshots.first { $0.id == "swarm:agent:worker-claude" }?.headline?.usedText, "running")
 
         store.registerSwarmProviders([SwarmScopeProvider(scope: "project:demo", client: client)])
-        XCTAssertEqual(store.notchSnapshots.map(\.id), ["swarm:scope:project:demo"])
+        XCTAssertEqual(store.usageSnapshots.map(\.id), ["swarm:scope:project:demo"])
 
         store.registerSwarmProviders([])
-        XCTAssertTrue(store.notchSnapshots.isEmpty)
+        XCTAssertTrue(store.usageSnapshots.isEmpty)
     }
 
     // MARK: Preferences
@@ -425,7 +425,7 @@ final class SwarmaTests: XCTestCase {
         defaults.removePersistentDomain(forName: name)
 
         XCTAssertEqual(Preferences.storedSwarmaServiceURL(defaults: defaults), "http://127.0.0.1:8787")
-        XCTAssertEqual(Preferences.storedSwarmaTokenPath(defaults: defaults), "~/Projects/swarma/.local/notchtrader.json")
+        XCTAssertEqual(Preferences.storedSwarmaTokenPath(defaults: defaults), "~/Projects/swarma/.local/swarmaa-mac.json")
 
         defaults.set("/nonexistent/swarma.json", forKey: "swarmaTokenPath")
         XCTAssertFalse(Preferences.storedSwarmaEnabled(defaults: defaults), "off where there is no token file")

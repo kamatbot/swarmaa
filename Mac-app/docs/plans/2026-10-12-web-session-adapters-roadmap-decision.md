@@ -2,13 +2,13 @@
 
 **Date:** 2026-10-12  
 **Status:** Decided — Out of Scope  
-**References:** `TASKS.md` ("Decisions needed", line 1846); `docs/plans/2026-08-28-usage-notch-plan.md` ("Open questions", item 4); `docs/specs/2026-08-28-usage-notch-design.md` (item 4).
+**References:** `TASKS.md` ("Decisions needed", line 1846); `docs/plans/2026-08-28-usage-Mac app-plan.md` ("Open questions", item 4); `docs/specs/2026-08-28-usage-Mac app-design.md` (item 4).
 
 ---
 
 ## 1. Context & Origin
 
-In the initial design of Codenotch, an open question was logged:
+In the initial design of Swarmaa, an open question was logged:
 > *"Are web-session adapters (ChatGPT et al.) in scope for v1, accepting the fragility? Claude now answers this for itself: the OAuth endpoint is in, so the same question is live for OpenAI and Perplexity."* (`TASKS.md`, line 1846)
 
 This document formalizes the evaluation and final roadmap decision regarding whether web-session adapters (specifically for ChatGPT / OpenAI via `WebSessionProvider` or browser session extraction) should be incorporated into the future roadmap.
@@ -24,14 +24,14 @@ This document formalizes the evaluation and final roadmap decision regarding whe
 
 ### B. Privacy, Security, and Sandboxing
 - Attempting to inspect or extract session cookies directly from external browsers (Google Chrome, Safari, Firefox) violates sandboxing principles, risks triggering system security warnings, and creates an unacceptable security and privacy footprint for users.
-- Codenotch's architectural invariant is that it never reads browser cookie stores or writes user credentials to disk.
+- Swarmaa's architectural invariant is that it never reads browser cookie stores or writes user credentials to disk.
 
 ### C. Terms of Service and Account Safety
 - Reverse-engineering and polling undocumented web frontend endpoints (`/backend-api/`) violates OpenAI's Terms of Service regarding automated extraction and scraping.
 - Using fragile web-session scraping creates risks of account flags, shadow-throttling, or bans for end-users.
 
 ### D. Redundancy with Existing Native Providers
-OpenAI and ChatGPT usage are already cleanly and reliably supported in Codenotch:
+OpenAI and ChatGPT usage are already cleanly and reliably supported in Swarmaa:
 1. **`CodexLocalProvider` (Official / Local Session)**:
    - Reads the local session managed and refreshed by OpenAI's official Codex macOS app and CLI (`~/.codex` or `com.openai.codex`).
    - Directly and legitimately queries `https://chatgpt.com/backend-api/wham/usage` using authorized Bearer tokens and account headers.
@@ -42,7 +42,7 @@ OpenAI and ChatGPT usage are already cleanly and reliably supported in Codenotch
    - Claude resolved this identically: `ClaudeOAuthProvider`, `ClaudeCLI`, and `ClaudeDesktopUsageCache` superseded any need for web-session scraping.
 
 ### E. The Scoped Role of `WebSessionProvider`
-`WebSessionProvider` remains in Codenotch, but is deliberately restricted:
+`WebSessionProvider` remains in Swarmaa, but is deliberately restricted:
 - **Where retained**: DeepSeek Platform, QianwenAI, MiniMax, and Qoder. These platforms lack local CLI sessions on macOS, but provide web consoles that permit explicit, opt-in in-app `WKWebView` sign-in without hostile anti-bot walls.
 - **Where deferred/unregistered**: Perplexity (`PerplexityUsage`) was implemented experimentally against `/rest/rate-limit/all`, but remains unregistered due to ongoing endpoint volatility.
 

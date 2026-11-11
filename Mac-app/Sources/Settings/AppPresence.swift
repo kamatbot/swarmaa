@@ -1,26 +1,28 @@
 import AppKit
 
-/// Where Swarmaa shows itself, apart from the notch.
+/// Where Swarmaa shows itself: a Dock tile, or a menu bar item.
 ///
-/// The notch is the product; this is only about how the *app* is reached — to
-/// open settings, or to quit it. Three states because the two obvious ones
-/// leave a gap: a Dock tile is easy to find and permanent, a menu bar item is
-/// out of the way but still there, and some people want neither.
+/// There is deliberately no "neither": with no Dock tile and no menu bar item
+/// there would be nothing left to click to get back into the app.
 enum AppPresence: String, CaseIterable, Identifiable {
     /// A normal app: Dock tile, ⌘-Tab entry, menu bar of its own.
     case dock
     /// An icon in the menu bar, and nothing in the Dock.
     case menuBar
-    /// Neither. Only the notch itself.
-    case hidden
 
     var id: String { rawValue }
+
+    /// A stored value, read safely: the retired "hidden" choice (neither Dock
+    /// nor menu bar) lands on the menu bar, and anything unknown is nil.
+    init?(stored raw: String?) {
+        guard let raw else { return nil }
+        self.init(rawValue: raw == "hidden" ? AppPresence.menuBar.rawValue : raw)
+    }
 
     var title: String {
         switch self {
         case .dock:    return L10n.t("Dock")
         case .menuBar: return L10n.t("Menu bar")
-        case .hidden:  return L10n.t("Neither")
         }
     }
 
@@ -30,15 +32,10 @@ enum AppPresence: String, CaseIterable, Identifiable {
             return L10n.t("A normal app icon in the Dock while Swarmaa is running.")
         case .menuBar:
             return L10n.t("A small icon in the menu bar instead, and nothing in the Dock.")
-        case .hidden:
-            // Said here because choosing this removes every visible way back to
-            // these settings, and finding that out afterwards is too late.
-            return L10n.t("No icon anywhere. Open Swarmaa again from Applications to bring these settings back.")
         }
     }
 
-    /// `.regular` is the only one that gets a Dock tile. Both others are
-    /// accessory apps; what separates them is whether a status item is made.
+    /// `.regular` is the only one that gets a Dock tile.
     var activationPolicy: NSApplication.ActivationPolicy {
         self == .dock ? .regular : .accessory
     }

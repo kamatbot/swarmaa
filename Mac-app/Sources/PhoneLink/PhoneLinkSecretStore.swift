@@ -7,7 +7,7 @@ protocol PhoneLinkSecretStore: AnyObject {
 }
 
 final class PhoneLinkKeychainSecretStore: PhoneLinkSecretStore {
-    static let service = "com.codenotch.phonelink.device"
+    static let service = "app.swarmaa.mac.phonelink.device"
 
     func read(deviceId: String) -> Data? {
         guard let value = KeychainItem.read(service: Self.service, account: deviceId) else {

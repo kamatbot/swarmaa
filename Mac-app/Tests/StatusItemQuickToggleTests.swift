@@ -1,6 +1,6 @@
 import XCTest
 import AppKit
-@testable import Codenotch
+@testable import Swarmaa
 
 /// The menu's own "Show limit information in menu bar" — the Settings switch,
 /// reachable from the bar it changes.

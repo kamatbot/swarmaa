@@ -1,6 +1,6 @@
 # LM Studio monitoring plan
 
-Prepared 2026-09-10 against `0a6c6fb` (Codenotch 1.7.0), as the
+Prepared 2026-09-10 against `0a6c6fb` (Swarmaa 1.7.0), as the
 "LM Studio can follow through the same display model" increment reserved in
 [the local LLM plan](2026-09-07-local-llm-provider-plan.md), section 5.
 Status: implemented in one increment, as the user asked. Verification is
@@ -65,7 +65,7 @@ Findings that shaped the design:
   its message, and reads files in 4 MB slices.
 - LM Studio logs every `listLoaded` call and every REST listing at INFO, but
   not `getInstanceProcessingState`. Polled naively that was 210 lines a
-  minute from Codenotch alone. The listing (REST and socket) is now asked
+  minute from Swarmaa alone. The listing (REST and socket) is now asked
   every five seconds and answered from memory in between; only the unlogged
   state call runs at 0.4 s.
 
@@ -94,7 +94,7 @@ as `model`, the tag in the server log, and the handle the socket reports on.
   approximate from the clocked phase, only for a response that just ended.
   Backs off two seconds when the server is down. A stored-token change drops
   the socket so the next poll authenticates afresh.
-- Notch: `ProviderRing` draws a local cell's arc as the context fill (a full
+- Mac app: `ProviderRing` draws a local cell's arc as the context fill (a full
   ring when unknown, as before for Ollama) in the speed band colour, grey
   before any speed exists. The inner activity arc becomes a turning ring of
   dots when `ActivitySummary.queued > 0`. `NotchViewModel` keeps performances
@@ -133,7 +133,7 @@ checks skipped, 0 failures. The first run found three assertions that spelt
 "17.9" with a point on a Mac whose locale writes "17,9"; they now build the
 expectation the way the label is built, as the Ollama tests do.
 
-`LMStudioViewTests` rendered the notch and the card on all four edges at all
+`LMStudioViewTests` rendered the Mac app and the card on all four edges at all
 three sizes with a ledger, a queued instance and a context arc
 (`TEST_RUNNER_LMSTUDIO_RENDER_DIRECTORY`); the right-edge medium frames were
 inspected: a grey full ring for a model without a speed, a green 61 % arc with
@@ -142,7 +142,7 @@ speed pair. The header note had been pushing the title to "Qwen · Lo…"; the
 title now takes layout priority and the note is the short form ("Prompt · 1
 queued").
 
-The opt-in live check (`TEST_RUNNER_CODENOTCH_LMSTUDIO_LIVE=1`, with
+The opt-in live check (`TEST_RUNNER_SWARMAA_LMSTUDIO_LIVE=1`, with
 `TEST_RUNNER_LM_API_TOKEN` because this server requires one) confirmed the
 socket and the REST listing name the same instances and timed the history
 read: 1,665 logged responses from 17,509 events in 10.3 s over 520 MB.
@@ -157,7 +157,7 @@ The timed figure reads lower than LM Studio's own for the same model, since
 the generating phase includes the runtime's bookkeeping before it reports
 idle and the poll's 0.4 s resolution; it is marked `~` for that reason. In
 the same eighteen seconds LM Studio's log gained 4 `listLoaded` and 3 REST
-listing lines from Codenotch, against 210 a minute before the caching.
+listing lines from Swarmaa, against 210 a minute before the caching.
 
 Not exercised live: a second instance queued behind the first (rendered from
 a fixture only), a server with the token requirement off in the running app

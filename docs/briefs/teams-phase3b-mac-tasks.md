@@ -1,6 +1,6 @@
-# Brief: Teams phase 3b, Needs you, Tasks, setup checklist and notch items (Mac app)
+# Brief: Teams phase 3b, Needs you, Tasks, setup checklist and Mac app items (Mac app)
 
-**Repo:** `~/Documents/Claude/Projects/NotchTrader`, on current `main` (build 27). The Swarmaa main window (`Sources/Teams/`, `Sources/Providers/SwarmaTeamsClient.swift`) is merged and installed.
+**Repo:** `~/Documents/Claude/Projects/Swarmaa`, on current `main` (build 27). The Swarmaa main window (`Sources/Teams/`, `Sources/Providers/SwarmaTeamsClient.swift`) is merged and installed.
 **Service:** Teams phases 1 and 2 are **live** on `http://127.0.0.1:8787`. Spec: `/Users/mk/Projects/swarma/docs/TEAMS.md` and `/Users/mk/Projects/swarma/docs/API.md`.
 **Real response shapes:** `/Users/mk/Projects/swarma/docs/briefs/teams-shapes/*.json` are copied from the live service. Build your decoders and test fixtures from these files, not from the spec. The window's first version guessed the shapes and got `unread_count` wrong.
 **UX reference:** OpenDuet's phone app. Use the ideas only, never its code. They are described below.
@@ -16,7 +16,7 @@
 - **Swarm card messages carry no snapshot.** `thread_read` returns `kind:"swarm"` with `ref.swarm_id` and an empty body. Fetch the swarm with `swarm_get`, cache it by id, and refresh it on `swarm.updated` and `message.updated` stream events.
 - **`question_list {status?}` and `question_answer {question_id, choices, text?, idempotency_key}`.**
   - Answering needs the `answer_questions` permission, which the owner grants to the app's identity.
-  - Without it the service returns 403 `owner_required`. Show "Ask the owner to allow answering questions from this Mac", with the grant command `npm run admin -- grant --name notchtrader --permission answer_questions`. Never crash.
+  - Without it the service returns 403 `owner_required`. Show "Ask the owner to allow answering questions from this Mac", with the grant command `npm run admin -- grant --name swarmaa-mac --permission answer_questions`. Never crash.
 - **The stream:** `GET /api/stream?after=now`.
   - The first event is `event: cursor`.
   - The types are `message.created`, `message.updated`, `swarm.updated`, `agent.updated`, `question.created`, `question.answered`, `thread.read` and `task.updated`.
@@ -44,10 +44,10 @@
    - each provider has a live worker, read from `swarm_status` workers;
    - the stream connects;
    - answering questions is allowed, from a cheap probe: `question_answer` with an invalid id gives 404 when allowed and 403 `owner_required` when not.
-4. **Notch items.**
-   - Open questions show as one notch cell, with a badge for the count and id `swarm:thread:<thread_id>` of the newest question. Clicking it opens the window on that thread; the hook from phase 3 already routes that id format.
+4. **Mac app items.**
+   - Open questions show as one Mac app cell, with a badge for the count and id `swarm:thread:<thread_id>` of the newest question. Clicking it opens the window on that thread; the hook from phase 3 already routes that id format.
    - An open swarm that is `waiting_on_you` or `blocked` shows as a cell with `done/total`.
-   - Don't change any other notch layout or behaviour.
+   - Don't change any other Mac app layout or behaviour.
 5. **Composer and cards.** Keep what's there. Also:
    - the question card's chips send via `question_answer`, and show the 403 state above;
    - the swarm card decodes `swarm_get` exactly as in the shape file.
@@ -57,13 +57,13 @@
    - the Tasks section grouping and colour mapping from `attention_list` items;
    - the resolve toggle building the right request;
    - the setup probe mapping (404 → Ready, 403 `owner_required` → Needs setup);
-   - the notch cell ids.
+   - the Mac app cell ids.
 
 ## Rules
 
 - No new dependencies; SwiftUI and AppKit only. No demo or placeholder data in real views.
 - **Write no build output inside the repo.** Use `-derivedDataPath "$TMPDIR/teams-dd"`.
-- Package resolution hangs in the worker sandbox. Copy an existing `~/Library/Developer/Xcode/DerivedData/Codenotch-*/SourcePackages` into `$TMPDIR/teams-sp`, and pass `-clonedSourcePackagesDirPath "$TMPDIR/teams-sp" -disableAutomaticPackageResolution -skipPackageUpdates`.
+- Package resolution hangs in the worker sandbox. Copy an existing `~/Library/Developer/Xcode/DerivedData/Swarmaa-*/SourcePackages` into `$TMPDIR/teams-sp`, and pass `-clonedSourcePackagesDirPath "$TMPDIR/teams-sp" -disableAutomaticPackageResolution -skipPackageUpdates`.
 - Put `timeout 900` on every `xcodebuild`, and pass the sandbox flags from the phase 3 brief.
 - Don't install, launch or kill apps, and don't touch keychains or signing. Don't call write tools on the live service. Read-only calls (`attention_list`, `swarm_list`, `question_list`) are fine if you want to check a shape.
 - Run `xcodegen` if you add files and `project.yml` needs it. Commit nothing; the bridge commits.
@@ -73,4 +73,4 @@
 
 - `BUILD SUCCEEDED` for the Debug build, unsigned is fine; say so.
 - The new tests pass, and the existing Teams suites and `AntigravityHeadlineTests` still pass. Report the exact result lines.
-- List every new file and every changed notch file, with a one-line reason each.
+- List every new file and every changed Mac app file, with a one-line reason each.

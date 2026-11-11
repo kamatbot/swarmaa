@@ -1,5 +1,5 @@
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 /// Banked rate-limit resets. The count is its own field — the details list
 /// can be shorter than the total — and the next expiry is the soonest credit,
@@ -66,47 +66,4 @@ final class CodexResetCreditsTests: XCTestCase {
         XCTAssertLessThan(result.credits.count, result.availableCount)
     }
 
-    /// The reset-credit block is extra card, so the hover region has to grow
-    /// with it or the pointer falls out of a card it is still over.
-    func testTheCardGrowsWhenResetCreditsAreShown() {
-        let plain = NotchLayout.cardHeight(windowCount: 2)
-        let withCredits = NotchLayout.cardHeight(windowCount: 2, hasResetCredits: true)
-        XCTAssertGreaterThan(withCredits, plain)
-    }
-
-    /// A successful endpoint response with no available credits is not card
-    /// content. It must neither draw the empty-state copy nor reserve space.
-    func testEmptyResetCreditsDoNotReserveCardSpace() {
-        var snapshot = ProviderSnapshot(
-            id: "codex", displayName: "Codex", glyph: .openai,
-            fidelity: .official, status: .ok, windows: []
-        )
-        snapshot.resetCredits = UsageResetCredits(availableCount: 0)
-
-        XCTAssertFalse(snapshot.hasAvailableResetCredits)
-        XCTAssertEqual(
-            NotchLayout.cardHeight(
-                windowCount: snapshot.windows.count,
-                hasResetCredits: snapshot.hasAvailableResetCredits
-            ),
-            NotchLayout.cardHeight(windowCount: snapshot.windows.count)
-        )
-    }
-
-    func testAvailableResetCreditsAreShownAndReserveSpace() {
-        var snapshot = ProviderSnapshot(
-            id: "codex", displayName: "Codex", glyph: .openai,
-            fidelity: .official, status: .ok, windows: []
-        )
-        snapshot.resetCredits = UsageResetCredits(availableCount: 1)
-
-        XCTAssertTrue(snapshot.hasAvailableResetCredits)
-        XCTAssertGreaterThan(
-            NotchLayout.cardHeight(
-                windowCount: snapshot.windows.count,
-                hasResetCredits: snapshot.hasAvailableResetCredits
-            ),
-            NotchLayout.cardHeight(windowCount: snapshot.windows.count)
-        )
-    }
 }

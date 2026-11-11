@@ -41,7 +41,7 @@ Existing hook plumbing to reuse: `scripts/hooks-install.ts` already installs the
 6. **Install.**
    - Extend `scripts/hooks-install.ts` and setup so the inbox hooks are installed next to the journal hook for each connected harness. They must be idempotent and removable with the existing uninstall path.
    - Codex hooks need the user's one-time `/hooks` trust. Print that as a next step; never bypass it.
-7. **Mac app and Grok.** No change is required; the notch already shows terminal task updates and Grok has its webhook. Optionally, add `message` items to the notch updates later (separate task).
+7. **Mac app and Grok.** No change is required; the Mac app already shows terminal task updates and Grok has its webhook. Optionally, add `message` items to the Mac app updates later (separate task).
 
 ## Tests
 

@@ -1,5 +1,5 @@
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 /// The state machine that reads a session's transcript.
 ///
@@ -15,8 +15,8 @@ final class ClaudeTranscriptTests: XCTestCase {
     // MARK: - Where the file is
 
     func testSlugReplacesSeparatorsAndDots() {
-        XCTAssertEqual(ClaudeTranscript.projectSlug(forCWD: "/Users/vinz/notch-app"),
-                       "-Users-vinz-notch-app")
+        XCTAssertEqual(ClaudeTranscript.projectSlug(forCWD: "/Users/vinz/demo-app"),
+                       "-Users-vinz-demo-app")
         // A worktree under a dot directory: both characters collapse, and the
         // run of two dashes is what the real directory names look like.
         XCTAssertEqual(
@@ -53,7 +53,7 @@ final class ClaudeTranscriptTests: XCTestCase {
     }
 
     /// Esc writes a record saying so, which is why a stopped session is
-    /// something the notch knows rather than something it waits out.
+    /// something the app knows rather than something it waits out.
     func testAnInterruptionEndsTheTurn() {
         XCTAssertEqual(turn("""
         {"type":"user","message":{"content":[{"type":"text","text":"[Request interrupted by user]"}]}}
@@ -161,7 +161,7 @@ final class ClaudeTranscriptReaderTests: XCTestCase {
     }
 
     /// `since` is when the turn last moved, which is what the tooltip counts
-    /// from — not the moment the notch happened to look.
+    /// from — not the moment the app happened to look.
     func testReportsWhenTheTranscriptLastMoved() throws {
         let url = try write(working, folder: "-Users-vinz-app", session: "abc")
         let when = Date(timeIntervalSince1970: 1_700_000_000)
@@ -201,7 +201,7 @@ final class ClaudeTranscriptReaderTests: XCTestCase {
 
 /// `since` means when the state was entered, not when the file was last
 /// touched. Reporting the latter froze the tooltip's elapsed time at zero for
-/// the whole of a long turn, and gave the notch a fresh value to animate every
+/// the whole of a long turn, and gave the app a fresh value to animate every
 /// two seconds while nothing visible had changed.
 extension ClaudeTranscriptReaderTests {
     func testTheStartOfTheStateIsHeldWhileItLasts() throws {

@@ -9,7 +9,7 @@ import Foundation
 /// out of the login keychain, which stays stale until Claude Code next runs and
 /// re-mints it. Someone who works in Claude Desktop rather than in the terminal
 /// can therefore have a perfectly current subscription, a Desktop window showing
-/// 30% of the session used, and a dark ring in the notch.
+/// 30% of the session used, and a dark ring in the app.
 ///
 /// Claude Desktop is Chromium, so its `GET /api/organizations/<id>/usage` — the
 /// very response its own usage panel draws — lands in a Simple Cache entry on

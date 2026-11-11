@@ -1,5 +1,5 @@
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 /// In-app language is a stored override, not the Mac's language. Follow
 /// System still hits the XCTest English pin when nothing is stored.

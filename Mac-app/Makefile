@@ -8,8 +8,8 @@ export DEVELOPER_DIR := /Applications/Xcode.app/Contents/Developer
 endif
 endif
 
-PROJECT := Codenotch.xcodeproj
-SCHEME  := Codenotch
+PROJECT := Swarmaa.xcodeproj
+SCHEME  := Swarmaa
 RESOLVED_PACKAGES := $(PROJECT)/project.xcworkspace/xcshareddata/swiftpm/Package.resolved
 ARCH    ?= $(shell uname -m)
 DEST    ?= platform=macOS,arch=$(ARCH)
@@ -25,7 +25,7 @@ DEST    ?= platform=macOS,arch=$(ARCH)
 # `grep`, not `grep -c`: `-c` prints "0" rather than nothing when it matches
 # nothing, so `ifeq (,...)` was never true and a machine *without* the
 # certificate fell through to signing with an identity it does not have —
-# "Signing for Codenotch requires a development team", on every target.
+# "Signing for Swarmaa requires a development team", on every target.
 HAS_DEVELOPER_ID := $(shell security find-identity -v -p codesigning 2>/dev/null | grep "Developer ID Application")
 
 # A personal "Apple Development" certificate, where there is one, is preferred
@@ -129,22 +129,28 @@ clean:
 #
 # One-time setup, which you have to run yourself because it takes a password:
 #
-#   xcrun notarytool store-credentials UsageNotch \
+#   xcrun notarytool store-credentials Swarmaa \
 #       --apple-id <your-apple-id> --team-id 6WFPL8B9FB --password <app-specific-password>
+#
+# A credential stored earlier under another label works too:
+# `make release NOTARY_PROFILE=<label>`.
 #
 # The app-specific password comes from appleid.apple.com → Sign-In and Security
 # → App-Specific Passwords. Not your Apple ID password.
 
 RELEASE_DIR := build/release
 APP_NAME    := Swarmaa
-# The label of the stored notarytool credential in the login keychain, not
-# anything to do with the app's name — it was created before the rename and
-# renaming the variable is what broke `make release` after it. Recreating it
-# needs an app-specific password, so the label simply stays as it is.
-NOTARY_PROFILE := UsageNotch
-DMG := $(RELEASE_DIR)/$(APP_NAME).dmg
+# The label of the stored notarytool credential in the login keychain.
+NOTARY_PROFILE ?= Swarmaa
+VERSION := $(shell awk -F'"' '/MARKETING_VERSION:/ {print $$2}' project.yml)
+TAG     ?= v$(VERSION)
+# Release artifacts carry the version, so every download URL is new: under
+# one constant name a cache (browser, proxy, CDN) went on serving the build
+# before it.
+DMG := $(RELEASE_DIR)/$(APP_NAME)-$(VERSION).dmg
+ZIP := $(RELEASE_DIR)/$(APP_NAME)-$(VERSION).zip
 
-.PHONY: archive dmg notarize release verify-release publish
+.PHONY: archive dmg zip notarize release verify-release publish appcast
 
 # Release configuration, exported with the Developer ID identity. `xcodebuild
 # archive` + `-exportArchive` rather than a plain build: it re-signs the bundle
@@ -163,7 +169,7 @@ archive: gen
 		'<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
 		'<plist version="1.0"><dict>' \
 		'<key>method</key><string>developer-id</string>' \
-		'<key>teamID</key><string>6WFPL8B9FB</string>' \
+		'<key>teamID</key><string>B4F73U5RGR</string>' \
 		'<key>signingStyle</key><string>manual</string>' \
 		'<key>signingCertificate</key><string>Developer ID Application</string>' \
 		'</dict></plist>' > $(RELEASE_DIR)/ExportOptions.plist
@@ -175,11 +181,15 @@ archive: gen
 # A plain drag-to-Applications disk image. `create-dmg` writes it read-only and
 # compressed, which is what notarization expects.
 dmg: archive
-	@command -v create-dmg >/dev/null || (echo "brew install create-dmg" && exit 1)
 	rm -f $(DMG)
 	rm -rf $(RELEASE_DIR)/stage
 	mkdir -p $(RELEASE_DIR)/stage
 	cp -R $(RELEASE_DIR)/$(APP_NAME).app $(RELEASE_DIR)/stage/
+	@# Without create-dmg (brew), a plain drag-to-Applications image from hdiutil: same app, no background art.
+	if ! command -v create-dmg >/dev/null; then \
+		ln -s /Applications $(RELEASE_DIR)/stage/Applications && \
+		hdiutil create -volname "$(APP_NAME)" -srcfolder $(RELEASE_DIR)/stage -ov -format UDZO $(DMG); \
+	else \
 	create-dmg \
 		--volname "$(APP_NAME)" \
 		--window-pos 400 300 \
@@ -189,7 +199,8 @@ dmg: archive
 		--app-drop-link 450 200 \
 		--hide-extension "$(APP_NAME).app" \
 		--background "docs/design/dmg-background.png" \
-		$(DMG) $(RELEASE_DIR)/stage
+		$(DMG) $(RELEASE_DIR)/stage; \
+	fi
 	codesign --force --sign "Developer ID Application" --timestamp $(DMG)
 	@# The app is inside the dmg now. Leaving the loose copies around is how
 	@# three spare "Swarmaa" entries end up in Spotlight; everything
@@ -202,68 +213,59 @@ notarize: dmg
 	xcrun notarytool submit $(DMG) --keychain-profile $(NOTARY_PROFILE) --wait
 	xcrun stapler staple $(DMG)
 
-# Sparkle ships its tools inside the resolved package artifacts.
-SPARKLE_BIN = $(shell dirname $$(find $$HOME/Library/Developer/Xcode/DerivedData/Codenotch-*/SourcePackages/artifacts/sparkle -name generate_appcast 2>/dev/null | head -1))
+# The same notarized app as a zip, for the GitHub release page. Taken from the
+# stapled dmg so the app inside carries the notarization ticket.
+zip: notarize
+	rm -f $(ZIP)
+	hdiutil attach $(DMG) -nobrowse -mountpoint $(RELEASE_DIR)/mnt
+	ditto -c -k --keepParent $(RELEASE_DIR)/mnt/$(APP_NAME).app $(ZIP)
+	hdiutil detach $(RELEASE_DIR)/mnt
 
-# The feed customers' copies poll. Signs each update with the EdDSA private key
-# in the login keychain — Sparkle installs nothing that key did not sign, so a
+# Sparkle ships its tools inside the resolved package artifacts.
+SPARKLE_BIN = $(shell dirname $$(find $$HOME/Library/Developer/Xcode/DerivedData/Swarmaa-*/SourcePackages/artifacts/sparkle -name generate_appcast 2>/dev/null | head -1))
+
+# The feed customers' copies poll: https://swarmaa.com/appcast.xml (SUFeedURL
+# in project.yml), served by the site's Cloudflare worker from
+# ../site/public/appcast.xml. Signs each update with the EdDSA private key in
+# the login keychain — Sparkle installs nothing that key did not sign, so a
 # compromised host cannot push code.
 #
-# Writes into docs/, which GitHub Pages serves. The dmg goes there too, so the
-# URL the appcast advertises is the one the file actually sits at — a mismatch
-# is the usual reason an update downloads and then fails to verify.
-# NOT docs/ — that holds the design frames and specs, and GitHub Pages serves
-# whatever it is pointed at. Publishing from there would put the whole design
-# history on the public web alongside the download.
-PAGES_DIR := site
-# Where the dmg actually sits. The enclosure URL the appcast advertises has to
-# match it exactly, or an update downloads and then fails to verify.
-DOWNLOAD_PREFIX := https://hivinz.com/
+# The download itself is the GitHub release asset `make publish` uploads, so
+# the enclosure URL is DOWNLOAD_PREFIX + Swarmaa-<version>.dmg. They must match
+# exactly, or an update downloads and then fails to verify — so publish the
+# release assets before deploying the site with the new feed.
+APPCAST       := $(abspath $(CURDIR)/../site/public/appcast.xml)
+APPCAST_STAGE := $(RELEASE_DIR)/appcast
+DOWNLOAD_PREFIX := https://github.com/kamatbot/swarmaa/releases/download/$(TAG)/
 
 appcast: $(DMG)
 	@test -n "$(SPARKLE_BIN)" || (echo "Sparkle tools not found — run make build first" && exit 1)
-	mkdir -p $(PAGES_DIR)
-	@# Rebuilt from what is actually in the folder, never merged into the old
-	@# one — generate_appcast preserves entries it already knows, and left the
-	@# previous version advertised at a URL now serving a different file, with
-	@# a signature that could never verify. The old dmg goes for the same
-	@# reason: generate_appcast reads the whole folder, so a leftover would be
-	@# advertised as a version of its own.
-	rm -f $(PAGES_DIR)/appcast.xml $(PAGES_DIR)/*.dmg
-	@# The name carries the version, so the download URL is new every release.
-	@# Under one constant name each release put a different installer at the
-	@# same URL, and anything caching it — a browser, a proxy, a CDN — went on
-	@# serving the build before it. That reads as "the release shipped the old
-	@# installer" (#386) rather than as the stale copy it is, and it costs a
-	@# release to disprove. generate_appcast takes the enclosure URL from the
-	@# filename, so versioning the name is the whole of it. Sparkle fetches
-	@# that same URL, so a cached body could serve a stale update to the
-	@# updater as well as to a browser.
-	cp $(DMG) $(PAGES_DIR)/$(APP_NAME)-$(VERSION).dmg
-	$(SPARKLE_BIN)/generate_appcast $(PAGES_DIR) --download-url-prefix $(DOWNLOAD_PREFIX)
-	@echo "Publish by committing $(PAGES_DIR)/ and pushing."
+	@# Rebuilt from the one dmg being released, never merged into an old feed:
+	@# generate_appcast reads the whole folder, so a leftover would be
+	@# advertised as a version of its own, at a URL it is not served from.
+	rm -rf $(APPCAST_STAGE)
+	mkdir -p $(APPCAST_STAGE)
+	cp $(DMG) $(APPCAST_STAGE)/
+	$(SPARKLE_BIN)/generate_appcast $(APPCAST_STAGE) --download-url-prefix $(DOWNLOAD_PREFIX) -o $(APPCAST)
+	rm -rf $(APPCAST_STAGE)
+	@echo "Wrote $(APPCAST). Run make publish, then deploy the site."
 
-release: notarize verify-release appcast
-	@echo "Notarized: $(DMG)"
+release: notarize verify-release zip appcast
+	@echo "Notarized: $(DMG) and $(ZIP)"
 
 # The GitHub release page is where someone who has never installed the app
-# looks first; the appcast feed is only ever read by copies already running.
-# The same notarized dmg belongs in both, and until it was in both the release
-# pages carried no assets at all — leaving a full Xcode install as the only way
-# to try the app.
-#
-# Deliberately not part of `release`: every other target here is local, and
-# this one writes to the remote. Run it once `make release` has finished and
-# the tag exists.
-VERSION := $(shell awk -F'"' '/MARKETING_VERSION:/ {print $$2}' project.yml)
-TAG     ?= v$(VERSION)
-
-publish: $(DMG)
+# looks first, and where the appcast's enclosure URL points. Deliberately not
+# part of `release`: every other target here is local, and this one writes to
+# the remote. Run it once `make release` has finished and the tag exists.
+publish: $(DMG) $(ZIP)
 	@test -n "$(VERSION)" || (echo "No MARKETING_VERSION in project.yml" && exit 1)
 	@# --clobber so re-running after a rebuild replaces the asset instead of
 	@# failing on the name already being taken.
-	gh release upload $(TAG) $(DMG) --clobber
-	@echo "Attached $(DMG) to $(TAG)."
+	@# Also under fixed names: swarmaa.com and the README link releases/latest/download/Swarmaa.zip.
+	cp $(DMG) $(RELEASE_DIR)/$(APP_NAME).dmg
+	cp $(ZIP) $(RELEASE_DIR)/$(APP_NAME).zip
+	gh release upload $(TAG) $(DMG) $(ZIP) $(RELEASE_DIR)/$(APP_NAME).dmg $(RELEASE_DIR)/$(APP_NAME).zip --clobber
+	@echo "Attached $(DMG), $(ZIP) and the fixed-name copies to $(TAG)."
 
 # What Gatekeeper on a customer's Mac will check. `spctl` accepting the app is
 # the actual proof that the download will open without a right-click.

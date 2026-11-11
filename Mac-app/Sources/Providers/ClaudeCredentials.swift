@@ -5,7 +5,7 @@ import Security
 ///
 /// Swarmaa only ever *reads* this item. Refreshing is deliberately left to
 /// Claude Code: minting a new token would mean writing a credential this app
-/// does not own, so when the token expires the notch says `needsAuth` and waits
+/// does not own, so when the token expires the app says `needsAuth` and waits
 /// for Claude Code to refresh it in the ordinary course of being used.
 struct ClaudeCredentials {
     let accessToken: String

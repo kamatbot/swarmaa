@@ -1,5 +1,5 @@
 import XCTest
-@testable import Codenotch
+@testable import Swarmaa
 
 /// A headless run's turn, read off its `updates.jsonl`: open until
 /// `turn_completed`, whatever hook runs follow it.

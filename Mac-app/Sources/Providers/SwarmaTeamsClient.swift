@@ -1103,8 +1103,8 @@ actor SwarmaTeamsClient {
 }
 
 extension SwarmaCells {
-    /// A notch cell whose id starts with this opens the main window on that
-    /// thread: the swarm and question items the notch shows (TEAMS.md §1).
+    /// A usage cell whose id starts with this opens the main window on that
+    /// thread: the swarm and question items the app shows (TEAMS.md §1).
     static let threadPrefix = "swarm:thread:"
     static func threadCellID(_ threadID: String) -> String { threadPrefix + threadID }
     static func swarmID(fromCellID id: String) -> String? {

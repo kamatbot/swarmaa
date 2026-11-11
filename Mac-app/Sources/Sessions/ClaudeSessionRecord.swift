@@ -94,7 +94,7 @@ struct ClaudeSessionRecord {
             // `startedAt` before the clock, because a desktop record carries
             // neither `statusUpdatedAt` nor `updatedAt` and `Date()` is a
             // different answer on every rescan — which makes the session look
-            // changed twice a second and sets the notch animating over and
+            // changed twice a second and sets the app animating over and
             // over. When the transcript is readable it replaces this anyway;
             // this is what holds still until it is.
             since: millis.map { Date(timeIntervalSince1970: $0 / 1000) }

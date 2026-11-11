@@ -1,6 +1,6 @@
 import XCTest
-#if canImport(Codenotch)
-@testable import Codenotch
+#if canImport(Swarmaa)
+@testable import Swarmaa
 #endif
 
 // MARK: - Fake WebSocket for Testing
