@@ -676,6 +676,27 @@ describe('bots core service (Brief B1)', { skip: !connectionString, concurrency:
     assert.equal(summaryTurn.required_capability, 'antigravity.read');
   });
 
+  it('a message that names an agent ("use agy to …") runs that turn on it', async () => {
+    const tenantId = randomUUID();
+    const user = await createPrincipal(tenantId, 'user-agy');
+    const lead = (await call(user, 'agent_create', {
+      name: 'LeadX', role: 'Lead', instructions: 'Lead', scope: 'project:a', runner: { provider: 'claude' }
+    })).agent;
+    const { thread } = await call(user, 'bot_create', {
+      name: 'AgyBot', rules: { first_reply: 'off' }, job: 'Audits', scope: 'project:a', lead_agent_id: lead.id, member_agent_ids: []
+    });
+    const turn = async () => (await pool.query(
+      "SELECT required_capability, permission_envelope->'runner'->>'provider' AS provider FROM tasks WHERE tenant_id=$1 AND agent_id=$2 AND thread_id=$3 AND status='queued'",
+      [tenantId, lead.id, thread.id])).rows[0];
+
+    await call(user, 'thread_post', { thread_id: thread.id, body: 'use agy to run a performance audit', idempotency_key: 'agy-1' });
+    assert.deepEqual(await turn(), { required_capability: 'antigravity.read', provider: 'antigravity' });
+
+    // A later message on the still-queued turn that names another agent moves it there.
+    await call(user, 'thread_post', { thread_id: thread.id, body: 'ask codex instead', idempotency_key: 'agy-2' });
+    assert.deepEqual(await turn(), { required_capability: 'codex.read', provider: 'codex' });
+  });
+
   it('a task card for review-ready and for failed, never twice', async () => {
     const tenantId = randomUUID();
     const user = await createPrincipal(tenantId, 'user-6');

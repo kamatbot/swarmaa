@@ -173,6 +173,18 @@ function runnerDisplayName(runner: RunnerConfig): string {
   return runner.provider ?? 'Auto';
 }
 
+/**
+ * The agent a person names for this message: "use agy to …", "ask codex …", "have claude …", or an @agy / @codex /
+ * @claude anywhere. Only these three names; null means the bot's own runner decides as usual.
+ */
+export function requestedProvider(body: string): 'claude' | 'codex' | 'antigravity' | null {
+  const named = /^\s*(?:please\s+)?(?:use|ask|have|let|with|via|run\s+(?:this\s+)?(?:on|with))\s+(agy|antigravity|codex|claude)\b/iu.exec(body)
+    ?? /(?:^|\s)@(agy|antigravity|codex|claude)\b/iu.exec(body);
+  if (!named) return null;
+  const name = named[1]!.toLowerCase();
+  return name === 'agy' || name === 'antigravity' ? 'antigravity' : name === 'claude' ? 'claude' : 'codex';
+}
+
 export async function enqueueAgentTurn(
   db: Db,
   p: Principal,
@@ -184,9 +196,11 @@ export async function enqueueAgentTurn(
     initiatorKind: 'person' | 'handoff' | 'swarm' | 'answer' | 'flow' | 'schedule' | 'bot_check' | 'source';
     hopDepth?: number;
     objective?: string;
+    /** The person named an agent for this turn ("use agy to …"): it runs there, whatever the bot's runner. */
+    provider?: 'claude' | 'codex' | 'antigravity' | null;
   }
 ): Promise<string> {
-  const { thread, agent, bot, seq, initiatorKind, hopDepth = 0, objective } = opts;
+  const { thread, agent, bot, seq, initiatorKind, hopDepth = 0, objective, provider } = opts;
   const queuedTurn = (await db.query<{ id: string; context_versions: Record<string, unknown> }>(
     "SELECT id, context_versions FROM tasks WHERE tenant_id=$1 AND agent_id=$2 AND thread_id=$3 AND kind='turn' AND status='queued' ORDER BY id ASC LIMIT 1 FOR UPDATE",
     [p.tenantId, agent.id, thread.id]
@@ -198,17 +212,25 @@ export async function enqueueAgentTurn(
       'UPDATE tasks SET context_versions=$1::jsonb, updated_at=clock_timestamp() WHERE id=$2',
       [JSON.stringify(updatedVersions), queuedTurn.id]
     );
+    // A newer message that names an agent moves the still-queued turn there.
+    if (provider) {
+      const editsQueued = bot ? (leadTurnProfile(bot, agent)?.edits ?? agent.edits) : agent.edits;
+      await db.query(`UPDATE tasks SET required_capability=$1,
+        permission_envelope=jsonb_set(permission_envelope, '{runner}', $2::jsonb) WHERE id=$3`,
+        [`${provider}.${editsQueued ? 'patch' : 'read'}`, JSON.stringify({ provider, fast: false }), queuedTurn.id]);
+    }
     return queuedTurn.id;
   }
 
   const botId = bot?.id ?? null;
   const profile = bot ? leadTurnProfile(bot, agent) : null;
   const first = (bot && !profile?.router) ? firstReplyRunner(bot.rules, agent.edits) : null;
-  const requiredCap = first?.capability ?? (profile ? profile.capability : runnerCapability(agent.runner, agent.edits));
+  const edits = profile ? profile.edits : agent.edits;
+  const requiredCap = provider ? `${provider}.${edits ? 'patch' : 'read'}`
+    : first?.capability ?? (profile ? profile.capability : runnerCapability(agent.runner, agent.edits));
   const taskId = newId();
   const turnObjective = objective || `Turn for agent ${agent.name} in ${thread.kind === 'bot' ? (thread.title ?? 'bot') : '#' + (thread.title ?? 'channel')}`;
-  const edits = profile ? profile.edits : agent.edits;
-  const runnerObj = profile?.runner ?? first?.runner;
+  const runnerObj = provider ? { provider, fast: false } : profile?.runner ?? first?.runner;
   const envelope = {
     deploy: false, publish: false, purchase: false, local_patch: edits,
     read_project: true, send_messages: false, permission_changes: false, external_side_effects: false,
@@ -651,7 +673,8 @@ export class TeamService {
             bot,
             seq: nextSeq,
             initiatorKind: 'person',
-            objective: cleanBody
+            objective: cleanBody,
+            provider: requestedProvider(body)
           });
         }
       }

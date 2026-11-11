@@ -155,3 +155,16 @@ test('router turn prompt contains router preamble, lists only allowed actions, a
   assert.ok(!taskPrompt.includes("- {type:'swarm_update'"));
   assert.ok(!taskPrompt.includes("- {type:'channel_post'"));
 });
+
+test('requestedProvider reads an agent the person names, and nothing else', async () => {
+  const { requestedProvider } = await import('../src/core/teams.js');
+  assert.equal(requestedProvider('use agy to run a performance audit'), 'antigravity');
+  assert.equal(requestedProvider('Please use Antigravity for this'), 'antigravity');
+  assert.equal(requestedProvider('ask codex to review the diff'), 'codex');
+  assert.equal(requestedProvider('have claude write the summary'), 'claude');
+  assert.equal(requestedProvider('can you check this @agy'), 'antigravity');
+  assert.equal(requestedProvider('run this on codex: the flaky test'), 'codex');
+  assert.equal(requestedProvider('compare codex and claude pricing'), null);
+  assert.equal(requestedProvider('the agy CLI broke yesterday'), null);
+  assert.equal(requestedProvider('email@codex.com'), null);
+});
