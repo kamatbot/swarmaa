@@ -151,10 +151,11 @@ final class TeamsTaskGroupingTests: XCTestCase {
     }
 
     func testColours() {
-        XCTAssertEqual(TeamsTaskSection.review.color, .green)
-        XCTAssertEqual(TeamsTaskSection.needsInput.color, .orange)
-        XCTAssertEqual(TeamsTaskSection.working.color, .blue)
-        XCTAssertEqual(TeamsTaskSection.failed.color, .red)
+        // The navy palette: sage review, amber input, signal-blue working, coral failed.
+        XCTAssertEqual(TeamsTaskSection.review.color, KS.sage)
+        XCTAssertEqual(TeamsTaskSection.needsInput.color, KS.amber)
+        XCTAssertEqual(TeamsTaskSection.working.color, KS.signal)
+        XCTAssertEqual(TeamsTaskSection.failed.color, KS.coral)
     }
 
     func testWorkingAndResolvedFromTaskList() throws {
