@@ -39566,79 +39566,79 @@
         }
       }
     },
-    "The update check didn't finish. Try again, or download the latest Swarmaa from hivinz.com.": {
+    "The update check didn't finish. Try again, or download the latest Swarmaa from swarmaa.com.": {
       "extractionState": "manual",
       "localizations": {
         "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Die Suche nach Updates wurde nicht abgeschlossen. Versuche es erneut oder lade das neueste Swarmaa von hivinz.com."
+            "value": "Die Suche nach Updates wurde nicht abgeschlossen. Versuche es erneut oder lade das neueste Swarmaa von swarmaa.com."
           }
         },
         "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "La recherche de mises à jour ne s'est pas terminée. Réessayez, ou téléchargez la dernière version de Swarmaa sur hivinz.com."
+            "value": "La recherche de mises à jour ne s'est pas terminée. Réessayez, ou téléchargez la dernière version de Swarmaa sur swarmaa.com."
           }
         },
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "アップデートの確認が完了しませんでした。もう一度試すか、hivinz.com から最新の Swarmaa をダウンロードしてください。"
+            "value": "アップデートの確認が完了しませんでした。もう一度試すか、swarmaa.com から最新の Swarmaa をダウンロードしてください。"
           }
         },
         "pt-BR": {
           "stringUnit": {
             "state": "translated",
-            "value": "A verificação de atualizações não terminou. Tente de novo ou baixe o Swarmaa mais recente em hivinz.com."
+            "value": "A verificação de atualizações não terminou. Tente de novo ou baixe o Swarmaa mais recente em swarmaa.com."
           }
         },
         "ru": {
           "stringUnit": {
             "state": "translated",
-            "value": "Проверка обновлений не завершилась. Попробуйте ещё раз или скачайте последнюю версию Swarmaa с hivinz.com."
+            "value": "Проверка обновлений не завершилась. Попробуйте ещё раз или скачайте последнюю версию Swarmaa с swarmaa.com."
           }
         },
         "uk": {
           "stringUnit": {
             "state": "translated",
-            "value": "Перевірка оновлень не завершилася. Спробуйте ще раз або завантажте останню версію Swarmaa з hivinz.com."
+            "value": "Перевірка оновлень не завершилася. Спробуйте ще раз або завантажте останню версію Swarmaa з swarmaa.com."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "更新检查未完成。请重试，或从 hivinz.com 下载最新的 Swarmaa。"
+            "value": "更新检查未完成。请重试，或从 swarmaa.com 下载最新的 Swarmaa。"
           }
         },
         "zh-Hant": {
           "stringUnit": {
             "state": "translated",
-            "value": "更新檢查未完成。請再試一次，或從 hivinz.com 下載最新的 Swarmaa。"
+            "value": "更新檢查未完成。請再試一次，或從 swarmaa.com 下載最新的 Swarmaa。"
           }
         },
         "ko": {
           "stringUnit": {
             "state": "translated",
-            "value": "업데이트 확인을 완료하지 못했습니다. 다시 시도하거나 hivinz.com에서 최신 Swarmaa를 다운로드하십시오."
+            "value": "업데이트 확인을 완료하지 못했습니다. 다시 시도하거나 swarmaa.com에서 최신 Swarmaa를 다운로드하십시오."
           }
         },
         "uz": {
           "stringUnit": {
             "state": "translated",
-            "value": "Yangilanishni tekshirish tugamadi. Qayta urinib koʻring yoki eng soʻnggi Swarmaaʼni hivinz.com dan yuklab oling."
+            "value": "Yangilanishni tekshirish tugamadi. Qayta urinib koʻring yoki eng soʻnggi Swarmaaʼni swarmaa.com dan yuklab oling."
           }
         },
         "id": {
           "stringUnit": {
             "state": "translated",
-            "value": "Pemeriksaan pembaruan tidak selesai. Coba lagi, atau unduh Swarmaa terbaru dari hivinz.com."
+            "value": "Pemeriksaan pembaruan tidak selesai. Coba lagi, atau unduh Swarmaa terbaru dari swarmaa.com."
           }
         },
         "tr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Güncelleme denetimi tamamlanamadı. Tekrar deneyin veya en son Swarmaa'u hivinz.com adresinden indirin."
+            "value": "Güncelleme denetimi tamamlanamadı. Tekrar deneyin veya en son Swarmaa'u swarmaa.com adresinden indirin."
           }
         }
       }
