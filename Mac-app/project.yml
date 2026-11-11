@@ -14,8 +14,8 @@ settings:
     # Sources/Info.plist reads both from here — hardcoding them there instead
     # silently pins every build to one version, so no customer ever sees an
     # update. Bump CURRENT_PROJECT_VERSION on every release.
-    MARKETING_VERSION: "1.26.0"
-    CURRENT_PROJECT_VERSION: "53"
+    MARKETING_VERSION: "1.27.0"
+    CURRENT_PROJECT_VERSION: "54"
     # Signed with a stable identity on purpose. The app reads Claude Code's
     # OAuth token out of the login keychain, and the keychain's ACL remembers
     # *which signed binary* was allowed. Ad-hoc or unsigned builds get a new
@@ -109,14 +109,13 @@ targets:
         NSMicrophoneUsageDescription: "Swarmaa uses the microphone to transcribe your message."
         NSSpeechRecognitionUsageDescription: "Swarmaa transcribes speech into your editable message."
         # --- Sparkle -------------------------------------------------------
-        # Beside the download itself, on hivinz.com. It used to point at a
-        # GitHub Pages URL for a repo that was never created, so every check
-        # got a 404 and Sparkle reported "an error occurred in retrieving
-        # update information" — correctly, since there was nothing there.
+        # Served by the swarmaa.com Cloudflare worker from site/public/appcast.xml,
+        # which `make appcast` writes. The downloads it lists are GitHub release
+        # assets (see DOWNLOAD_PREFIX in the Makefile).
         #
         # Must stay reachable for as long as any copy is installed: the feed is
         # the only route by which a shipped build can ever be replaced.
-        SUFeedURL: https://hivinz.com/appcast.xml
+        SUFeedURL: https://swarmaa.com/appcast.xml
         # The public half of the EdDSA key in the login keychain. Sparkle
         # refuses any update not signed by its private half, so a hijacked feed
         # or a swapped download cannot install code. Losing the private key
@@ -126,13 +125,13 @@ targets:
         # shows a "check for updates automatically?" prompt, which is exactly
         # the permission this is meant to avoid.
         SUEnableAutomaticChecks: true
-        # Never downloads unasked: a new version is offered in the notch and
-        # installed when Update is chosen — see `Updater`.
+        # Never downloads unasked: a new version is offered in Sparkle's update
+        # window and installed when Install Update is chosen — see `Updater`.
         SUAutomaticallyUpdate: false
         SUScheduledCheckInterval: 86400
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: app.swarmaa.notch
+        PRODUCT_BUNDLE_IDENTIFIER: app.swarmaa.mac
         PRODUCT_NAME: Swarmaa
         PRODUCT_MODULE_NAME: Swarmaa
         GENERATE_INFOPLIST_FILE: "NO"
@@ -156,7 +155,7 @@ targets:
       - target: Swarmaa
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: app.swarmaa.notch.tests
+        PRODUCT_BUNDLE_IDENTIFIER: app.swarmaa.mac.tests
         GENERATE_INFOPLIST_FILE: "YES"
         # The host app's product is Swarmaa.app (PRODUCT_NAME), not the target name.
         TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Swarmaa.app/Contents/MacOS/Swarmaa"
