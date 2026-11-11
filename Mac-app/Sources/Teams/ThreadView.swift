@@ -368,7 +368,13 @@ struct BotMessageAvatar: View {
 
     var body: some View {
         let agent = model.agent(id: agentID)
-        ProviderMonogram(provider: agent?.runner.provider, size: 30, fallback: agent?.name ?? "")
+        // The agent's character, with its provider (CL/CX/AG) as a small badge.
+        KSMoji(seed: agent?.avatar ?? agentID, size: 32)
+            .overlay(alignment: .bottomTrailing) {
+                if agent?.runner.provider != nil {
+                    ProviderMonogram(provider: agent?.runner.provider, size: 14, fallback: "").offset(x: 4, y: 4)
+                }
+            }
     }
 }
 
