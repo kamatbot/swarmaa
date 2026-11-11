@@ -49,14 +49,14 @@ import WatchConnectivity
         guard !recording, !permissionPending, currentGeneration == generation else { return }
         guard memos.count < MemoLimits.count else { error = "Watch memo storage is full. Delete a saved copy first."; return }
         permissionPending = true
-        AVAudioSession.sharedInstance().requestRecordPermission { [weak self] allowed in
-            Task { @MainActor in
-                guard let self else { return }
-                self.permissionPending = false
-                guard allowed else { self.error = "Allow microphone access in Watch settings to record."; return }
-                guard self.currentGeneration == generation else { return }
-                self.begin(generation: generation)
-            }
+        // The async API resumes on the main actor; a closure here would inherit main-actor isolation and
+        // trap under Swift 6 when the system calls it on a background queue.
+        Task {
+            let allowed = await AVAudioApplication.requestRecordPermission()
+            permissionPending = false
+            guard allowed else { error = "Allow microphone access in Watch settings to record."; return }
+            guard currentGeneration == generation else { return }
+            begin(generation: generation)
         }
     }
     private func begin(generation: String) {
