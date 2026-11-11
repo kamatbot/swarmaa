@@ -33,6 +33,16 @@ enum ReleaseNotes {
     static var all: [ReleaseNote] {
         [
             ReleaseNote(
+                version: "1.27.1",
+                headline: L10n.t("Automatic updates from swarmaa.com."),
+                changes: [
+                    ReleaseNote.Change(
+                        title: L10n.t("Updates itself"),
+                        detail: L10n.t("From this version on, Swarmaa checks swarmaa.com and installs new versions for you.")
+                    ),
+                ]
+            ),
+            ReleaseNote(
                 version: "1.27.0",
                 headline: L10n.t("A fresh start as Swarmaa for Mac: the main window and the menu bar."),
                 changes: [
