@@ -59,7 +59,10 @@ struct SwarmMapPanel: View {
             .padding(.horizontal, 16).frame(height: KS.topBarHeight)
             .background(KS.topBar)
             .overlay(alignment: .bottom) { Rectangle().fill(KS.hairline).frame(height: 1) }
-            TimelineView(.animation) { tl in
+            // Animate only while a swarm is active (tasks running or a pulse in flight); otherwise paused, and a new
+            // status still redraws it once. Unpaused at 60 fps this cost ~35% of a core at idle.
+            let moving = store.state.runningCount > 0 || !store.state.pulses.isEmpty
+            TimelineView(.animation(minimumInterval: 1.0 / 30, paused: !moving)) { tl in
                 Canvas { ctx, size in SwarmMapDrawing.draw(&ctx, size, store.state, model.openQuestions.count, tl.date) }
                     .padding(.top, 8)
             }
