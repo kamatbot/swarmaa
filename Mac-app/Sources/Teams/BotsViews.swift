@@ -153,7 +153,7 @@ struct BotRow: View {
                         .foregroundStyle(needs > 0 ? KS.needsYouText.opacity(0.85) : KS.textMuted).lineLimit(1)
                 }
             }
-            .padding(.horizontal, 12).padding(.vertical, 8)
+            .padding(.horizontal, 12).padding(.vertical, 12)  // ~58pt rows (was 50): room to breathe in a tall list
             .background {
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .fill(selected ? KS.selected : hovered ? KS.chip.opacity(0.6) : .clear)
