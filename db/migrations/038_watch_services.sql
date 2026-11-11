@@ -14,5 +14,6 @@ CREATE TABLE watch_transaction_requests (
  tenant_id text NOT NULL, scope text NOT NULL, thread_id uuid NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
  principal_id uuid NOT NULL REFERENCES principals(id), request_id uuid NOT NULL, request_hash text NOT NULL,
  origin text NOT NULL, expected_user_id text NOT NULL, account_id text, review_id text,
+ review_token_sha256 text, review_expires_at timestamptz, confirmation_id uuid,
  PRIMARY KEY (tenant_id, principal_id, request_id), UNIQUE (tenant_id, principal_id, thread_id, review_id)
 );

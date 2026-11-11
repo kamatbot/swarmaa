@@ -13,10 +13,11 @@ import { noExtraKeys } from './shared.js';
 
 const CHUNK = 131072, MAX = 20 * 1024 * 1024;
 const digest = (v: Buffer | string) => createHash('sha256').update(v).digest('hex');
-async function authorize(db: PoolClient, p: Principal, thread: string, write: boolean): Promise<string> {
+// lock=false for calls that wait on RetireOdds: a thread row lock would block thread_post for up to 15 s.
+async function authorize(db: PoolClient, p: Principal, thread: string, write: boolean, lock = true): Promise<string> {
   requireCondition(p.role !== 'worker', 403, 'forbidden', 'Workers cannot use watch host services.');
   requirePermission(p, 'thread:read'); if (write) requirePermission(p, 'thread:write');
-  const row = (await db.query('SELECT scope FROM threads WHERE id=$1 AND tenant_id=$2 FOR UPDATE', [thread,p.tenantId])).rows[0];
+  const row = (await db.query(`SELECT scope FROM threads WHERE id=$1 AND tenant_id=$2${lock ? ' FOR UPDATE' : ''}`, [thread,p.tenantId])).rows[0];
   requireCondition(row, 404, 'thread_not_found', 'Thread not found.'); requireScope(p,row.scope); return row.scope;
 }
 function root(): string {
@@ -175,14 +176,29 @@ export async function watchTransaction(pool:Pool,p:Principal,action:'preview'|'c
     requireCondition(operation === 'update' ? !!expenseId : !expenseId,400,'invalid_arguments','Invalid expense id.');
     const payload = {requestId,expectedUserId:config.user,operation,...(expenseId ? {expenseId}:{}),values:{payee:values.payee,date:values.date,amount:values.amount,currency:values.currency,category:values.category}};
     await transaction(pool,async db => {
-      const scope = await authorize(db,p,thread,true);
+      const scope = await authorize(db,p,thread,true,false);
       await db.query('INSERT INTO watch_transaction_requests (tenant_id,scope,thread_id,principal_id,request_id,request_hash,origin,expected_user_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT DO NOTHING',[p.tenantId,scope,thread,p.id,requestId,digest(JSON.stringify(payload)),config.origin,config.user]);
       const row = (await db.query('SELECT * FROM watch_transaction_requests WHERE tenant_id=$1 AND principal_id=$2 AND request_id=$3 FOR UPDATE',[p.tenantId,p.id,requestId])).rows[0];
       requireCondition(row.thread_id === thread && row.scope === scope && row.request_hash === digest(JSON.stringify(payload)) && row.origin === config.origin && row.expected_user_id === config.user,409,'transaction_conflict','Transaction request conflicts.');
     });
   }
+  // Pin the confirmation to the previewed token before the external call, so a timeout cannot be replayed
+  // with another confirmation ID, a different token, or after the review expired.
+  if (action === 'confirm') {
+    const reviewId = string(input.review_id,'review_id',200), token = string(input.review_token,'review_token',4096);
+    const confirmationId = uuid(input.confirmation_id,'confirmation_id').toLowerCase();
+    await transaction(pool,async db => {
+      const scope = await authorize(db,p,thread,true,false);
+      const row = (await db.query('SELECT * FROM watch_transaction_requests WHERE tenant_id=$1 AND principal_id=$2 AND thread_id=$3 AND review_id=$4 FOR UPDATE',[p.tenantId,p.id,thread,reviewId])).rows[0];
+      requireCondition(row && row.scope === scope,404,'review_not_found','Review not found.');
+      requireCondition(row.review_token_sha256 === digest(token),409,'review_stale','Review token does not match the previewed review.');
+      if (row.confirmation_id) { requireCondition(row.confirmation_id === confirmationId,409,'review_already_confirmed','This review already has a different confirmation.'); return; }
+      requireCondition(new Date(row.review_expires_at).getTime() > Date.now(),409,'review_expired','Review expired; request a new preview.');
+      await db.query('UPDATE watch_transaction_requests SET confirmation_id=$1 WHERE tenant_id=$2 AND principal_id=$3 AND request_id=$4',[confirmationId,p.tenantId,p.id,row.request_id]);
+    });
+  }
   return transaction(pool,async db => {
-    const scope = await authorize(db,p,thread,true);
+    const scope = await authorize(db,p,thread,true,false);
     if (action === 'preview') {
       const requestId = uuid(input.request_id,'request_id'), operation = input.operation;
       requireCondition(operation === 'create' || operation === 'update',400,'invalid_arguments','Invalid operation.');
@@ -198,10 +214,10 @@ export async function watchTransaction(pool:Pool,p:Principal,action:'preview'|'c
       const after = object(result.after);
       const cents = (amount:unknown):string => { const [whole, fraction = ''] = String(amount).split('.'); return `${whole}.${fraction.padEnd(2,'0')}`; };
       const before = result.before === null ? null : object(result.before);
-      requireCondition(result.accountId === config.user && (!row.review_id || row.review_id === result.reviewId) && (!row.account_id || row.account_id === result.accountId) && result.operation === operation &&
+      requireCondition(result.accountId === config.user && (!row.review_id || row.review_id === result.reviewId) && (!row.review_token_sha256 || row.review_token_sha256 === digest(String(result.reviewToken))) && (!row.account_id || row.account_id === result.accountId) && result.operation === operation &&
         after.payee === String(values.payee).trim() && after.date === values.date && cents(after.amount) === cents(values.amount) && after.currency === values.currency && after.category === values.category &&
         (operation === 'create' ? before === null : before !== null && before.id === expenseId && (after.id === undefined || after.id === expenseId)),502,'retireodds_response_invalid','RetireOdds review does not match the request.');
-      await db.query('UPDATE watch_transaction_requests SET review_id=$1,account_id=$2 WHERE tenant_id=$3 AND principal_id=$4 AND request_id=$5',[result.reviewId,result.accountId,p.tenantId,p.id,requestId]); return result;
+      await db.query('UPDATE watch_transaction_requests SET review_id=$1,account_id=$2,review_token_sha256=$6,review_expires_at=$7 WHERE tenant_id=$3 AND principal_id=$4 AND request_id=$5',[result.reviewId,result.accountId,p.tenantId,p.id,requestId,digest(String(result.reviewToken)),new Date(String(result.expiresAt))]); return result;
     }
     const reviewId = string(input.review_id,'review_id',200);
     const row = (await db.query('SELECT * FROM watch_transaction_requests WHERE tenant_id=$1 AND principal_id=$2 AND thread_id=$3 AND review_id=$4 FOR UPDATE',[p.tenantId,p.id,thread,reviewId])).rows[0];
@@ -212,7 +228,7 @@ export async function watchTransaction(pool:Pool,p:Principal,action:'preview'|'c
     else endpoint += `${encodeURIComponent(reviewId)}?expectedUserId=${encodeURIComponent(config.user)}`;
     const result = review(await remote(config,endpoint,body));
     requireCondition(result.reviewId === reviewId && result.accountId === row.account_id,502,'retireodds_response_invalid','RetireOdds review binding changed.');
-    if (action === 'confirm') { const receipt = object(result.receipt); requireCondition(result.status === 'confirmed' && receipt.id === input.confirmation_id,502,'retireodds_response_invalid','RetireOdds receipt does not match confirmation.'); }
+    if (action === 'confirm') { const receipt = object(result.receipt); requireCondition(result.status === 'confirmed' && String(receipt.id).toLowerCase() === String(input.confirmation_id).toLowerCase(),502,'retireodds_response_invalid','RetireOdds receipt does not match confirmation.'); }
     return result;
   });
 }
