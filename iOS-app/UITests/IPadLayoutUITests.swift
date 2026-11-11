@@ -33,6 +33,15 @@ import XCTest
         XCTAssertFalse(app.textFields["composer"].exists)
         shot(app, "ipad-landscape-timeline")
 
+        app.buttons["pane-tasks"].tap()
+        XCTAssertTrue(app.staticTexts["Fix the plan limits on the pricing page"].waitForExistence(timeout: 3), "Tasks pane in the main area")
+        XCTAssertFalse(app.buttons["ipad-bot-launch"].exists)
+        shot(app, "ipad-landscape-tasks")
+        app.buttons["pane-usage"].tap()
+        XCTAssertTrue(app.buttons["Refresh usage"].waitForExistence(timeout: 3), "Usage pane in the main area")
+        shot(app, "ipad-landscape-usage")
+        app.buttons["pane-bots"].tap()
+        XCTAssertTrue(app.buttons["ipad-bot-launch"].waitForExistence(timeout: 3))
         app.buttons["tab-logs"].tap()
         XCTAssertTrue(app.scrollViews["ipad-logs"].waitForExistence(timeout: 3))
         app.buttons["tab-thread"].tap()
@@ -59,5 +68,46 @@ import XCTest
         XCUIDevice.shared.orientation = .portrait
         XCTAssertTrue(app.buttons["ipad-bot-launch"].waitForExistence(timeout: 3))
         shot(app, "ipad-portrait")
+    }
+
+    /// Present now (no retry window) and inside the window, not scrolled out of view.
+    private func onScreen(_ app: XCUIApplication, _ element: XCUIElement) -> Bool {
+        element.exists && element.isHittable && app.windows.firstMatch.frame.contains(element.frame)
+    }
+
+    /// The thread must still show its newest message after the map changes the column width (it went blank on device).
+    func testThreadStaysVisibleWhenMapToggles() throws {
+        try XCTSkipUnless(UIDevice.current.userInterfaceIdiom == .pad, "iPad layout")
+        let app = XCUIApplication()
+        app.launchArguments = ["-demo", "-long-thread-demo"]
+        for orientation in [UIDeviceOrientation.landscapeLeft, .portrait] {
+            XCUIDevice.shared.orientation = orientation
+            app.launch()
+            let newest = app.staticTexts["Demo reply 100"]
+            XCTAssertTrue(newest.waitForExistence(timeout: 10))
+            XCTAssertTrue(newest.isHittable, "newest message on screen at launch")
+            let name = orientation == .portrait ? "portrait" : "landscape"
+            for step in ["open", "closed", "open"] {
+                app.buttons["toggle-swarm-map"].tap()
+                sleep(1)
+                shot(app, "ipad-\(name)-map-\(step)")
+                XCTAssertTrue(onScreen(app, newest), "\(name): newest message visible with the map \(step)")
+            }
+            // Another bot and back with the map open.
+            app.buttons["ipad-bot-watch"].tap(); app.buttons["ipad-bot-launch"].tap()
+            sleep(1)
+            XCTAssertTrue(onScreen(app, newest), "\(name): newest message visible after switching bots")
+            // Scrolled to the top, then the map closes: the top of the thread stays on screen, not a blank column.
+            let thread = app.scrollViews.containing(.staticText, identifier: "Demo reply 100").firstMatch
+            let first = app.staticTexts["Plan Friday’s launch. Ask me before anything goes public."]
+            for _ in 0..<40 where !onScreen(app, first) { thread.swipeDown(velocity: .fast) }
+            XCTAssertTrue(onScreen(app, first), "\(name): scrolled to the top")
+            app.buttons["toggle-swarm-map"].tap(); sleep(1)
+            shot(app, "ipad-\(name)-top-map-closed")
+            XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH 'Demo reply' OR label BEGINSWITH 'Plan Friday'")).allElementsBoundByIndex.contains { onScreen(app, $0) },
+                          "\(name): thread not blank after the map closes while scrolled up")
+            app.buttons["toggle-swarm-map"].tap(); sleep(1)
+            app.terminate()
+        }
     }
 }

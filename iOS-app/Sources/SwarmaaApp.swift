@@ -660,7 +660,10 @@ struct RootView: View {
         VStack(spacing: 0) {
             ScrollViewReader { proxy in
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 8) {
+                    // Not lazy: a lazy stack keeps the bottom anchor on estimated row heights, and when the column
+                    // width changes (iPad map, sidebar) the offset lands past the real content: a blank thread.
+                    // A thread page is at most a few hundred rows, so measuring them all is cheap.
+                    VStack(alignment: .leading, spacing: 8) {
                         ForEach(threadRows(model.messages)) { row in
                             if row.folded {
                                 let threadID = model.openBot?.threadID ?? ""
