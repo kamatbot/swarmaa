@@ -17,7 +17,7 @@ final class OMLXMetrics: ObservableObject {
     @Published private(set) var linked = false
     /// Every existing log file has been read into the ledger.
     @Published private(set) var historyLoaded = false
-    /// Keyed by notch cell id.
+    /// Keyed by usage cell id.
     @Published private(set) var activities: [String: LocalModelActivity] = [:]
     @Published private(set) var performances: [String: LocalModelPerformance] = [:]
     @Published private(set) var ledger = LocalTokenLedger()
@@ -169,7 +169,7 @@ final class OMLXMetrics: ObservableObject {
         }
         guard activities != next else { return }
         // Only on a change, like the session monitors: the one way to see what
-        // the notch thinks a model is doing without hovering over it.
+        // the app thinks a model is doing without hovering over it.
         let summary = next.map { "\($0.key.split(separator: ":").last ?? "")=\($0.value.phase) q\($0.value.queued)" }
             .sorted().joined(separator: " ")
         Log.sessions.debug("omlx: \(summary.isEmpty ? "idle" : summary, privacy: .public)")

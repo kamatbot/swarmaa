@@ -163,7 +163,7 @@ enum AntigravityBridge {
 
     /// Turns the quota summary into limit windows.
     ///
-    /// The server reports what is **left**, not what is spent — the notch shows
+    /// The server reports what is **left**, not what is spent — the app shows
     /// the opposite, so every fraction is inverted here rather than in the view,
     /// where it would be a percentage whose meaning depended on the provider.
     static func windows(in data: Data, now: Date = Date()) -> [LimitWindow] {

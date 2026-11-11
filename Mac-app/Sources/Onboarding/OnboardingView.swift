@@ -94,7 +94,7 @@ private struct WelcomePage: View {
 
     var body: some View {
         PageHeader(title: "Welcome to Swarmaa",
-                   subtitle: "Swarmaa watches your coding agents from the notch: how much quota each has left, and what every chat and project is doing. Choose where your Swarmaa lives. You can also skip this and just see usage.")
+                   subtitle: "Swarmaa watches your coding agents: how much quota each has left, and what every chat and project is doing. Choose where your Swarmaa lives. You can also skip this and just see usage.")
         option(.setUpHere, "Set up Swarmaa on this Mac",
                model.bundledRuntime == nil
                ? "This build doesn't include the Swarmaa runtime. Choose another option, or skip."
@@ -179,7 +179,7 @@ private struct ConnectedPage: View {
     @ObservedObject var model: OnboardingModel
     var body: some View {
         PageHeader(title: "You're connected",
-                   subtitle: "This Mac now shows your Swarmaa agents and swarms in the notch. Nothing was installed on this Mac.")
+                   subtitle: "This Mac now shows your Swarmaa agents and swarms in the main window. Nothing was installed on this Mac.")
         StarterPromptBox(text: StarterPrompt.text(projects: [], remoteMCP: (try? SwarmaOAuth.origin(model.remoteAddress)).map(SwarmaOAuth.resource)))
     }
 }

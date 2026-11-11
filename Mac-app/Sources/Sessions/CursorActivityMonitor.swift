@@ -15,7 +15,7 @@ import SQLite3
 /// the busy/waiting state, and finished subagents are what left the blocking
 /// flag set for months. Waiting rows are gated on this editor launch (or a
 /// write still inside the staleness window), so a leftover approval from a
-/// previous process does not keep the notch amber.
+/// previous process does not keep the app amber.
 ///
 /// The database is in **WAL mode**, so it must be opened without `immutable`:
 /// that flag tells SQLite to ignore the write-ahead log, which means reading
@@ -109,7 +109,7 @@ final class CursorActivityMonitor: ObservableObject, AgentActivityMonitor {
         defer { sqlite3_close(db) }
 
         // `isSubagent` lives on the row, not always in the JSON value. Nested
-        // composers (continual-learning, explore, …) are not their own notch
+        // composers (continual-learning, explore, …) are not their own app
         // rows: the parent chat already carries the busy/waiting state, and
         // finished subagents are what left `hasBlockingPendingActions` set for
         // months after the run ended.

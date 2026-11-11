@@ -2,33 +2,13 @@ import AppKit
 import Foundation
 import UserNotifications
 
-/// Where every notification goes: the notch (its peek, its cards, its
-/// sounds) or a banner in Notification Center. One choice, because the
-/// reasons for either hold for all of them at once: the notch is quiet and
-/// stays out of Notification Center, a banner reaches a second display and a
-/// hidden notch. Which events notify at all stays a switch per event.
-enum NotificationChannel: String, CaseIterable, Identifiable {
-    case notch, mac
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .notch: return L10n.t("In the notch")
-        case .mac:   return L10n.t("Mac notifications")
-        }
-    }
-
-    var explanation: String {
-        switch self {
-        case .notch: return L10n.t("The notch opens for a moment or shows a card, with the sound you chose. Nothing reaches Notification Center.")
-        case .mac:   return L10n.t("A banner in Notification Center, which reaches you on another display or with the notch hidden. The notch stays quiet; sounds still play.")
-        }
-    }
-}
-
-/// The Mac side of the channel: banners for the events that had only the
-/// notch, and a test button that answers whatever state the permission is in.
+/// Banners in Notification Center for every event Swarmaa announces, and a
+/// test button that answers whatever state the permission is in.
 enum ChannelNotifications {
+    static var explanation: String {
+        L10n.t("A banner in Notification Center, which reaches you on any display. Sounds play as chosen below.")
+    }
+
     /// Without a delegate, macOS delivers an app's own notifications quietly
     /// to the list while that app is frontmost: the test sent from Settings,
     /// with the Settings window in front, never showed. The delegate asks for
@@ -46,9 +26,8 @@ enum ChannelNotifications {
         UNUserNotificationCenter.current().delegate = presenter
     }
 
-    /// Asked when the Mac channel is chosen, so the first banner is not also
-    /// the first permission dialog. Never on the notch channel: someone who
-    /// keeps everything in the notch is never asked about banners.
+    /// Asked at start, so the first banner is not also the first permission
+    /// dialog.
     static func requestAuthorizationIfNeeded() {
         let center = UNUserNotificationCenter.current()
         center.getNotificationSettings { settings in
@@ -70,7 +49,7 @@ enum ChannelNotifications {
                 }
             case .denied:
                 DispatchQueue.main.async {
-                    let id = Bundle.main.bundleIdentifier ?? "app.swarmaa.notch"
+                    let id = Bundle.main.bundleIdentifier ?? "app.swarmaa.mac"
                     if let url = URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension?id=\(id)") {
                         NSWorkspace.shared.open(url)
                     }

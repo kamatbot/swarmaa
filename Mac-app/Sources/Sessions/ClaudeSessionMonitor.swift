@@ -27,7 +27,7 @@ final class ClaudeSessionMonitor: ObservableObject, AgentActivityMonitor {
     ///
     /// Renewing the OAuth token runs the Claude CLI, and the CLI registers a
     /// session file for the second or so it is alive, exactly like any other
-    /// session. Without this the notch grows a seventh row that nobody asked
+    /// session. Without this the app grows a seventh row that nobody asked
     /// for, and — worse — `isBusy` can read it as work in progress and start
     /// polling usage hard on the strength of it.
     ///
@@ -135,7 +135,7 @@ final class ClaudeSessionMonitor: ObservableObject, AgentActivityMonitor {
                               ownership: ownership)
         guard found != sessions else { return }   // don't churn SwiftUI for nothing
         // Only on a change, so this is a handful of lines an hour rather than a
-        // firehose. It is the one way to see what the notch thinks is running
+        // firehose. It is the one way to see what the app thinks is running
         // without hovering over it:
         //
         //     log stream --predicate 'category == "sessions"' --level debug
@@ -257,7 +257,7 @@ final class ClaudeSessionMonitor: ObservableObject, AgentActivityMonitor {
     /// One session can hold two registry records at once: resuming after a
     /// crash registers a new pid while the old process is still winding down,
     /// and for a moment both files pass the liveness check. Claude Code settles
-    /// this by keeping the most recently started record, so the notch does the
+    /// this by keeping the most recently started record, so the app does the
     /// same rather than drawing one session twice.
     static func deduplicated(_ records: [ClaudeSessionRecord]) -> [ClaudeSessionRecord] {
         var newest: [String: ClaudeSessionRecord] = [:]

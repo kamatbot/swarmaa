@@ -7,7 +7,7 @@ import Foundation
 /// with base64url parts: AES-256-GCM, the key the SHA-256 of a secret that is
 /// `$ZCODE_CREDENTIAL_SECRET` when set, else
 /// `zcode-credential-fallback:<platform>:<home>:<user>`. ZCode's own bundled
-/// CLI spells the whole construction out, and the notch mirrors it rather
+/// CLI spells the whole construction out, and the app mirrors it rather
 /// than asking for a key of its own — recent ZCode encrypts every value at
 /// rest, so skipping the wrapped ones reads a signed-in plan as signed out.
 ///

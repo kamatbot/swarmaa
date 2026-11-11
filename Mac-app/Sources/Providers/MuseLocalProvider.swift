@@ -40,7 +40,7 @@ actor MuseLocalProvider: UsageProvider {
     }
 
     nonisolated var signInRoute: SignInRoute {
-        .guidance(L10n.t("Run `muse login` in Terminal — it signs in through your browser, and the notch reads its login and its logs."))
+        .guidance(L10n.t("Run `muse login` in Terminal — it signs in through your browser, and Swarmaa reads its login and its logs."))
     }
 
     nonisolated func account() -> ProviderAccount? {

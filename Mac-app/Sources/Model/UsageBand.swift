@@ -64,23 +64,3 @@ enum UsageBand: String, Codable, Equatable {
         return Palette.ramp(from: Palette.watchPair, to: Palette.criticalPair, fraction: (f - watchLimit) / (1 - watchLimit))
     }
 }
-
-private struct UsageWatchLimitKey: EnvironmentKey {
-    static let defaultValue: Double = 0.50
-}
-
-private struct UsageCriticalLimitKey: EnvironmentKey {
-    static let defaultValue: Double = 0.70
-}
-
-extension EnvironmentValues {
-    var usageWatchLimit: Double {
-        get { self[UsageWatchLimitKey.self] }
-        set { self[UsageWatchLimitKey.self] = newValue }
-    }
-
-    var usageCriticalLimit: Double {
-        get { self[UsageCriticalLimitKey.self] }
-        set { self[UsageCriticalLimitKey.self] = newValue }
-    }
-}

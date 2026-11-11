@@ -6,7 +6,7 @@ import Foundation
 /// Z.ai does not ship a desktop app for the plan, so there is no single
 /// session to borrow the way Claude Code's or Cursor's is borrowed. What it
 /// has is an API key that several coding tools will hold on the user's behalf,
-/// and a notch that wants to read one of them rather than ask for a key of its
+/// and the app that wants to read one of them rather than ask for a key of its
 /// own. The sources, in the order they are tried:
 ///
 /// 1. **Claude Code** — `~/.claude/settings.json`, the documented way to point

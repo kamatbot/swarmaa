@@ -91,7 +91,7 @@ struct ClaudeUsageCLI: Sendable {
     /// Each one is a Claude Code process like any other, and files a session
     /// under `~/.claude/sessions` for the seconds it lives. `ClaudeSessionMonitor`
     /// steps over these pids (see `ignoredPIDs`) so the probe never reaches the
-    /// notch. Left in, it did worse than draw a row: it ran `busy`, then
+    /// app. Left in, it did worse than draw a row: it ran `busy`, then
     /// vanished, and the completion watcher announced "usage-scratch-e1
     /// finished" as a banner on every poll that spawned it.
     static var runningPIDs: Set<Int32> { running.all }

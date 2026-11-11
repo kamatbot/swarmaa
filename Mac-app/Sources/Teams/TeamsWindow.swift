@@ -11,7 +11,7 @@ final class TeamsWindowController: NSObject, NSWindowDelegate {
     private var inFullScreen = false
     init(model: TeamsModel? = nil) { self.model = model ?? TeamsModel(); super.init() }
 
-    /// `threadID` opens straight onto that thread (a notch swarm or question).
+    /// `threadID` opens straight onto that thread (the app swarm or question).
     func show(threadID: String? = nil, connect: Bool = true) {
         if window == nil {
             let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1280, height: 820),

@@ -132,7 +132,7 @@ struct LocalTokenLedger: Equatable {
     var isEmpty: Bool { days.isEmpty }
     var instances: [String] { Array(days.keys).sorted() }
 
-    /// `key` names the entry — a notch cell id, so the tooltip can look its
+    /// `key` names the entry — a usage cell id, so the tooltip can look its
     /// own model up — and defaults to the instance the log named.
     mutating func record(_ prediction: LocalPrediction, as key: String? = nil) {
         let instance = key ?? prediction.instance

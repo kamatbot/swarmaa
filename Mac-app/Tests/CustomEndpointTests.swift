@@ -377,53 +377,6 @@ final class CustomEndpointTests: XCTestCase {
             data: Data("llamacpp:predicted_tokens_seconds 8.5".utf8)), "gauges alone must not detect a complete usage source")
     }
 
-    @MainActor
-    func testLlamaCppSnapshotShowsSpeedAndRequestCountsWithTokenTotalsInTooltip() async throws {
-        let endpoint = CustomEndpoint(name: "llama.cpp", baseURL: "http://127.0.0.1:8080/v1",
-                                      iconPreset: "llamacpp", usageSource: .jsonEndpoint, usagePreset: .llamaCpp)
-        let network = presetNetwork { request in
-            XCTAssertEqual(request.url?.path, "/metrics")
-            return (200, Data("""
-                llamacpp:prompt_tokens_total 12000
-                llamacpp:tokens_predicted_total 3000
-                llamacpp:predicted_tokens_seconds 42.456
-                llamacpp:requests_processing 1
-                llamacpp:requests_deferred 2
-                """.utf8))
-        }
-        let provider = CustomEndpointProvider(endpoint: endpoint, network: network, endpointLoader: { _ in endpoint })
-        let snapshot = try await provider.fetchSnapshot()
-        XCTAssertEqual(snapshot.headlineID, "llamacpp-speed")
-        XCTAssertEqual(snapshot.headlineText, "\(42.5.formatted()) tok/s")
-        XCTAssertEqual(snapshot.windows.map(\.label), [L10n.t("Average generation speed"), L10n.t("Active requests"),
-            L10n.t("Queued requests"), L10n.t("Tokens Since Server Start")])
-        XCTAssertEqual(snapshot.windows[1].detail, "1")
-        XCTAssertEqual(snapshot.windows[2].detail, "2")
-        XCTAssertEqual(snapshot.windows[3].usedText, "15k")
-        XCTAssertEqual(snapshot.compactRowCount, 4, "tooltip height must reserve all four rows")
-        XCTAssertNil(snapshot.ringFraction, "speed must not invent quota/context occupancy")
-        XCTAssertNil(snapshot.weeklyID)
-
-        let model = NotchViewModel()
-        model.edge = .right
-        model.surfaceStyle = .solid
-        model.showsNotchReadings = true
-        model.snapshots = [snapshot]
-        model.isExpanded = true
-        model.hoveredIndex = 0
-        let renderer = ImageRenderer(content: NotchRootView(model: model)
-            .frame(width: model.panelSize.width, height: model.panelSize.height)
-            .environment(\.colorScheme, .dark)
-            .environment(\.codenotchHeadlessGlass, true))
-        renderer.scale = 2
-        let image = try XCTUnwrap(renderer.cgImage)
-        let png = try XCTUnwrap(NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]))
-        let attachment = XCTAttachment(data: png, uniformTypeIdentifier: "public.png")
-        attachment.name = "llamacpp-performance-metrics"
-        attachment.lifetime = .keepAlways
-        add(attachment)
-    }
-
     func testLlamaCppSnapshotKeepsMissingGaugesDistinctFromZero() async throws {
         let endpoint = CustomEndpoint(name: "llama.cpp", baseURL: "http://127.0.0.1:8080/v1",
                                       usageSource: .jsonEndpoint, usagePreset: .llamaCpp)

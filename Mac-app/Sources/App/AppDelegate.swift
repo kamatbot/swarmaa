@@ -5,7 +5,8 @@ import SwiftUI
 final class AppDelegate: NSObject, NSApplicationDelegate {
     /// The running delegate. `NSApp.delegate` is SwiftUI's adaptor proxy, not this class, so casting it finds nothing.
     private(set) static weak var shared: AppDelegate?
-    private var notchFleet: NotchFleet?
+    /// What the menu bar and the phone read: snapshots plus live sessions.
+    private let board = UsageBoard()
     private var store: UsageStore?
     var phoneLinkServer: PhoneLinkServer?
     var phoneLinkServerStatus: PhoneLinkServerStatus?
@@ -18,14 +19,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var lmstudioMetrics: LMStudioMetrics?
     private var omlxMetrics: OMLXMetrics?
 
-    /// Menu-bar-only mode: true while the notch is off. Usage and the Swarmaa
-    /// server are asked once a minute and nothing else polls — no activity
-    /// monitors, no local-runtime metrics, no Pi/OpenCode watchers.
+    /// Lightweight mode: usage and the Swarmaa server are asked once a minute
+    /// and nothing else polls — no activity monitors, no local-runtime metrics,
+    /// no Pi/OpenCode watchers. It was the default while the on-screen overlay
+    /// existed (off by default) and is now the only mode.
+    // ponytail: constant; flip to false to run the activity monitors again.
+    static let isLightweight = true
     @MainActor private static func lightweight(_ preferences: Preferences) -> AnyPublisher<Bool, Never> {
-        preferences.$showsNotch.combineLatest(preferences.$notchVisibility)
-            .map { shows, visibility in !shows || visibility == .hidden }
-            .removeDuplicates()
-            .eraseToAnyPublisher()
+        Just(isLightweight).eraseToAnyPublisher()
     }
     private var preferences: Preferences?
     private var settings: SettingsWindowController?
@@ -57,13 +58,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Quit any copy of Swarmaa that was already running.
     ///
-    /// Every notch is a window on the screen edge, so a second copy is not a
-    /// harmless duplicate the way a second text editor is: it draws a second
-    /// notch over the first, and a developer with a build in `DerivedData`, a
-    /// staged release and `/Applications` could end up with the screen ringed
-    /// by them. They are separate bundles at separate paths, so the system
-    /// launches each as its own process rather than activating the one that is
-    /// already up.
+    /// A second copy is not a harmless duplicate: it polls the same accounts,
+    /// answers the phone on the same port and puts a second item in the menu
+    /// bar. Separate bundles at separate paths launch as separate processes.
     ///
     /// The newcomer wins, deliberately. Quitting the *new* copy instead would
     /// be the wrong way round while developing: the whole point of launching a
@@ -84,7 +81,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// The snapshots as the rings draw them: the vendor's own, with the weekly
     /// window leading where that is switched on, and the daily pace laid over
-    /// that where it is. One place, so the notch and the phone agree on what a
+    /// that where it is. One place, so the menu and the phone agree on what a
     /// ring means. The menu bar and the alert watchers are deliberately fed the
     /// vendor's own order instead — see their sink.
     static func drawn(_ snapshots: [ProviderSnapshot], weekly: Bool, paced: Bool)
@@ -127,60 +124,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Before Preferences reads anything, or the first launch flag and
         // every choice would be read from an empty domain — and before the
         // onboarding gate, which reads the migrated Swarmaa settings.
-        Preferences.migrateFromCodenotch()
-        Preferences.migrateFromPreviousName()
         if OnboardingGate.needsOnboarding() {
             runSetup()
         } else {
-            startNotch()
-            openTeams()  // the main window is home, not just the notch
+            start()
+            openTeams()
         }
     }
 
     // MARK: Onboarding
 
     private var onboarding: OnboardingWindowController?
-    private var notchStarted = false
+    private var started = false
 
-    /// "Run Setup…", and the first-launch gate. The notch starts when the
+    /// "Run Setup…", and the first-launch gate. The app starts when the
     /// window closes, if it has not already.
     @MainActor func runSetup() {
         if let onboarding, onboarding.isShowing { onboarding.show(); return }
         let controller = OnboardingWindowController(preferences: preferences) { [weak self] in
             guard let self else { return }
             self.onboarding = nil
-            if !self.notchStarted { self.startNotch() }
+            if !self.started { self.start() }
             self.openTeams()
         }
         onboarding = controller
         controller.show()
     }
 
-    @MainActor private func startNotch() {
-        notchStarted = true
+    @MainActor private func start() {
+        started = true
         let preferences = Preferences()
         self.preferences = preferences
+        let board = self.board
 
-        // One notch per display: the fleet owns a controller for each screen
-        // the scope asks for and fans every reading out to all of them. The
-        // stored edge goes in up front, before any panel is ever put up — the
-        // sink below delivers on the next run loop turn, by which time the
-        // notch would already have flashed on the default edge.
-        let fleet = NotchFleet(scope: preferences.notchScope, edge: preferences.notchEdge)
-        self.notchFleet = fleet
-
-        // `CODENOTCH_DEMO=1` puts the design frame's three providers and one
-        // local model on screen with its numbers, for screenshots and for
-        // eyeballing the layout.
-        // The queued local model and the stale ring are there so the busy
-        // indicator's two edge cases can be eyeballed.
-        let isDemo = ProcessInfo.processInfo.environment["CODENOTCH_DEMO"] == "1"
+        // `SWARMAA_DEMO=1` puts fixed sample providers and sessions in the
+        // menu bar, for screenshots.
+        let isDemo = ProcessInfo.processInfo.environment["SWARMAA_DEMO"] == "1"
         if isDemo {
-            fleet.setSnapshots(Fixtures.snapshots())
+            board.setSnapshots(Fixtures.snapshots())
             for (id, sessions) in Fixtures.sessions() {
-                fleet.setSessions(providerID: id, sessions: sessions)
+                board.setSessions(providerID: id, sessions: sessions)
             }
-            fleet.setLocalActivities(Fixtures.localActivities())
+            board.setLocalActivities(Fixtures.localActivities())
         } else {
             // DeepSeek's Platform usage page is a browser-session provider:
             // login is explicit, stays in Swarmaa's own WKWebView store, and
@@ -201,12 +186,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let miniMaxWeb = WebSessionProvider(site: Sites.minimax(region: preferences.minimaxRegion))
             self.miniMaxWeb = miniMaxWeb
             let webProviders: [WebSessionProvider] = [deepSeek, qianwen, qoder]
-            fleet.signInItems = [deepSeek, miniMaxWeb, qianwen, qoder].map { provider in
-                let name = provider.displayName
-                return (title: L10n.t("Sign in to \(name)…"),
-                        action: { [weak provider] in provider?.presentSignIn() })
-            }
-
             // Cursor reads the editor's session, or cursor-agent's if the
             // editor is missing — never a browser one: signing into
             // cursor.com separately created a second, empty account.
@@ -313,12 +292,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 .receive(on: RunLoop.main)
                 .sink { [weak swarma] in swarma?.showsChats = $0 }
                 .store(in: &cancellables)
-            preferences.$swarmaUpdates
-                .removeDuplicates()
-                .receive(on: RunLoop.main)
-                .sink { [weak swarma] in swarma?.announcesUpdates = $0 }
-                .store(in: &cancellables)
-            swarma.onUpdate = { [weak self] update, detail in self?.queueSwarmUpdate(SwarmaUpdates.notice(update, detail: detail)) }
+            swarma.announcesUpdates = false
             swarma.onRoutingChange = { [weak self] change in self?.announceRouting(change) }
             // A new address or token file is read on the next request; this
             // only makes that request happen now rather than on the timer.
@@ -328,12 +302,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 .debounce(for: .milliseconds(600), scheduler: RunLoop.main)
                 .sink { [weak swarma] _ in swarma?.sync() }
                 .store(in: &cancellables)
-            fleet.onReviewLessons = { [weak self] in self?.reviewLessons() }
-            fleet.onOpenThread = { [weak self] in self?.openTeams(threadID: $0) }
-            fleet.onCancelSwarmTask = { [weak swarma] target in
-                Task { await swarma?.cancel(target) }
-            }
-
             Costs.attach(to: store)
             deepSeek.onAuthenticated = { [weak store] in
                 store?.providerAuthenticationChanged(providerID: "deepseek")
@@ -350,21 +318,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
             let updater = Updater()
             self.updater = updater
-            // An update is offered in the notch, and installed there — see
-            // `UpdateCard`. Checked for as it launches; never under test, where
-            // it would reach for the real feed.
-            updater.$prompt
-                .receive(on: RunLoop.main)
-                .sink { [weak fleet] in fleet?.apply(updatePrompt: $0) }
-                .store(in: &cancellables)
-            fleet.onUpdateChoice = { [weak updater] in updater?.respond($0) }
-            // Put off: a red dot on the settings button until it is taken.
-            Publishers.CombineLatest(updater.$pending, updater.$prompt)
-                .map { pending, prompt in pending != nil && prompt == nil }
-                .removeDuplicates()
-                .receive(on: RunLoop.main)
-                .sink { [weak fleet] in fleet?.apply(updatePending: $0) }
-                .store(in: &cancellables)
+            // Checked for as it launches; never under test, where it would
+            // reach for the real feed.
             if !isRunningTests { updater.start() }
 
             let relay = OllamaActivityRelay()
@@ -380,24 +335,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             relayConfiguration
                 .removeDuplicates { $0.enabled == $1.enabled && $0.endpoint == $1.endpoint }
                 .receive(on: RunLoop.main)
-                .sink { [weak relay, weak fleet] configuration in
-                    fleet?.setLocalMetricsEnabled(configuration.enabled)
+                .sink { [weak relay, weak board] configuration in
+                    board?.setLocalMetricsEnabled(configuration.enabled)
                     relay?.configure(enabled: configuration.enabled, endpoint: configuration.endpoint)
                 }
                 .store(in: &cancellables)
             relay.$thinkingModels
                 .receive(on: RunLoop.main)
-                .sink { [weak fleet, weak store] models in
-                    let previous = fleet?.thinkingModels ?? [:]
-                    fleet?.setThinkingModels(models)
+                .sink { [weak board, weak store] models in
+                    let previous = board?.thinkingModels ?? [:]
+                    board?.setThinkingModels(models)
                     if models.keys.contains(where: { previous[$0] == nil }) { store?.refresh(providerID: "ollama-local") }
                 }
                 .store(in: &cancellables)
 
             relay.$performances
                 .receive(on: RunLoop.main)
-                .sink { [weak fleet, weak store] measurements in
-                    fleet?.setPerformances(measurements)
+                .sink { [weak board, weak store] measurements in
+                    board?.setPerformances(measurements)
                     if !measurements.isEmpty { store?.refresh(providerID: "ollama-local") }
                 }
                 .store(in: &cancellables)
@@ -422,18 +377,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 .store(in: &cancellables)
             lmstudio.$activities
                 .receive(on: RunLoop.main)
-                .sink { [weak fleet] in fleet?.setLocalActivities($0, source: LMStudioMetrics.providerID) }
+                .sink { [weak board] in board?.setLocalActivities($0, source: LMStudioMetrics.providerID) }
                 .store(in: &cancellables)
             lmstudio.$performances
                 .receive(on: RunLoop.main)
-                .sink { [weak fleet, weak store] measurements in
-                    fleet?.setPerformances(measurements, source: LMStudioMetrics.providerID)
+                .sink { [weak board, weak store] measurements in
+                    board?.setPerformances(measurements, source: LMStudioMetrics.providerID)
                     if !measurements.isEmpty { store?.refresh(providerID: LMStudioMetrics.providerID) }
                 }
                 .store(in: &cancellables)
             lmstudio.$ledger
                 .receive(on: RunLoop.main)
-                .sink { [weak fleet] in fleet?.setLedger($0, source: LMStudioMetrics.providerID) }
+                .sink { [weak board] in board?.setLedger($0, source: LMStudioMetrics.providerID) }
                 .store(in: &cancellables)
 
             // oMLX the same way: its admin activity endpoint says what each
@@ -455,18 +410,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 .store(in: &cancellables)
             omlx.$activities
                 .receive(on: RunLoop.main)
-                .sink { [weak fleet] in fleet?.setLocalActivities($0, source: OMLXMetrics.providerID) }
+                .sink { [weak board] in board?.setLocalActivities($0, source: OMLXMetrics.providerID) }
                 .store(in: &cancellables)
             omlx.$performances
                 .receive(on: RunLoop.main)
-                .sink { [weak fleet, weak store] measurements in
-                    fleet?.setPerformances(measurements, source: OMLXMetrics.providerID)
+                .sink { [weak board, weak store] measurements in
+                    board?.setPerformances(measurements, source: OMLXMetrics.providerID)
                     if !measurements.isEmpty { store?.refresh(providerID: OMLXMetrics.providerID) }
                 }
                 .store(in: &cancellables)
             omlx.$ledger
                 .receive(on: RunLoop.main)
-                .sink { [weak fleet] in fleet?.setLedger($0, source: OMLXMetrics.providerID) }
+                .sink { [weak board] in board?.setLedger($0, source: OMLXMetrics.providerID) }
                 .store(in: &cancellables)
 
             let dir: URL
@@ -474,7 +429,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
             } else {
                 let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-                dir = appSupport.appendingPathComponent("Codenotch/phone-link", isDirectory: true)
+                dir = appSupport.appendingPathComponent("Swarmaa/phone-link", isDirectory: true)
             }
             let phoneSecretStore: PhoneLinkSecretStore = NSClassFromString("XCTestCase") != nil
                 ? InMemoryPhoneLinkSecretStore()
@@ -489,14 +444,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 pairing: phonePairing,
                 registry: phoneRegistry,
                 status: serverStatus,
-                getSnapshot: { @Sendable [weak store, weak fleet, weak preferences] in
-                    guard let store, let fleet, let preferences else { return nil }
+                getSnapshot: { @Sendable [weak store, weak board, weak preferences] in
+                    guard let store, let board, let preferences else { return nil }
                     let snap = await MainActor.run {
                         PhoneLinkSnapshotBuilder.build(
                             snapshots: Self.drawn(store.snapshots,
                                                   weekly: preferences.weeklyHeadline,
                                                   paced: preferences.claudeDailyPaceRing),
-                            sessions: Array(fleet.sessions.values.flatMap { $0 }),
+                            sessions: Array(board.sessions.values.flatMap { $0 }),
                             disconnected: store.disconnected,
                             order: preferences.providerOrder,
                             serverName: PhoneLinkNetwork.getComputerName(),
@@ -506,8 +461,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     }
                     return try? JSONEncoder().encode(snap)
                 },
-                refreshAndGetSnapshot: { @Sendable [weak store, weak fleet, weak preferences] in
-                    guard let store, let fleet, let preferences else { return nil }
+                refreshAndGetSnapshot: { @Sendable [weak store, weak board, weak preferences] in
+                    guard let store, let board, let preferences else { return nil }
                     // A phone asking to refresh is the same gesture as opening
                     // the menu here, and it is about to render these numbers on
                     // another screen. Nothing cached will do.
@@ -522,7 +477,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                             snapshots: Self.drawn(store.snapshots,
                                                   weekly: preferences.weeklyHeadline,
                                                   paced: preferences.claudeDailyPaceRing),
-                            sessions: Array(fleet.sessions.values.flatMap { $0 }),
+                            sessions: Array(board.sessions.values.flatMap { $0 }),
                             disconnected: store.disconnected,
                             order: preferences.providerOrder,
                             serverName: PhoneLinkNetwork.getComputerName(),
@@ -549,23 +504,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     store?.openAccountSource(providerID: $0, switching: true) ?? false
                 },
                 retry: { [weak store] in store?.reauthorize(providerID: $0) },
-                // Both halves, because the stored nudge and the live one are
-                // kept apart on purpose — clearing only the preference would
-                // leave the notch where it is until the next edge change, and
-                // moving only the panel would put it back on relaunch.
-                resetPosition: { [weak fleet, weak preferences] in
-                    preferences?.setOffset(0, for: preferences?.notchEdge ?? .right)
-                    fleet?.apply(alongOffset: 0)
-                },
                 quit: { NSApp.terminate(nil) },
                 previewResetAlert: { [weak self] in
                     self?.previewUsageResetAlert()
                 },
                 previewSessionLimitAlert: { [weak self] in
                     self?.previewSessionLimitAlert()
-                },
-                previewSwarmaUpdate: { [weak self] in
-                    self?.previewSwarmaUpdate()
                 },
                 previewWeeklyLimitAlert: { [weak self] in
                     self?.previewWeeklyLimitAlert()
@@ -576,13 +520,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 usageStore: store, ollamaRelay: relay, lmstudioMetrics: lmstudio, omlxMetrics: omlx,
                 phoneLinkPairing: phonePairing, phoneLinkRegistry: phoneRegistry, phoneLinkServerStatus: serverStatus
             )
-            // The gear toggles; everything else that opens settings opens it.
-            // Settings live in the main window now; the old panel's controller stays for its view.
-            fleet.onOpenSettings = { [weak self] in self?.openSettings() }
-            // A session row answers where it runs by taking you there.
-            fleet.onFocusSession = { pid in
-                Task { _ = await SessionFocus.focus(pid: pid) }
-            }
             self.settings = settings
 
             // What changed, once per version — including on a fresh install,
@@ -592,10 +529,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             )
             self.whatsNew = whatsNew
 
-            // An agent app has no dock icon and no window: installed and
-            // launched, it shows four empty rings on a screen edge and no
-            // reason to look at them. Once, on the very first run, it opens the
-            // one place that explains what to connect.
+            // Once, on the very first run, it opens the one place that
+            // explains what to connect.
             //
             // Sequenced behind What's New rather than beside it: two windows
             // arriving together is one to dismiss before you can read either.
@@ -623,15 +558,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // redraws its own switch from it in the same breath.
             statusItem.onToggleLimits = { [weak preferences] in preferences?.showsLimitsInMenuBar = $0 }
             // Read when the menu opens, so a model's line is as current as its cell.
-            statusItem.cells = { [weak fleet] in fleet?.menuModel.snapshots ?? [] }
-            statusItem.activity = { [weak fleet] in fleet?.menuModel.activity(for: $0) }
-            // Handed over up front, like the notch's edge: the sink below
+            statusItem.cells = { [weak board] in board?.snapshots ?? [] }
+            statusItem.activity = { [weak board] in board?.activity(for: $0) }
+            // Handed over up front: the sink below
             // delivers a run loop turn later, and the item would otherwise go
             // up as one thing and then change its mind.
             statusItem.limits = preferences.menuBarLimits
             statusItem.resetTimeFormat = preferences.resetTimeFormat
             statusItem.showsWeeklyLimit = preferences.showsWeeklyLimitInMenuBar
-            statusItem.showsRemaining = preferences.showsRemainingInNotch
+            statusItem.showsRemaining = preferences.showsRemaining
 
             preferences.$appPresence
                 .receive(on: RunLoop.main)
@@ -661,30 +596,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 .removeDuplicates()
                 .receive(on: DispatchQueue.main)
                 .sink { [weak statusItem] in statusItem?.showsWeeklyLimit = $0 }
-                .store(in: &cancellables)
-
-            preferences.$showsNotch.combineLatest(preferences.$notchVisibility)
-                .map { shows, visibility in shows ? visibility : .hidden }
-                .receive(on: RunLoop.main)
-                .sink { [weak fleet] in
-                    Costs.notchShowsCosts = $0 != .hidden
-                    fleet?.apply($0)
-                }
-                .store(in: &cancellables)
-
-            preferences.$foldsForFullScreen
-                .receive(on: RunLoop.main)
-                .sink { [weak fleet] in fleet?.apply(foldsForFullScreen: $0) }
-                .store(in: &cancellables)
-
-            preferences.$deepSeekPricingEnabled
-                .receive(on: RunLoop.main)
-                .sink { [weak fleet] in fleet?.apply(deepSeekPricingEnabled: $0) }
-                .store(in: &cancellables)
-
-            preferences.$deepSeekPricingSchedule
-                .receive(on: RunLoop.main)
-                .sink { [weak fleet] in fleet?.apply(deepSeekPricingSchedule: $0) }
                 .store(in: &cancellables)
 
             preferences.$qoderRegion
@@ -723,146 +634,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
                 .store(in: &cancellables)
 
-            preferences.$notchEdge
-                .receive(on: RunLoop.main)
-                .sink { [weak fleet, weak preferences] edge in
-                    // Read before `apply(edge:)` moves the panel, so the new
-                    // edge's own remembered nudge is what it lands at rather
-                    // than the old edge's carried over onto it.
-                    fleet?.apply(alongOffset: preferences?.offset(for: edge) ?? 0)
-                    fleet?.apply(edge: edge)
-                }
-                .store(in: &cancellables)
-
-            // Three inputs, one answer: which control is in charge, and the
-            // value each of them holds. Any of them changing has to re-ask
-            // `notchScale` rather than trust the value it was handed, since
-            // the preset and the slider each keep their own.
-            //
-            // `dropFirst` on each, because `@Published` publishes the value it
-            // is given at init — without it every launch would open the notch
-            // three times over before anyone had touched anything.
-            Publishers.MergeMany(
-                preferences.$notchSize.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-                preferences.$usesCustomNotchScale.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-                preferences.$customNotchScale.dropFirst().map { _ in () }.eraseToAnyPublisher()
-            )
-            // `DispatchQueue.main`, not `RunLoop.main`, and this is the one
-            // subscription where the difference is visible. Combine's RunLoop
-            // scheduler delivers in `.default` mode, which AppKit starves for
-            // as long as a drag is in progress — the loop is in
-            // `NSEventTrackingRunLoopMode` the whole time a slider is held. So
-            // the notch sat unchanged until the mouse came up, then jumped.
-            // Every `Timer` here is registered `forMode: .common` against the
-            // same hazard; the scheduler offers no way to say that, and the
-            // dispatch queue is not bound to run loop modes at all.
-            .receive(on: DispatchQueue.main)
-            .sink { [weak fleet, weak preferences] in
-                guard let preferences, let fleet else { return }
-                fleet.apply(scale: preferences.notchScale)
-                // Resizing something you cannot see is guesswork. On the
-                // hover setting the notch is folded away for as long as the
-                // pointer is in Settings, which is exactly when the size is
-                // being chosen — so it is opened for a moment to show what
-                // just changed. Dragging the slider keeps re-arming this, so
-                // it simply stays open until the drag stops. `peek` still
-                // declines outright when the notch is set to Hide.
-                fleet.peek(for: 1.2, focusing: nil)
-            }
-            .store(in: &cancellables)
-
-            preferences.$notchScope
-                .receive(on: RunLoop.main)
-                .sink { [weak fleet] in fleet?.apply(scope: $0) }
-                .store(in: &cancellables)
-
-            preferences.$displayPreference
-                .receive(on: RunLoop.main)
-                .sink { [weak fleet] in fleet?.apply(displayPreference: $0) }
-                .store(in: &cancellables)
-
-            fleet.onReposition = { [weak preferences] offset in
-                preferences?.setOffset(offset, for: preferences?.notchEdge ?? .right)
-            }
-
-            // Writing the preference is the whole of it: `notchEdge` is
-            // `@Published` and the fleet already follows it, so the notch
-            // relocates by the same path the Settings picker uses.
-            fleet.onMoveToEdge = { [weak preferences] edge, offset in
-                // Where along it first, so the edge's sink reads it back and
-                // the notch lands under the pointer that carried it there.
-                if let offset { preferences?.setOffset(offset, for: edge) }
-                preferences?.notchEdge = edge
-            }
-
             preferences.$resetTimeFormat
                 .receive(on: RunLoop.main)
-                .sink { [weak fleet, weak statusItem] in
-                    fleet?.apply(resetTimeFormat: $0)
-                    statusItem?.resetTimeFormat = $0
-                }
+                .sink { [weak statusItem] in statusItem?.resetTimeFormat = $0 }
                 .store(in: &cancellables)
 
-            preferences.$accentColor
-                .receive(on: RunLoop.main)
-                .sink { [weak fleet] in fleet?.apply(accentColor: $0) }
-                .store(in: &cancellables)
-            
-            preferences.$watchLimit
-                .combineLatest(preferences.$criticalLimit)
-                .receive(on: RunLoop.main)
-                .sink { [weak fleet] watch, critical in
-                    fleet?.apply(watchLimit: watch, criticalLimit: critical)
-                }
-                .store(in: &cancellables)
-
-            preferences.$showsNotchReadings
+            preferences.$showsRemaining
                 .dropFirst()
-                .sink { [weak fleet] in fleet?.apply(showsNotchReadings: $0) }
-                .store(in: &cancellables)
-
-            preferences.$showsRemainingInNotch
-                .dropFirst()
-                .sink { [weak self, weak fleet] in
-                    fleet?.apply(showsRemainingInNotch: $0)
-                    self?.statusItem?.showsRemaining = $0
-                }
-                .store(in: &cancellables)
-
-            preferences.$shutRingsWhenSpent
-                .dropFirst()
-                .sink { [weak fleet] in fleet?.apply(shutRingsWhenSpent: $0) }
-                .store(in: &cancellables)
-
-            preferences.$weeklyRingDashed
-                .receive(on: RunLoop.main)
-                .sink { [weak fleet] in fleet?.apply(weeklyRingDashed: $0) }
-                .store(in: &cancellables)
-
-            preferences.$weeklyReading
-                .receive(on: RunLoop.main)
-                .sink { [weak fleet] in fleet?.apply(weeklyReading: $0) }
-                .store(in: &cancellables)
-
-            preferences.$weeklyRing
-                .receive(on: RunLoop.main)
-                .sink { [weak fleet] in fleet?.apply(weeklyRing: $0) }
-                .store(in: &cancellables)
-
-                
-            preferences.$notchSurfaceStyle
-                .receive(on: RunLoop.main)
-                .sink { [weak fleet] in fleet?.apply(surfaceStyle: $0) }
-                .store(in: &cancellables)
-
-            preferences.$colorTransitionStyle
-                .receive(on: RunLoop.main)
-                .sink { [weak fleet] in fleet?.apply(colorTransitionStyle: $0) }
-                .store(in: &cancellables)
-
-            preferences.$busyIndicatorStyle
-                .receive(on: RunLoop.main)
-                .sink { [weak fleet] in fleet?.apply(busyIndicatorStyle: $0) }
+                .sink { [weak self] in self?.statusItem?.showsRemaining = $0 }
                 .store(in: &cancellables)
 
             Publishers.CombineLatest(preferences.$connectedProviders, preferences.$disabledModels)
@@ -964,10 +743,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let displayOptions = preferences.$claudeDailyPaceRing.combineLatest(
                 preferences.$weeklyHeadline, preferences.$autoOrderByRemaining,
                 preferences.$hideDepletedAccounts)
-            store.$notchSnapshots
+            store.$usageSnapshots
                 .combineLatest(displayOptions)
                 .receive(on: RunLoop.main)
-                .sink { [weak fleet] snapshots, options in
+                .sink { [weak board] snapshots, options in
                     let (paced, weekly, autoOrder, hideDepleted) = options
                     // Before the derivations: the daily pace ring is advisory,
                     // not a spending gate, and judging off it would hide an
@@ -976,7 +755,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     let usable = hideDepleted ? snapshots.filter { !$0.isDepleted } : snapshots
                     var drawn = Self.drawn(usable, weekly: weekly, paced: paced)
                     if autoOrder { drawn = ProviderOrder.byRemainingUsage(drawn) }
-                    fleet?.setSnapshots(drawn)
+                    board?.setSnapshots(drawn)
                 }
                 .store(in: &cancellables)
 
@@ -1000,20 +779,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
                 .store(in: &cancellables)
             store.start()
-            fleet.onRefresh = { [weak store] in store?.refreshNow(freshness: .fromSource) }
-            fleet.onLook = { [weak store] in store?.refreshBecauseSomeoneIsLooking() }
-            fleet.onRefreshProvider = { [weak store] id in
-                await store?.refresh(providerID: id, freshness: .fromSource)?.value
-            }
-            store.$refreshing
-                .receive(on: RunLoop.main)
-                .sink { [weak fleet] ids in fleet?.setRefreshing(ids) }
-                .store(in: &cancellables)
-
-            // CODENOTCH_DISCOVER=<url> loads that page in the signed-in WebView
+            // SWARMAA_DISCOVER=<url> loads that page in the signed-in WebView
             // and logs the API calls it makes — for finding an undocumented
             // endpoint by watching the site rather than guessing at path names.
-            if let target = ProcessInfo.processInfo.environment["CODENOTCH_DISCOVER"],
+            if let target = ProcessInfo.processInfo.environment["SWARMAA_DISCOVER"],
                let url = URL(string: target),
                let provider = webProviders.first(where: { url.host?.contains($0.id) == true })
                    ?? webProviders.first {
@@ -1025,7 +794,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.store = store
         }
 
-        // What each agent is doing right now, so the notch can say whether it is
+        // What each agent is doing right now, so the menu can say whether it is
         // still working without you switching to it.
         var monitors: [String: any AgentActivityMonitor] = [
             "cursor": CursorActivityMonitor(),
@@ -1101,7 +870,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Renewing the token runs the Claude command, which registers a session
         // of its own for the second it lives. Every Claude monitor is told to
-        // step over that pid, so it never reaches the notch and never counts as
+        // step over that pid, so it never reaches the menu and never counts as
         // work in progress.
         //
         // Only the default profile is renewed. The command writes whichever
@@ -1135,11 +904,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             refresher.start()
             tokenRefresher = refresher
         }
-        let activity = ActivityCoordinator(monitors: monitors) { [weak self, weak fleet] id, sessions in
-            guard let fleet else { return }
-            fleet.setSessions(providerID: id, sessions: sessions)
+        let activity = ActivityCoordinator(monitors: monitors) { [weak self, weak board] id, sessions in
+            guard let board else { return }
+            board.setSessions(providerID: id, sessions: sessions)
             self?.statusItem?.setActivity(providerID: id, sessions: sessions)
-            self?.announceCompletions(sessions: fleet.sessions)
+            self?.announceCompletions(sessions: board.sessions)
             self?.noteWorkState(providerID: id, sessions: sessions)
         }
         self.activityCoordinator = activity
@@ -1213,29 +982,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.preferences?.asksProviderOnLook ?? false
         }
 
-        // Applied last, right before the panel goes up: every one of these
-        // calls a `NotchFleet.apply(...)` that can trigger `reconcile()` on
-        // its own — `displayPreference` always does, being how the very
-        // first controller gets created — and `reconcile()` copies the
-        // fleet's callbacks (`onOpenSettings`, `onRefreshProvider`, ...) into
-        // that controller at creation time, not through a live reference.
-        // Calling any of these earlier, before those callbacks were set
-        // above, silently built the one controller this app ever has with
-        // every action wired to nothing: the panel still opened and rings
-        // still drew, so there was nothing to notice except every click
-        // doing exactly nothing. `fleet.show()`'s own reconcile only ever
-        // repositions an existing controller — it does not re-copy them —
-        // so this has to be the very last thing that can create one.
-        
-        // Banners need permission; ask the moment banners are chosen, not on
-        // the first event, and never of someone who keeps to the notch.
-        preferences.$notificationChannel
-            .removeDuplicates()
-            .receive(on: RunLoop.main)
-            .sink { channel in
-                if channel == .mac { ChannelNotifications.requestAuthorizationIfNeeded() }
-            }
-            .store(in: &cancellables)
+        // Banners need permission; asked at start rather than on the first event.
+        ChannelNotifications.requestAuthorizationIfNeeded()
 
         preferences.$phoneLinkEnabled
             .receive(on: RunLoop.main)
@@ -1259,30 +1007,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
             .store(in: &cancellables)
-        // Before the first controller exists, so its panel is never put up when the notch is off.
-        fleet.apply(preferences.showsNotch ? preferences.notchVisibility : .hidden)
-        fleet.apply(displayPreference: preferences.displayPreference)
-        fleet.apply(alongOffset: preferences.offset(for: preferences.notchEdge))
-        fleet.apply(scale: preferences.notchScale)
-        fleet.apply(resetTimeFormat: preferences.resetTimeFormat)
-        fleet.apply(accentColor: preferences.accentColor)
-        fleet.apply(watchLimit: preferences.watchLimit, criticalLimit: preferences.criticalLimit)
-        fleet.apply(colorTransitionStyle: preferences.colorTransitionStyle)
-        fleet.apply(busyIndicatorStyle: preferences.busyIndicatorStyle)
-        fleet.apply(weeklyRing: preferences.weeklyRing)
-        fleet.apply(weeklyRingDashed: preferences.weeklyRingDashed)
-        fleet.apply(showsNotchReadings: preferences.showsNotchReadings)
-        fleet.apply(weeklyReading: preferences.weeklyReading)
-        fleet.apply(showsRemainingInNotch: preferences.showsRemainingInNotch)
-        fleet.apply(shutRingsWhenSpent: preferences.shutRingsWhenSpent)
-        fleet.apply(foldsForFullScreen: preferences.foldsForFullScreen)
-        fleet.apply(surfaceStyle: preferences.notchSurfaceStyle)
-        fleet.apply(deepSeekPricingEnabled: preferences.deepSeekPricingEnabled)
-        fleet.apply(deepSeekPricingSchedule: preferences.deepSeekPricingSchedule)
-        fleet.show()
     }
 
-    /// Open the notch, and make a noise, when something has just finished.
+    /// Make a noise, and a banner, when something has just finished.
     ///
     /// The watcher is fed on every publication whether or not anything is
     /// switched on, because it is a difference engine: skipping a reading would
@@ -1290,13 +1017,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// transition it reported would be one that never happened.
     ///
     /// Several sessions can land in the same reading — one turn ending often
-    /// unblocks another — and that gets one peek and one chime rather than a
-    /// chord. The newest is the one offered, since it is the one whose window
-    /// you were most recently in.
+    /// unblocks another — and that gets one banner and one chime rather than a
+    /// chord.
     @MainActor
     private func announceCompletions(sessions: [String: [AgentSession]]) {
         let events = completions.absorb(sessions)
-        guard let event = events.first, let preferences, let fleet = notchFleet else { return }
+        guard let event = events.first, let preferences else { return }
         Log.usage.info("session \(event.session.name, privacy: .public) \(String(describing: event.reason), privacy: .public)")
 
         if preferences.sessionEndSound {
@@ -1305,12 +1031,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                               : preferences.sessionEndSoundName)
         }
         guard preferences.announceSessionEnd else { return }
-        if preferences.notificationChannel == .mac {
-            ChannelNotifications.sessionEnded(name: event.session.name, blocked: event.reason == .blocked)
-            return
-        }
-        fleet.peek(for: preferences.peekDuration.seconds,
-                   focusing: event.session.processID)
+        ChannelNotifications.sessionEnded(name: event.session.name, blocked: event.reason == .blocked)
     }
 
     /// Takes one reading on the falling edge of a provider's work.
@@ -1334,124 +1055,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// A crossing is a banner on the Mac channel, as it always was; on the
-    /// notch channel it is a card beside the notch, so choosing the notch
-    /// really does keep Notification Center empty. The banner remains the
-    /// fallback for a notch that cannot show the card (hidden).
     @MainActor
     private func announceThreshold(_ alert: ThresholdAlert) {
-        guard let preferences, let fleet = notchFleet,
-              preferences.notificationChannel == .notch else {
-            ThresholdAlerts.deliver(alert)
-            return
-        }
-        var notice = UsageResetEvent(providerID: alert.providerID, providerName: alert.providerName,
-                                     windowLabel: alert.windowLabel, glyph: alert.glyph,
-                                     previousFraction: 0, currentFraction: Double(alert.usedPercent) / 100,
-                                     resetsAt: alert.resetsAt)
-        notice.noticeTitle = alert.threshold >= 100
-            ? L10n.t("\(alert.providerName) limit reached")
-            : L10n.t("\(alert.providerName) is at \(alert.usedPercent)%")
-        notice.noticeSubtitle = alert.windowLabel
-        notice.noticeStatus = L10n.t("\(alert.usedPercent)% used")
-        if !fleet.showResetAlert(notice, duration: 6.0) {
-            ThresholdAlerts.deliver(alert)
-        }
+        ThresholdAlerts.deliver(alert)
     }
 
-    /// Swarm updates show one after another, silently: each card gets its
-    /// full 6 s before the next slides out, like messages arriving in a chat.
-    private var swarmUpdateQueue: [UsageResetEvent] = []
-    private var swarmUpdateBusy = false
-
-    @MainActor
-    private func queueSwarmUpdate(_ notice: UsageResetEvent) {
-        swarmUpdateQueue.append(notice)
-        drainSwarmUpdates()
-    }
-
-    @MainActor
-    private func drainSwarmUpdates() {
-        guard !swarmUpdateBusy, !swarmUpdateQueue.isEmpty, let fleet = notchFleet else { return }
-        let next = swarmUpdateQueue.removeFirst()
-        // A hidden notch has nowhere to show it; these are never worth a banner.
-        guard fleet.showResetAlert(next, duration: 6.0) else { return drainSwarmUpdates() }
-        swarmUpdateBusy = true
-        DispatchQueue.main.asyncAfter(deadline: .now() + 6.4) { [weak self] in
-            self?.swarmUpdateBusy = false
-            self?.drainSwarmUpdates()
-        }
-    }
-
-    @MainActor
-    private func previewSwarmaUpdate() {
-        let run = SwarmaUpdate(kind: .finished, taskID: "demo", provider: "claude",
-                               objective: "Add the hover card", scope: "project:demo", taskKind: "patch", branch: "swarm/hover-card")
-        queueSwarmUpdate(SwarmaUpdates.notice(run, detail: SwarmaTaskDetail(
-            answer: "## Hover card\nAdded the activity card to the worker cells and wired its height.", reason: nil)))
-    }
-
-    /// Swarmaa moved new work to another vendor. Same two forms as a limit
-    /// alert: the notch's card, or a banner on the Mac channel and wherever the
-    /// notch cannot show one. It follows the limit-reached switches because a
-    /// switch is what a spent limit causes; with those off it stays quiet.
+    /// Swarmaa moved new work to another vendor. It follows the limit-reached
+    /// switches because a switch is what a spent limit causes; with those off
+    /// it stays quiet.
     @MainActor
     private func announceRouting(_ change: SwarmaRoutingChange) {
         guard let preferences,
               preferences.announceSessionLimitReached || preferences.announceWeeklyLimitReached else { return }
-        let post = { ChannelNotifications.post(title: change.title, body: change.body, thread: "swarma.routing") }
-        guard preferences.notificationChannel == .notch, let fleet = notchFleet else {
-            post()
-            return
-        }
-        var notice = UsageResetEvent(providerID: SwarmaCells.agentPrefix + change.to,
-                                     providerName: SwarmaCells.vendorName(change.to), windowLabel: "",
-                                     glyph: SwarmaCells.glyph(forProvider: change.to),
-                                     previousFraction: 0, currentFraction: 0, resetsAt: nil)
-        notice.noticeTitle = change.title
-        notice.noticeSubtitle = change.body
-        notice.noticeStatus = ""
-        if !fleet.showResetAlert(notice, duration: 6.0) { post() }
+        ChannelNotifications.post(title: change.title, body: change.body, thread: "swarma.routing")
     }
 
-    /// The test from Settings, on whichever channel is chosen.
+    /// The test from Settings.
     @MainActor
     private func sendTestNotification() {
-        guard let preferences, let fleet = notchFleet else { return }
-        guard preferences.notificationChannel == .notch else {
-            ChannelNotifications.test()
-            return
-        }
-        if preferences.sessionEndSound { SessionChime.play(preferences.sessionEndSoundName) }
-        var notice = UsageResetEvent(providerID: "codenotch", providerName: "Swarmaa",
-                                     windowLabel: "", glyph: .claude,
-                                     previousFraction: 0, currentFraction: 0, resetsAt: nil)
-        notice.noticeTitle = L10n.t("Swarmaa test")
-        notice.noticeSubtitle = L10n.t("This is what one looks like.")
-        notice.noticeStatus = ""
-        fleet.showResetAlert(notice, duration: 5.0)
+        ChannelNotifications.test()
     }
 
-    /// Open the notch and show a usage reset notification modal when a limit resets.
+    /// A banner, and the chosen sound, when a limit resets.
     @MainActor
     private func announceUsageReset(event: UsageResetEvent) {
-        guard let preferences, let fleet = notchFleet else { return }
+        guard let preferences else { return }
         Log.usage.info("usage reset for \(event.providerName, privacy: .public) (\(event.windowLabel, privacy: .public))")
 
         if preferences.usageResetSound {
             SessionChime.play(preferences.usageResetSoundName)
         }
         guard preferences.announceUsageReset else { return }
-        // The channel decides the form: a banner, or the notch's card with
-        // the banner only where the notch cannot show it.
-        if preferences.notificationChannel == .mac || !fleet.showResetAlert(event, duration: 5.0) {
-            UsageAlertNotifications.deliver(event)
-        }
+        UsageAlertNotifications.deliver(event)
     }
 
     @MainActor
     private func previewUsageResetAlert() {
-        guard let preferences, let fleet = notchFleet else { return }
+        guard let preferences else { return }
         let demo = UsageResetEvent(
             providerID: "claude",
             providerName: "Claude",
@@ -1464,13 +1104,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if preferences.usageResetSound {
             SessionChime.play(preferences.usageResetSoundName)
         }
-        fleet.showResetAlert(demo, duration: 5.0)
+        UsageAlertNotifications.deliver(demo)
     }
 
-    /// Open the notch and show a usage limit reached notification modal when a limit is exhausted.
+    /// A banner, and the chosen sound, when a limit is exhausted.
     @MainActor
     private func announceUsageLimit(event: UsageAlertEvent) {
-        guard let preferences, let fleet = notchFleet else { return }
+        guard let preferences else { return }
 
         let isAnnounceEnabled: Bool
         switch event.kind {
@@ -1489,14 +1129,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if preferences.limitReachedSound {
             SessionChime.play(preferences.limitReachedSoundName)
         }
-        if preferences.notificationChannel == .mac || !fleet.showResetAlert(event, duration: 6.0) {
-            UsageAlertNotifications.deliver(event)
-        }
+        UsageAlertNotifications.deliver(event)
     }
 
     @MainActor
     private func previewSessionLimitAlert() {
-        guard let preferences, let fleet = notchFleet else { return }
+        guard let preferences else { return }
         let demo = UsageAlertEvent(
             kind: .sessionLimitReached,
             providerID: "claude",
@@ -1510,12 +1148,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if preferences.limitReachedSound {
             SessionChime.play(preferences.limitReachedSoundName)
         }
-        fleet.showResetAlert(demo, duration: 6.0)
+        UsageAlertNotifications.deliver(demo)
     }
 
     @MainActor
     private func previewWeeklyLimitAlert() {
-        guard let preferences, let fleet = notchFleet else { return }
+        guard let preferences else { return }
         let demo = UsageAlertEvent(
             kind: .weeklyLimitReached,
             providerID: "claude",
@@ -1529,22 +1167,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if preferences.limitReachedSound {
             SessionChime.play(preferences.limitReachedSoundName)
         }
-        fleet.showResetAlert(demo, duration: 6.0)
+        UsageAlertNotifications.deliver(demo)
     }
 
-    /// Closing the settings window must not take the app with it.
-    ///
-    /// The default for a Dock app is to quit once its last window closes, which
-    /// here would kill the notch — the part that is actually the product —
-    /// every time someone shut the settings they had just opened.
+    /// Closing the main window must not take the app with it: the menu bar
+    /// item, the phone link and the alerts keep running.
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         false
     }
 
-    /// The way back in when the notch is hidden.
-    ///
-    /// With no dock icon, no menu bar item and no notch on screen, there is
-    /// otherwise nothing left to click — choosing Hide would be a one-way door.
     /// Launching the app again while it is already running lands here, so
     /// opening it from Applications or Spotlight reopens the main window.
     func applicationShouldHandleReopen(_ sender: NSApplication,
@@ -1573,11 +1204,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let windowOpen = teams?.window?.isVisible == true || teams?.window?.isMiniaturized == true
         NSApp.setActivationPolicy(windowOpen ? .regular : chosen.activationPolicy)
     }
-    /// The main window, from the status item or a notch swarm/question item.
+    /// The main window, from the status item or the app menu.
     @MainActor func openTeams(threadID: String? = nil) {
         if teams == nil {
             let window = TeamsWindowController()
-            store?.$notchSnapshots.receive(on: RunLoop.main)
+            store?.$usageSnapshots.receive(on: RunLoop.main)
                 .sink { [weak model = window.model] in model?.localUsage = $0 }
                 .store(in: &cancellables)
             teams = window
@@ -1588,7 +1219,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private var lessonReview: LessonReviewWindowController?
-    /// The Lesson Review window, from the notch, the status item or the app menu.
+    /// The Lesson Review window, from the status item or the app menu.
     @MainActor func reviewLessons() {
         if lessonReview == nil {
             lessonReview = LessonReviewWindowController(service: SwarmaClient.shared) { [weak self] in
@@ -1612,7 +1243,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         store?.stop()
         openCodeActivityBridge?.stop()
         activityCoordinator?.stop()
-        notchFleet?.stop()
         // A language server this app started, if any. Left running it would
         // outlive the reason it exists and keep answering on loopback to
         // nothing.
@@ -1622,6 +1252,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 extension Notification.Name {
-    /// "Run Setup…" from places with no direct line to the app delegate (notch menu, Settings).
+    /// "Run Setup…" from places with no direct line to the app delegate (menus, Settings).
     static let swarmaaRunSetup = Notification.Name("app.swarmaa.runSetup")
 }

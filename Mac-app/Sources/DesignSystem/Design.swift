@@ -6,7 +6,7 @@ import SwiftUI
 ///
 /// The frame fixes only ratios, never an absolute size, so one anchor picks the
 /// scale: the design spec calls the provider ring 44pt across, and it measures
-/// 117px in the frame. Change `scale` and the whole surface — notch, rings,
+/// 117px in the frame. Change `scale` and the whole surface — app, rings,
 /// type, tooltip — resizes together, still in the design's proportions.
 enum Design {
     /// Points per pixel of the design frame.

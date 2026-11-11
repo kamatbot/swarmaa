@@ -22,7 +22,7 @@ final class LMStudioProviderTests: XCTestCase {
         XCTAssertEqual(snapshot.kind, .localRuntime)
         XCTAssertEqual(snapshot.id, "lmstudio")
         XCTAssertEqual(snapshot.status, .ok)
-        XCTAssertEqual(snapshot.notchSnapshots.map(\.id), ["lmstudio:model:qwen3.8-27b"])
+        XCTAssertEqual(snapshot.usageSnapshots.map(\.id), ["lmstudio:model:qwen3.8-27b"])
         XCTAssertNil(provider.account())
         XCTAssertFalse(provider.isVisibleWhenAbsent)
         XCTAssertEqual(provider.signInRoute, .openApp(bundleID: "ai.elementlabs.lmstudio", name: "LM Studio"))

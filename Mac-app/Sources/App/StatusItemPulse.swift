@@ -10,7 +10,7 @@ import QuartzCore
 /// display that is not active — and only the mask's alpha moves. The open
 /// menu's highlight is drawn outside the button's layer, so it is untouched.
 ///
-/// Core Animation moves the alpha in the render server, the way the notch's
+/// Core Animation moves the alpha in the render server, the way the app's
 /// spinning arc is turned: nothing here runs between frames, and with nothing
 /// working there is no mask and no animation at all.
 ///

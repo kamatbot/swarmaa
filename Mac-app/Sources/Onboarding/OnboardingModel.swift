@@ -426,7 +426,7 @@ final class OnboardingModel: ObservableObject {
 
     // MARK: Finish
 
-    /// Point the notch at the service that was just set up.
+    /// Point the app at the service that was just set up.
     private func applyToApp(_ summary: SetupSummary) {
         defaults.set(serviceRoot, forKey: Preferences.serviceRootKey)
         defaults.set("token", forKey: Preferences.authModeKey)

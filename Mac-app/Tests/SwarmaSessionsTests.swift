@@ -143,16 +143,16 @@ final class SwarmaSessionsTests: XCTestCase {
 
         var status = try full()
         store.registerSwarmProviders(SwarmaDirectory.providers(for: status, client: client))
-        XCTAssertTrue(store.notchSnapshots.map(\.id).contains("swarm:harness:dot"))
+        XCTAssertTrue(store.usageSnapshots.map(\.id).contains("swarm:harness:dot"))
 
         status.sessions.removeAll { $0.harness == "dot" }
         store.registerSwarmProviders(SwarmaDirectory.providers(for: status, client: client))
-        XCTAssertFalse(store.notchSnapshots.map(\.id).contains("swarm:harness:dot"))
-        XCTAssertTrue(store.notchSnapshots.map(\.id).contains("swarm:harness:codex"))
+        XCTAssertFalse(store.usageSnapshots.map(\.id).contains("swarm:harness:dot"))
+        XCTAssertTrue(store.usageSnapshots.map(\.id).contains("swarm:harness:codex"))
 
         status.sessions = []
         store.registerSwarmProviders(SwarmaDirectory.providers(for: status, client: client))
-        XCTAssertEqual(store.notchSnapshots.map(\.id).filter { $0.hasPrefix("swarm:harness:") }, [])
+        XCTAssertEqual(store.usageSnapshots.map(\.id).filter { $0.hasPrefix("swarm:harness:") }, [])
     }
 
     // MARK: Routing on agent cells

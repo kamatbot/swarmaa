@@ -22,7 +22,7 @@ struct SessionCompletionWatcher {
     struct Event: Equatable {
         let session: AgentSession
         let reason: Reason
-        /// Which provider's ring it belongs to, so the notch can point at it.
+        /// Which provider's ring it belongs to, so the app can point at it.
         let providerID: String
     }
 

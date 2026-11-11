@@ -55,39 +55,4 @@ final class SwarmaUpdatesTests: XCTestCase {
         XCTAssertEqual(d, SwarmaTaskDetail(answer: "ok", reason: "timeout"))
     }
 
-    @MainActor
-    func testUpdateCardsRender() throws {
-        let started = SwarmaUpdates.notice(
-            SwarmaUpdate(kind: .started, taskID: "1", provider: "claude", objective: "Add the hover card to worker cells",
-                         scope: "project:demo", taskKind: "patch", branch: nil), detail: nil)
-        let finished = SwarmaUpdates.notice(
-            SwarmaUpdate(kind: .finished, taskID: "2", provider: "codex", objective: "Add the hover card",
-                         scope: "project:demo", taskKind: "patch", branch: "swarm/hover-card"),
-            detail: SwarmaTaskDetail(answer: "## Hover card\nAdded the activity card to the worker cells and wired its height through the layout.", reason: nil))
-        for (name, event) in [("started", started), ("finished", finished)] {
-            let view = UsageResetCard(event: event, direction: .trailing, onDismiss: {})
-                .padding(20)
-                .background(Color.black)
-                .environment(\.colorScheme, .dark)
-                .environment(\.notchCardSurfaceStyle, .solid)
-                .environment(\.codenotchAccentColor, .blue)
-                .environment(\.codenotchHeadlessGlass, true)
-            let renderer = ImageRenderer(content: view)
-            renderer.scale = 2
-            let image = try XCTUnwrap(renderer.nsImage)
-            let tiff = try XCTUnwrap(image.tiffRepresentation)
-            let png = try XCTUnwrap(NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]))
-            try png.write(to: URL(fileURLWithPath: "/tmp/swarm-update-\(name).png"))
-        }
-    }
-}
-
-final class SwarmaUpdateCardHeightTests: XCTestCase {
-    func testDetailGrowsCardBeyondBaseAndCapsAtFourLines() {
-        var e = SwarmaUpdates.notice(SwarmaUpdate(kind: .started, taskID: "1", provider: "claude", objective: "x",
-                                                  scope: nil, taskKind: nil, branch: nil), detail: nil)
-        XCTAssertEqual(UsageResetCard.height(for: e), UsageResetCard.cardHeight)
-        e.noticeDetail = String(repeating: "word ", count: 200)
-        XCTAssertEqual(UsageResetCard.height(for: e), UsageResetCard.cardHeight + 3 * NotchLayout.cardBodyLineHeight, accuracy: 0.01)
-    }
 }

@@ -41,7 +41,7 @@ actor KiloProvider: UsageProvider {
     }
 
     nonisolated var signInRoute: SignInRoute {
-        .guidance(L10n.t("Usage rides on the account Kilo CLI signs into — run `kilo` once and sign in, and the notch reads it."))
+        .guidance(L10n.t("Usage rides on the account Kilo CLI signs into — run `kilo` once and sign in, and Swarmaa reads it."))
     }
 
     nonisolated func forgetCachedCredential() {

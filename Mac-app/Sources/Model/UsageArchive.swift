@@ -4,7 +4,7 @@ import Foundation
 ///
 /// Without this, a cold start that cannot reach the endpoint — rate limited,
 /// offline, token expired — shows nothing at all, which is the least useful
-/// thing the notch could do. A remembered reading is dimmed and dated, but a
+/// thing the app could do. A remembered reading is dimmed and dated, but a
 /// dated number you can see beats a blank ring.
 struct UsageArchive {
     private struct Entry: Codable {
@@ -146,7 +146,7 @@ struct UsageArchive {
 
     /// Drop what we remember about one provider.
     ///
-    /// Signing out has to reach this, or the notch keeps showing the last
+    /// Signing out has to reach this, or the app keeps showing the last
     /// reading — dimmed and dated, but still that account's numbers, still on
     /// screen after the next launch.
     func forget(_ providerID: String) {

@@ -35,7 +35,7 @@ actor GrokBotProvider: UsageProvider {
             return .openApp(bundleID: GrokBotCache.bundleID, name: "Grok Bot")
         }
         return .guidance(L10n.t(
-            "Install Grok Bot and sign in — the notch reads the weekly usage it keeps on this Mac."
+            "Install Grok Bot and sign in — Swarmaa reads the weekly usage it keeps on this Mac."
         ))
     }
 

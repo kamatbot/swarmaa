@@ -20,16 +20,6 @@ final class CostTests: XCTestCase {
         XCTAssertEqual(credits.resetsAt, Date(timeIntervalSince1970: 1_789_430_400))
     }
 
-    /// Cost rows on the card add exactly what the section draws.
-    func testCardHeightGrowsWithCostRows() {
-        let base = NotchLayout.cardHeight(windowCount: 2)
-        let withRows = NotchLayout.cardHeight(windowCount: 2, costRows: 3)
-        let expected = NotchLayout.blockSpacing + NotchLayout.cardBodyLineHeight
-            + 3 * (NotchLayout.cardBodyLineHeight + NotchLayout.sessionRowGap)
-        XCTAssertEqual(withRows - base, expected, accuracy: 0.01)
-        XCTAssertEqual(NotchLayout.cardHeight(windowCount: 2, costRows: 0), base)
-    }
-
     /// Money for subscription work is the weekly share of the plan; a credit
     /// seat prices credits; an API account prices tokens.
     func testCostEstimatorModes() {

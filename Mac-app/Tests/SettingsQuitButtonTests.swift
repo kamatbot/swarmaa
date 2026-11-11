@@ -16,7 +16,6 @@ final class SettingsQuitButtonTests: XCTestCase {
             signIn: { _ in false },
             switchAccount: { _ in false },
             retry: { _ in },
-            resetPosition: {},
             quit: { didQuit = true },
             updater: Updater()
         )

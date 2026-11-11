@@ -140,68 +140,6 @@ final class SessionCompletionTests: XCTestCase {
     }
 }
 
-/// The peek has to survive the pointer not being there.
-@MainActor
-final class PeekTests: XCTestCase {
-    private func pump(_ seconds: TimeInterval) {
-        RunLoop.current.run(until: Date().addingTimeInterval(seconds))
-    }
-
-    /// The regression this exists for: the cursor poll runs every 0.3s and
-    /// folds the notch 0.45s after finding the pointer somewhere else, which
-    /// during a peek it almost always is. The notch opened and shut inside a
-    /// second — the announcement was there, and nobody could have seen it.
-    ///
-    /// Only asserts that it is *still open* well past that window. Whether it
-    /// closes afterwards depends on where the mouse happens to be on the
-    /// machine running this, which is not something a test may assume.
-    func testAPeekOutlastsTheHoverFold() {
-        let controller = NotchWindowController()
-        controller.show()
-        defer { controller.stop() }
-
-        controller.peek(for: 2, focusing: nil)
-        XCTAssertTrue(controller.model.isExpanded)
-        pump(1.2)
-        XCTAssertTrue(controller.model.isExpanded,
-                      "the pointer being elsewhere must not end a peek early")
-    }
-
-    /// Hidden is a standing choice. Something finishing does not overrule it.
-    func testAPeekDoesNotOverrideHidden() {
-        let controller = NotchWindowController()
-        controller.show()
-        defer { controller.stop() }
-
-        controller.apply(.hidden)
-        controller.peek(for: 2, focusing: nil)
-        XCTAssertFalse(controller.model.isExpanded)
-    }
-}
-
-/// The peek's length is a setting, so the setting has to survive a round trip.
-final class PeekDurationTests: XCTestCase {
-    func testEveryDurationIsAUsefulLength() {
-        for duration in PeekDuration.allCases {
-            XCTAssertGreaterThanOrEqual(duration.seconds, 1)
-            XCTAssertLessThanOrEqual(duration.seconds, 30)
-        }
-    }
-
-    /// The raw values are written to UserDefaults, so renaming a case would
-    /// silently reset everybody's choice to the default.
-    func testRawValuesAreStable() {
-        XCTAssertEqual(PeekDuration.allCases.map(\.rawValue), ["brief", "standard", "long"])
-        XCTAssertEqual(PeekDuration(rawValue: "standard")?.seconds, 5)
-    }
-
-    /// An unrecognised stored value — a downgrade, a hand-edited domain — has
-    /// to land on the default rather than on nothing.
-    func testAnUnknownStoredValueFallsBack() {
-        XCTAssertNil(PeekDuration(rawValue: "forever"))
-    }
-}
-
 /// The chime resolves files itself, so that resolution is worth checking.
 final class SessionChimeTests: XCTestCase {
     func testTheDefaultSoundsExist() {

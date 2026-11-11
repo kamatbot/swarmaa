@@ -55,8 +55,8 @@ final class LMStudioUsageTests: XCTestCase {
 
         let snapshot = LMStudioFixtures.snapshot(reading)
         XCTAssertTrue(snapshot.hasReading)
-        XCTAssertEqual(snapshot.notchSnapshots.map(\.id), ["lmstudio:model:qwen3.8-27b"])
-        let cell = try XCTUnwrap(snapshot.notchSnapshots.first)
+        XCTAssertEqual(snapshot.usageSnapshots.map(\.id), ["lmstudio:model:qwen3.8-27b"])
+        let cell = try XCTUnwrap(snapshot.usageSnapshots.first)
         XCTAssertEqual(cell.glyph, .qwen)
         XCTAssertEqual(cell.providerID, "lmstudio")
         XCTAssertTrue(cell.localRuntimeMeasuresSpeed)
@@ -74,7 +74,7 @@ final class LMStudioUsageTests: XCTestCase {
         XCTAssertEqual(reading.models[0].brand, .qwen, "the identifier says nothing; the model key does")
         XCTAssertNil(reading.models[1].brand)
         XCTAssertEqual(reading.models[1].contextLength, 8192, "no per-instance context falls back to the model maximum")
-        let cells = LMStudioFixtures.snapshot(reading).notchSnapshots
+        let cells = LMStudioFixtures.snapshot(reading).usageSnapshots
         XCTAssertEqual(cells.map(\.glyph), [.qwen, .lmstudio])
     }
 
@@ -91,7 +91,7 @@ final class LMStudioUsageTests: XCTestCase {
         let reading = try LMStudioUsage.parse(Data(#"{"models":[]}"#.utf8))
         let snapshot = LMStudioFixtures.snapshot(reading)
         XCTAssertTrue(snapshot.hasReading)
-        XCTAssertTrue(snapshot.notchSnapshots.isEmpty)
+        XCTAssertTrue(snapshot.usageSnapshots.isEmpty)
         XCTAssertTrue(snapshot.statusMessage?.contains("No models loaded") == true)
     }
 

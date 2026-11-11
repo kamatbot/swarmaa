@@ -4,7 +4,7 @@ import Foundation
 /// Is a pid still running, and is it still the *same* process?
 ///
 /// A session that crashes leaves its file behind saying `busy` forever, so the
-/// notch has to check rather than trust the file. Checking the pid alone is not
+/// app has to check rather than trust the file. Checking the pid alone is not
 /// enough on a long-running machine: pids get reused, and a recycled one would
 /// resurrect a dead session. Comparing start times settles it.
 enum ProcessLiveness {

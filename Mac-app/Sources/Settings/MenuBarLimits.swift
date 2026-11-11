@@ -6,7 +6,7 @@ import Foundation
 /// Presentation only, and kept apart from `Preferences.connectedProviders` on
 /// purpose. That list decides what Swarmaa *reads*; this one decides what the
 /// menu bar *shows* of it. A provider can be read and kept out of the bar, and
-/// taking it out never stops the reading — the notch, the menu, the alerts and
+/// taking it out never stops the reading — the app, the menu, the alerts and
 /// the phone all carry on. The other way round there is nothing to show: a
 /// provider that is not read has no limit to put here, and choosing it here
 /// starts no reading.

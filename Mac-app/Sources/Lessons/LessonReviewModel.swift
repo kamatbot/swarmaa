@@ -34,7 +34,7 @@ final class LessonReviewModel: ObservableObject {
     private let service: LessonService
     private let onChanged: () -> Void
 
-    /// `onChanged` runs after a review went through, so the notch count follows.
+    /// `onChanged` runs after a review went through, so the app count follows.
     init(service: LessonService, onChanged: @escaping () -> Void = {}) {
         self.service = service
         self.onChanged = onChanged

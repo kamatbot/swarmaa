@@ -20,7 +20,7 @@ enum SessionFocus {
     /// raise the owning application either way.
     ///
     /// The tab selection runs off the calling actor: cmux's CLI and osascript
-    /// are subprocesses that would otherwise stall the notch's tap handling.
+    /// are subprocesses that would otherwise stall the app's tap handling.
     @discardableResult
     static func focus(pid: pid_t) async -> Bool {
         let app = owningApp(of: pid)
@@ -78,7 +78,7 @@ enum SessionFocus {
             Log.usage.debug("no owning app for pid \(pid, privacy: .public)")
             return false
         }
-        // `activate()` rather than the deprecated options form: the notch's own
+        // `activate()` rather than the deprecated options form: the app's own
         // panel is non-activating, so there is no focus of ours to hand over
         // and nothing to co-ordinate.
         return app.activate()

@@ -457,24 +457,6 @@ final class CodexUsageTests: XCTestCase {
         XCTAssertEqual(try CodexUsage.resetCredits(from: Data("[]".utf8)).credits, [])
     }
 
-    func testAccountUsageCardGetsRoomForTheActivitySection() {
-        let plain = NotchLayout.cardHeight(windowCount: 2)
-        let withTokens = NotchLayout.cardHeight(windowCount: 2, hasTokenUsage: true)
-
-        XCTAssertGreaterThan(withTokens, plain)
-        XCTAssertEqual(
-            withTokens - plain,
-            NotchLayout.codexUsageTop + NotchLayout.hairline + NotchLayout.blockSpacing
-                + NotchLayout.codexMetricTop + NotchLayout.codexMetricHeight
-                + NotchLayout.codexMetricBottom
-                + NotchLayout.hairline
-                + 2 * NotchLayout.cardBodyLineHeight
-                + NotchLayout.codexUsageRowGap
-                + NotchLayout.codexChartTop + NotchLayout.codexChartHeight,
-            accuracy: 0.001
-        )
-    }
-
 }
 
 /// The activity signal is a heuristic — a rollout written moments ago — so what
@@ -979,26 +961,6 @@ final class UsageBlockTests: XCTestCase {
         XCTAssertEqual(block.summary(now: now), "Paused")
     }
 
-    /// The card has to be tall enough for the line, or it is clipped — the same
-    /// mistake the status message made.
-    func testTheCardMakesRoomForIt() {
-        let plain = NotchLayout.cardHeight(windowCount: 1)
-        let blocked = NotchLayout.cardHeight(windowCount: 1,
-                                             blockMessage: "Paused until 4:13 PM")
-        XCTAssertGreaterThan(blocked, plain, "the blocked line has no room to be drawn in")
-    }
-
-    /// And a long one gets the room it actually needs.
-    func testALongBlockMessageGetsMoreThanOneLine() {
-        let long = "Workspace limit reached until Thu 4:13 PM — every seat on this "
-                 + "workspace shares one allowance and it is spent"
-        XCTAssertGreaterThan(NotchLayout.bodyTextHeight(long),
-                             NotchLayout.cardBodyLineHeight)
-        XCTAssertGreaterThan(
-            NotchLayout.cardHeight(windowCount: 1, blockMessage: long),
-            NotchLayout.cardHeight(windowCount: 1, blockMessage: "Paused")
-        )
-    }
 }
 
 /// A Codex row named for the conversation it is, and one row per conversation.

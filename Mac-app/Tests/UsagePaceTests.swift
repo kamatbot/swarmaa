@@ -103,14 +103,6 @@ final class UsageProjectionTests: XCTestCase {
 
 @MainActor
 final class UsagePacePreferenceTests: XCTestCase {
-    func testDefaultsOffAndSurvivesARelaunch() throws {
-        let name = "UsagePacePreferenceTests.\(UUID().uuidString)"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
-        defer { defaults.removePersistentDomain(forName: name) }
-        XCTAssertFalse(Preferences(defaults: defaults).showUsagePace)
-        Preferences(defaults: defaults).showUsagePace = true
-        XCTAssertTrue(Preferences(defaults: defaults).showUsagePace)
-    }
 }
 
 final class PaceMarkerTests: XCTestCase {
@@ -157,9 +149,4 @@ final class PaceMarkerTests: XCTestCase {
         XCTAssertNil(window(remaining: nil).paceMarkerFraction(now: now, showingRemaining: true))
     }
 
-    func testMarkerXStaysOnTheTrack() {
-        XCTAssertEqual(paceMarkerX(position: 0.25, trackWidth: 536, markerWidth: 2), 133, accuracy: 1e-9)
-        XCTAssertEqual(paceMarkerX(position: 0, trackWidth: 536, markerWidth: 2), 0, accuracy: 1e-9)
-        XCTAssertEqual(paceMarkerX(position: 1, trackWidth: 536, markerWidth: 2), 534, accuracy: 1e-9)
-    }
 }

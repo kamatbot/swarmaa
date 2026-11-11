@@ -8,7 +8,7 @@ import Foundation
 ///
 /// Every list defaults to empty rather than failing the decode. The service is
 /// ours but it moves faster than this app, and a worker row missing one array
-/// should still draw a cell, not blank the whole notch.
+/// should still draw a cell, not blank the whole app.
 struct SwarmaStatus: Decodable, Equatable {
     struct Worker: Equatable {
         struct Running: Decodable, Equatable {
@@ -213,7 +213,7 @@ extension SwarmaStatus.Session: Decodable {
         harness = try c.decodeIfPresent(String.self, forKey: .harness) ?? "other"
         title = try c.decodeIfPresent(String.self, forKey: .title) ?? ""
         scope = try c.decodeIfPresent(String.self, forKey: .scope)
-        // One unreadable timestamp must not cost the notch every chat.
+        // One unreadable timestamp must not cost the app every chat.
         updatedAt = (try? c.decodeIfPresent(Date.self, forKey: .updatedAt)) ?? nil
     }
 }

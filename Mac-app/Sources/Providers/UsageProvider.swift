@@ -95,10 +95,10 @@ protocol UsageProvider {
     /// and no prompt appears. A requirement, not an extension member, for the
     /// reason spelled out above `account()`.
     func forgetCachedCredential()
-    /// Whether this provider should keep a cell or placeholder in the notch when
+    /// Whether this provider should keep a cell or placeholder in the app when
     /// its account or daemon is unavailable. Most providers default to `true`
     /// so users see sign-in guidance; local daemon providers return `false`
-    /// so an inactive service does not take up a ring in the notch.
+    /// so an inactive service does not take up a ring in the app.
     var isVisibleWhenAbsent: Bool { get }
     /// Whether the idle timer skips this provider. For refreshes that cost
     /// something per call, so the background never spends on its own. Such a

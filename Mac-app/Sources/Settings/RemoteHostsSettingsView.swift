@@ -57,7 +57,7 @@ struct RemoteHostsSettingsView: View {
                     }
 
                     if preferences.remoteHosts.isEmpty, !isEditing {
-                        Text(L10n.t("No servers yet. Add one above and its ring appears in the notch."))
+                        Text(L10n.t("No servers yet. Add one above and its usage appears in Swarmaa."))
                             .font(.callout)
                             .foregroundStyle(.secondary)
                     } else {

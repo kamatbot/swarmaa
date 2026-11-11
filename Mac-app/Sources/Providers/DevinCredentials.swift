@@ -7,7 +7,7 @@ import SQLite3
 /// Swarmaa only ever reads it, the same bargain as Cursor and Claude Code:
 /// the owning tool mints and refreshes it, we borrow the current value. Both
 /// files hold the same kind of session token, and both answer the same
-/// GetUserStatus call — the CLI path is only a fallback so the notch works on
+/// GetUserStatus call — the CLI path is only a fallback so the app works on
 /// a machine that has never had the Desktop app.
 struct DevinCredentials {
     let apiKey: String

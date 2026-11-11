@@ -186,25 +186,4 @@ final class OnboardingTests: XCTestCase {
 
     // MARK: Defaults migration
 
-    func testMigratesFromCodenotchOnce() {
-        let oldName = "OnboardingTests.old.\(UUID().uuidString)"
-        let old = UserDefaults(suiteName: oldName)!
-        old.set("alwaysShow", forKey: "notchVisibility")
-        old.set(true, forKey: "swarmaEnabled")
-        old.synchronize()
-        let fresh = suite()
-        fresh.set("kept", forKey: "swarmaServiceURL")
-
-        Preferences.migrateFromCodenotch(into: fresh, from: oldName)
-        XCTAssertEqual(fresh.string(forKey: "notchVisibility"), "alwaysShow")
-        XCTAssertTrue(fresh.bool(forKey: "swarmaEnabled"))
-        XCTAssertEqual(fresh.string(forKey: "swarmaServiceURL"), "kept", "existing keys are not overwritten")
-        XCTAssertTrue(fresh.bool(forKey: Preferences.migratedFromCodenotchKey))
-
-        old.set("hidden", forKey: "notchVisibility"); old.synchronize()
-        fresh.set("onHover", forKey: "notchVisibility")
-        Preferences.migrateFromCodenotch(into: fresh, from: oldName)
-        XCTAssertEqual(fresh.string(forKey: "notchVisibility"), "onHover", "runs once")
-        old.removePersistentDomain(forName: oldName)
-    }
 }

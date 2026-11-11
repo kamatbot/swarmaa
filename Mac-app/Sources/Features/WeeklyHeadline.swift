@@ -5,7 +5,7 @@ import Foundation
 ///
 /// The short window resets every few hours; the weekly one is the limit that
 /// actually runs out, and the one that decides when to move to another account.
-/// With both on the notch, the big ring was the short one and the week sat in
+/// With both in the app, the big ring was the short one and the week sat in
 /// the hover card or a thin second ring. This leads with the week instead: the
 /// big ring becomes the weekly window, the thin ring — where one is switched
 /// on — the short one, and nothing leaves the card.

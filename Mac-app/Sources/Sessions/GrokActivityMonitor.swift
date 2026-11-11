@@ -59,7 +59,7 @@ final class GrokActivityMonitor: ObservableObject, AgentActivityMonitor {
 
     /// Off the main thread. Finding headless `grok -p` runs lists every
     /// process on the Mac and asks the kernel about each — hundreds of calls a
-    /// tick — which is not work to put between the notch and its next frame.
+    /// tick — which is not work to put between the app and its next frame.
     private func rescan() {
         guard !isScanning else { return }
         isScanning = true

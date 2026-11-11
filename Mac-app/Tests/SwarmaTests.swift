@@ -407,14 +407,14 @@ final class SwarmaTests: XCTestCase {
         store.registerSwarmProviders([SwarmAgentProvider(name: "worker-claude", client: client),
                                       SwarmScopeProvider(scope: "project:demo", client: client)])
         try await Task.sleep(nanoseconds: 400_000_000)
-        XCTAssertEqual(Set(store.notchSnapshots.map(\.id)), ["swarm:agent:worker-claude", "swarm:scope:project:demo"])
-        XCTAssertEqual(store.notchSnapshots.first { $0.id == "swarm:agent:worker-claude" }?.headline?.usedText, "running")
+        XCTAssertEqual(Set(store.usageSnapshots.map(\.id)), ["swarm:agent:worker-claude", "swarm:scope:project:demo"])
+        XCTAssertEqual(store.usageSnapshots.first { $0.id == "swarm:agent:worker-claude" }?.headline?.usedText, "running")
 
         store.registerSwarmProviders([SwarmScopeProvider(scope: "project:demo", client: client)])
-        XCTAssertEqual(store.notchSnapshots.map(\.id), ["swarm:scope:project:demo"])
+        XCTAssertEqual(store.usageSnapshots.map(\.id), ["swarm:scope:project:demo"])
 
         store.registerSwarmProviders([])
-        XCTAssertTrue(store.notchSnapshots.isEmpty)
+        XCTAssertTrue(store.usageSnapshots.isEmpty)
     }
 
     // MARK: Preferences

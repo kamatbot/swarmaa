@@ -3,9 +3,8 @@ import SwiftUI
 
 /// Hosts the settings sheet in its own window.
 ///
-/// A real window rather than a panel attached to the notch: settings are a place
-/// you go, not something you glance at, and a floating panel that follows the
-/// notch would be one more thing hovering over the screen edge.
+/// Settings are a place you go, not something you glance at, so they get a
+/// real window — and the same view is the main window's Settings pane.
 @MainActor
 final class SettingsWindowController: NSObject, NSWindowDelegate {
     private var window: NSWindow?
@@ -28,11 +27,9 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     let phoneLinkPairing: PhoneLinkPairing?
     let phoneLinkRegistry: PhoneLinkRegistry?
     let phoneLinkServerStatus: PhoneLinkServerStatus?
-    private let resetPosition: () -> Void
     private let quit: () -> Void
     private let previewResetAlert: (() -> Void)?
     private let previewSessionLimitAlert: (() -> Void)?
-    private let previewSwarmaUpdate: (() -> Void)?
     private let previewWeeklyLimitAlert: (() -> Void)?
     private let sendTestNotification: (() -> Void)?
 
@@ -43,11 +40,9 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
          signIn: @escaping (String) -> Bool,
          switchAccount: @escaping (String) -> Bool,
          retry: @escaping (String) -> Void,
-         resetPosition: @escaping () -> Void,
          quit: @escaping () -> Void,
          previewResetAlert: (() -> Void)? = nil,
          previewSessionLimitAlert: (() -> Void)? = nil,
-         previewSwarmaUpdate: (() -> Void)? = nil,
          previewWeeklyLimitAlert: (() -> Void)? = nil,
          sendTestNotification: (() -> Void)? = nil,
          usageStore: UsageStore? = nil,
@@ -60,11 +55,9 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         self.phoneLinkPairing = phoneLinkPairing
         self.phoneLinkRegistry = phoneLinkRegistry
         self.phoneLinkServerStatus = phoneLinkServerStatus
-        self.resetPosition = resetPosition
         self.quit = quit
         self.previewResetAlert = previewResetAlert
         self.previewSessionLimitAlert = previewSessionLimitAlert
-        self.previewSwarmaUpdate = previewSwarmaUpdate
         self.previewWeeklyLimitAlert = previewWeeklyLimitAlert
         self.sendTestNotification = sendTestNotification
         self.switchAccount = switchAccount
@@ -196,36 +189,16 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         layoutTrafficLights(in: window)
     }
 
-    /// Put the window away if it is already in front, otherwise bring it up.
-    ///
-    /// Only the notch's own gear calls this. A menu item reading "Settings…"
-    /// and the first-launch introduction both `show()` instead, because a
-    /// command that names a destination should go there rather than toggle.
-    ///
-    /// The condition is *key*, not merely visible. Clicking the gear while the
-    /// window is open but behind something else should fetch it forward — the
-    /// intent there is plainly "show me that", and closing it would be the one
-    /// thing the click could not have meant.
-    func toggle() {
-        if let window, window.isVisible, window.isKeyWindow {
-            // `isReleasedWhenClosed` is false, so this hides it and keeps the
-            // window itself for the next `show()`.
-            window.close()
-            return
-        }
-        show()
-    }
-
     /// The same settings, bindings and all, as a pane of the main window.
     func embeddedView() -> some View {
         SettingsView(preferences: preferences,
                      providers: providers, phoneLinkPairing: phoneLinkPairing, phoneLinkRegistry: phoneLinkRegistry, phoneLinkServerStatus: phoneLinkServerStatus,
                      signOut: signOut, signIn: signIn, switchAccount: switchAccount, retry: retry,
-                     resetPosition: resetPosition, quit: quit, updater: updater,
+                     quit: quit, updater: updater,
                      ollamaRelay: ollamaRelay, lmstudioMetrics: lmstudioMetrics, omlxMetrics: omlxMetrics,
                      usageStore: usageStore,
                      previewResetAlert: previewResetAlert, previewSessionLimitAlert: previewSessionLimitAlert,
-                     previewWeeklyLimitAlert: previewWeeklyLimitAlert, previewSwarmaUpdate: previewSwarmaUpdate,
+                     previewWeeklyLimitAlert: previewWeeklyLimitAlert,
                      sendTestNotification: sendTestNotification, embedded: true)
     }
 
@@ -282,7 +255,6 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
                                    signIn: signIn,
                                    switchAccount: switchAccount,
                                    retry: retry,
-                                   resetPosition: resetPosition,
                                    quit: quit,
                                    updater: updater,
                                    ollamaRelay: ollamaRelay, lmstudioMetrics: lmstudioMetrics,
@@ -291,7 +263,6 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
                                    previewResetAlert: previewResetAlert,
                                    previewSessionLimitAlert: previewSessionLimitAlert,
                                    previewWeeklyLimitAlert: previewWeeklyLimitAlert,
-                                   previewSwarmaUpdate: previewSwarmaUpdate,
                                    sendTestNotification: sendTestNotification)
                 // One point over the macOS default, for any text without its own font.
                 .font(.system(size: 14))

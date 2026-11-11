@@ -34,7 +34,7 @@ final class CredentialCache<Credential>: @unchecked Sendable {
     private let isExpired: (Credential) -> Bool
     /// How long to sit with what we have when the probe cannot tell us whether
     /// the item moved. Long enough not to nag, short enough that a rotation is
-    /// picked up while you are still looking at the notch.
+    /// picked up while you are still looking at the app.
     private let recheckAfter: TimeInterval
     /// How long to leave macOS alone after it has said no, where there is no
     /// probe to be more precise with — and, since the fix below, the same

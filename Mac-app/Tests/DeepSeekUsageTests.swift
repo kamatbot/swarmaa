@@ -183,13 +183,6 @@ final class DeepSeekUsageTests: XCTestCase {
         XCTAssertNotNil(Bundle.main.url(forResource: "holiday-cn-LICENSE", withExtension: "txt"))
     }
 
-    func testDisablingPricingOnlyRemovesPricingRowsFromTheCardHeight() {
-        XCTAssertGreaterThan(
-            NotchLayout.usageDetailHeight(1, showsPricing: true),
-            NotchLayout.usageDetailHeight(1, showsPricing: false)
-        )
-    }
-
     func testSwitchGateIgnoresTheExistingSession() {
         var gate = WebSessionAuthenticationGate(baselineFingerprint: "old")
 
@@ -317,37 +310,6 @@ final class DeepSeekUsageTests: XCTestCase {
         XCTAssertEqual(detail.totalRequests, 2)
     }
 
-    func testDeepSeekCardRendersMoneySummaryAndCharts() throws {
-        let detail = ProviderUsageDetail(
-            start: Date(timeIntervalSince1970: 1_800_000_000),
-            end: Date(timeIntervalSince1970: 1_800_086_400),
-            timeZoneSeconds: 28_800,
-            currency: "CNY",
-            groups: [UsageDetailGroup(apiKeyID: "key-1", apiKeyLabel: "main",
-                                      model: "deepseek-chat",
-                                      days: [UsageDetailDay(date: Date(timeIntervalSince1970: 1_800_000_000),
-                                                            cacheHitTokens: 100,
-                                                            cacheMissTokens: 50,
-                                                            outputTokens: 25,
-                                                            requests: 2,
-                                                            cost: 0.12)])]
-        )
-        let snapshot = ProviderSnapshot(
-            id: "deepseek", displayName: "DeepSeek", glyph: .deepseek,
-            fidelity: .derived, status: .ok,
-            windows: [LimitWindow(id: "spend", label: "Account usage (CNY)",
-                                  usedFraction: 9.20 / 20.07,
-                                  money: UsageMoneyBreakdown(currency: "CNY", spent: 9.20, remaining: 10.87))],
-            usageDetail: detail
-        )
-        let image = try XCTUnwrap(ImageRenderer(content: TooltipCard(snapshot: snapshot, now: Date())).nsImage)
-        XCTAssertGreaterThan(image.size.height, NotchLayout.cardHeight(windowCount: 1) + NotchLayout.usageDetailChartHeight)
-        if let path = ProcessInfo.processInfo.environment["DEEPSEEK_TOOLTIP_RENDER_PATH"],
-           let tiff = image.tiffRepresentation,
-           let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) {
-            try png.write(to: URL(fileURLWithPath: path))
-        }
-    }
 }
 
 /// The money bar's headline reads spent by default, what is left when the

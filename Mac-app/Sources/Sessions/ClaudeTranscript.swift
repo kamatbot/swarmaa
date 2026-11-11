@@ -125,7 +125,7 @@ enum ClaudeTranscript {
     }
 
     /// Pressing Esc writes a user turn saying so, which is what makes "stopped"
-    /// something the notch can know rather than wait out with a timeout. Two
+    /// something the app can know rather than wait out with a timeout. Two
     /// wordings exist, and both start the same way.
     private static let interruption = "[Request interrupted by user"
 
@@ -167,8 +167,8 @@ final class ClaudeTranscriptReader {
     /// The transcript's timestamp is when it was last *appended to*, which
     /// moves every few seconds through a long turn. Reported as-is it would
     /// hold the tooltip's elapsed time at zero for as long as the session
-    /// worked, and hand the notch a new value to animate on every tick. What
-    /// the notch means by `since` is when the state was entered, so the moment
+    /// worked, and hand the app a new value to animate on every tick. What
+    /// the app means by `since` is when the state was entered, so the moment
     /// of the change is kept and the appends in between are ignored.
     private var entered: [String: (turn: ClaudeTranscript.Turn, at: Date)] = [:]
     /// Sessions already looked for the hard way and not found. The directory

@@ -2,7 +2,7 @@ import Foundation
 import Security
 
 /// Where Muse Code keeps its account and its logs. Both are read-only: the
-/// notch borrows what the CLI wrote and never signs in, refreshes, or writes.
+/// app borrows what the CLI wrote and never signs in, refreshes, or writes.
 enum MuseCredentials {
     /// The login keychain item the CLI mints its API key into.
     static let keychainService = "ai.meta.dev.credentials"

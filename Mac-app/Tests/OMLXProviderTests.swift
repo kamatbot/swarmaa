@@ -22,7 +22,7 @@ final class OMLXProviderTests: XCTestCase {
         XCTAssertEqual(snapshot.kind, .localRuntime)
         XCTAssertEqual(snapshot.id, "omlx")
         XCTAssertEqual(snapshot.status, .ok)
-        XCTAssertEqual(snapshot.notchSnapshots.map(\.id), ["omlx:model:Qwen3.8-27B-oQ8e-mtp"])
+        XCTAssertEqual(snapshot.usageSnapshots.map(\.id), ["omlx:model:Qwen3.8-27B-oQ8e-mtp"])
         XCTAssertNil(provider.account())
         XCTAssertFalse(provider.isVisibleWhenAbsent)
         XCTAssertEqual(provider.signInRoute, .openApp(bundleID: "app.omlx", name: "oMLX"))

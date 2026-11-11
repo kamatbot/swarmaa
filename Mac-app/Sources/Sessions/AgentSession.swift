@@ -5,7 +5,7 @@ import Foundation
 ///
 /// Deliberately a *display* model rather than a mirror of any one tool's file
 /// format: Claude Code publishes a session registry, Cursor keeps composer rows
-/// in SQLite, and neither shape belongs in the notch. Each monitor does its own
+/// in SQLite, and neither shape belongs in the app. Each monitor does its own
 /// parsing and hands back this.
 struct AgentSession: Identifiable, Equatable {
     /// What the session is doing right now.

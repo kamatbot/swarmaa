@@ -12,7 +12,7 @@ enum ProviderOrder {
     static func cells(from snapshots: [ProviderSnapshot],
                       keeping previous: [ProviderSnapshot]) -> [ProviderSnapshot] {
         snapshots.flatMap { snapshot in
-            let cells = snapshot.notchSnapshots
+            let cells = snapshot.usageSnapshots
             return snapshot.kind == .localRuntime
                 ? arrange(cells, by: previous.map(\.id), id: \.id) : cells
         }

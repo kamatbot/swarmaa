@@ -17,7 +17,7 @@ import Foundation
 ///
 /// The shape settles how Perplexity can be displayed at all: it reports **only
 /// what is left**. No totals, so there is no denominator for a percentage, and
-/// no reset times either. So the notch shows the count — "2 left" — rather than
+/// no reset times either. So the app shows the count — "2 left" — rather than
 /// a percentage worked back from a limit nobody stated. `sources` is a long tail
 /// of connector quotas unrelated to model usage, and is ignored.
 enum PerplexityUsage {

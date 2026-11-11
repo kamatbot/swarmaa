@@ -38,7 +38,7 @@ final class AccountNicknameTests: XCTestCase {
         XCTAssertEqual(store.snapshots.map(\.displayName), ["Claude (work)"])
         store.nicknames = ["claude-work": "Acme"]
         XCTAssertEqual(store.snapshots.map(\.displayName), ["Acme"])
-        XCTAssertEqual(store.notchSnapshots.map(\.displayName), ["Acme"])
+        XCTAssertEqual(store.usageSnapshots.map(\.displayName), ["Acme"])
     }
 
     func testClearingTheNameGoesBackToTheProviders() {
