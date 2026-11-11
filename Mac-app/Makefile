@@ -256,8 +256,11 @@ publish: $(DMG) $(ZIP)
 	@test -n "$(VERSION)" || (echo "No MARKETING_VERSION in project.yml" && exit 1)
 	@# --clobber so re-running after a rebuild replaces the asset instead of
 	@# failing on the name already being taken.
-	gh release upload $(TAG) $(DMG) $(ZIP) --clobber
-	@echo "Attached $(DMG) and $(ZIP) to $(TAG)."
+	@# Also under fixed names: swarmaa.com and the README link releases/latest/download/Swarmaa.zip.
+	cp $(DMG) $(RELEASE_DIR)/$(APP_NAME).dmg
+	cp $(ZIP) $(RELEASE_DIR)/$(APP_NAME).zip
+	gh release upload $(TAG) $(DMG) $(ZIP) $(RELEASE_DIR)/$(APP_NAME).dmg $(RELEASE_DIR)/$(APP_NAME).zip --clobber
+	@echo "Attached $(DMG), $(ZIP) and the fixed-name copies to $(TAG)."
 
 # What Gatekeeper on a customer's Mac will check. `spctl` accepting the app is
 # the actual proof that the download will open without a right-click.
