@@ -143,12 +143,14 @@ struct WKPrimary: ButtonStyle {
 @main struct SwarmaaWatchApp: App {
     @Environment(\.scenePhase) private var phase
     private let store = WatchStore.shared
+    @State private var router = WatchRouter.shared
     var body: some Scene {
         WindowGroup {
-            NavigationStack {
+            NavigationStack(path: $router.path) {
                 Group {
                     if let snapshot = store.snapshot, snapshot.signedIn {
                         List {
+                            NavigationLink(value: "memos") { Label("Voice memos", systemImage: "waveform") }.wkRow()
                             if snapshot.bots.isEmpty { Text("Your bots will appear here after Swarmaa on iPhone syncs.").font(WK.caption).foregroundStyle(WK.muted).listRowBackground(Color.clear) }
                             ForEach(snapshot.bots.sorted { $0.starred && !$1.starred }) { bot in
                                 let needs = (snapshot.questions ?? []).contains { $0.threadID == bot.threadID }
@@ -164,7 +166,6 @@ struct WKPrimary: ButtonStyle {
                                 }.wkRow()
                             }
                             NavigationLink { WatchTransactionsView(store: store) } label: { Label("Transactions", systemImage: "list.bullet.rectangle") }.wkRow()
-                            NavigationLink { WatchMemosView(store: store) } label: { Label("Voice memos", systemImage: "waveform") }.wkRow()
                             Button("Refresh") { store.refresh() }.buttonStyle(WKPrimary()).listRowBackground(Color.clear)
                         }.navigationTitle("Bots")
                     } else {
@@ -175,7 +176,7 @@ struct WKPrimary: ButtonStyle {
                             }
                         }
                     }
-                }.wkScreen()
+                }.wkScreen().navigationDestination(for: String.self) { _ in WatchMemosView(store: store) }
             }.tint(WK.signal).onAppear { store.refresh() }
         }.onChange(of: phase) { _, new in
             // Keep recording when the screen dims or the wrist drops; the audio background mode keeps the session alive.

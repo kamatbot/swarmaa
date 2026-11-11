@@ -15,6 +15,25 @@ import AVFoundation
     var items: [Item] = []
     var error: String?
     private var player: AVAudioPlayer?
+    private var transcribing = Set<String>()
+    private func transcriptURL(_ audio: URL) -> URL { audio.deletingPathExtension().appendingPathExtension("txt") }
+    /// Writes <id>.txt next to each memo once on-device recognition finishes (empty on failure) and then re-triggers delivery.
+    private func ensureTranscripts(_ urls: [URL]) {
+        for url in urls where !FileManager.default.fileExists(atPath: transcriptURL(url).path) && transcribing.insert(url.path).inserted {
+            Task {
+                let text = await MemoTranscriber.transcribe(url)
+                try? text.write(to: transcriptURL(url), atomically: true, encoding: .utf8)
+                transcribing.remove(url.path)
+                WatchBridge.shared.changed()
+            }
+        }
+    }
+    // Wait for the transcript, but never block delivery for long.
+    private func transcriptReady(_ url: URL) -> Bool {
+        if FileManager.default.fileExists(atPath: transcriptURL(url).path) { return true }
+        let age = Date().timeIntervalSince((try? url.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? .distantPast)
+        return age > 180
+    }
     static var root: URL { FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("Watch Memos", isDirectory: true) }
     func refresh(generation: String?) {
         guard let generation, UUID(uuidString: generation) != nil else { items = []; return }
@@ -23,6 +42,7 @@ import AVFoundation
             let id = url.deletingPathExtension().lastPathComponent
             return Item(id: id, url: url, date: (try? url.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? .distantPast, delivery: deliveries.first { $0.id == id && $0.generation == generation })
         }.sorted { $0.date > $1.date }
+        ensureTranscripts(items.map(\.url))
     }
     // Input was copied synchronously from the transient WCSessionFile URL before its callback returned.
     func retain(_ source: URL, envelope: MemoEnvelope) throws {
@@ -79,6 +99,8 @@ import AVFoundation
             do {
                 let hash = try await Task.detached { try MemoLimits.hash(url) }.value
                 guard valid(), hash == entry.hash, deliveryIndex(entry) != nil else { continue }
+                guard transcriptReady(url) else { continue }
+                let transcript = (try? String(contentsOf: transcriptURL(url), encoding: .utf8)) ?? ""
                 var received = Set<Int>()
                 do {
                     let status = try await service.call("watch_memo_status", ["memo_id": .string(entry.id), "thread_id": .string(entry.threadID)])
@@ -100,7 +122,9 @@ import AVFoundation
                     guard valid(), deliveryIndex(entry) != nil else { return false }
                     try handle.seek(toOffset: UInt64(index * 131_072))
                     guard let chunk = try handle.read(upToCount: min(131_072, entry.bytes - index * 131_072)), !chunk.isEmpty else { throw MemoFailure.invalid }
-                    let result = try await service.call("watch_memo_put", ["memo_id": .string(entry.id), "thread_id": .string(entry.threadID), "sha256": .string(entry.hash), "byte_length": .number(Double(entry.bytes)), "captured_at": .string(entry.capturedAt), "index": .number(Double(index)), "data_base64": .string(chunk.base64EncodedString())])
+                    var args: [String: JSON] = ["memo_id": .string(entry.id), "thread_id": .string(entry.threadID), "sha256": .string(entry.hash), "byte_length": .number(Double(entry.bytes)), "captured_at": .string(entry.capturedAt), "index": .number(Double(index)), "data_base64": .string(chunk.base64EncodedString())]
+                    if !transcript.isEmpty { args["transcript"] = .string(transcript) }
+                    let result = try await service.call("watch_memo_put", args)
                     guard valid() else { return false }
                     guard deliveryIndex(entry) != nil else { break }
                     guard result["memo_id"].string.lowercased() == entry.id.lowercased(), result["sha256"].string == entry.hash, result["byte_length"].int == entry.bytes else { throw MemoFailure.invalid }
@@ -121,7 +145,7 @@ import AVFoundation
         catch { self.error = "Could not play this memo." }
     }
     func delete(_ item: Item, generation: String?) {
-        do { try FileManager.default.removeItem(at: item.url); deliveries.removeAll { $0.id == item.id && $0.generation == generation }; _ = save(); refresh(generation: generation) }
+        do { try FileManager.default.removeItem(at: item.url); try? FileManager.default.removeItem(at: transcriptURL(item.url)); deliveries.removeAll { $0.id == item.id && $0.generation == generation }; _ = save(); refresh(generation: generation) }
         catch { self.error = "Could not delete the iPhone copy." }
     }
     enum MemoFailure: Error { case invalid, full }
@@ -165,7 +189,7 @@ struct PhoneMemosView: View {
             }
         }.onAppear {
             store.refresh(generation: generation)
-            if selectedThread.isEmpty { selectedThread = (Runtime.model.starred ?? Runtime.model.sortedBots.first)?.threadID ?? "" }
+            if selectedThread.isEmpty { selectedThread = (Runtime.model.sortedBots.first { $0.name.caseInsensitiveCompare("Assistant") == .orderedSame } ?? Runtime.model.starred ?? Runtime.model.sortedBots.first)?.threadID ?? "" }
         }.alert("Delete iPhone copy?", isPresented: Binding(get: { deleteItem != nil }, set: { if !$0 { deleteItem = nil } })) {
             Button("Delete", role: .destructive) { if let item = deleteItem { store.delete(item, generation: generation) }; deleteItem = nil }
             Button("Cancel", role: .cancel) { deleteItem = nil }
