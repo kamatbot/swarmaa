@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { plist } from './setup-lib.js';
 import { resolve } from 'node:path';
@@ -34,7 +34,13 @@ function localIO(): DeployIO {
       mkdirSync(agents, { recursive: true });
       mkdirSync(resolve(root, '.local/logs'), { recursive: true, mode: 0o700 });
       const file = resolve(agents, 'com.swarma.relay.plist');
-      writeFileSync(file, plist('com.swarma.relay', [process.execPath, '--env-file=.env', 'dist/src/relay-agent.js'], {
+      // A stable Homebrew link to this same Node, not the versioned Cellar path: `brew upgrade` deletes the old
+      // Cellar folder, and launchd then fails the relay with exit 78 (no phone can pair or connect).
+      const real = (p: string): string => { try { return realpathSync(p); } catch { return ''; } };
+      const self = real(process.execPath);
+      const node = ['/opt/homebrew/opt/node@24/bin/node', '/opt/homebrew/bin/node', '/usr/local/opt/node@24/bin/node', '/usr/local/bin/node']
+        .find(p => real(p) === self) ?? process.execPath;
+      writeFileSync(file, plist('com.swarma.relay', [node, '--env-file=.env', 'dist/src/relay-agent.js'], {
         workingDirectory: root, stdout: resolve(root, '.local/logs/relay.log'), stderr: resolve(root, '.local/logs/relay.err.log'),
         env: { PATH: `/opt/homebrew/opt/node@24/bin:${process.env.PATH ?? ''}` },
       }), { mode: 0o600 });
