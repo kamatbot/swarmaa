@@ -10,6 +10,7 @@ import WatchConnectivity
         var hash: String
         var bytes: Int
         var state: String
+        var threadID: String? = nil
     }
     var memos: [Memo] = []
     var error: String?
@@ -45,7 +46,7 @@ import WatchConnectivity
         }
         retryPending()
     }
-    func start(generation: String) {
+    func start(generation: String, threadID: String) {
         guard !recording, !permissionPending, currentGeneration == generation else { return }
         guard memos.count < MemoLimits.count else { error = "Watch memo storage is full. Delete a saved copy first."; return }
         permissionPending = true
@@ -56,10 +57,10 @@ import WatchConnectivity
             permissionPending = false
             guard allowed else { error = "Allow microphone access in Watch settings to record."; return }
             guard currentGeneration == generation else { return }
-            begin(generation: generation)
+            begin(generation: generation, threadID: threadID)
         }
     }
-    private func begin(generation: String) {
+    private func begin(generation: String, threadID: String) {
         let id = UUID().uuidString
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -67,7 +68,7 @@ import WatchConnectivity
             try AVAudioSession.sharedInstance().setActive(true)
             let settings: [String: Any] = [AVFormatIDKey: Int(kAudioFormatMPEG4AAC), AVSampleRateKey: 44_100, AVNumberOfChannelsKey: 1, AVEncoderBitRateKey: 64_000]
             let recorder = try AVAudioRecorder(url: audio(id), settings: settings)
-            memos.append(Memo(id: id, generation: generation, created: Date(), hash: "", bytes: 0, state: "recording"))
+            memos.append(Memo(id: id, generation: generation, created: Date(), hash: "", bytes: 0, state: "recording", threadID: threadID))
             guard save() else { memos.removeLast(); return }
             recorder.delegate = self
             guard recorder.record(forDuration: MemoLimits.seconds) else { finalize(id); error = "Recording could not start."; return }
@@ -112,15 +113,18 @@ import WatchConnectivity
     func transfer(_ item: Memo) {
         guard item.generation == currentGeneration, item.state != "phone", item.bytes > 0,
               WCSession.default.activationState == .activated else { return }
-        let envelope = MemoEnvelope(id: item.id, generation: item.generation, hash: item.hash, bytes: item.bytes)
+        let envelope = MemoEnvelope(id: item.id, generation: item.generation, hash: item.hash, bytes: item.bytes, threadID: item.threadID, capturedAt: ISO8601DateFormatter().string(from: item.created))
         guard envelope.valid else { return }
         let already = WCSession.default.outstandingFileTransfers.contains { ($0.file.metadata?["id"] as? String) == item.id && ($0.file.metadata?["generation"] as? String) == item.generation }
-        if !already { WCSession.default.transferFile(audio(item.id), metadata: ["id": item.id, "generation": item.generation, "hash": item.hash, "bytes": item.bytes]) }
+        var metadata: [String: Any] = ["id": item.id, "generation": item.generation, "hash": item.hash, "bytes": item.bytes, "capturedAt": envelope.capturedAt ?? ""]
+        if let threadID = item.threadID { metadata["threadID"] = threadID }
+        if !already { WCSession.default.transferFile(audio(item.id), metadata: metadata) }
     }
     func retryPending() { for memo in memos where memo.generation == currentGeneration && memo.state == "pending" { transfer(memo) } }
     func receipt(id: String, generation: String, hash: String, status: String) {
-        guard generation == currentGeneration, let index = memos.firstIndex(where: { $0.id == id && $0.generation == generation && $0.hash == hash }), memos[index].state != "phone" else { return }
-        memos[index].state = status == "phone" ? "phone" : "unconfirmed"
+        guard generation == currentGeneration, let index = memos.firstIndex(where: { $0.id == id && $0.generation == generation && $0.hash == hash }), memos[index].state != "mac" else { return }
+        if memos[index].state == "phone" && status != "mac" { return }
+        memos[index].state = status == "mac" ? "mac" : status == "phone" ? "phone" : "unconfirmed"
         _ = save()
     }
     func retry(_ item: Memo) {
@@ -159,16 +163,19 @@ struct WatchMemosView: View {
     private let memos = WatchMemos.shared
     @State private var deleteCandidate: WatchMemos.Memo?
     @State private var confirmPrevious = false
+    @State private var selectedThread = ""
     var body: some View {
         List {
             if let generation = store.snapshot?.generation, store.snapshot?.signedIn == true {
+                Picker("Memo bot", selection: $selectedThread) { ForEach(store.snapshot?.bots ?? []) { bot in Text(bot.name).tag(bot.threadID) } }.disabled(memos.recording)
                 if memos.recording { Button("Stop recording") { memos.stop() } }
-                else { Button("Record memo") { memos.start(generation: generation) } }
-                Text("Up to 15 minutes. Transfers to iPhone when available. Mac sync is not available yet.").font(.caption).foregroundStyle(.secondary)
+                else { Button("Record memo") { memos.start(generation: generation, threadID: selectedThread) }.disabled(selectedThread.isEmpty) }
+                Text("Up to 15 minutes. Transfers to iPhone and then Mac when available.").font(.caption).foregroundStyle(.secondary)
                 ForEach(memos.memos.filter { $0.generation == generation }) { memo in
                     VStack(alignment: .leading) {
                         Text(memo.created, style: .date)
-                        Text(memo.state == "phone" ? "Saved on iPhone" : memo.state == "recording" ? "Recording" : memo.state == "pending" ? "Waiting for iPhone" : "Delivery unconfirmed").font(.caption)
+                        if let thread = memo.threadID { Text("Bot: " + (store.snapshot?.bots.first(where: { $0.threadID == thread })?.name ?? thread)).font(.caption) }
+                        Text(memo.state == "mac" ? "Saved on Mac" : memo.state == "phone" ? "Saved on iPhone; waiting for Mac" : memo.state == "recording" ? "Recording" : memo.state == "pending" ? "Waiting for iPhone" : "Delivery unconfirmed").font(.caption)
                         if memo.bytes > 0 { Button("Play") { memos.play(memo) }.disabled(memos.recording) }
                         if memo.state == "unconfirmed" || memo.state == "pending" { Button("Retry") { memos.retry(memo) } }
                         if memo.state != "recording" { Button("Delete Watch copy", role: .destructive) { deleteCandidate = memo } }
@@ -179,7 +186,9 @@ struct WatchMemosView: View {
                 }
             } else { Text("Open Swarmaa on iPhone to connect before recording.") }
             if let error = memos.error { Text(error).font(.caption) }
-        }.navigationTitle("Memos")
+        }.navigationTitle("Memos").onAppear {
+            if selectedThread.isEmpty, let bots = store.snapshot?.bots { selectedThread = (bots.first(where: { $0.starred }) ?? bots.first)?.threadID ?? "" }
+        }
             .alert("Delete previous connection memos?", isPresented: $confirmPrevious) {
                 Button("Delete", role: .destructive) { if let generation = store.snapshot?.generation { memos.deletePrevious(generation: generation) } }
                 Button("Cancel", role: .cancel) {}
@@ -187,6 +196,6 @@ struct WatchMemosView: View {
             .alert("Delete Watch copy?", isPresented: Binding(get: { deleteCandidate != nil }, set: { if !$0 { deleteCandidate = nil } })) {
                 Button("Delete", role: .destructive) { if let memo = deleteCandidate { memos.delete(memo) }; deleteCandidate = nil }
                 Button("Cancel", role: .cancel) { deleteCandidate = nil }
-            } message: { Text(deleteCandidate?.state == "phone" ? "The iPhone copy remains." : "This memo may not have reached your iPhone.") }
+            } message: { Text(["phone", "mac"].contains(deleteCandidate?.state ?? "") ? "The iPhone copy remains." : "This memo may not have reached your iPhone.") }
     }
 }
