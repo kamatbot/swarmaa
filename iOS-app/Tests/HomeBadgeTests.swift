@@ -12,3 +12,19 @@ final class HomeBadgeTests: XCTestCase {
         XCTAssertFalse(shouldPopHomeBadge(oldUnread: 5, oldNeedsYou: 2, unread: 4, needsYou: 1))
     }
 }
+
+@MainActor
+final class UnreadClearTests: XCTestCase {
+    /// The iPad keeps the bot list on screen, so a read thread must clear its badge locally.
+    func testReadingAThreadClearsItsUnreadBadgeOnly() throws {
+        let model = AppModel()
+        let a = Bot(raw: try JSON.parse(#"{"id":"a","badges":{"unread":3}}"#))
+        let b = Bot(raw: try JSON.parse(#"{"id":"b","badges":{"unread":2}}"#))
+        model.bots = [a, b]
+        model.clearUnread("a")
+        XCTAssertEqual(model.bots.map(\.unread), [0, 2])
+        model.visibleThreadBotID = "b"
+        model.clearVisibleUnread()
+        XCTAssertEqual(model.bots.map(\.unread), [0, 0])
+    }
+}

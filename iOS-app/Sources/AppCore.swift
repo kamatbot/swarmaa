@@ -667,6 +667,7 @@ enum PushNotification {
             async let swarm = service.call("swarm_status", [:])
             async let agentRows = allPages(service, "agent_list", ["limit": .number(100)], key: "agents")
             (bots, status, agents) = try await (botRows.map { Bot(raw: $0) }, swarm, agentRows)
+            clearVisibleUnread()
             if let bot = openBot {
                 if let updated = bots.first(where: { $0.id == bot.id }) { openBot = updated }
                 else { removeBot(bot.id) }
@@ -704,6 +705,7 @@ enum PushNotification {
             threadCache[bot.id] = messages
             if let seq = messages.last?.seq {
                 _ = try await service.call("thread_mark_read", ["thread_id": .string(bot.threadID), "seq": .number(Double(seq))])
+                clearUnread(bot.id)
             }
         } catch {
             // A deletion can race an in-flight thread read or arrive while the app is offline.
@@ -716,6 +718,14 @@ enum PushNotification {
         }
     }
 
+    /// The bot list's unread badge is a snapshot from bot_list. Reading a thread marks it read on the host, but the
+    /// snapshot keeps the old count until the list reloads; on iPad the list never leaves the screen, so clear it here.
+    func clearUnread(_ id: String) {
+        guard let i = bots.firstIndex(where: { $0.id == id }), bots[i].unread > 0 else { return }
+        bots[i].raw["badges"]["unread"] = .number(0)
+    }
+    /// A reload while a thread is on screen: that thread is being read, so it has nothing unread.
+    func clearVisibleUnread() { if let id = visibleThreadBotID { clearUnread(id) } }
     func open(_ bot: Bot) async {
         openBot = bot
         if isDemo { return }
@@ -761,6 +771,7 @@ enum PushNotification {
         }
         if name.hasPrefix("bot.") || name == "message.created" || name.hasPrefix("question.") {
             bots = try await allPages(service, "bot_list", ["limit": .number(100), "include_archived": .bool(true)], key: "bots").map { Bot(raw: $0) }
+            clearVisibleUnread()
             if let id = openBot?.id, let updated = bots.first(where: { $0.id == id }) { openBot = updated }
         }
     }
@@ -851,6 +862,7 @@ enum PushNotification {
         let updated = Bot(raw: try await service.call("bot_update", input)["bot"])
         // Server enforces uniqueness; refresh both the newly and previously starred rows.
         bots = try await allPages(service, "bot_list", ["include_archived": .bool(true)], key: "bots").map { Bot(raw: $0) }
+        clearVisibleUnread()
         if openBot?.id == updated.id { openBot = updated }
     }
     func archive(_ bot: Bot) async throws {

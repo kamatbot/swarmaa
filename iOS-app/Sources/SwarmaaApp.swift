@@ -417,6 +417,8 @@ struct RootView: View {
         .onChange(of: screen) { _, value in if value != .home { searchFocused = false }; if value != .thread { dictation.stop(); dictationToken = UUID(); dictationStarting = false }; updateVisibleThread() }
         .onChange(of: sheet?.id) { _, _ in updateVisibleThread() }
         .onChange(of: sizeClass) { _, _ in updateVisibleThread() }
+        // On iPad another bot opens without leaving .home, so follow the open bot too.
+        .onChange(of: model.openBot?.id) { _, _ in updateVisibleThread(); model.clearVisibleUnread() }
         .onChange(of: model.openBot?.id) { oldID, id in
             dictation.stop(); dictationToken = UUID(); dictationStarting = false; draftGeneration = UUID()
             if let oldID, model.connected || model.isDemo { drafts[oldID] = (composer, photos) }
