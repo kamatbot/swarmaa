@@ -9,12 +9,8 @@ import SwiftUI
     func recordMemo() { if path != ["memos"] { path = ["memos"] }; recordRequest += 1 }
 }
 
-struct RecordVoiceMemoIntent: AppIntent {
-    static let title: LocalizedStringResource = "Record a memo"
-    static let description = IntentDescription("Opens Swarmaa and starts recording a voice memo for your Assistant.")
-    static let openAppWhenRun = true
-    @MainActor func perform() async throws -> some IntentResult { WatchRouter.shared.recordMemo(); return .result() }
-}
+/// The app's side of RecordVoiceMemoIntent (the widget extension has a no-op one).
+enum RecordMemoAction { @MainActor static func run() { WatchRouter.shared.recordMemo() } }
 
 struct SwarmaaShortcuts: AppShortcutsProvider {
     static var appShortcuts: [AppShortcut] {

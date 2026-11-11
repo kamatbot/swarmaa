@@ -56,13 +56,17 @@ targets:
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: UIInterfaceOrientationPortrait
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight
         MARKETING_VERSION: '1.0'
-        CURRENT_PROJECT_VERSION: '7'
+        CURRENT_PROJECT_VERSION: '8'
   SwarmaaWatch:
     type: application
     platform: watchOS
     sources:
       - Watch
       - WatchShared
+      - WatchIntents
+    dependencies:
+      - target: SwarmaaWatchWidgets
+        embed: true
     info:
       path: Watch/Info.plist
       properties:
@@ -78,7 +82,26 @@ targets:
         INFOPLIST_KEY_WKApplication: YES
         INFOPLIST_KEY_NSMicrophoneUsageDescription: Record voice memos on your Watch.
         MARKETING_VERSION: '1.0'
-        CURRENT_PROJECT_VERSION: '7'
+        CURRENT_PROJECT_VERSION: '8'
+  SwarmaaWatchWidgets:
+    type: app-extension
+    platform: watchOS
+    deploymentTarget: '26.0'
+    sources:
+      - WatchWidgets
+      - WatchIntents
+    info:
+      path: WatchWidgets/Info.plist
+      properties:
+        CFBundleDisplayName: Swarmaa
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.swarmaa.ios.watchkitapp.widgets
+        TARGETED_DEVICE_FAMILY: '4'
+        MARKETING_VERSION: '1.0'
+        CURRENT_PROJECT_VERSION: '8'
   SwarmaaTests:
     type: bundle.unit-test
     platform: iOS
