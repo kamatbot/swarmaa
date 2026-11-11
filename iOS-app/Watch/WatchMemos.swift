@@ -167,26 +167,27 @@ struct WatchMemosView: View {
     var body: some View {
         List {
             if let generation = store.snapshot?.generation, store.snapshot?.signedIn == true {
-                Picker("Memo bot", selection: $selectedThread) { ForEach(store.snapshot?.bots ?? []) { bot in Text(bot.name).tag(bot.threadID) } }.disabled(memos.recording)
-                if memos.recording { Button("Stop recording") { memos.stop() } }
-                else { Button("Record memo") { memos.start(generation: generation, threadID: selectedThread) }.disabled(selectedThread.isEmpty) }
-                Text("Up to 15 minutes. Transfers to iPhone and then Mac when available.").font(.caption).foregroundStyle(.secondary)
+                Picker("Memo bot", selection: $selectedThread) { ForEach(store.snapshot?.bots ?? []) { bot in Text(bot.name).tag(bot.threadID) } }.disabled(memos.recording).wkRow()
+                if memos.recording { Button("Stop recording") { memos.stop() }.buttonStyle(WKPrimary()).listRowBackground(Color.clear) }
+                else { Button("Record memo") { memos.start(generation: generation, threadID: selectedThread) }.buttonStyle(WKPrimary()).disabled(selectedThread.isEmpty).listRowBackground(Color.clear) }
+                Text("Up to 15 minutes. Transfers to iPhone and then Mac when available.").font(WK.caption).foregroundStyle(WK.muted).listRowBackground(Color.clear)
                 ForEach(memos.memos.filter { $0.generation == generation }) { memo in
-                    VStack(alignment: .leading) {
-                        Text(memo.created, style: .date)
-                        if let thread = memo.threadID { Text("Bot: " + (store.snapshot?.bots.first(where: { $0.threadID == thread })?.name ?? thread)).font(.caption) }
-                        Text(memo.state == "mac" ? "Saved on Mac" : memo.state == "phone" ? "Saved on iPhone; waiting for Mac" : memo.state == "recording" ? "Recording" : memo.state == "pending" ? "Waiting for iPhone" : "Delivery unconfirmed").font(.caption)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(memo.created, style: .date).font(.headline).foregroundStyle(WK.strong)
+                        if let thread = memo.threadID { Text("Bot: " + (store.snapshot?.bots.first(where: { $0.threadID == thread })?.name ?? thread)).font(WK.caption).foregroundStyle(WK.muted) }
+                        Text(memo.state == "mac" ? "Saved on Mac" : memo.state == "phone" ? "Saved on iPhone; waiting for Mac" : memo.state == "recording" ? "Recording" : memo.state == "pending" ? "Waiting for iPhone" : "Delivery unconfirmed").font(WK.caption)
+                            .foregroundStyle(memo.state == "mac" ? WK.ready : memo.state == "recording" ? WK.signal : memo.state == "unconfirmed" ? WK.failed : WK.needs)
                         if memo.bytes > 0 { Button("Play") { memos.play(memo) }.disabled(memos.recording) }
                         if memo.state == "unconfirmed" || memo.state == "pending" { Button("Retry") { memos.retry(memo) } }
                         if memo.state != "recording" { Button("Delete Watch copy", role: .destructive) { deleteCandidate = memo } }
-                    }
+                    }.padding(.vertical, 4).wkRow()
                 }
                 if memos.memos.contains(where: { $0.generation != generation }) {
                     Button("Delete previous connection memos", role: .destructive) { confirmPrevious = true }
                 }
-            } else { Text("Open Swarmaa on iPhone to connect before recording.") }
-            if let error = memos.error { Text(error).font(.caption) }
-        }.navigationTitle("Memos").onAppear {
+            } else { Text("Open Swarmaa on iPhone to connect before recording.").foregroundStyle(WK.muted).listRowBackground(Color.clear) }
+            if let error = memos.error { Text(error).font(WK.caption).foregroundStyle(WK.failed).listRowBackground(Color.clear) }
+        }.navigationTitle("Memos").wkScreen().onAppear {
             if selectedThread.isEmpty, let bots = store.snapshot?.bots { selectedThread = (bots.first(where: { $0.starred }) ?? bots.first)?.threadID ?? "" }
         }
             .alert("Delete previous connection memos?", isPresented: $confirmPrevious) {

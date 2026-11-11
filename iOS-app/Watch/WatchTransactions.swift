@@ -97,27 +97,32 @@ struct WatchTransactionsView: View {
     var body: some View {
         List {
             if let snapshot = store.snapshot, snapshot.signedIn {
-                Picker("Bot", selection: $threadID) { ForEach(snapshot.bots) { bot in Text(bot.name).tag(bot.threadID) } }
-                Picker("Operation", selection: $operation) { Text("Create").tag("create"); Text("Update").tag("update") }
-                if operation == "update" { TextField("Exact expense ID", text: $expenseID) }
-                TextField("Payee", text: $payee)
-                TextField("Amount", text: $amount)
-                Picker("Currency", selection: $currency) { Text("THB").tag("THB"); Text("USD").tag("USD"); Text("EUR").tag("EUR") }
-                DatePicker("Date", selection: $date, displayedComponents: .date)
-                TextField("Category", text: $category)
+                Picker("Bot", selection: $threadID) { ForEach(snapshot.bots) { bot in Text(bot.name).tag(bot.threadID) } }.wkRow()
+                Picker("Operation", selection: $operation) { Text("Create").tag("create"); Text("Update").tag("update") }.wkRow()
+                if operation == "update" { TextField("Exact expense ID", text: $expenseID).wkRow() }
+                TextField("Payee", text: $payee).wkRow()
+                TextField("Amount", text: $amount).wkRow()
+                Picker("Currency", selection: $currency) { Text("THB").tag("THB"); Text("USD").tag("USD"); Text("EUR").tag("EUR") }.wkRow()
+                DatePicker("Date", selection: $date, displayedComponents: .date).wkRow()
+                TextField("Category", text: $category).wkRow()
                 Button("Preview") {
                     let f = DateFormatter(); f.calendar = Calendar(identifier: .gregorian); f.locale = Locale(identifier: "en_US_POSIX"); f.dateFormat = "yyyy-MM-dd"
                     let values = TransactionValues(id: nil, payee: payee, date: f.string(from: date), amount: amount, currency: currency, category: category)
                     tx.preview(generation: snapshot.generation, threadID: threadID, operation: operation, expenseID: operation == "update" ? expenseID : nil, values: values)
                 }.disabled(threadID.isEmpty || payee.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || payee.utf8.count > 200 || category.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || category.utf8.count > 200 || expenseID.utf8.count > 200 || amount.range(of: "^(0|[1-9]\\d{0,11})(\\.\\d{1,2})?$", options: .regularExpression) == nil || (operation == "update" && expenseID.isEmpty))
+                    .buttonStyle(WKPrimary()).listRowBackground(Color.clear)
                 ForEach(tx.entries.filter { $0.request.generation == snapshot.generation }) { item in
                     NavigationLink { WatchTransactionReview(store: store, itemID: item.id) } label: {
-                        VStack(alignment: .leading) { Text(item.request.values.payee); Text(item.receipt != nil ? "Ledger updated" : item.state == "review" ? "Review available" : item.state == "unconfirmed" ? "Confirmation unconfirmed" : "Preview pending").font(.caption) }
-                    }
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(item.request.values.payee).font(.headline).foregroundStyle(WK.strong)
+                            Text(item.receipt != nil ? "Ledger updated" : item.state == "review" ? "Review available" : item.state == "unconfirmed" ? "Confirmation unconfirmed" : "Preview pending").font(WK.caption)
+                                .foregroundStyle(item.receipt != nil ? WK.ready : item.state == "review" ? WK.signal : item.state == "unconfirmed" ? WK.failed : WK.needs)
+                        }
+                    }.wkRow()
                 }
-                if let error = tx.error { Text(error).font(.caption) }
+                if let error = tx.error { Text(error).font(WK.caption).foregroundStyle(WK.failed) }
             }
-        }.navigationTitle("Transactions").onAppear {
+        }.navigationTitle("Transactions").wkScreen().onAppear {
             if threadID.isEmpty, let bots = store.snapshot?.bots { threadID = (bots.first(where: { $0.starred }) ?? bots.first)?.threadID ?? "" }
         }
     }
@@ -133,10 +138,10 @@ struct WatchTransactionReview: View {
                 if let item, let review = item.review {
                     Text("Account: " + review.accountId)
                     Text("Operation: " + review.operation)
-                    if let before = review.before { Text("Before").font(.headline); fields(before) }
-                    else { Text("Before: none") }
-                    Text("After").font(.headline); fields(review.after)
-                    Text("Expires: " + review.expiresAt)
+                    if let before = review.before { Text("Before").font(.headline).foregroundStyle(WK.strong); fields(before) }
+                    else { Text("Before: none").foregroundStyle(WK.muted) }
+                    Text("After").font(.headline).foregroundStyle(WK.strong); fields(review.after)
+                    Text("Expires: " + review.expiresAt).font(WK.meta).foregroundStyle(WK.muted)
                     if item.receipt != nil { Text("Ledger updated"); Button("Remove from Watch") { tx.discard(item) } }
                     else if item.confirmation != nil { Text("Confirmation unconfirmed"); Button("Retry confirmation") { tx.retry(item) } }
                     else { NavigationLink("Review confirmation") { WatchTransactionConfirm(store: store, itemID: itemID) }; Button("Discard preview") { tx.discard(item) } }
@@ -146,7 +151,7 @@ struct WatchTransactionReview: View {
                     Button("Discard preview") { tx.discard(item) }
                 } else { Text("This transaction is unavailable.") }
             }
-        }.navigationTitle("Review")
+        }.navigationTitle("Review").wkScreen()
     }
     @ViewBuilder private func fields(_ value: TransactionValues) -> some View {
         if let id = value.id { Text("ID: " + id) }
@@ -162,15 +167,15 @@ struct WatchTransactionConfirm: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 8) {
                 if let item, let review = item.review {
-                    Text("Confirm ledger update").font(.headline)
+                    Text("Confirm ledger update").font(.headline).foregroundStyle(WK.strong)
                     Text("Account: " + review.accountId); Text("Operation: " + review.operation)
                     if let b = review.before { Text("Before"); fields(b) } else { Text("Before: none") }
                     Text("After"); fields(review.after); Text("Expires: " + review.expiresAt)
-                    Button("Confirm update") { if let generation = store.snapshot?.generation { tx.confirm(item, generation: generation) } }.disabled(item.confirmation != nil || item.receipt != nil)
-                    if let error = tx.error { Text(error) }
+                    Button("Confirm update") { if let generation = store.snapshot?.generation { tx.confirm(item, generation: generation) } }.buttonStyle(WKPrimary()).disabled(item.confirmation != nil || item.receipt != nil)
+                    if let error = tx.error { Text(error).foregroundStyle(WK.failed) }
                 }
             }
-        }.navigationTitle("Confirm")
+        }.navigationTitle("Confirm").wkScreen()
     }
     @ViewBuilder private func fields(_ v: TransactionValues) -> some View {
         if let id = v.id { Text("ID: " + id) }
