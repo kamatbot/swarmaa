@@ -1357,4 +1357,50 @@ describe('bots core service (Brief B1)', { skip: !connectionString, concurrency:
     assert.equal(finishedTurn4.status, 'failed');
     assert.equal(finishedTurn4.result?.failure?.code, 'router_edit_forbidden');
   });
+  it('a coordinator bot sends work to another project\'s bot with project_dispatch and gets the reply back', async () => {
+    const user = await createPrincipal(randomUUID(), 'dispatch-owner');
+    const worker = await createPrincipal(user.tenantId, 'dispatch-worker', 'worker');
+    const mk = async (name: string, scope: string, rules: Record<string, unknown>) => {
+      const agent = (await call(user, 'agent_create', { name: `${name}Lead`, role: 'Lead', instructions: 'Help', scope, runner: { provider: 'codex' } })).agent;
+      return await call(user, 'bot_create', { name, job: `${name} job`, scope, lead_agent_id: agent.id, member_agent_ids: [],
+        rules: { first_reply: 'off', ...rules }, routing: { summary: { provider: 'codex' } } });
+    };
+    const assistant = await mk('Assistant', 'project:a', { dispatch_all_projects: true });
+    const plain = await mk('Plain', 'project:a', {});
+    const retire = await mk('Retire', 'project:b', {});
+    const actions = (a: unknown) => 'On it.\n\n```swarmaa-actions\n' + JSON.stringify([a]) + '\n```';
+    const turn = async (threadId: string, scope: string, caps: string[], answer: string) => {
+      if (threadId) await call(user, 'thread_post', { thread_id: threadId, body: 'Do a performance review of retire using agy', idempotency_key: randomUUID() });
+      const claim = await call(worker, 'task_claim', { scope, capabilities: caps, kinds: ['turn'] });
+      assert.ok(claim.task);
+      await call(worker, 'task_finish', { task_id: claim.task.id, lease_token: claim.lease_token, lease_generation: claim.lease_generation,
+        outcome: 'completed', result: { answer } });
+      return claim.task;
+    };
+    const bodies = async (threadId: string) => (await pool.query('SELECT kind, body, author FROM messages WHERE thread_id=$1 ORDER BY seq', [threadId])).rows;
+
+    // Only a bot with rules.dispatch_all_projects may dispatch.
+    const plainTask = await turn(plain.thread.id, 'project:a', ['codex.read'], actions({ type: 'project_dispatch', bot: 'Retire', body: 'x' }));
+    assert.equal(plainTask.project_bots, undefined);
+    assert.ok((await bodies(plain.thread.id)).some(m => /Turn action rejected: project_dispatch/.test(m.body)));
+
+    const claimed = await turn(assistant.thread.id, 'project:a', ['codex.read'],
+      actions({ type: 'project_dispatch', bot: 'retire', body: 'Use agy to run a performance review' }));
+    assert.deepEqual(claimed.project_bots.map((b: { name: string }) => b.name).sort(), ['Plain', 'Retire']);
+    assert.ok((await bodies(assistant.thread.id)).some(m => m.body === 'Sent to Retire: Use agy to run a performance review'));
+    const posted = (await bodies(retire.thread.id)).at(-1)!;
+    assert.equal(posted.body, 'Use agy to run a performance review');
+    assert.equal(posted.author.kind, 'agent');
+    const queued = (await pool.query("SELECT required_capability, context_versions FROM tasks WHERE thread_id=$1 AND status='queued'", [retire.thread.id])).rows;
+    assert.equal(queued.length, 1);
+    assert.equal(queued[0].required_capability, 'antigravity.read');
+    assert.equal(queued[0].context_versions.dispatched_from.thread_id, assistant.thread.id);
+
+    await turn('', 'project:b', ['antigravity.read'], 'Audit: 3 findings');
+    const back = (await bodies(assistant.thread.id)).at(-1)!;
+    assert.equal(back.body, '**Retire:** Audit: 3 findings');
+    assert.equal(back.author.kind, 'agent');
+    // The copied reply is an agent post, so the coordinator does not answer itself in a loop.
+    assert.equal((await pool.query("SELECT 1 FROM tasks WHERE thread_id=$1 AND status='queued'", [assistant.thread.id])).rowCount, 0);
+  });
 });

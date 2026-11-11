@@ -106,6 +106,7 @@ export function buildTurnPrompt(
 
   let agents: Array<{ id: string; name: string; role?: string }> = [];
   let router = false;
+  const projectBots = ((inputOrTask as { project_bots?: Array<{ name: string; scope: string; job?: string }> }).project_bots ?? []);
 
   if ('instructions' in inputOrTask && 'messages' in inputOrTask) {
     instructions = inputOrTask.instructions ?? '';
@@ -184,6 +185,9 @@ export function buildTurnPrompt(
     '- {type:\'question_ask\', prompt, options, multi, free_text, swarm_step_id?, action?}: action is {kind: command|publish|send|deploy|purchase|other, summary (what will happen, up to 200 chars), detail (the exact command, text or URL, up to 2000 chars), where? (folder, channel, recipient or site)}.',
     'Before anything that publishes, sends, deploys, buys, or runs a command outside the worktree, ask with question_ask including action with the exact detail, and do it only after the owner approves.',
     ...(router ? [] : ['- {type:\'channel_post\', channel_id, body}']),
+    ...(projectBots.length ? [
+      "- {type:'project_dispatch', bot, body}: send a request to another project's bot (bot = its name from the Project bots list). That bot does the work in its own repository and its reply is posted back here. Put the owner's request in body in plain words, keeping any agent they named (\"use agy to …\", \"ask codex …\") so it runs on that agent. Use this whenever the owner asks for work in one of those projects; do not do that work yourself."
+    ] : []),
     ...(botTurn || router ? [
       "- {type:'bot_appearance', avatar?, color?}: change only this bot; provide at least one field. Allowed in every turn, read-only ones included: listing it in the actions block is the whole change, the service applies it, and you call nothing. When the owner asks for a new look, include it; never say you can't change your appearance.",
       'Characters: lead (violet, big eyes, rosy cheeks); runner (blue, sunglasses, thumbs-up); scout (peach/pink, magnifying glass).',
@@ -203,6 +207,7 @@ export function buildTurnPrompt(
     workerRules,
     ...(stepTurn ? [stepReport] : []),
     ...(fastMode && !router ? [fastModeInstruction] : []),
+    ...(projectBots.length ? [`Project bots (you coordinate them; send work with project_dispatch):\n${projectBots.map(b => `- ${b.name} (${b.scope})${b.job ? `: ${b.job.replace(/\s+/g, ' ')}` : ''}`).join('\n')}`] : []),
     ...(agents && agents.length > 0 ? [`Available agents in this project scope:\n${agents.map(a => `- ${a.name} (id: ${a.id}${a.role ? `, role: ${a.role}` : ''})`).join('\n')}`] : []),
     `Agent instructions:\n${instructions.trim()}`,
     `Thread window (ordered oldest to newest):\n${wrappedMessages.join('\n\n')}`,

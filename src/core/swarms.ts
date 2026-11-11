@@ -7,7 +7,7 @@ import type { Principal } from '../types.js';
 import { integer, object, optionalString, scopeName, string, uuid } from '../validation.js';
 import { booleanOption } from './memory.js';
 import { assertKnownScope, audit, canonicalJson, event, newId, noExtraKeys, requireFound, scopeLock, scopeSql, sha256, teamsLock, type Db } from './shared.js';
-import { assignThreadSeq, clipUtf8, type AgentRow, type ThreadRow, type MessageRow } from './teams.js';
+import { assignThreadSeq, clipUtf8, enqueueAgentTurn, requestedProvider, type AgentRow, type ThreadRow, type MessageRow } from './teams.js';
 import { runnerCapability } from '../bridge/adapters.js';
 import { cancelTask, taskView, type TaskRow } from './tasks.js';
 import { botCapability, leadTurnProfile, memberCapability } from './bots.js';
@@ -1663,6 +1663,34 @@ export class SwarmsService {
         )).rows[0];
         if (step) await this.refreshSwarmStatus(db, p, step.swarm_id);
       }
+    } else if (act.type === 'project_dispatch') {
+      // validateTurnGrant resolved act.bot to an id and checked this bot may dispatch.
+      const target = (await db.query<{ id: string; name: string; scope: string; thread_id: string; lead_agent_id: string; routing: Record<string, unknown>; rules: Record<string, unknown> }>(
+        'SELECT id, name, scope, thread_id, lead_agent_id, routing, rules FROM bots WHERE id=$1 AND tenant_id=$2 AND NOT archived FOR UPDATE',
+        [act.bot, ctx.tenantId]
+      )).rows[0];
+      if (!target) throw new AppError(404, 'not_found', 'target bot not found');
+      const thread = (await db.query<ThreadRow>('SELECT * FROM threads WHERE id=$1 AND tenant_id=$2 FOR UPDATE', [target.thread_id, ctx.tenantId])).rows[0];
+      const lead = (await db.query<AgentRow>('SELECT * FROM agents WHERE id=$1 AND NOT archived FOR UPDATE', [target.lead_agent_id])).rows[0];
+      if (!thread || !lead) throw new AppError(409, 'invalid_state', `bot '${target.name}' has no thread or lead agent`);
+      if (!(await this.takeTurn(db, p, budget, target.name))) return;
+      const seq = await assignThreadSeq(db, ctx.tenantId, thread.id);
+      const msgId = newId();
+      const author = { kind: 'agent', id: ctx.agent.id };
+      await db.query(
+        `INSERT INTO messages (id, tenant_id, scope, thread_id, seq, author, kind, body, ref)
+         VALUES ($1, $2, $3, $4, $5, $6::jsonb, 'text', $7, $8::jsonb)`,
+        [msgId, ctx.tenantId, target.scope, thread.id, seq, JSON.stringify(author), act.body,
+         JSON.stringify({ dispatched_from: { thread_id: ctx.thread.id, bot_id: ctx.botId } })]
+      );
+      await db.query('UPDATE threads SET updated_at=clock_timestamp() WHERE id=$1', [thread.id]);
+      await event(db, p, target.scope, 'message.created', msgId, { thread_id: thread.id, message_id: msgId, seq: Number(seq), kind: 'text', author });
+      await enqueueAgentTurn(db, p, {
+        thread, agent: lead, bot: target, seq, initiatorKind: 'handoff', hopDepth: budget.hop + 1,
+        objective: clipUtf8(act.body, 256), provider: requestedProvider(act.body),
+        dispatchedFrom: { thread_id: ctx.thread.id, scope: ctx.scope, bot_id: ctx.botId! }
+      });
+      await this.postNotice(db, p, ctx.scope, ctx.thread.id, `Sent to ${target.name}: ${clipUtf8(act.body, 200)}`);
     } else if (act.type === 'channel_post') {
       const chanSeq = await assignThreadSeq(db, ctx.tenantId, act.channel_id);
       const chanMsgId = newId();
