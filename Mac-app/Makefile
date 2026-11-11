@@ -181,11 +181,15 @@ archive: gen
 # A plain drag-to-Applications disk image. `create-dmg` writes it read-only and
 # compressed, which is what notarization expects.
 dmg: archive
-	@command -v create-dmg >/dev/null || (echo "brew install create-dmg" && exit 1)
 	rm -f $(DMG)
 	rm -rf $(RELEASE_DIR)/stage
 	mkdir -p $(RELEASE_DIR)/stage
 	cp -R $(RELEASE_DIR)/$(APP_NAME).app $(RELEASE_DIR)/stage/
+	@# Without create-dmg (brew), a plain drag-to-Applications image from hdiutil: same app, no background art.
+	if ! command -v create-dmg >/dev/null; then \
+		ln -s /Applications $(RELEASE_DIR)/stage/Applications && \
+		hdiutil create -volname "$(APP_NAME)" -srcfolder $(RELEASE_DIR)/stage -ov -format UDZO $(DMG); \
+	else \
 	create-dmg \
 		--volname "$(APP_NAME)" \
 		--window-pos 400 300 \
@@ -195,7 +199,8 @@ dmg: archive
 		--app-drop-link 450 200 \
 		--hide-extension "$(APP_NAME).app" \
 		--background "docs/design/dmg-background.png" \
-		$(DMG) $(RELEASE_DIR)/stage
+		$(DMG) $(RELEASE_DIR)/stage; \
+	fi
 	codesign --force --sign "Developer ID Application" --timestamp $(DMG)
 	@# The app is inside the dmg now. Leaving the loose copies around is how
 	@# three spare "Swarmaa" entries end up in Spotlight; everything
