@@ -31,24 +31,28 @@ struct SwarmMapPanel: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 10) {
-                Text(verbatim: L10n.t("Swarm map")).font(KS.body(14, .semibold))
+                KSLabel(L10n.t("Swarm map"))
                 Spacer()
                 Button { model.swarmMapWide.toggle() } label: { Image(systemName: "arrow.up.left.and.arrow.down.right") }
                     .help(L10n.t("Resize")).accessibilityLabel(L10n.t("Resize"))
                 Button { model.showSwarmMap = false } label: { Image(systemName: "xmark") }
                     .help(L10n.t("Close")).accessibilityLabel(L10n.t("Close"))
             }
-            .buttonStyle(.plain).padding(.horizontal, 16).padding(.top, KS.topBarHeight / 2).padding(.bottom, 10)
+            .buttonStyle(.plain).foregroundStyle(KS.textMuted)
+            .padding(.horizontal, 16).frame(height: KS.topBarHeight)
+            .background(KS.topBar)
+            .overlay(alignment: .bottom) { Rectangle().fill(KS.hairline).frame(height: 1) }
             TimelineView(.animation) { tl in
                 Canvas { ctx, size in SwarmMapDrawing.draw(&ctx, size, store.state, model.openQuestions.count, tl.date) }
                     .aspectRatio(0.84, contentMode: .fit)
+                    .padding(.top, 8)
             }
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(store.state.accessibilitySummary)
             Rectangle().fill(KS.hairline).frame(height: 1)
             feed
         }
-        .background(KS.white)
+        .background(KS.paper)
         .overlay(alignment: .leading) { Rectangle().fill(KS.hairline).frame(width: 1) }
         .onAppear { store.attach(model) }
         .task {
@@ -101,15 +105,11 @@ struct SwarmMapPanel: View {
 }
 
 private enum SwarmMapDrawing {
-    /// Pastel tints are fills; strokes and pulses need a darker accent to read on paper.
-    static func accent(_ provider: String) -> Color {
-        switch provider {
-        case "claude": return Color(hex: 0x7F9A1C)
-        case "codex": return Color(hex: 0xD9603F)
-        case "antigravity": return Color(hex: 0x3F72B5)
-        default: return Color(hex: 0xB08A2E)
-        }
-    }
+    /// On navy the provider tints read as strokes and pulses as they are.
+    static func accent(_ provider: String) -> Color { KS.providerTint(provider) }
+    static let line = Color(red: 200 / 255, green: 218 / 255, blue: 245 / 255)
+    static let station = Color(hex: 0x0F1F38)
+    static let caption = Color(hex: 0xC9D5E6)
 
     static let messageSeconds = 3.5
 
@@ -119,7 +119,7 @@ private enum SwarmMapDrawing {
         let ended = s.feed.filter { $0.provider == n && ($0.kind == .done || $0.kind == .failed) && date.timeIntervalSince($0.at) < 4 }
             .map { ($0.kind == .failed ? "✕ " : "✓ ") + brief($0.objective) }
         let running = (s.running[n] ?? []).map { "› " + brief($0.objective) }
-        return ended.map { ($0, $0.hasPrefix("✕") ? KS.danger : KS.readyText) } + running.map { ($0, KS.textSoft) }
+        return ended.map { ($0, $0.hasPrefix("✕") ? KS.danger : KS.readyText) } + running.map { ($0, caption) }
     }
 
     static func brief(_ objective: String?) -> String {
@@ -149,8 +149,8 @@ private enum SwarmMapDrawing {
         var bubble = ctx
         bubble.opacity = alpha
         let box = Path(roundedRect: CGRect(x: x - w / 2, y: y - h / 2, width: w, height: h), cornerRadius: h / 2)
-        bubble.fill(box, with: .color(.white.opacity(0.92)))
-        bubble.stroke(box, with: .color(KS.ink.opacity(0.10)), lineWidth: 1)
+        bubble.fill(box, with: .color(KS.white))
+        bubble.stroke(box, with: .color(line.opacity(0.10)), lineWidth: 1)
         bubble.draw(text, at: CGPoint(x: x, y: y))
         if all.count > 1 {
             bubble.draw(Text(verbatim: "\(Int(slot) % all.count + 1)/\(all.count)").font(KS.mono(7)).foregroundColor(KS.textMuted),
@@ -173,28 +173,29 @@ private enum SwarmMapDrawing {
         }
 
         // Card and dotted orbits.
-        ctx.fill(Path(roundedRect: CGRect(origin: .zero, size: size).insetBy(dx: 10, dy: 6), cornerRadius: 14), with: .color(KS.paper))
-        for k in [0.55, 1.0, 1.32] {
-            ctx.stroke(circle(c, ring * k), with: .color(KS.ink.opacity(0.10)), style: StrokeStyle(lineWidth: 1, dash: [1.5, 4]))
+        let card = Path(roundedRect: CGRect(origin: .zero, size: size).insetBy(dx: 12, dy: 6), cornerRadius: 16)
+        ctx.fill(card, with: .color(KS.paperDeep))
+        ctx.stroke(card, with: .color(line.opacity(0.07)), lineWidth: 1)
+        for k in [0.55, 1.0] {
+            ctx.stroke(circle(c, ring * k), with: .color(line.opacity(0.10)), style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
         }
         // Spokes: hairline, worn thicker and warmer by finished work.
         for n in names {
             var path = Path(); path.move(to: c); path.addLine(to: pos[n]!)
             let worn = Double(min(s.finished[n] ?? 0, 12))
-            ctx.stroke(path, with: .color(KS.ink.opacity(0.12)), lineWidth: 1)
+            ctx.stroke(path, with: .color(line.opacity(0.14)), lineWidth: 1)
             if worn > 0 { ctx.stroke(path, with: .color(accent(n).opacity(0.25 + worn * 0.04)), lineWidth: 0.8 + worn * 0.35) }
         }
-        // Hub: white disc, ink ring; a sweeping arc while anything runs.
-        ctx.fill(circle(c, hub + 7), with: .color(KS.ink.opacity(0.04)))
-        ctx.fill(circle(c, hub), with: .color(.white))
-        ctx.stroke(circle(c, hub), with: .color(KS.ink.opacity(0.85)), lineWidth: 1.5)
+        // Hub: a navy disc in a white outline; a sweeping arc while anything runs.
+        ctx.fill(circle(c, hub), with: .color(KS.paper))
+        ctx.stroke(circle(c, hub), with: .color(Color(hex: 0xEEF2F8).opacity(0.8)), lineWidth: 1.5)
         if s.runningCount > 0 {
             var arc = Path()
             let start = (t * 90).truncatingRemainder(dividingBy: 360)
             arc.addArc(center: c, radius: hub + 5, startAngle: .degrees(start), endAngle: .degrees(start + 110), clockwise: false)
-            ctx.stroke(arc, with: .color(KS.ink.opacity(0.55)), style: StrokeStyle(lineWidth: 2, lineCap: .round))
+            ctx.stroke(arc, with: .color(KS.signal.opacity(0.8)), style: StrokeStyle(lineWidth: 2, lineCap: .round))
         }
-        ctx.draw(Text(verbatim: "SWARMAA").font(KS.mono(10, .semibold)).tracking(1.5).foregroundColor(KS.ink), at: CGPoint(x: c.x, y: c.y - 3))
+        ctx.draw(Text(verbatim: "SWARMAA").font(KS.mono(10, .semibold)).tracking(1.5).foregroundColor(KS.strong), at: CGPoint(x: c.x, y: c.y - 3))
         ctx.draw(Text(verbatim: "\(s.runningCount) running").font(KS.mono(7.5)).foregroundColor(KS.textMuted), at: CGPoint(x: c.x, y: c.y + 9))
         if s.queued > 0 {
             ctx.draw(Text(verbatim: "\(s.queued) queued").font(KS.mono(8)).foregroundColor(KS.textMuted), at: CGPoint(x: c.x, y: c.y + hub + 16))
@@ -204,11 +205,14 @@ private enum SwarmMapDrawing {
             let p = pos[n]!
             let label = CGPoint(x: p.x, y: p.y + r + 11)
             if n == "you" {
-                if questions > 0 { ctx.fill(circle(p, r + 8), with: .color(KS.coral.opacity(0.18 + 0.08 * sin(t * 3)))) }
-                ctx.fill(circle(p, r), with: .color(.white))
-                ctx.stroke(circle(p, r), with: .color(questions > 0 ? KS.coral : KS.ink.opacity(0.18)), lineWidth: questions > 0 ? 1.8 : 1)
-                ctx.draw(Image(systemName: "person"), at: p)
-                ctx.draw(Text(verbatim: L10n.t("You")).font(KS.mono(11, .medium)).foregroundColor(KS.ink), at: label)
+                let you = questions > 0 ? KS.needsYouText : line.opacity(0.18)
+                if questions > 0 { ctx.fill(circle(p, r + 8), with: .color(KS.needsYouText.opacity(0.14 + 0.06 * sin(t * 3)))) }
+                ctx.fill(circle(p, r), with: .color(station))
+                ctx.stroke(circle(p, r), with: .color(you), lineWidth: questions > 0 ? 2 : 1)
+                var person = ctx.resolve(Image(systemName: "person"))
+                person.shading = .color(questions > 0 ? KS.needsYouText : KS.textMuted)
+                ctx.draw(person, at: p)
+                ctx.draw(Text(verbatim: L10n.t("You")).font(KS.body(12, .semibold)).foregroundColor(KS.strong), at: label)
                 if questions > 0 {
                     ctx.draw(Text(verbatim: L10n.t("\(questions) waiting")).font(KS.mono(9)).foregroundColor(KS.needsYouText),
                              at: CGPoint(x: label.x, y: label.y + 13))
@@ -218,11 +222,11 @@ private enum SwarmMapDrawing {
             let tint = accent(n), runs = s.running[n] ?? []
             var cx = ctx
             if s.offline.contains(n) { cx.opacity = 0.35 }
-            if !runs.isEmpty { cx.fill(circle(p, r + 9), with: .color(KS.providerTint(n).opacity(0.45 + 0.15 * sin(t * 3)))) }
-            cx.fill(circle(p, r), with: .color(.white))
-            cx.stroke(circle(p, r), with: .color(runs.isEmpty ? KS.ink.opacity(0.18) : tint), lineWidth: runs.isEmpty ? 1 : 1.8)
+            if !runs.isEmpty { cx.fill(circle(p, r + 9), with: .color(tint.opacity(0.14 + 0.06 * sin(t * 3)))) }
+            cx.fill(circle(p, r), with: .color(station))
+            cx.stroke(circle(p, r), with: .color(runs.isEmpty ? line.opacity(0.18) : tint), lineWidth: runs.isEmpty ? 1 : 2)
             cx.draw(Text(verbatim: TeamsCopy.providerShort(n)).font(KS.mono(11, .bold)).foregroundColor(tint), at: p)
-            cx.draw(Text(verbatim: SwarmaCells.vendorName(n)).font(KS.mono(11, .medium)).foregroundColor(KS.ink), at: label)
+            cx.draw(Text(verbatim: SwarmaCells.vendorName(n)).font(KS.body(12, .semibold)).foregroundColor(KS.strong), at: label)
             let done = s.finished[n] ?? 0, used = s.tokens[n] ?? 0
             if done > 0 || used > 0 {
                 let line = [done > 0 ? "\(done) done" : nil, used > 0 ? TeamsTaskBulk.tokens(used) + " tok" : nil].compactMap { $0 }.joined(separator: " · ")
@@ -242,14 +246,14 @@ private enum SwarmMapDrawing {
             }
             if runs.count > 1 {
                 let b = CGPoint(x: p.x + r * 0.8, y: p.y - r * 0.8)
-                cx.fill(circle(b, 9), with: .color(.white)); cx.stroke(circle(b, 9), with: .color(tint), lineWidth: 1.2)
-                cx.draw(Text(verbatim: "×\(runs.count)").font(KS.mono(8, .bold)).foregroundColor(KS.ink), at: b)
+                cx.fill(circle(b, 9), with: .color(KS.paper)); cx.stroke(circle(b, 9), with: .color(tint), lineWidth: 1.2)
+                cx.draw(Text(verbatim: "×\(runs.count)").font(KS.mono(8, .bold)).foregroundColor(KS.strong), at: b)
             }
             messages(&cx, n, s, CGPoint(x: label.x, y: label.y + 30), width: size.width, date: date)
             if let f = s.failures[n], f > 0 {
                 let b = CGPoint(x: p.x - r * 0.8, y: p.y - r * 0.8)
                 cx.fill(circle(b, 8), with: .color(KS.danger))
-                cx.draw(Text(verbatim: "\(f)").font(KS.mono(8, .bold)).foregroundColor(.white), at: b)
+                cx.draw(Text(verbatim: "\(f)").font(KS.mono(8, .bold)).foregroundColor(KS.onSignal), at: b)
             }
         }
         // Pulses, with a short fading trail.
