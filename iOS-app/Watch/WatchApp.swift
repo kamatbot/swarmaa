@@ -25,6 +25,7 @@ import WatchConnectivity
     func refresh() {
         transmit(WatchPacket(kind: "refresh"), durable: true)
         WatchMemos.shared.retryPending()
+        WatchTransactions.shared.refresh(generation: snapshot?.signedIn == true ? snapshot?.generation : nil)
         for item in queue where item.status != "delivered" { transmit(WatchPacket(kind: "post", post: item.post), durable: true) }
     }
     func enqueue(bot: WatchBot, body: String) -> Bool {
@@ -62,6 +63,9 @@ import WatchConnectivity
             if incoming.generation != snapshot?.generation || !incoming.signedIn { queue = [] }
             snapshot = incoming; _ = save()
             WatchMemos.shared.setGeneration(incoming.signedIn ? incoming.generation : nil)
+            WatchTransactions.shared.invalidateOtherGenerations(incoming.signedIn ? incoming.generation : nil)
+        } else if packet.kind == "transaction", let transaction = packet.transaction {
+            WatchTransactions.shared.receive(transaction, generation: snapshot?.signedIn == true ? snapshot?.generation : nil)
         } else if packet.kind == "memo_ack", let id = packet.id, let generation = packet.generation, let hash = packet.hash, let status = packet.status {
             WatchMemos.shared.receipt(id: id, generation: generation, hash: hash, status: status)
         } else if packet.kind == "ack", packet.generation == snapshot?.generation,
@@ -79,7 +83,11 @@ import WatchConnectivity
             self.refresh()
         }
     }
-    private func restoreMemoGeneration() { WatchMemos.shared.setGeneration(snapshot?.signedIn == true ? snapshot?.generation : nil) }
+    private func restoreMemoGeneration() {
+        let generation = snapshot?.signedIn == true ? snapshot?.generation : nil
+        WatchMemos.shared.setGeneration(generation)
+        WatchTransactions.shared.invalidateOtherGenerations(generation)
+    }
     nonisolated func session(_ session: WCSession, didFinish fileTransfer: WCSessionFileTransfer, error: Error?) {
         guard error != nil, let id = fileTransfer.file.metadata?["id"] as? String, let generation = fileTransfer.file.metadata?["generation"] as? String else { return }
         Task { @MainActor in WatchMemos.shared.transferFailed(id: id, generation: generation) }
@@ -111,6 +119,7 @@ import WatchConnectivity
                                     Label(bot.name, systemImage: bot.starred ? "star.fill" : "bubble.left")
                                 }
                             }
+                            NavigationLink("Transactions") { WatchTransactionsView(store: store) }
                             NavigationLink("Voice memos") { WatchMemosView(store: store) }
                             Button("Refresh") { store.refresh() }
                         }.navigationTitle("Bots")

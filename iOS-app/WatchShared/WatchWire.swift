@@ -1,6 +1,6 @@
 import Foundation
 
-// Only bounded, non-credential data crosses WatchConnectivity.
+// Bounded messages carry no long-lived connection credentials.
 enum WatchLimits {
     static let queue = 40
     static let bodyBytes = 4_000
@@ -39,6 +39,7 @@ struct WatchPacket: Codable, Sendable {
     var status: String? = nil
     var hash: String? = nil
     var message: String? = nil // Server message id of a delivered post.
+    var transaction: TransactionPacket? = nil
 }
 enum WatchCodec {
     static func encode(_ packet: WatchPacket) -> Data? {

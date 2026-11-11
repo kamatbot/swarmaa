@@ -817,3 +817,15 @@ Calling `thread_read` on a bot thread automatically batches and embeds a `task` 
 - `task_subscriptions`: `{ task_id }` -> `{ subscriptions: [...] }`. Lists active and inactive subscriptions for a task. Subscriptions are read through this tool.
 
 
+## Watch memo delivery and transaction reviews
+
+These tools require both `thread:read` and `thread:write`, exact tenant/scope access, and a non-worker principal. Apply migration `038_watch_services.sql` before enabling them. Host prerequisites and storage policy are in [WATCH-HOST.md](WATCH-HOST.md).
+
+- `watch_memo_put`: `{memo_id,thread_id,sha256,byte_length,captured_at,index,data_base64}`. Deterministic 128 KiB decoded chunks (short final chunk), maximum 20 MiB. Metadata and bytes cannot change when retrying an ID. Returns `{memo_id,sha256,byte_length,status,stored_on?}`; only a complete, verified, durably stored recording returns `status:"stored",stored_on:"mac"`.
+- `watch_memo_status`: `{memo_id,thread_id}`. Same metadata plus `received_indices`; an unknown memo returns 404. Resume missing indices using the original immutable metadata.
+- `watch_memo_delete`: `{memo_id,thread_id}`. Deletes that thread's manifest, chunks and local recording.
+- `watch_transaction_preview`: `{thread_id,request_id,operation,expense_id?,values:{payee,date,amount,currency,category}}`. `operation` is create/update; update requires an exact expense ID. Amount is decimal text, date is YYYY-MM-DD, currency is THB/USD/EUR. Returns the full immutable RetireOdds review with account, before/after, token and expiry.
+- `watch_transaction_confirm`: `{thread_id,review_id,review_token,confirmation_id}`. Requires a separate explicit confirmation of the displayed review. Returns the full review with its durable ledger receipt.
+- `watch_transaction_get`: `{thread_id,review_id}`. Reconciles uncertain delivery with the bound account's review and optional receipt. Never substitute a new confirmation ID after a timeout.
+
+Financial tools additionally require the explicit host principal allowlist and RetireOdds configuration. They depend on [RetireOdds PR #159](https://github.com/kamatbot/retireodds/pull/159). This source increment has not been built or tested; no migration or live financial operation has been run.

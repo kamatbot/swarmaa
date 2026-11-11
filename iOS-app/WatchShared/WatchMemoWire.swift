@@ -13,8 +13,11 @@ enum MemoLimits {
 struct MemoEnvelope: Codable, Sendable {
     let id, generation, hash: String
     let bytes: Int
+    var threadID: String? = nil
+    var capturedAt: String? = nil
     var valid: Bool {
         UUID(uuidString: id) != nil && UUID(uuidString: generation) != nil &&
+        (threadID == nil || UUID(uuidString: threadID!) != nil) && (capturedAt == nil || capturedAt!.utf8.count <= 64) &&
         hash.count == 64 && hash.allSatisfy { $0.isHexDigit && !$0.isUppercase } && bytes > 0 && bytes <= MemoLimits.bytes
     }
 }

@@ -9,6 +9,7 @@ import CryptoKit
     private let defaults = UserDefaults.standard
     private var busy = false
     private var requested = false
+    private var transactionInbox: [TransactionPacket] = []
     private var generation = ""
     private var fingerprint = ""
     private var revision: Int { get { defaults.integer(forKey: "watch.revision") } set { defaults.set(newValue, forKey: "watch.revision") } }
@@ -79,7 +80,8 @@ import CryptoKit
             publish(bots: [], signedIn: false); return
         }
         // Reuse the app's live connection when it is up; open (and close) a private one only otherwise.
-        let shared = Runtime.model.connected ? Runtime.model.service : nil
+        let candidate = Runtime.model.connected ? Runtime.model.service as? RelayService : nil
+        let shared: (any HostService)? = candidate?.connection.hostID == connection.hostID && candidate?.connection.relay == connection.relay && candidate?.connection.token == connection.token ? candidate : nil
         let owned = shared == nil ? RelayService(connection: connection) : nil
         let service: any HostService = shared ?? owned!
         defer { if let owned { Task { await owned.transport.disconnect() } } }
@@ -88,6 +90,23 @@ import CryptoKit
             guard watchAvailable, expected == generation, currentFingerprint() == fingerprint else { changed(); return }
             let available = list["bots"].array.map { Bot(raw: $0) }.filter { !$0.archived && UUID(uuidString: $0.id) != nil && UUID(uuidString: $0.threadID) != nil }
             let bots = Array(Bot.sorted(available).sorted { $0.starred && !$1.starred }.prefix(WatchLimits.bots))
+            let allowedThreads = Set(available.map(\.threadID))
+            let inbox = transactionInbox; transactionInbox = []
+            for packet in inbox {
+                if !PhoneTransactions.shared.accept(packet, generation: expected, allowedThreads: allowedThreads) {
+                    let requestID = packet.request?.id ?? packet.confirmation.flatMap { confirmation in PhoneTransactions.shared.requestID(for: confirmation) }
+                    send(WatchPacket(kind: "transaction", transaction: TransactionPacket(kind: "result", generation: expected, requestID: requestID, state: "unconfirmed")))
+                }
+            }
+            await PhoneTransactions.shared.flush(service: service, generation: expected, allowedThreads: allowedThreads, valid: { self.watchAvailable && self.generation == expected && self.currentFingerprint() == self.fingerprint }) { packet in
+                self.send(WatchPacket(kind: "transaction", transaction: packet))
+            }
+            guard watchAvailable, expected == generation, currentFingerprint() == fingerprint else { changed(); return }
+            let moreMemos = await PhoneMemos.shared.flush(service: service, generation: expected, allowedThreads: allowedThreads, valid: { self.watchAvailable && self.generation == expected && self.currentFingerprint() == self.fingerprint }) { memo in
+                self.send(WatchPacket(kind: "memo_ack", generation: expected, id: memo.id, status: "mac", hash: memo.hash))
+            }
+            if moreMemos { requested = true }
+            guard watchAvailable, expected == generation, currentFingerprint() == fingerprint else { changed(); return }
             for post in entries.filter({ !$0.delivered }).map(\.post) {
                 guard watchAvailable, expected == generation, currentFingerprint() == fingerprint else { changed(); return }
                 guard available.contains(where: { $0.id == post.botID && $0.threadID == post.threadID }) else {
@@ -185,6 +204,11 @@ import CryptoKit
         guard let packet = WatchCodec.decode(data) else { return }
         guard synchronizeIdentity() else { return }
         if packet.kind == "refresh" { requestWork(); return }
+        if packet.kind == "transaction", let transaction = packet.transaction {
+            let incomingGeneration = transaction.request?.generation ?? transaction.confirmation?.generation
+            guard incomingGeneration == generation, !fingerprint.isEmpty, transactionInbox.count < 40 else { return }
+            transactionInbox.append(transaction); requestWork(); return
+        }
         guard packet.kind == "post", let post = packet.post, post.generation == generation, !fingerprint.isEmpty,
               UUID(uuidString: post.id) != nil, UUID(uuidString: post.botID) != nil, UUID(uuidString: post.threadID) != nil,
               !post.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
@@ -206,6 +230,7 @@ import CryptoKit
             try PhoneMemos.shared.retain(source, envelope: envelope)
             PhoneMemos.shared.refresh(generation: envelope.generation)
             send(WatchPacket(kind: "memo_ack", generation: envelope.generation, id: envelope.id, status: "phone", hash: envelope.hash))
+            requestWork()
         } catch {
             send(WatchPacket(kind: "memo_ack", generation: envelope.generation, id: envelope.id, status: "unconfirmed", hash: envelope.hash))
         }
@@ -214,7 +239,7 @@ import CryptoKit
         guard let metadata = file.metadata, let id = metadata["id"] as? String,
               let generation = metadata["generation"] as? String, let hash = metadata["hash"] as? String,
               let bytes = metadata["bytes"] as? Int else { return }
-        let envelope = MemoEnvelope(id: id, generation: generation, hash: hash, bytes: bytes)
+        let envelope = MemoEnvelope(id: id, generation: generation, hash: hash, bytes: bytes, threadID: metadata["threadID"] as? String, capturedAt: metadata["capturedAt"] as? String)
         guard envelope.valid, (try? file.fileURL.resourceValues(forKeys: [.fileSizeKey]).fileSize) == bytes else { return }
         let staged = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".m4a")
         do { try FileManager.default.copyItem(at: file.fileURL, to: staged) } catch { return }
