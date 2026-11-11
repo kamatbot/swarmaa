@@ -338,8 +338,9 @@ struct RootView: View {
                     ZStack {
                         if sizeClass == .regular {
                             // iPad (or any regular-width window): the Mac's three columns. Compact keeps the stack below.
-                            IPadWorkspace(model: model, screen: $screen, sheet: $sheet, search: $search, open: open) { threadBody }
-                                .accessibilityHidden(screen != .home && screen != .thread).allowsHitTesting(screen == .home || screen == .thread)
+                            IPadWorkspace(model: model, screen: $screen, sheet: $sheet, search: $search, open: open,
+                                          threadBody: { threadBody }, tasksBody: { tasksView(embedded: true) }, usageBody: { usageView(embedded: true) })
+                                .accessibilityHidden(![.home, .thread, .tasks, .usage].contains(screen)).allowsHitTesting([.home, .thread, .tasks, .usage].contains(screen))
                         } else {
                         home.accessibilityHidden(screen != .home).allowsHitTesting(screen == .home)
                         if screen == .thread || (screen == .settings && model.openBot != nil) {
@@ -348,8 +349,8 @@ struct RootView: View {
                                 .accessibilityHidden(screen != .thread)
                         }
                         }
-                        if screen == .tasks { tasks.swipeBack { screen = .home }.background(KS.ground).transition(.move(edge: .trailing)) }
-                        if screen == .usage { usage.swipeBack { screen = .home }.background(KS.ground).transition(.move(edge: .trailing)) }
+                        if screen == .tasks && sizeClass != .regular { tasksView().swipeBack { screen = .home }.background(KS.ground).transition(.move(edge: .trailing)) }
+                        if screen == .usage && sizeClass != .regular { usageView().swipeBack { screen = .home }.background(KS.ground).transition(.move(edge: .trailing)) }
                         if screen == .connect {
                             ConnectView(model: model) { screen = .home }.swipeBack { screen = .home }.background(KS.ground).transition(.move(edge: .trailing))
                         }
@@ -833,9 +834,10 @@ struct RootView: View {
             }
         }
     }
-    private var tasks: some View {
+    /// `embedded`: inside the iPad's Tasks pane, which has no close header.
+    private func tasksView(embedded: Bool = false) -> some View {
         VStack(spacing: 0) {
-            header("Tasks") { screen = .home }
+            if !embedded { header("Tasks") { screen = .home } }
             HStack {
                 countCard("Need you", count: model.attention.count, color: KS.needsText)
                 countCard("Working", count: model.tasks.filter { ["running", "queued"].contains($0["status"].string) }.count, color: KS.signal)
@@ -907,9 +909,9 @@ struct RootView: View {
             .frame(maxWidth: .infinity, alignment: .leading).padding(12).card()
             .accessibilityElement(children: .combine)
     }
-    private var usage: some View {
+    private func usageView(embedded: Bool = false) -> some View {
         VStack(spacing: 0) {
-            header("Usage") { screen = .home }
+            if !embedded { header("Usage") { screen = .home } }
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 10) {
                     Text("Auto work follows your host’s routing policy and available quota.").font(KS.body()).foregroundStyle(KS.soft).fixedSize(horizontal: false, vertical: true)
@@ -1311,6 +1313,12 @@ private extension AppModel {
             first.raw["created_at"] = .string("2026-10-28T10:00:00Z")
             last.raw["created_at"] = .string("2026-10-28T10:03:00Z")
             messages.insert(contentsOf: [first, last], at: 1)
+        }
+        if ProcessInfo.processInfo.arguments.contains("-long-thread-demo") {
+            // A thread taller than the screen, for layout tests; the last message is "Demo reply 100".
+            // Uneven heights, like real replies: most short, every seventh a long report.
+            messages += (5...104).map { i in Demo.message("long\(i)", i, "text", .string(i == 104 ? "Demo reply 100" : "Demo reply \(i - 4): " + String(repeating: "a longer line that wraps differently at each column width. ", count: i % 7 == 0 ? 40 : 1 + i % 3)), human: i % 3 == 0) }
+            typing = []
         }
         if ProcessInfo.processInfo.arguments.contains("-handover-demo") {
             func step(_ id: String, _ title: String, _ who: String, _ status: String, needs: [String] = [], check: String) -> JSON {

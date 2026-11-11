@@ -40,6 +40,9 @@ func shortClock(_ value: String, now: Date = Date()) -> String {
     return days < 7 ? "\(days)d" : days < 60 ? "\(days / 7)w" : "\(days / 30)mo"
 }
 
+/// The Mac window's top bar tone.
+extension KS { static let topBar = Color(hex: 0x0F1F38) }
+
 enum BotTab: String, CaseIterable { case thread = "Thread", timeline = "Timeline", logs = "Logs" }
 
 extension AppModel {
@@ -70,54 +73,177 @@ extension AppModel {
 
 /// Regular width (iPad full screen, or a wide window): the Mac main window's three columns.
 /// Compact width never builds this; RootView keeps the iPhone stack there.
-struct IPadWorkspace<ThreadBody: View>: View {
+struct IPadWorkspace<ThreadBody: View, TasksBody: View, UsageBody: View>: View {
     @Bindable var model: AppModel
     @Binding var screen: Screen
     @Binding var sheet: Sheet?
     @Binding var search: String
     var open: (Bot) -> Void
     @ViewBuilder var threadBody: () -> ThreadBody
+    @ViewBuilder var tasksBody: () -> TasksBody
+    @ViewBuilder var usageBody: () -> UsageBody
     @State private var tab = BotTab.thread
     @State private var showMap = false
     @State private var monitor = false
-    @State private var visibility = NavigationSplitViewVisibility.all
     @FocusState private var searchFocused: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    /// The Mac's panes. Which one shows follows `screen`, so a task row that opens a bot lands back on Bots.
+    enum Pane { case bots, tasks, usage }
+    private var pane: Pane { screen == .tasks ? .tasks : screen == .usage ? .usage : .bots }
+    private func show(_ p: Pane) {
+        switch p {
+        case .bots: screen = model.openBot == nil ? .home : .thread
+        case .tasks: screen = .tasks; Task { try? await model.loadTasks() }
+        case .usage: screen = .usage
+        }
+    }
 
     var body: some View {
         Group {
             if monitor {
                 SwarmMapPanel(model: model, monitor: true, expand: {}, close: { monitor = false })
             } else {
-                NavigationSplitView(columnVisibility: $visibility) {
-                    sidebar
-                        .navigationSplitViewColumnWidth(min: 260, ideal: 300, max: 360)
-                        .toolbar { sidebarToolbar }
-                        .navigationBarTitleDisplayMode(.inline)  // "Bots" is the list's own label, as on the Mac.
-                        .toolbarBackground(KS.grouped, for: .navigationBar)
-                } detail: {
-                    detail
-                        .toolbar { detailToolbar }
-                        .navigationBarTitleDisplayMode(.inline)
-                        .toolbarBackground(KS.ground, for: .navigationBar)
+                // No system navigation bars: one top bar across the window, then the Mac's columns.
+                GeometryReader { g in
+                    VStack(spacing: 0) {
+                        topBar(width: g.size.width)
+                        switch pane {
+                        case .bots:
+                            HStack(spacing: 0) {
+                                sidebar.frame(width: g.size.width < 1100 ? 240 : 300)
+                                    .overlay(alignment: .trailing) { Rectangle().fill(KS.hairline).frame(width: 1) }
+                                detail
+                            }
+                        case .tasks: tasksBody().padding(.top, 12).frame(maxWidth: .infinity, maxHeight: .infinity)
+                        case .usage: usageBody().padding(.top, 12).frame(maxWidth: .infinity, maxHeight: .infinity)
+                        }
+                    }
                 }
-                .navigationSplitViewStyle(.balanced)
             }
         }
         .background(KS.ground)
         .task { if !model.isDemo { try? await model.loadTasks() } }
         .background { shortcuts }
+        .onChange(of: search) { _, q in if !q.isEmpty && pane != .bots { show(.bots) } }
     }
 
     /// Hardware keyboard: ⌘K search, ⌘1/2/3 tabs, ⌘⇧M map.
     private var shortcuts: some View {
         Group {
-            Button("Search bots") { visibility = .all; searchFocused = true }.keyboardShortcut("k", modifiers: .command)
+            Button("Search bots") { searchFocused = true }.keyboardShortcut("k", modifiers: .command)
             ForEach(Array(BotTab.allCases.enumerated()), id: \.offset) { i, t in
                 Button(t.rawValue) { tab = t }.keyboardShortcut(KeyEquivalent(Character("\(i + 1)")), modifiers: .command)
             }
             Button("Swarm map") { showMap.toggle() }.keyboardShortcut("m", modifiers: [.command, .shift])
         }.opacity(0).frame(width: 0, height: 0).accessibilityHidden(true)
+    }
+
+    // MARK: Top bar (the Mac's WorkspaceTopBar)
+
+    private var trail: [String] {
+        switch pane {
+        case .bots: return ["bots"] + (model.openBot.map { [$0.name] } ?? [])
+        case .tasks: return ["tasks"]
+        case .usage: return ["usage"]
+        }
+    }
+    private func breadcrumb(_ parts: [String]) -> some View {
+        HStack(spacing: 8) {
+            ForEach(Array(parts.enumerated()), id: \.offset) { i, part in
+                if i > 0 { Text("/").foregroundStyle(Color(hex: 0x4F6688)) }
+                Text(part).font(KS.body(i == 0 && part == "swarmaa" ? .semibold : .regular))
+                    .foregroundStyle(part == "swarmaa" || i == parts.count - 1 ? KS.strong : KS.soft)
+            }
+        }.lineLimit(1).fixedSize()
+    }
+    private func topBar(width: CGFloat) -> some View {
+        HStack(spacing: 16) {
+            // Full trail, then just the last part, then nothing: never wraps.
+            ViewThatFits(in: .horizontal) {
+                breadcrumb(["swarmaa"] + trail)
+                breadcrumb([trail.last ?? "swarmaa"])
+                Color.clear.frame(width: 0, height: 0)
+            }
+            .accessibilityElement(children: .combine).accessibilityLabel("Breadcrumb: swarmaa, " + trail.joined(separator: ", "))
+            panes.layoutPriority(2)
+            Spacer(minLength: 8)
+            searchField.frame(minWidth: 140, idealWidth: 280, maxWidth: 300).layoutPriority(1)
+            if width >= 900, !workerProviders.isEmpty {
+                HStack(spacing: -7) {
+                    ForEach(workerProviders, id: \.self) { Avatar(name: $0, size: 28, provider: $0).overlay(Circle().strokeBorder(KS.topBar, lineWidth: 2)) }
+                }.fixedSize().accessibilityElement(children: .ignore)
+                    .accessibilityLabel("Agents online: " + workerProviders.map(vendorName).joined(separator: ", "))
+            }
+            barButton("point.3.connected.trianglepath.dotted", showMap ? "Hide swarm map" : "Show swarm map", on: showMap) {
+                withAnimation(reduceMotion ? nil : KS.glide) { showMap.toggle() }
+            }.accessibilityIdentifier("toggle-swarm-map")
+            barButton("gearshape", "Settings", on: false) { sheet = .you }
+            Button { sheet = .newBot } label: {
+                Text(width >= 760 ? "+ New bot" : "+").font(KS.body(.semibold)).foregroundStyle(KS.onSignal)
+                    .padding(.horizontal, 16).frame(height: 36)
+                    .background(KS.signal, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .frame(minHeight: 44).contentShape(Rectangle())
+            }.buttonStyle(PressStyle()).fixedSize().accessibilityLabel("New bot").accessibilityIdentifier("ipad-new-bot")
+        }
+        .padding(.horizontal, 16)
+        .frame(maxWidth: .infinity, minHeight: 56, maxHeight: 56)
+        // The bar's colour runs up under the status bar.
+        .background(KS.topBar.ignoresSafeArea(edges: .top))
+        .overlay(alignment: .bottom) { Rectangle().fill(KS.hairline).frame(height: 1) }
+    }
+    /// Bots · Tasks · Usage, the Bots segment carrying how many bots have updates.
+    private var panes: some View {
+        let updates = model.sortedBots.filter { $0.unread > 0 || $0.needsYou > 0 }.count
+        return HStack(spacing: 2) {
+            ForEach([(Pane.bots, "Bots"), (.tasks, "Tasks"), (.usage, "Usage")], id: \.1) { p, title in
+                let on = pane == p, badge = p == .bots ? updates : 0
+                Button { show(p) } label: {
+                    HStack(spacing: 6) {
+                        Text(title).font(KS.body(.medium)).foregroundStyle(on ? KS.strong : KS.muted)
+                        if badge > 0 {
+                            Text("\(badge)").font(KS.mono(.semibold)).foregroundStyle(KS.onSignal).padding(.horizontal, 6).frame(minHeight: 18).background(KS.signal, in: Capsule())
+                        }
+                    }
+                    .padding(.horizontal, 12).frame(height: 30)
+                    .background(on ? KS.mine : .clear, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    .frame(minHeight: 44).contentShape(Rectangle())
+                }
+                .buttonStyle(PressStyle())
+                .accessibilityLabel(badge > 0 ? title + ", \(badge) with updates" : title)
+                .accessibilityAddTraits(on ? .isSelected : [])
+                .accessibilityIdentifier("pane-" + title.lowercased())
+            }
+        }
+        .padding(.horizontal, 3).frame(height: 38)
+        .background(KS.inset, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(KS.hairline, lineWidth: 1).allowsHitTesting(false))
+        .fixedSize()
+    }
+    private var searchField: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass").font(.system(size: 13, weight: .semibold)).foregroundStyle(KS.muted)
+            TextField("", text: $search, prompt: Text("Search bots").foregroundStyle(KS.muted)).font(KS.body()).foregroundStyle(KS.ink)
+                .focused($searchFocused).accessibilityLabel("Search bots").submitLabel(.search)
+            if search.isEmpty {
+                Text("⌘K").font(KS.mono()).foregroundStyle(KS.soft).padding(.horizontal, 6).padding(.vertical, 1)
+                    .background(KS.chip, in: RoundedRectangle(cornerRadius: 6)).accessibilityHidden(true)
+            } else {
+                Button { search = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(KS.muted).frame(minWidth: 32, minHeight: 36) }
+                    .buttonStyle(PressStyle()).accessibilityLabel("Clear search")
+            }
+        }
+        .padding(.leading, 12).padding(.trailing, 8).frame(height: 36)
+        .background(KS.inset, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(searchFocused ? KS.signal.opacity(0.7) : KS.hairline, lineWidth: 1).allowsHitTesting(false))
+        .frame(minHeight: 44).contentShape(Rectangle()).onTapGesture { searchFocused = true }
+    }
+    private func barButton(_ symbol: String, _ label: String, on: Bool, _ action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol).font(.system(size: 15, weight: .semibold)).foregroundStyle(on ? KS.onSignal : KS.soft)
+                .frame(width: 36, height: 36).background(on ? KS.signal : KS.chip.opacity(0.6), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .frame(width: 44, height: 44).contentShape(Rectangle())
+        }.buttonStyle(PressStyle()).fixedSize().accessibilityLabel(label).accessibilityAddTraits(on ? .isSelected : [])
     }
 
     // MARK: Sidebar
@@ -127,12 +253,6 @@ struct IPadWorkspace<ThreadBody: View>: View {
     private var sidebar: some View {
         let bots = model.sortedBots.filter(matches), hidden = model.hiddenBots.filter(matches)
         return VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 10) {
-                Image(systemName: "magnifyingglass").foregroundStyle(KS.muted)
-                TextField("", text: $search, prompt: Text("Search bots").foregroundStyle(KS.muted)).focused($searchFocused).accessibilityLabel("Search bots")
-                if search.isEmpty { Text("⌘K").font(KS.mono()).foregroundStyle(KS.muted).accessibilityHidden(true) }
-                else { Button { search = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(KS.muted) }.accessibilityLabel("Clear search") }
-            }.padding(.horizontal, 12).frame(minHeight: 40).card(KS.inset, radius: 10).padding(.horizontal, 12).padding(.top, 8)
             HStack {
                 Eyebrow("Bots")
                 Spacer()
@@ -231,7 +351,7 @@ struct IPadWorkspace<ThreadBody: View>: View {
                     let provider = u["provider"].string
                     let window = u["windows"].array.first { $0["name"].string.replacingOccurrences(of: " ", with: "") == "5h" } ?? u["windows"].array.first
                     let used = min(max(window?["used_percent"].number ?? 0, 0), 100)
-                    Button { screen = .usage } label: {
+                    Button { show(.usage) } label: {
                         VStack(spacing: 5) {
                             HStack { Text(vendorName(provider)); Spacer(); Text(window?["used_percent"].number.map { "\(Int($0))%" } ?? "—") }
                                 .font(KS.mono()).foregroundStyle(KS.soft)
@@ -247,35 +367,13 @@ struct IPadWorkspace<ThreadBody: View>: View {
         }
     }
 
-    @ToolbarContentBuilder private var sidebarToolbar: some ToolbarContent {
-        ToolbarItemGroup(placement: .topBarLeading) {
-            Button { sheet = .you } label: { Image(systemName: "person.crop.circle") }.accessibilityLabel("You")
-        }
-        ToolbarItemGroup(placement: .topBarTrailing) {
-            Button { screen = .tasks; Task { try? await model.loadTasks() } } label: { Image(systemName: "list.bullet") }.accessibilityLabel("Tasks")
-            Button { screen = .usage } label: { Image(systemName: "chart.pie") }.accessibilityLabel("Usage")
-            Button { sheet = .newBot } label: { Image(systemName: "plus") }.accessibilityLabel("New bot").accessibilityIdentifier("ipad-new-bot")
-        }
-    }
-
-    @ToolbarContentBuilder private var detailToolbar: some ToolbarContent {
-        ToolbarItemGroup(placement: .topBarTrailing) {
-            if model.openBot != nil {
-                Button { screen = .settings } label: { Image(systemName: "slider.horizontal.3") }.accessibilityLabel("Bot settings")
-            }
-            Button { withAnimation(reduceMotion ? nil : KS.glide) { showMap.toggle() } } label: {
-                Image(systemName: "point.3.connected.trianglepath.dotted").symbolVariant(showMap ? .fill : .none)
-            }
-            .accessibilityLabel(showMap ? "Hide swarm map" : "Show swarm map").accessibilityIdentifier("toggle-swarm-map")
-        }
-    }
-
     // MARK: Detail
 
     private var detail: some View {
         GeometryReader { g in
-            // Thread keeps at least ~380 pt; when the map and the inspector don't both fit, the map takes the inspector's place.
-            let inspector = !showMap || g.size.width >= 380 + 320 + 340
+            // The centre keeps at least ~480 pt (the bot header fits); when the map and the inspector don't both fit,
+            // the map takes the inspector's place.
+            let inspector = !showMap || g.size.width >= 480 + 320 + 340
             HStack(spacing: 0) {
                 content.frame(maxWidth: .infinity)
                 if inspector, let bot = model.openBot {
@@ -298,7 +396,7 @@ struct IPadWorkspace<ThreadBody: View>: View {
         if let bot = model.openBot {
             VStack(spacing: 0) {
                 VStack(alignment: .leading, spacing: 0) {
-                    IPadBotHeader(model: model, bot: bot)
+                    IPadBotHeader(model: model, bot: bot, settings: { screen = .settings })
                     if let s = followedSwarm(model.messages)?.swarm, !["done", "cancelled"].contains(s["status"].string) {
                         let total = s["progress"]["total"] == .null ? swarmSteps(s).count : s["progress"]["total"].int
                         let done = s["progress"]["done"] == .null ? swarmSteps(s).filter { $0["status"].string == "done" }.count : s["progress"]["done"].int
@@ -310,7 +408,7 @@ struct IPadWorkspace<ThreadBody: View>: View {
                         }
                     }
                     tabs
-                }.padding(.horizontal, 24).padding(.top, 12)
+                }.padding(.horizontal, 24).padding(.top, 20)
                 switch tab {
                 case .thread: threadBody()
                 case .timeline: IPadTimeline(model: model)
@@ -348,10 +446,12 @@ struct IPadWorkspace<ThreadBody: View>: View {
     }
 }
 
-/// Name, status pill and a meta line, as on the Mac.
+/// The Mac bot header: character, name with its menu, meta line; status pill, star and bot settings on the right.
 private struct IPadBotHeader: View {
     @Bindable var model: AppModel
     let bot: Bot
+    var settings: () -> Void
+    @State private var saving = false
     private var meta: String {
         var parts = [bot.scope.replacingOccurrences(of: "project:", with: "")].filter { !$0.isEmpty }
         if let (swarm, at) = followedSwarm(model.messages) {
@@ -362,15 +462,46 @@ private struct IPadBotHeader: View {
         return parts.joined(separator: " · ")
     }
     var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            MojiAvatar(seed: bot.avatarSeed, size: 34, colorHex: bot.colorHex)
+        HStack(alignment: .top, spacing: 8) {
             VStack(alignment: .leading, spacing: 4) {
-                Text(bot.name).font(.system(.title, design: .default, weight: .semibold)).foregroundStyle(Color(hex: 0xF6F8FC)).lineLimit(1)
-                Text(meta).font(KS.secondary()).foregroundStyle(KS.muted).lineLimit(1).truncationMode(.middle)
-            }.layoutPriority(1).accessibilityElement(children: .combine).accessibilityAddTraits(.isHeader)
+                HStack(spacing: 10) {
+                    MojiAvatar(seed: bot.avatarSeed, size: 34, colorHex: bot.colorHex)
+                    Text(bot.name).font(.system(.title, design: .default, weight: .semibold)).foregroundStyle(Color(hex: 0xF6F8FC)).lineLimit(1)
+                        .accessibilityAddTraits(.isHeader)
+                    menu
+                }
+                Text(meta).font(KS.body()).foregroundStyle(KS.muted).lineLimit(1).truncationMode(.middle)
+            }.layoutPriority(1)
             Spacer(minLength: 8)
             pill
+            iconButton(bot.starred ? "star.fill" : "star", bot.starred ? "Unstar" : "Star", on: bot.starred) { setStar(!bot.starred) }
+                .disabled(saving || bot.archived || model.isDemo)
+            iconButton("slider.horizontal.3", "Bot settings", on: false, settings)
         }
+    }
+    private var menu: some View {
+        Menu {
+            Button("Bot settings", action: settings)
+            Button(bot.starred ? "Unstar" : "Star") { setStar(!bot.starred) }.disabled(saving || bot.archived || model.isDemo)
+            Button("Earlier messages") { Task { do { try await model.olderMessages() } catch { model.error = safeError(error) } } }
+            Divider()
+            Button("Hide bot", role: .destructive) { Task { do { try await model.archive(bot) } catch { model.error = safeError(error) } } }
+                .disabled(bot.archived || model.isDemo)
+        } label: {
+            Image(systemName: "chevron.down").font(.system(size: 13, weight: .semibold)).foregroundStyle(KS.muted)
+                .frame(width: 32, height: 44).contentShape(Rectangle())
+        }.accessibilityLabel("Bot menu, " + bot.name)
+    }
+    private func setStar(_ on: Bool) {
+        saving = true
+        var draft = bot; draft.raw["starred"] = .bool(on)
+        Task { defer { saving = false }; do { try await model.save(draft) } catch { model.error = safeError(error) } }
+    }
+    private func iconButton(_ symbol: String, _ label: String, on: Bool, _ action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol).font(.system(size: 15, weight: .semibold)).foregroundStyle(on ? KS.needsText : KS.soft)
+                .frame(width: 44, height: 44).contentShape(Rectangle())
+        }.buttonStyle(PressStyle(icon: true)).accessibilityLabel(label).accessibilityAddTraits(on ? .isSelected : [])
     }
     @ViewBuilder private var pill: some View {
         let needs = max(bot.needsYou, model.openQuestions.count)
@@ -378,7 +509,7 @@ private struct IPadBotHeader: View {
         let (text, ink, fill): (String, Color, Color) = needs > 0 ? (needs > 1 ? "\(needs) need you" : "Needs you", KS.needsText, KS.needsTint)
             : running ? ("Running", KS.signal, KS.signalTint) : ("Idle", KS.muted, KS.chip)
         HStack(spacing: 8) { Circle().fill(ink).frame(width: 7, height: 7); Text(text).font(KS.secondary(.semibold)) }
-            .foregroundStyle(ink).padding(.horizontal, 12).frame(minHeight: 26).background(fill, in: Capsule()).fixedSize().padding(.top, 6)
+            .foregroundStyle(ink).padding(.horizontal, 12).frame(minHeight: 26).background(fill, in: Capsule()).fixedSize().padding(.top, 9)
             .accessibilityElement(children: .combine)
     }
 }
