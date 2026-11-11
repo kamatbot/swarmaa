@@ -1,7 +1,26 @@
+# Fonts never change under the same name: cache for a year.
 /fonts/*
   Cache-Control: public, max-age=31536000, immutable
+# Film, brand mark and icons keep stable names but could be replaced: cache for 30 days, refresh in the background.
+/film/*
+  Cache-Control: public, max-age=2592000, stale-while-revalidate=86400
+/brand/swarmaa-mark.svg
+  Cache-Control: public, max-age=2592000, stale-while-revalidate=86400
 /favicon.svg
-  Cache-Control: public, max-age=86400
+  Cache-Control: public, max-age=2592000, stale-while-revalidate=86400
+/apple-touch-icon.png
+  Cache-Control: public, max-age=2592000, stale-while-revalidate=86400
+# Pages always revalidate, so a deploy shows up on the next visit.
+/
+  Cache-Control: public, max-age=0, must-revalidate
+/index.html
+  Cache-Control: public, max-age=0, must-revalidate
+/guide
+  Cache-Control: public, max-age=0, must-revalidate
+/guide.html
+  Cache-Control: public, max-age=0, must-revalidate
+/brand/
+  Cache-Control: public, max-age=0, must-revalidate
 /*
   X-Content-Type-Options: nosniff
   Referrer-Policy: strict-origin-when-cross-origin

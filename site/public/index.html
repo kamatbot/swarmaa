@@ -21,10 +21,14 @@
 <meta name="theme-color" content="#0a1830">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,300..800&family=IBM+Plex+Mono:wght@400;500&family=Instrument+Sans:wdth,wght@75..100,400..600&display=swap" rel="stylesheet">
+<link rel="preload" href="/fonts/instrument-sans-var-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/fonts/archivo-var-latin.woff2" as="font" type="font/woff2" crossorigin>
 <style>
+/* Self-hosted latin subsets (from Google Fonts, SIL OFL): Archivo and Instrument Sans are variable in width and weight. */
+@font-face { font-family: "Archivo"; font-style: normal; font-weight: 300 800; font-stretch: 62% 125%; font-display: swap; src: url(/fonts/archivo-var-latin.woff2) format("woff2"); unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD; }
+@font-face { font-family: "Instrument Sans"; font-style: normal; font-weight: 400 600; font-stretch: 75% 100%; font-display: swap; src: url(/fonts/instrument-sans-var-latin.woff2) format("woff2"); unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD; }
+@font-face { font-family: "IBM Plex Mono"; font-style: normal; font-weight: 400; font-display: swap; src: url(/fonts/ibm-plex-mono-400-latin.woff2) format("woff2"); unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD; }
+@font-face { font-family: "IBM Plex Mono"; font-style: normal; font-weight: 500; font-display: swap; src: url(/fonts/ibm-plex-mono-500-latin.woff2) format("woff2"); unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD; }
 /* ONE SYSTEM: deep navy surfaces, white type, one signal blue for action and progress,
    coral only where a person is needed. Archivo display, Instrument Sans reading, Plex Mono labels. */
 :root {
@@ -115,7 +119,7 @@ code, .mono { font-family: var(--font-mono); }
 .hero-ctas { display: flex; flex-wrap: wrap; gap: 0.7rem; align-items: center; }
 .hero-meta { margin: 0 0 0 0.4rem; font: 400 0.72rem var(--font-mono); letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
 .hero-cap { display: flex; justify-content: space-between; gap: 1rem; flex-wrap: wrap; margin: 0 0 0.5rem; font: 400 0.72rem var(--font-mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); }
-.hero-cap span:last-child { color: color-mix(in oklab, var(--muted) 70%, transparent); }
+.hero-cap span:last-child { color: var(--muted); }
 
 /* cards */
 .panel { display: flex; flex-direction: column; overflow: hidden; border-radius: 1.1rem; background-color: var(--card); background-image: var(--tex-basalt); box-shadow: var(--raised); transition: transform 0.3s ease; }
@@ -189,7 +193,7 @@ code, .mono { font-family: var(--font-mono); }
 .vg-why-t { display: block; color: #f2f5fa; font-size: 0.78rem; }
 .vg-lines { list-style: none; margin: 0.2rem 0.7rem; padding: 0.35rem 0; border-radius: 0.45rem; background: #081326; border: 1px solid rgba(200, 218, 245, 0.08); font: 400 0.7rem/1.5 "IBM Plex Mono", monospace; overflow: hidden; }
 .vg-lines li { display: flex; gap: 0.5rem; padding: 0.08rem 0.6rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; animation: vg-line 0.45s ease both; animation-delay: calc(var(--i) * 110ms); }
-.vg-lines li::before { inline-size: 0.7rem; flex: none; color: #62769a; content: " "; }
+.vg-lines li::before { inline-size: 0.7rem; flex: none; color: #8796ae; content: " "; }
 .vg-lines .del { background: rgba(196, 138, 98, 0.12); color: #e3b291; text-decoration: line-through; text-decoration-color: rgba(227, 178, 145, 0.6); }
 .vg-lines .del::before { content: "−"; color: #e3b291; }
 .vg-lines .add { background: rgba(185, 201, 162, 0.12); color: #cddcb8; }
@@ -220,7 +224,7 @@ code, .mono { font-family: var(--font-mono); }
 .app-dots i:first-child { background: #c48a62; }
 .app-crumb { display: inline-flex; align-items: center; gap: 0.45rem; color: #9aabc3; white-space: nowrap; min-inline-size: 0; }
 .app-crumb b { color: #eef2f8; font-weight: 600; }
-.app-crumb span { color: #4f6688; }
+.app-crumb span { color: #7c8ea8; }
 .app-crumb em { font-style: normal; color: #eef2f8; overflow: hidden; text-overflow: ellipsis; }
 .app-search {
   margin-inline-start: auto; display: inline-flex; align-items: center; gap: 0.5rem; padding: 0.38rem 0.6rem; border-radius: 0.5rem;
@@ -264,7 +268,7 @@ code, .mono { font-family: var(--font-mono); }
 
 .app-main { display: flex; flex-direction: column; min-inline-size: 0; padding: 1.1rem 1.4rem 0; overflow: hidden; }
 .app-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; }
-.app-head h3 { margin: 0; font: 600 1.35rem/1.2 "Instrument Sans", sans-serif; color: #f6f8fc; text-transform: none; text-shadow: none; letter-spacing: -0.01em !important; }
+.app-head h2 { margin: 0; font: 600 1.35rem/1.2 "Instrument Sans", sans-serif; color: #f6f8fc; text-transform: none; text-shadow: none; letter-spacing: -0.01em !important; }
 .app-head p { margin: 0.2rem 0 0; color: #8b9cb6; font-size: 0.8rem; }
 .app-status { flex: none; display: inline-flex; align-items: center; gap: 0.4rem; padding: 0.25rem 0.65rem; border-radius: 999px; font-size: 0.74rem; font-weight: 600; background: rgba(143, 184, 255, 0.12); color: #bcd3ff; }
 .app-status::before { content: ""; inline-size: 0.45rem; block-size: 0.45rem; border-radius: 50%; background: currentColor; }
@@ -313,7 +317,7 @@ code, .mono { font-family: var(--font-mono); }
 .app-card { padding: 0.85rem; border-radius: 0.75rem; background: #12233e; border: 1px solid rgba(200, 218, 245, 0.07); }
 .app-ask { transition: border-color 0.4s ease, box-shadow 0.4s ease; }
 .app-ask.is-on { border-color: rgba(224, 167, 122, 0.5); box-shadow: 0 0 0 4px rgba(224, 167, 122, 0.08); }
-.app-ask h4 { margin: 0; font: 600 0.95rem/1.3 "Instrument Sans", sans-serif; color: #f6f8fc; text-transform: none; text-shadow: none; }
+.app-ask h3 { margin: 0; font: 600 0.95rem/1.3 "Instrument Sans", sans-serif; color: #f6f8fc; text-transform: none; text-shadow: none; }
 .ask-sub { margin: 0.2rem 0 0.65rem; color: #94a5bd; font-size: 0.76rem; }
 .ask-preview { padding: 0.6rem 0.7rem; border-radius: 0.5rem; background: #081326; border: 1px solid rgba(200, 218, 245, 0.07); color: #b3c1d4; font-size: 0.76rem; line-height: 1.5; }
 .ask-preview b { color: #eef2f8; font-weight: 600; }
@@ -572,7 +576,7 @@ code, .mono { font-family: var(--font-mono); }
 .seg button[aria-checked="true"] { background: #1b3561; box-shadow: inset 0 0 0 1px rgba(143, 184, 255, 0.35); color: #fff; }
 .code-col { display: grid; gap: 0.9rem; min-inline-size: 0; }
 .code { margin: 0; padding: 1.4rem 1.5rem; border-radius: 1.1rem; background: rgba(4, 12, 28, 0.82); box-shadow: var(--recessed); font: 400 0.8rem/1.65 var(--font-mono); color: var(--paper); overflow-x: auto; white-space: pre; min-block-size: 25rem; }
-.code .k { color: #aeb6bd; } .code .s { color: #8fb8ff; } .code .n { color: #c99d72; } .code .c { color: rgba(238, 242, 248, 0.4); }
+.code .k { color: #aeb6bd; } .code .s { color: #8fb8ff; } .code .n { color: #c99d72; } .code .c { color: #8a97ad; }
 .code-caption { margin: 0; font: 400 0.72rem var(--font-mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); text-align: center; }
 .inline-cmd { display: inline-block; padding: 0.05rem 0.4rem; border-radius: 0.3rem; background: #16294a; font: 500 0.85em var(--font-mono); color: #c9d4e4; }
 
@@ -607,7 +611,7 @@ code, .mono { font-family: var(--font-mono); }
 .footer-top { display: grid; grid-template-columns: minmax(0, 1.6fr) repeat(2, minmax(0, 1fr)); gap: 2.5rem; margin-block-end: 3rem; }
 .footer-line { margin: 1rem 0 1.4rem; color: rgba(238, 242, 248, 0.72); max-inline-size: 26rem; }
 .footer-dl { display: flex; flex-wrap: wrap; gap: 0.6rem; }
-.footer-col h4 { margin: 0 0 1rem; font: 400 0.75rem var(--font-mono); letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); }
+.footer-col h3 { margin: 0 0 1rem; font: 400 0.75rem var(--font-mono); letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); }
 .footer-col ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.6rem; }
 .footer-col a { display: inline-flex; align-items: center; gap: 0.35rem; text-decoration: none; color: rgba(238, 242, 248, 0.82); }
 .footer-col a:hover { color: #fff; }
@@ -690,7 +694,7 @@ code, .mono { font-family: var(--font-mono); }
 
         <aside class="app-side">
           <p class="app-h"><span class="pin">1</span>Bots <span class="app-count">4</span></p>
-          <ul class="app-runs" id="app_runs" role="tablist" aria-label="Bots"></ul>
+          <div class="app-runs" id="app_runs" role="tablist" aria-label="Bots" aria-orientation="vertical"></div>
           <div class="app-side-more">
             <p class="app-h">Agents</p>
             <ul class="app-agents" id="app_agents"></ul>
@@ -702,7 +706,7 @@ code, .mono { font-family: var(--font-mono); }
         <div class="app-main">
           <div class="app-head">
             <div>
-              <h3 id="app_title">Expat filing pilots</h3>
+              <h2 id="app_title">Expat filing pilots</h2>
               <p id="app_meta"></p>
             </div>
             <span class="app-status" id="app_status">Running</span>
@@ -710,11 +714,11 @@ code, .mono { font-family: var(--font-mono); }
           <div class="app-progress" aria-hidden="true"><span id="app_bar"></span></div>
           <div class="app-tabs" role="tablist" aria-label="Views">
             <span class="pin">2</span>
-            <button type="button" role="tab" aria-selected="false" data-tab="thread">Thread</button>
-            <button type="button" role="tab" aria-selected="true" data-tab="timeline">Timeline</button>
-            <button type="button" role="tab" aria-selected="false" data-tab="logs">Logs</button>
+            <button type="button" role="tab" id="tab_thread" aria-controls="app_panes" aria-selected="false" data-tab="thread">Thread</button>
+            <button type="button" role="tab" id="tab_timeline" aria-controls="app_panes" aria-selected="true" data-tab="timeline">Timeline</button>
+            <button type="button" role="tab" id="tab_logs" aria-controls="app_panes" aria-selected="false" data-tab="logs">Logs</button>
           </div>
-          <div class="app-panes">
+          <div class="app-panes" id="app_panes" role="tabpanel" aria-labelledby="tab_timeline">
             <div class="app-thread" id="app_thread" data-pane="thread" hidden></div>
             <ol class="app-steps" id="app_steps" data-pane="timeline"></ol>
             <pre class="app-logs" id="app_logs" data-pane="logs" hidden></pre>
@@ -1014,11 +1018,11 @@ code, .mono { font-family: var(--font-mono); }
         </div>
       </div>
       <nav class="footer-col" aria-label="Product">
-        <h4>Product</h4>
+        <h3>Product</h3>
         <ul><li><a href="#workspace">Workspace</a></li><li><a href="#swarms">Swarms</a></li><li><a href="#inspector">Run inspector</a></li><li><a href="#mcp">MCP</a></li><li><a href="/guide">Guide</a></li></ul>
       </nav>
       <nav class="footer-col" aria-label="Project">
-        <h4>Project</h4>
+        <h3>Project</h3>
         <ul><li><a href="https://github.com/kamatbot/swarmaa">GitHub<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 12 12 4M6 4h6v6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></a></li><li><a href="https://api.swarmaa.com/account">Sign in</a></li><li><a href="/guide#grok">Connect Grok</a></li><li><a href="/brand/">Brand</a></li></ul>
       </nav>
     </div>
@@ -1031,6 +1035,16 @@ code, .mono { font-family: var(--font-mono); }
 </footer>
 
 <script>
+/* SVG pulses (SMIL) on the two swarm maps run only while their map is on screen, starting after load. */
+(function () {
+  const svgs = ["map_svg", "amap_svg"].map((id) => document.getElementById(id)).filter(Boolean);
+  svgs.forEach((s) => s.pauseAnimations && s.pauseAnimations());
+  if (matchMedia("(prefers-reduced-motion: reduce)").matches || !("IntersectionObserver" in window)) return;
+  addEventListener("load", () => {
+    const io = new IntersectionObserver((es) => es.forEach((e) => (e.isIntersecting && !document.hidden ? e.target.unpauseAnimations() : e.target.pauseAnimations())));
+    svgs.forEach((s) => io.observe(s));
+  }, { once: true });
+})();
 /* Nav: flat at the top, a pill once the page moves; marks the section on screen. */
 (function () {
   const nav = document.querySelector(".nav");
@@ -1128,8 +1142,18 @@ ${c("→")}
    ========================================================================== */
 (function () {
   const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  const visible = (el) => { const r = el.getBoundingClientRect(); return !document.hidden && r.bottom > 0 && r.top < window.innerHeight; };
-  const every = (ms, el, fn) => setInterval(() => { if (visible(el)) fn(); }, ms);
+  const afterLoad = (fn) => {
+    const go = () => ("requestIdleCallback" in window ? requestIdleCallback(fn, { timeout: 1500 }) : setTimeout(fn, 300));
+    if (document.readyState === "complete") go(); else addEventListener("load", go, { once: true });
+  };
+  // an interval that exists only while el is on screen and the tab is visible, started after first load
+  const every = (ms, el, fn) => afterLoad(() => {
+    let id = 0, onScreen = !("IntersectionObserver" in window);
+    const sync = () => { const run = onScreen && !document.hidden; if (run && !id) id = setInterval(fn, ms); else if (!run && id) { clearInterval(id); id = 0; } };
+    if (!onScreen) new IntersectionObserver((es) => { onScreen = es[0].isIntersecting; sync(); }).observe(el);
+    document.addEventListener("visibilitychange", sync);
+    sync();
+  });
   const esc = (t) => String(t).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
   /* ── Card 1: the swarm plan writes itself, step by step ── */
@@ -1139,8 +1163,8 @@ ${c("→")}
     const go = plan.querySelector(".vg-go");
     let i = 0;
     const show = (n) => { items.forEach((li, k) => li.classList.toggle("in", k < n)); go.classList.toggle("ready", n >= items.length); };
-    if (reduced) show(items.length);
-    else every(620, plan, () => { i = (i + 1) % (items.length + 6); show(Math.min(i, items.length)); });
+    show(items.length);
+    if (!reduced) every(620, plan, () => { i = (i + 1) % (items.length + 6); show(Math.min(i, items.length)); });
   }
 
   /* ── Card 2: the queue drains into the first agent under its ceiling ── */
@@ -1278,8 +1302,8 @@ ${c("→")}
   function renderRuns() {
     $("app_runs").innerHTML = BOTS.map((b) => {
       const s = state(b);
-      return `<li><button class="app-run" type="button" role="tab" aria-selected="${b === current}" data-id="${b.id}">` +
-        `<span class="dot dot--${DOT[s]}"></span><b>${esc(b.name)}</b><time>${b.time}</time><small>${b.by ? esc(b.by) + " · " : ""}${LABEL[s]}</small></button></li>`;
+      return `<button class="app-run" type="button" role="tab" aria-selected="${b === current}" data-id="${b.id}">` +
+        `<span class="dot dot--${DOT[s]}"></span><b>${esc(b.name)}</b><time>${b.time}</time><small>${b.by ? esc(b.by) + " · " : ""}${LABEL[s]}</small></button>`;
     }).join("");
     // agents panel: who is busy across all bots
     const busy = { claude: 0, codex: 0, antigravity: 0 };
@@ -1329,7 +1353,7 @@ ${c("→")}
     if (s === "ask" && b.ask) {
       const a = b.ask;
       ask.classList.add("is-on");
-      ask.innerHTML = `<p class="app-h"><span class="pin">3</span>Needs you · 1</p><h4>${esc(a.title)}</h4><p class="ask-sub">${esc(a.sub)}</p>` +
+      ask.innerHTML = `<p class="app-h"><span class="pin">3</span>Needs you · 1</p><h3>${esc(a.title)}</h3><p class="ask-sub">${esc(a.sub)}</p>` +
         `<div class="ask-preview ask-note"><span class="vg-lbl">Lead's note</span>${esc(a.note)}</div>` +
         `<div class="ask-btns"><button class="ok" type="button" data-act="approve">Approve merge</button><button type="button" data-act="reply">Reply</button></div>`;
     } else {
@@ -1420,6 +1444,7 @@ ${c("→")}
     tab = btn.dataset.tab;
     app.querySelectorAll(".app-tabs button").forEach((x) => x.setAttribute("aria-selected", String(x === btn)));
     app.querySelectorAll("[data-pane]").forEach((p) => (p.hidden = p.dataset.pane !== tab));
+    $("app_panes").setAttribute("aria-labelledby", btn.id);
   });
   let toastT = 0;
   const toast = (msg) => { const t = $("app_toast"); t.textContent = msg; t.classList.add("on"); clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove("on"), 2400); };
@@ -1615,8 +1640,9 @@ ${c("→")}
   function frame(now) {
     raf = 0;
     const dt = Math.min(0.1, (now - (last || now)) / 1000); last = now;
-    const on = playing && !document.hidden && (() => { const r = root.getBoundingClientRect(); return r.bottom > 0 && r.top < innerHeight; })();
-    if (on && performance.now() >= resumeAt) {
+    const on = playing && !document.hidden && onScreen;
+    if (!on) { last = 0; return; } // stop the loop; the observer or visibilitychange restarts it
+    if (performance.now() >= resumeAt) {
       if (now < holdUntil) { /* holding */ }
       else if (!approved && t >= gate.t && t < gate.t + 0.05) {
         // reached the gate: wait for a person, then approve and skip the human wait
@@ -1654,8 +1680,17 @@ ${c("→")}
   });
   if (!playing) { playBtn.setAttribute("aria-pressed", "false"); playBtn.setAttribute("aria-label", "Play"); }
 
+  let onScreen = false;
   if (reduced) { approved = true; t = END; draw(); }
-  else { draw(); tick(); }
+  else {
+    draw();
+    const start = () => {
+      if (!("IntersectionObserver" in window)) { onScreen = true; tick(); return; }
+      new IntersectionObserver((es) => { onScreen = es[0].isIntersecting; if (onScreen && playing) tick(); }).observe(root);
+    };
+    const go = () => ("requestIdleCallback" in window ? requestIdleCallback(start, { timeout: 1500 }) : setTimeout(start, 300));
+    if (document.readyState === "complete") go(); else addEventListener("load", go, { once: true });
+  }
   document.addEventListener("visibilitychange", () => { if (!document.hidden && playing) tick(); });
 })();
 </script>
