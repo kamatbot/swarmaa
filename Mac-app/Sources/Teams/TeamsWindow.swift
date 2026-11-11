@@ -25,8 +25,8 @@ final class TeamsWindowController: NSObject, NSWindowDelegate {
             window.setAccessibilityRole(.window)
             window.setAccessibilityLabel("Swarmaa")
             window.minSize = NSSize(width: 900, height: 560)
-            // Kind Swarm has one theme, paper; keep the window in it whatever the Mac's appearance.
-            window.appearance = NSAppearance(named: .aqua)
+            // The workspace has one theme, navy; keep the window dark whatever the Mac's appearance.
+            window.appearance = NSAppearance(named: .darkAqua)
             let host = TeamsHostingView(rootView: TeamsRootView(model: model))
             host.safeAreaRegions = []
             window.contentView = host
@@ -136,7 +136,8 @@ struct TeamsConnectionStatus: View {
         if model.staleError != nil || model.streamState != "Live" {
             HStack(spacing: 8) {
                 KSChip(model.staleError == nil ? L10n.t("Reconnecting") : L10n.t("Offline"),
-                       fill: model.staleError == nil ? KS.butter : KS.coral)
+                       fill: model.staleError == nil ? KS.needsYouTint : KS.failedTint,
+                       ink: model.staleError == nil ? KS.needsYouText : KS.failedText)
                 if let date = model.lastUpdated {
                     TimelineView(.periodic(from: .now, by: 60)) { context in
                         Text(verbatim: L10n.t("updated \(max(0, Int(context.date.timeIntervalSince(date) / 60))) min ago"))
@@ -166,8 +167,8 @@ struct TeamsRootView: View {
         .background(KS.paper)
         .ignoresSafeArea(.container, edges: .top)
         .foregroundStyle(KS.ink)
-        .tint(KS.ink)
-        .environment(\.colorScheme, .light)
+        .tint(KS.signal)
+        .environment(\.colorScheme, .dark)
         .alert(L10n.t("Swarmaa"), isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) {
             Button(L10n.t("OK")) { model.error = nil }
         } message: { Text(verbatim: model.error ?? "") }
@@ -217,8 +218,9 @@ struct TeamsRail: View {
             Button { model.showSwarmMap.toggle() } label: {
                 Image(systemName: "point.3.connected.trianglepath.dotted").font(.system(size: 17, weight: .semibold))
                     .frame(width: 46, height: 46)
-                    .background(Circle().fill(model.showSwarmMap ? KS.lime : .clear))
-                    .foregroundStyle(model.showSwarmMap ? KS.ink : KS.onInkSoft)
+                    .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(model.showSwarmMap ? KS.selected : .clear))
+                    .overlay(alignment: .leading) { if model.showSwarmMap { railMark } }
+                    .foregroundStyle(model.showSwarmMap ? KS.signal : KS.onInkMuted)
                     .contentShape(Circle())
             }
             .buttonStyle(RailButtonStyle())
@@ -239,7 +241,13 @@ struct TeamsRail: View {
         }
         .frame(width: 72)
         .frame(maxHeight: .infinity)
-        .background(KS.ink)
+        .background(KS.rail)
+        .overlay(alignment: .trailing) { Rectangle().fill(KS.hairline).frame(width: 1) }
+    }
+
+    /// The 2 pt signal bar a selected rail item carries on its leading edge.
+    private var railMark: some View {
+        RoundedRectangle(cornerRadius: 1).fill(KS.signal).frame(width: 2, height: 22).offset(x: -1)
     }
 
     /// `symbol` nil draws the Swarmaa mark.
@@ -251,10 +259,11 @@ struct TeamsRail: View {
                 else { KSMoji(seed: "swarmaa", size: 34, kind: .mark) }
             }
                 .frame(width: 46, height: 46)
-                .background(Circle().fill(on ? KS.lime : .clear))
-                .foregroundStyle(on ? KS.ink : KS.onInkSoft)
+                .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(on ? KS.selected : .clear))
+                .overlay(alignment: .leading) { if on { railMark } }
+                .foregroundStyle(on ? KS.signal : KS.onInkMuted)
                 .overlay(alignment: .topTrailing) { if badge > 0 { KSBadge(count: badge, outlined: true).offset(x: 6, y: -4) } }
-                .contentShape(Circle())
+                .contentShape(Rectangle())
         }
         .buttonStyle(RailButtonStyle())
         .help(title)
@@ -273,7 +282,7 @@ private struct RailButtonStyle: ButtonStyle {
         @State private var hovered = false
         var body: some View {
             configuration.label
-                .background(Circle().fill(KS.paper.opacity(configuration.isPressed ? 0.18 : hovered ? 0.10 : 0)))
+                .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.white.opacity(configuration.isPressed ? 0.10 : hovered ? 0.05 : 0)))
                 .onHover { hovered = $0 }
         }
     }
@@ -297,7 +306,7 @@ struct UsageRingButton: View {
                         .stroke(KS.providerTint(usage.provider), style: StrokeStyle(lineWidth: 4.5, lineCap: .butt))
                         .rotationEffect(.degrees(-90))
                 }
-                Text(verbatim: TeamsCopy.providerShort(usage.provider)).font(KS.mono(10, .bold)).foregroundStyle(KS.paper)
+                Text(verbatim: TeamsCopy.providerShort(usage.provider)).font(KS.mono(10, .bold)).foregroundStyle(KS.ink)
             }
             .frame(width: 34, height: 34).frame(width: 46, height: 42).contentShape(Rectangle())
         }
@@ -305,7 +314,7 @@ struct UsageRingButton: View {
         .onHover { hovering = $0 }
         .popover(isPresented: Binding(get: { hovering }, set: { if !$0 { hovering = false } }),
                  arrowEdge: .trailing) {
-            UsageCard(model: model, usage: usage).environment(\.colorScheme, .light)
+            UsageCard(model: model, usage: usage).environment(\.colorScheme, .dark)
         }
         .accessibilityLabel(name + ", " + (left.map { L10n.t("\(Int($0)) percent left") } ?? L10n.t("no reading")))
         .accessibilityHint(L10n.t("Opens Usage"))
@@ -324,18 +333,18 @@ struct UsageCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text(verbatim: SwarmaCells.vendorName(usage.provider)).font(KS.body(18, .bold)).foregroundStyle(KS.paper)
+                Text(verbatim: SwarmaCells.vendorName(usage.provider)).font(KS.body(17, .semibold)).foregroundStyle(KS.strong)
                 Spacer()
-                if let h = usage.headroom { KSChip("\(Int(h))% " + L10n.t("left"), fill: KS.providerTint(usage.provider)) }
+                if let h = usage.headroom { KSChip("\(Int(h))% " + L10n.t("left"), fill: KS.providerTint(usage.provider), ink: KS.onSignal) }
             }
             if let error = usage.error { Text(verbatim: error).font(KS.body(13)).foregroundStyle(KS.coral) }
             ForEach(Array(usage.windows.enumerated()), id: \.offset) { _, w in
                 VStack(alignment: .leading, spacing: 5) {
                     HStack {
-                        Text(verbatim: TeamsCopy.windowName(w.name)).font(KS.body(14)).foregroundStyle(KS.paper)
+                        Text(verbatim: TeamsCopy.windowName(w.name)).font(KS.body(14)).foregroundStyle(KS.ink)
                         Spacer()
                         Text(verbatim: w.usedPercent.map { "\(Int($0))% " + L10n.t("used") } ?? "—")
-                            .font(KS.mono(12, .semibold)).foregroundStyle(KS.paper)
+                            .font(KS.mono(12, .semibold)).foregroundStyle(KS.ink)
                     }
                     GeometryReader { g in
                         ZStack(alignment: .leading) {
@@ -343,22 +352,22 @@ struct UsageCard: View {
                             Capsule().fill(KS.providerTint(usage.provider))
                                 .frame(width: g.size.width * min(max((w.usedPercent ?? 0) / 100, 0), 1))
                         }
-                    }.frame(height: 8)
+                    }.frame(height: 6)
                     if let reset = w.resetsAt {
-                        Text("Resets \(reset, format: .relative(presentation: .named))").font(KS.body(12)).foregroundStyle(KS.onInkSoft)
+                        Text("Resets \(reset, format: .relative(presentation: .named))").font(KS.body(12)).foregroundStyle(KS.textMuted)
                     }
                 }
             }
-            Rectangle().fill(KS.inkLine).frame(height: 2)
+            Rectangle().fill(KS.hairline).frame(height: 1)
             HStack {
                 Text(verbatim: routing.map { $0.liveWorker ? L10n.t("Live worker ready") : L10n.t("No live worker") } ?? L10n.t("Not routed"))
-                    .font(KS.body(12)).foregroundStyle(KS.onInkSoft)
+                    .font(KS.body(12)).foregroundStyle(KS.textMuted)
                 Spacer()
                 Button(L10n.t("Usage")) { model.pane = .usage }.buttonStyle(.ks(.primary, compact: true))
             }
         }
         .padding(16).frame(width: 290)
-        .background(KS.ink)
+        .background(KS.white)
     }
 }
 
@@ -372,8 +381,8 @@ struct TeamsAvatar: View {
     var size: CGFloat = 32
     var body: some View {
         if isChannel {
-            Text(verbatim: "#").font(KS.display(size * 0.55)).frame(width: size, height: size)
-                .ksCard(fill: KS.lime, radius: size * 0.3, line: 2).accessibilityHidden(true)
+            Text(verbatim: "#").font(KS.mono(size * 0.45, .bold)).foregroundStyle(KS.onSignal).frame(width: size, height: size)
+                .ksCard(fill: KS.signal, radius: size * 0.3).accessibilityHidden(true)
         } else {
             KSMoji(seed: seed, size: size)
         }
@@ -393,10 +402,10 @@ struct TeamsEmptyState: View {
 
     var body: some View {
         VStack(spacing: 14) {
-            Image(systemName: symbol).font(.system(size: 30, weight: .semibold)).foregroundStyle(KS.ink)
-                .frame(width: 72, height: 72).ksCard(fill: KS.lime, radius: 24, shadow: true)
-            Text(verbatim: title).font(KS.body(20, .bold)).multilineTextAlignment(.center)
-            if let detail { Text(verbatim: detail).font(KS.body(15)).foregroundStyle(KS.textSoft).multilineTextAlignment(.center).frame(maxWidth: 420) }
+            Image(systemName: symbol).font(.system(size: 24, weight: .medium)).foregroundStyle(KS.signal)
+                .frame(width: 56, height: 56).ksCard(fill: KS.chip, radius: 12)
+            Text(verbatim: title).font(KS.body(18, .semibold)).foregroundStyle(KS.strong).multilineTextAlignment(.center)
+            if let detail { Text(verbatim: detail).font(KS.body(14)).foregroundStyle(KS.textMuted).multilineTextAlignment(.center).frame(maxWidth: 420) }
             if let action { Button(action.0, action: action.1).buttonStyle(.ks(.primary)) }
         }
         .padding(40).frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -410,6 +419,7 @@ struct KSBottomBar<Content: View>: View {
         HStack(spacing: 10) { content }
             .padding(.horizontal, 20).padding(.vertical, 12)
             .background(KS.paper)
+            .overlay(alignment: .top) { Rectangle().fill(KS.hairline).frame(height: 1) }
     }
 }
 
@@ -421,7 +431,7 @@ struct UsagePane: View {
     var body: some View {
         VStack(spacing: 0) {
             KSTopBar {
-                Text(verbatim: L10n.t("USAGE.")).font(KS.display(24)).fixedSize()
+                Text(verbatim: L10n.t("Usage")).font(KS.body(20, .semibold)).foregroundStyle(KS.strong).fixedSize()
                 Text(verbatim: L10n.t("What each subscription has left, and where auto routing sends work next."))
                     .font(KS.body(13)).foregroundStyle(KS.textSoft).lineLimit(1)
                 Spacer(minLength: 0)
@@ -465,12 +475,12 @@ struct UsageProviderCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text(verbatim: SwarmaCells.vendorName(usage.provider)).font(KS.body(19, .bold))
+                Text(verbatim: SwarmaCells.vendorName(usage.provider)).font(KS.body(17, .semibold)).foregroundStyle(KS.strong)
                 Spacer()
                 if let plan = usage.plan, !plan.isEmpty { KSChip(plan) }
             }
             HStack(alignment: .lastTextBaseline, spacing: 6) {
-                Text(verbatim: usage.headroom.map { "\(Int($0))%" } ?? "—").font(KS.display(46))
+                Text(verbatim: usage.headroom.map { "\(Int($0))%" } ?? "—").font(KS.mono(34, .medium)).foregroundStyle(KS.strong)
                 KSLabel(L10n.t("left"))
             }
             if let error = usage.error { Text(verbatim: error).font(KS.body(13)).foregroundStyle(KS.textSoft) }
@@ -483,11 +493,11 @@ struct UsageProviderCard: View {
                     }
                     GeometryReader { g in
                         ZStack(alignment: .leading) {
-                            Capsule().fill(KS.paper)
+                            Capsule().fill(KS.chip)
                             Capsule().fill(KS.providerTint(usage.provider))
                                 .frame(width: g.size.width * min(max((w.usedPercent ?? 0) / 100, 0), 1))
                         }
-                    }.frame(height: 10)
+                    }.frame(height: 5)
                     if let reset = w.resetsAt {
                         Text("Resets \(reset, format: .relative(presentation: .named))").font(KS.body(12)).foregroundStyle(KS.textMuted)
                     }
@@ -504,17 +514,17 @@ struct RoutingOrderBand: View {
     var body: some View {
         let order = usage.filter { $0.headroom != nil }.sorted { ($0.headroom ?? 0) > ($1.headroom ?? 0) }
         VStack(alignment: .leading, spacing: 12) {
-            KSLabel(L10n.t("01 — Auto routing order, right now"), color: KS.onInkSoft)
+            KSLabel(L10n.t("01 — Auto routing order, right now"))
             HStack(spacing: 10) {
                 ForEach(Array(order.enumerated()), id: \.element.provider) { i, u in
-                    if i > 0 { Text(verbatim: "→").foregroundStyle(KS.onInkMuted) }
-                    KSChip("\(i + 1)", fill: i == 0 ? KS.lime : KS.white)
-                    Text(verbatim: SwarmaCells.vendorName(u.provider)).font(KS.body(15, .semibold)).foregroundStyle(KS.paper)
+                    if i > 0 { Text(verbatim: "→").foregroundStyle(KS.textDim) }
+                    KSChip("\(i + 1)", fill: i == 0 ? KS.signal : KS.chip, ink: i == 0 ? KS.onSignal : KS.textSoft)
+                    Text(verbatim: SwarmaCells.vendorName(u.provider)).font(KS.body(15, .semibold)).foregroundStyle(KS.ink)
                 }
             }
         }
         .padding(20).frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 22).fill(KS.ink))
+        .ksCard(radius: 12)
     }
 }
 

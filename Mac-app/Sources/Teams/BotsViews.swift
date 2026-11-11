@@ -297,7 +297,7 @@ struct BotThreadHeader: View {
             }
             .padding(.horizontal, 9).frame(height: 32)
             .background(Capsule().fill(KS.white))
-            .shadow(color: KS.ink.opacity(0.08), radius: 1, y: 1)
+            .shadow(color: KS.shadow.opacity(0.08), radius: 1, y: 1)
         }
         // `.button` + plain keeps the label as drawn; `.borderlessButton` flattens it to an NSMenu title and image.
         .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize()
@@ -648,14 +648,14 @@ private struct DeleteBotSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text(verbatim: L10n.t("Delete bot?")).font(KS.display(32))
+            Text(verbatim: L10n.t("Delete bot?")).font(KS.body(24, .semibold))
             Text(verbatim: L10n.t("This permanently deletes the bot and its chat. This cannot be undone."))
                 .font(KS.body(15))
             Text(verbatim: L10n.t("Type the bot's name exactly to confirm:")).font(KS.body(14))
             Text(verbatim: bot.name).font(KS.body(16, .bold)).textSelection(.enabled)
             TextField(L10n.t("Bot name"), text: $confirmName).textFieldStyle(.roundedBorder)
             if let error = model.botError {
-                Text(verbatim: error).font(KS.body(14)).foregroundStyle(.red)
+                Text(verbatim: error).font(KS.body(14)).foregroundStyle(KS.danger)
                     .fixedSize(horizontal: false, vertical: true)
             }
             HStack {
@@ -666,7 +666,7 @@ private struct DeleteBotSheet: View {
                 Button(L10n.t("Delete bot"), role: .destructive) {
                     Task { if await model.deleteBot(bot, confirmName: confirmName) { dismiss() } }
                 }
-                .buttonStyle(.plain).foregroundStyle(.red)
+                .buttonStyle(.plain).foregroundStyle(KS.danger)
                 .disabled(confirmName != bot.name || model.savingBot)
             }
         }
@@ -698,7 +698,7 @@ struct NewBotSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text(verbatim: L10n.t("NEW BOT.")).font(KS.display(36))
+            Text(verbatim: L10n.t("New bot")).font(KS.body(24, .semibold))
             Text(verbatim: L10n.t("One job, done for as long as the bot exists. You can add a crew and set its routing after."))
                 .font(KS.body(14)).foregroundStyle(KS.textSoft)
             labeled(L10n.t("Name")) { TextField(L10n.t("e.g. Launch"), text: $name).textFieldStyle(.plain).font(KS.body(16)) }
@@ -740,7 +740,7 @@ struct NewBotSheet: View {
             }
         }
         .padding(24).frame(width: 520).fixedSize(horizontal: false, vertical: true)
-        .background(KS.paper).environment(\.colorScheme, .light)
+        .background(KS.paper).environment(\.colorScheme, .dark)
         .onAppear { model.botError = nil; if scope.isEmpty { scope = scopes.first ?? "" } }
         .onChange(of: scope) { _, _ in leadID = "" }
     }

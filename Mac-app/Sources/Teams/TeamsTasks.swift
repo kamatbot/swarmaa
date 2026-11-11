@@ -83,10 +83,10 @@ enum TeamsTaskSection: Int, CaseIterable, Comparable {
     /// Green for review, orange for input, blue for working, red for failed.
     var color: Color {
         switch self {
-        case .needsInput: return .orange
-        case .review: return .green
-        case .working: return .blue
-        case .failed: return .red
+        case .needsInput: return KS.amber
+        case .review: return KS.sage
+        case .working: return KS.signal
+        case .failed: return KS.coral
         case .resolved: return .secondary
         }
     }

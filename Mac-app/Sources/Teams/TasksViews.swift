@@ -17,7 +17,7 @@ struct NeedsYouRow: View {
             Spacer(minLength: 8)
             if let at = item.at {
                 Text(at, format: .relative(presentation: .numeric, unitsStyle: .narrow))
-                    .font(.caption).foregroundStyle(Palette.textSecondary)
+                    .font(.caption).foregroundStyle(KS.textMuted)
             }
         }
         .padding(.vertical, 3)
@@ -69,7 +69,7 @@ struct RunningSwarmRow: View {
                     Text(verbatim: swarm.title).font(.system(size: 13, weight: .semibold)).lineLimit(2)
                     let names = swarm.runningAssignees.compactMap { model.agent(id: $0)?.name }
                     Text(verbatim: names.isEmpty ? TeamsCopy.swarmStatus(swarm.status) : names.joined(separator: ", "))
-                        .font(.callout).foregroundStyle(Palette.textSecondary).lineLimit(2)
+                        .font(.callout).foregroundStyle(KS.textMuted).lineLimit(2)
                 }
                 Spacer()
                 Text(verbatim: "\(swarm.progress.done)/\(swarm.progress.total)").font(.system(size: 13, weight: .bold).monospacedDigit())
@@ -99,7 +99,7 @@ struct TasksPane: View {
         let sections = TeamsTaskGrouping.sections(model.taskRows, search: model.taskSearch, sort: model.taskSort)
         VStack(spacing: 0) {
             KSTopBar {
-                Text(verbatim: L10n.t("TASKS.")).font(KS.display(24)).fixedSize()
+                Text(verbatim: L10n.t("Tasks")).font(KS.body(20, .semibold)).foregroundStyle(KS.strong).fixedSize()
                 Text(verbatim: L10n.t("Everything your bots are doing, done or stuck on."))
                     .font(KS.body(13)).foregroundStyle(KS.textSoft).lineLimit(1)
                 Spacer(minLength: 0)
@@ -418,9 +418,9 @@ private struct ContextUsedSection: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(verbatim: label(item)).textSelection(.enabled)
                         if item.validity == "source_changed" {
-                            Text(verbatim: L10n.t("Source changed — verify")).font(KS.body(11, .bold)).foregroundStyle(.orange)
+                            Text(verbatim: L10n.t("Source changed — verify")).font(KS.body(11, .bold)).foregroundStyle(KS.needsYouText)
                         } else if item.validity == "source_missing" {
-                            Text(verbatim: L10n.t("Source missing")).font(KS.body(11, .bold)).foregroundStyle(.orange)
+                            Text(verbatim: L10n.t("Source missing")).font(KS.body(11, .bold)).foregroundStyle(KS.needsYouText)
                         }
                     }
                 }
@@ -451,7 +451,7 @@ struct SetupChecklistView: View {
             Text(verbatim: L10n.t("Setup")).font(.title2.weight(.semibold))
             VStack(alignment: .leading, spacing: 10) {
                 if model.setupRows.isEmpty {
-                    Text(verbatim: L10n.t("Not checked yet.")).foregroundStyle(Palette.textSecondary)
+                    Text(verbatim: L10n.t("Not checked yet.")).foregroundStyle(KS.textMuted)
                 }
                 ForEach(model.setupRows) { SetupRowView(row: $0) }
             }
@@ -475,9 +475,9 @@ struct SetupRowView: View {
 
     private var badge: (String, Color) {
         switch row.state {
-        case .ready: return (L10n.t("Ready"), .green)
+        case .ready: return (L10n.t("Ready"), KS.sage)
         case .notChecked: return (L10n.t("Not checked"), .secondary)
-        case .needsSetup: return (L10n.t("Needs setup"), .orange)
+        case .needsSetup: return (L10n.t("Needs setup"), KS.amber)
         }
     }
 
@@ -488,7 +488,7 @@ struct SetupRowView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(verbatim: row.title).font(.body)
                 if row.state != .ready {
-                    Text(verbatim: row.fix).font(.caption).foregroundStyle(Palette.textSecondary)
+                    Text(verbatim: row.fix).font(.caption).foregroundStyle(KS.textMuted)
                         .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
                 }
             }

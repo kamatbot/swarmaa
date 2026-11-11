@@ -77,9 +77,9 @@ final class TeamsSnapshotRender: XCTestCase {
     private func render<V: View>(_ view: V, _ name: String, size: CGSize) throws {
         guard let dir = ProcessInfo.processInfo.environment["SWARMAA_SNAPSHOT_DIR"] else { throw XCTSkip("set SWARMAA_SNAPSHOT_DIR") }
         try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-        let host = NSHostingView(rootView: view.frame(width: size.width, height: size.height).environment(\.colorScheme, .light))
+        let host = NSHostingView(rootView: view.frame(width: size.width, height: size.height).environment(\.colorScheme, .dark))
         host.frame = NSRect(origin: .zero, size: size)
-        host.appearance = NSAppearance(named: .aqua)
+        host.appearance = NSAppearance(named: .darkAqua)
         let window = NSWindow(contentRect: host.frame, styleMask: [.borderless], backing: .buffered, defer: false)
         window.contentView = host
         host.layoutSubtreeIfNeeded()

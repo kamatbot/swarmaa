@@ -235,7 +235,7 @@ struct HandoverStrip: View {
                         Text(verbatim: agent?.name ?? L10n.t("A crew member")).font(KS.body(12, m.active ? .semibold : .regular))
                     }
                     .padding(.leading, 3).padding(.trailing, 8).frame(height: 24)
-                    .background(Capsule().fill(m.active ? KS.lime : KS.neutralTint))
+                    .background(Capsule().fill(m.active ? KS.selected : KS.neutralTint))
                 }
             }
         }

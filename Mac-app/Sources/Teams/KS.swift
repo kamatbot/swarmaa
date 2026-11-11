@@ -1,42 +1,72 @@
 import AppKit
 import SwiftUI
 
-/// Kind Swarm: soft content surfaces, paper ground, muted lime and coral. Matches the "Swarmaa main
-/// window" design canvas. Normal-width system type keeps body copy legible;
-/// compressed type is reserved for the stencil display lines.
+/// Swarmaa's workspace palette: a dark-navy developer tool. Token names predate the
+/// navy rebuild ("paper", "ink", "white"), so every view follows; read them as roles:
+/// `paper` = window ground, `paperDeep` = side columns, `white` = card, `ink` = primary text.
 enum KS {
-    static let ink = Color(hex: 0x15111F)
-    static let paper = Color(hex: 0xF4EFE6)
-    /// The bot list and other side columns: a shade darker than paper, so columns part by tone, not a rule.
-    static let paperDeep = Color(hex: 0xEBE4D7)
+    /// Primary text.
+    static let ink = Color(hex: 0xE3E9F2)
+    /// Titles and names.
+    static let strong = Color(hex: 0xF2F5FA)
+    /// Window ground.
+    static let paper = Color(hex: 0x0B182D)
+    /// Side columns.
+    static let paperDeep = Color(hex: 0x0D1C33)
+    /// The window top bar.
+    static let topBar = Color(hex: 0x0F1F38)
+    /// The leftmost rail.
+    static let rail = Color(hex: 0x08142A)
+    /// Inset wells: search, composer, code.
+    static let well = Color(hex: 0x081326)
+    /// Agent message cards.
+    static let bubble = Color(hex: 0x102039)
+    /// Selected row and your own messages.
+    static let selected = Color(hex: 0x1B3155)
+    /// Chips, tracks and secondary buttons.
+    static let chip = Color(hex: 0x182C4D)
+    static let chipAlt = Color(hex: 0x16294A)
     /// A soft separator between rows inside a card.
-    static let hairline = Color(hex: 0x15111F).opacity(0.10)
-    static let white = Color.white
-    static let lime = Color(hex: 0xCFE08A)
-    static let coral = Color(hex: 0xE8836B)
+    static let hairline = Color(red: 200 / 255, green: 218 / 255, blue: 245 / 255).opacity(0.08)
+    /// Card surface (named for the light theme it replaced).
+    static let white = Color(hex: 0x12233E)
+    /// Signal blue: primary buttons, progress, running.
+    static let signal = Color(hex: 0x8FB8FF)
+    /// Text on signal blue (and on any light accent fill).
+    static let onSignal = Color(hex: 0x0A1830)
+    /// Kept name: the old lime accent is now signal blue.
+    static let lime = signal
+    /// Failure.
+    static let coral = Color(hex: 0xE0896A)
     /// Destructive actions (hide, delete).
-    static let danger = Color(hex: 0xC8452F)
-    static let coralTint = Color(hex: 0xFDF5F0)
-    static let needsYouTint = Color(hex: 0xFBE3DA)
-    static let needsYouText = Color(hex: 0x9B3A22)
-    static let readyText = Color(hex: 0x4A5A12)
-    static let failedTint = Color(hex: 0xF6DDD6)
-    static let failedText = Color(hex: 0x8A2410)
-    static let neutralTint = ink.opacity(0.06)
-    static let hoverTint = ink.opacity(0.10)
-    static let searchLine = ink.opacity(0.06)
-    static let optionLine = ink.opacity(0.12)
-    static let sage = Color(hex: 0xD6E3A6)
-    static let sageTint = Color(hex: 0xF1F5E2)
-    static let sky = Color(hex: 0xB7CCE8)
-    static let butter = Color(hex: 0xEAD9A6)
-    static let lilac = Color(hex: 0xD9CDEE)
-    static let textSoft = Color(hex: 0x3A3347)
-    static let textMuted = Color(hex: 0x5A5168)
-    static let onInkSoft = Color(hex: 0xCFC6E8)
-    static let onInkMuted = Color(hex: 0xB9B0CC)
-    static let inkLine = Color(hex: 0x3B3358)
-    static let dash = Color(hex: 0xCFC6E8)
+    static let danger = Color(hex: 0xE0896A)
+    /// A card that needs you: the card, warmed a touch toward amber.
+    static let coralTint = Color(hex: 0x1E2C42)
+    static let amber = Color(hex: 0xE0A77A)
+    static let needsYouTint = Color(hex: 0xE0A77A).opacity(0.16)
+    static let needsYouText = Color(hex: 0xECC09A)
+    static let readyText = Color(hex: 0xCDDCB8)
+    static let failedTint = Color(hex: 0xE0896A).opacity(0.16)
+    static let failedText = Color(hex: 0xF0A88E)
+    static let neutralTint = chip
+    static let hoverTint = Color(hex: 0x213A62)
+    static let searchLine = hairline
+    static let optionLine = Color(red: 200 / 255, green: 218 / 255, blue: 245 / 255).opacity(0.14)
+    static let sage = Color(hex: 0xB9C9A2)
+    static let sageTint = Color(hex: 0xB9C9A2).opacity(0.18)
+    static let sky = Color(hex: 0x7AA7F2)
+    static let butter = Color(hex: 0xE0A77A).opacity(0.16)
+    static let lilac = Color(hex: 0x2A4068)
+    static let textSoft = Color(hex: 0xB3C1D4)
+    static let textMuted = Color(hex: 0x8B9CB6)
+    static let textDim = Color(hex: 0x7C8EA8)
+    /// Idle dots and separators.
+    static let idle = Color(hex: 0x4F6688)
+    static let onInkSoft = Color(hex: 0xC9D4E4)
+    static let onInkMuted = Color(hex: 0x8B9CB6)
+    static let inkLine = chip
+    static let dash = Color(red: 200 / 255, green: 218 / 255, blue: 245 / 255).opacity(0.10)
+    static let shadow = Color.black
 
     static let motion = Animation.timingCurve(0.2, 0, 0, 1, duration: 0.2)
     static let pressMotion = Animation.spring(response: 0.28, dampingFraction: 0.78)
@@ -44,7 +74,7 @@ enum KS {
     static func body(_ size: CGFloat = 15, _ weight: Font.Weight = .regular) -> Font {
         .system(size: size, weight: weight)
     }
-    static func display(_ size: CGFloat) -> Font { .system(size: size, weight: .black).width(.compressed) }
+    static func display(_ size: CGFloat) -> Font { .system(size: size, weight: .semibold) }
     static func mono(_ size: CGFloat = 11, _ weight: Font.Weight = .medium) -> Font {
         .system(size: size, weight: weight, design: .monospaced)
     }
@@ -52,10 +82,10 @@ enum KS {
     /// A provider's ring colour in the rail and on Usage.
     static func providerTint(_ provider: String) -> Color {
         switch provider {
-        case "claude": return lime
-        case "antigravity": return sky
-        case "codex": return coral
-        default: return butter
+        case "claude": return Color(hex: 0xC99D72)
+        case "antigravity": return Color(hex: 0x7AA7F2)
+        case "codex": return Color(hex: 0xAEB6BD)
+        default: return Color(hex: 0xB9A0D6)
         }
     }
 }
@@ -66,7 +96,7 @@ struct KSLabel: View {
     var color: Color = KS.textMuted
     init(_ text: String, color: Color = KS.textMuted) { self.text = text; self.color = color }
     var body: some View {
-        Text(verbatim: text.uppercased()).font(KS.mono(11)).tracking(1.6).foregroundStyle(color)
+        Text(verbatim: text.uppercased()).font(KS.body(11, .semibold)).tracking(0.9).foregroundStyle(color)
     }
 }
 
@@ -76,26 +106,26 @@ struct KSChip: View {
     var ink: Color = KS.textSoft
     init(_ text: String, fill: Color = KS.neutralTint, ink: Color = KS.textSoft) { self.text = text; self.fill = fill; self.ink = ink }
     var body: some View {
-        Text(verbatim: text).font(KS.body(11.5, .semibold)).lineLimit(1)
+        Text(verbatim: text).font(KS.mono(11, .medium)).lineLimit(1)
             .foregroundStyle(ink)
-            .padding(.horizontal, 7).frame(height: 22)
-            .background(Capsule().fill(fill))
+            .padding(.horizontal, 7).frame(height: 20)
+            .background(RoundedRectangle(cornerRadius: 5, style: .continuous).fill(fill))
             .fixedSize()
     }
 }
 
-/// A count in a lime pill.
+/// A count in a signal-blue pill.
 struct KSBadge: View {
     let count: Int
     var outlined = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
-        Text(verbatim: count > 99 ? "99+" : "\(count)").font(KS.mono(11, .bold)).foregroundStyle(KS.ink)
+        Text(verbatim: count > 99 ? "99+" : "\(count)").font(KS.mono(11, .bold)).foregroundStyle(KS.onSignal)
             .contentTransition(reduceMotion ? .identity : .numericText())
             .animation(reduceMotion ? nil : KS.motion, value: count)
             .padding(.horizontal, 5).frame(minWidth: 20, minHeight: 20)
             .background(Capsule().fill(KS.lime))
-            .overlay { if outlined { Capsule().strokeBorder(KS.ink, lineWidth: 2) } }
+            .overlay { if outlined { Capsule().strokeBorder(KS.rail, lineWidth: 2) } }
             .fixedSize()
             .accessibilityLabel(L10n.t("\(count) new"))
     }
@@ -103,13 +133,10 @@ struct KSBadge: View {
 
 extension View {
     /// Raised surface; legacy shadow callers use the same soft depth.
-    func ksCard(fill: Color = KS.white, radius: CGFloat = 16, shadow: Bool = true, line: CGFloat = 0) -> some View {
-        background(
-            RoundedRectangle(cornerRadius: radius, style: .continuous).fill(fill)
-                .shadow(color: KS.ink.opacity(0.06), radius: 1, y: 1)
-                .shadow(color: KS.ink.opacity(0.05), radius: 7, y: 4)
-        )
-        .overlay(RoundedRectangle(cornerRadius: radius, style: .continuous).strokeBorder(KS.hairline, lineWidth: line))
+    /// Card surface with a hairline edge; navy cards part by tone and line, not shadow.
+    func ksCard(fill: Color = KS.white, radius: CGFloat = 12, shadow: Bool = true, line: CGFloat = 1) -> some View {
+        background(RoundedRectangle(cornerRadius: min(radius, 12), style: .continuous).fill(fill))
+        .overlay(RoundedRectangle(cornerRadius: min(radius, 12), style: .continuous).strokeBorder(KS.hairline, lineWidth: max(line, 1)))
     }
 }
 
@@ -125,20 +152,25 @@ struct KSButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         let pressed = configuration.isPressed && isEnabled
         let fill: Color = switch kind {
-        case .primary: KS.lime
-        case .ink: KS.ink
+        case .primary: hovered && isEnabled ? Color(hex: 0xA6C7FF) : KS.signal
+        case .ink: KS.selected
         case .danger: KS.failedTint
-        case .paper, .white: hovered && isEnabled ? KS.hoverTint : KS.neutralTint
+        case .paper, .white: hovered && isEnabled ? KS.hoverTint : KS.chip
         }
-        let fg: Color = kind == .ink ? KS.paper : kind == .danger ? KS.failedText : KS.ink
+        let fg: Color = kind == .primary ? KS.onSignal : kind == .danger ? KS.failedText : KS.ink
         configuration.label
             .font(KS.body(compact ? 13 : 14, .semibold))
             .foregroundStyle(fg)
             .padding(.horizontal, compact ? 11 : 15)
             .frame(minHeight: compact ? 30 : 36)
-            .background(Capsule().fill(fill))
+            .background(RoundedRectangle(cornerRadius: compact ? 8 : 9, style: .continuous).fill(fill))
+            .overlay {
+                if kind == .paper || kind == .white {
+                    RoundedRectangle(cornerRadius: compact ? 8 : 9, style: .continuous).strokeBorder(KS.optionLine, lineWidth: 1)
+                }
+            }
             .scaleEffect(pressed && !reduceMotion ? 0.985 : 1)
-            .contentShape(Capsule())
+            .contentShape(RoundedRectangle(cornerRadius: 9))
             .opacity(isEnabled ? 1 : 0.45)
             .onHover { hovered = $0 }
             .animation(reduceMotion ? nil : KS.pressMotion, value: pressed)
@@ -197,7 +229,7 @@ struct KSMoji: View {
                 Image(nsImage: image).resizable().interpolation(.high).aspectRatio(contentMode: .fit)
             } else {
                 RoundedRectangle(cornerRadius: size * 0.3).fill(KS.lilac)
-                    .overlay(RoundedRectangle(cornerRadius: size * 0.3).stroke(KS.ink, lineWidth: 2))
+                    .overlay(RoundedRectangle(cornerRadius: size * 0.3).stroke(KS.hairline, lineWidth: 1))
                     .padding(size * 0.1)
             }
         }
@@ -207,7 +239,7 @@ struct KSMoji: View {
     }
 }
 
-/// A search field in a white pill.
+/// A search field in an inset well.
 struct KSSearchField: View {
     let prompt: String
     @Binding var text: String
@@ -215,8 +247,8 @@ struct KSSearchField: View {
     @FocusState private var focused: Bool
     var body: some View {
         HStack(spacing: 8) {
-            Image(systemName: "magnifyingglass").font(.system(size: 13, weight: .semibold)).foregroundStyle(KS.ink)
-            TextField(prompt, text: $text).textFieldStyle(.plain).font(KS.body(15)).focused($focused)
+            Image(systemName: "magnifyingglass").font(.system(size: 12, weight: .semibold)).foregroundStyle(KS.textDim)
+            TextField(prompt, text: $text).textFieldStyle(.plain).font(KS.body(13)).foregroundStyle(KS.ink).focused($focused)
             if !text.isEmpty {
                 Button { text = ""; focused = true } label: {
                     Image(systemName: "xmark.circle.fill").foregroundStyle(KS.textMuted)
@@ -226,10 +258,9 @@ struct KSSearchField: View {
                 .help(L10n.t("Clear search"))
             }
         }
-        .padding(.horizontal, 14).frame(height: height)
-        .background(Capsule().fill(KS.white))
-        .overlay(Capsule().strokeBorder(KS.searchLine, lineWidth: 1))
-        .overlay(Capsule().strokeBorder(KS.lime, lineWidth: focused ? 3 : 0).padding(3))
+        .padding(.horizontal, 10).frame(height: height)
+        .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(KS.well))
+        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(focused ? KS.signal.opacity(0.7) : KS.searchLine, lineWidth: 1))
     }
 }
 
@@ -261,9 +292,10 @@ struct KSBarButtonStyle: ButtonStyle {
         let pressed = configuration.isPressed && isEnabled
         configuration.label
             .frame(width: send ? 36 : 32, height: send ? 36 : 32)
-            .foregroundStyle(send ? KS.paper : KS.ink)
-            .background(Circle().fill(send ? KS.ink.opacity(isEnabled ? 1 : 0.25) : on ? KS.lime : (hovered || pressed) && isEnabled ? KS.neutralTint : .clear))
-            .contentShape(Circle())
+            .foregroundStyle(send ? KS.onSignal : on ? KS.onSignal : KS.ink)
+            .background(RoundedRectangle(cornerRadius: send ? 9 : 8, style: .continuous)
+                .fill(send ? KS.signal.opacity(isEnabled ? 1 : 0.3) : on ? KS.signal : (hovered || pressed) && isEnabled ? KS.chip : .clear))
+            .contentShape(RoundedRectangle(cornerRadius: 8))
             .onHover { hovered = $0 }
             .scaleEffect(pressed && !reduceMotion ? 0.985 : 1)
             .offset(y: pressed && !reduceMotion ? 1 : 0)
@@ -272,7 +304,7 @@ struct KSBarButtonStyle: ButtonStyle {
     }
 }
 
-/// 32pt round icon button for the top bar. `on` fills it lime: a toggle that is on.
+/// 32pt icon button for bars. `on` fills it signal blue: a toggle that is on.
 struct KSBarButton: View {
     let symbol: String
     let label: String
@@ -284,7 +316,7 @@ struct KSBarButton: View {
             Image(systemName: symbol).font(.system(size: 13, weight: .semibold)).frame(width: 32, height: 32)
                 .contentShape(Circle())
         }
-        .buttonStyle(KSBarButtonStyle(on: on || fill == KS.lime)).foregroundStyle(KS.ink)
+        .buttonStyle(KSBarButtonStyle(on: on || fill == KS.lime))
         .accessibilityLabel(label).help(label)
     }
 }
