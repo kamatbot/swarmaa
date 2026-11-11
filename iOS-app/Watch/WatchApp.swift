@@ -178,7 +178,8 @@ struct WKPrimary: ButtonStyle {
                 }.wkScreen()
             }.tint(WK.signal).onAppear { store.refresh() }
         }.onChange(of: phase) { _, new in
-            if new == .active { store.refresh() } else { WatchMemos.shared.stop() }
+            // Keep recording when the screen dims or the wrist drops; the audio background mode keeps the session alive.
+            if new == .active { store.refresh() }
         }
     }
 }
