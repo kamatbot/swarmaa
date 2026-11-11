@@ -146,6 +146,41 @@ extension TeamsModel {
     static var missing: Set<String> = []
 }
 
+// MARK: - Usage on hover
+
+/// Hovering anything that shows a provider's usage opens its full card (every window, resets, plan)
+/// after a short delay; leaving closes it.
+struct UsageHover: ViewModifier {
+    @ObservedObject var model: TeamsModel
+    let provider: String
+    var edge: Edge = .trailing
+    @State private var shown = false
+    @State private var pending: Task<Void, Never>?
+
+    private var usage: SwarmaStatus.Usage? { model.allUsage.first { $0.provider == provider } }
+
+    func body(content: Content) -> some View {
+        content
+            .onHover { inside in
+                pending?.cancel()
+                guard inside, usage != nil else { shown = false; return }
+                pending = Task { @MainActor in
+                    try? await Task.sleep(for: .milliseconds(350))
+                    if !Task.isCancelled { shown = true }
+                }
+            }
+            .popover(isPresented: $shown, arrowEdge: edge) {
+                if let usage { UsageCard(model: model, usage: usage).environment(\.colorScheme, .dark) }
+            }
+    }
+}
+
+extension View {
+    func usageHover(_ model: TeamsModel, _ provider: String, edge: Edge = .trailing) -> some View {
+        modifier(UsageHover(model: model, provider: provider, edge: edge))
+    }
+}
+
 // MARK: - Window top bar
 
 /// The one bar across the workspace: breadcrumb, ⌘K search, agents online, and the primary action.
@@ -189,7 +224,7 @@ struct WorkspaceTopBar: View {
                 .onChange(of: model.search) { _, q in if !q.isEmpty, model.pane != .bots { model.pane = .bots } }
             if !model.workerProviders.isEmpty {
                 HStack(spacing: -7) {
-                    ForEach(model.workerProviders, id: \.self) { ProviderMonogram(provider: $0, size: 28, ring: KS.topBar) }
+                    ForEach(model.workerProviders, id: \.self) { ProviderMonogram(provider: $0, size: 28, ring: KS.topBar).usageHover(model, $0, edge: .bottom) }
                 }
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel(L10n.t("Agents online") + ": " + model.workerProviders.map(SwarmaCells.vendorName).joined(separator: ", "))
@@ -553,12 +588,11 @@ struct BotSideColumn: View {
                 HStack(spacing: 8) {
                     if q.action != nil {
                         ForEach(q.options, id: \.self) { option in
-                            Button(option) { answer(q, option) }
+                            Button { answer(q, option) } label: { Text(verbatim: option).frame(maxWidth: .infinity) }
                                 .buttonStyle(.ks(option.lowercased() == "approve" ? .primary : .paper))
-                                .frame(maxWidth: .infinity)
                         }
                     } else {
-                        Button(L10n.t("Answer")) { open(q) }.buttonStyle(.ks(.primary)).frame(maxWidth: .infinity)
+                        Button { open(q) } label: { Text(verbatim: L10n.t("Answer")).frame(maxWidth: .infinity) }.buttonStyle(.ks(.primary))
                     }
                 }
                 .disabled(sending)
@@ -606,14 +640,14 @@ struct BotSideColumn: View {
         }
         VStack(spacing: 8) {
             if t.isFailed {
-                Button(L10n.t("Retry")) { Task { await model.retry(t.id) } }.buttonStyle(.ks(.primary)).frame(maxWidth: .infinity)
-                Button(L10n.t("Mark resolved")) { Task { await model.resolve(t.id, true) } }.buttonStyle(.ks(.paper)).frame(maxWidth: .infinity)
+                Button { Task { await model.retry(t.id) } } label: { Text(verbatim: L10n.t("Retry")).frame(maxWidth: .infinity) }.buttonStyle(.ks(.primary))
+                Button { Task { await model.resolve(t.id, true) } } label: { Text(verbatim: L10n.t("Mark resolved")).frame(maxWidth: .infinity) }.buttonStyle(.ks(.paper))
             } else if let branch = t.branch {
-                Button(L10n.t("Copy review command")) {
+                Button {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString("git log -p \(branch)", forType: .string)
-                }.buttonStyle(.ks(.primary)).frame(maxWidth: .infinity)
-                Button(L10n.t("Mark resolved")) { Task { await model.resolve(t.id, true) } }.buttonStyle(.ks(.paper)).frame(maxWidth: .infinity)
+                } label: { Text(verbatim: L10n.t("Copy review command")).frame(maxWidth: .infinity) }.buttonStyle(.ks(.primary))
+                Button { Task { await model.resolve(t.id, true) } } label: { Text(verbatim: L10n.t("Mark resolved")).frame(maxWidth: .infinity) }.buttonStyle(.ks(.paper))
             }
         }
         .disabled(busy).padding(.top, 12)
@@ -750,6 +784,8 @@ struct SidebarAgents: View {
                         .font(KS.mono(11, .regular)).foregroundStyle(n > 0 ? KS.signal : KS.textMuted)
                 }
                 .padding(.horizontal, 10).padding(.vertical, 5)
+                .contentShape(Rectangle())
+                .usageHover(model, p)
                 .accessibilityElement(children: .combine)
             }
         }
@@ -784,7 +820,8 @@ struct SidebarQuota: View {
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain).padding(.horizontal, 6)
-                    .accessibilityLabel(SwarmaCells.vendorName(u.provider) + ", " + L10n.t("\(Int(used)) percent used"))
+                    .usageHover(model, u.provider)
+                    .accessibilityLabel(SwarmaCells.vendorName(u.provider) + ", " + L10n.t("\(Int(used)) percent used in 5 hours"))
                     .accessibilityHint(L10n.t("Opens Usage"))
                 }
             }

@@ -35,6 +35,8 @@ final class TeamsWindowController: NSObject, NSWindowDelegate {
             window.setFrameAutosaveName("SwarmaaTeamsWindow")
             if !window.setFrameUsingName("SwarmaaTeamsWindow") { window.center() }
             self.window = window
+            // SwiftUI focuses the first text field (the top bar's search); open with nothing focused, so ⌘K is how you search.
+            DispatchQueue.main.async { [weak window] in window?.makeFirstResponder(nil) }
             // The first time the window opens, show the setup checklist if anything is wrong.
             if connect { Task { [model] in
                 await model.runSetup()
@@ -251,6 +253,7 @@ struct UsageCard: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Text(verbatim: SwarmaCells.vendorName(usage.provider)).font(KS.body(17, .semibold)).foregroundStyle(KS.strong)
+                if let plan = usage.plan, !plan.isEmpty { KSChip(plan, fill: KS.chip, ink: KS.textSoft) }
                 Spacer()
                 if let h = usage.headroom { KSChip("\(Int(h))% " + L10n.t("left"), fill: KS.providerTint(usage.provider), ink: KS.onSignal) }
             }
@@ -395,6 +398,7 @@ struct UsageProviderCard: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Text(verbatim: SwarmaCells.vendorName(usage.provider)).font(KS.body(17, .semibold)).foregroundStyle(KS.strong)
+                if let plan = usage.plan, !plan.isEmpty { KSChip(plan, fill: KS.chip, ink: KS.textSoft) }
                 Spacer()
                 if let plan = usage.plan, !plan.isEmpty { KSChip(plan) }
             }
