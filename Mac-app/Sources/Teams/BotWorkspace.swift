@@ -14,7 +14,7 @@ struct ProviderMonogram: View {
     var body: some View {
         let known = provider.map { !$0.isEmpty } ?? false
         Text(verbatim: known ? TeamsCopy.providerShort(provider!) : String(fallback.prefix(2)).uppercased())
-            .font(KS.mono(size * 0.34, .bold))
+            .font(KS.glyph(size * 0.34, .bold, mono: true))
             .foregroundStyle(known ? KS.onSignal : KS.ink)
             .frame(width: size, height: size)
             .background(Circle().fill(known ? KS.providerTint(provider!) : KS.chip))
@@ -68,8 +68,8 @@ struct KSSectionLabel: View {
             KSLabel(text)
             if let count {
                 Spacer(minLength: 0)
-                Text(verbatim: "\(count)").font(KS.body(11, .medium)).foregroundStyle(KS.onInkSoft)
-                    .padding(.horizontal, 7).background(Capsule().fill(KS.chip))
+                Text(verbatim: "\(count)").font(KS.secondary(.medium)).foregroundStyle(KS.onInkSoft)
+                    .padding(.horizontal, 8).background(Capsule().fill(KS.chip))
             }
         }
     }
@@ -187,6 +187,8 @@ extension View {
 struct WorkspaceTopBar: View {
     @ObservedObject var model: TeamsModel
     @FocusState private var searchFocused: Bool
+    /// The bar's own width: narrower bars drop the avatars, then shorten New bot to its icon.
+    @State private var width: CGFloat = 1400
 
     private var trail: [String] {
         switch model.pane {
@@ -196,54 +198,66 @@ struct WorkspaceTopBar: View {
         }
     }
 
+    private func breadcrumb(_ parts: [String]) -> some View {
+        HStack(spacing: 8) {
+            ForEach(Array(parts.enumerated()), id: \.offset) { i, part in
+                if i > 0 { Text(verbatim: "/").foregroundStyle(KS.idle) }
+                Text(verbatim: part).font(i == 0 && part == "swarmaa" ? KS.text(.semibold) : KS.text())
+                    .foregroundStyle(part == "swarmaa" || i == parts.count - 1 ? KS.strong : KS.textSoft)
+            }
+        }
+        .lineLimit(1).fixedSize()
+    }
+
     var body: some View {
         HStack(spacing: 16) {
-            HStack(spacing: 8) {
-                Text(verbatim: "swarmaa").font(KS.body(14, .semibold)).foregroundStyle(KS.strong)
-                ForEach(Array(trail.enumerated()), id: \.offset) { i, part in
-                    Text(verbatim: "/").foregroundStyle(KS.idle)
-                    Text(verbatim: part).foregroundStyle(i == trail.count - 1 && trail.count > 1 ? KS.strong : KS.textSoft).lineLimit(1)
-                }
+            // Full trail, then just the last part, then nothing: never wraps, gives way before the panes.
+            ViewThatFits(in: .horizontal) {
+                breadcrumb(["swarmaa"] + trail)
+                breadcrumb([trail.last ?? "swarmaa"])
+                Color.clear.frame(width: 0, height: 0)
             }
-            .font(KS.body(14))
+            .layoutPriority(0)
             .accessibilityElement(children: .combine)
             .accessibilityLabel(L10n.t("Breadcrumb") + ": swarmaa, " + trail.joined(separator: ", "))
-            panes
+            panes.layoutPriority(2)
             Spacer(minLength: 8)
             KSSearchField(prompt: L10n.t("Search bots"), text: $model.search, height: 32)
                 .focused($searchFocused)
-                .frame(minWidth: 180, idealWidth: 280, maxWidth: 300)
+                .frame(minWidth: 120, idealWidth: 280, maxWidth: 300)
                 .overlay(alignment: .trailing) {
                     if model.search.isEmpty {
-                        Text(verbatim: "⌘K").font(KS.mono(11, .medium)).foregroundStyle(KS.textSoft)
+                        Text(verbatim: "⌘K").font(KS.meta()).foregroundStyle(KS.textSoft)
                             .padding(.horizontal, 6).padding(.vertical, 1)
-                            .background(RoundedRectangle(cornerRadius: 4).fill(KS.chip))
+                            .background(RoundedRectangle(cornerRadius: 6).fill(KS.chip))
                             .padding(.trailing, 8).allowsHitTesting(false).accessibilityHidden(true)
                     }
                 }
                 .onChange(of: model.search) { _, q in if !q.isEmpty, model.pane != .bots { model.pane = .bots } }
-            if !model.workerProviders.isEmpty {
+            if width >= 900, !model.workerProviders.isEmpty {
                 HStack(spacing: -7) {
                     ForEach(model.workerProviders, id: \.self) { ProviderMonogram(provider: $0, size: 28, ring: KS.topBar).usageHover(model, $0, edge: .bottom) }
                 }
                 .accessibilityElement(children: .ignore)
+                .fixedSize()
                 .accessibilityLabel(L10n.t("Agents online") + ": " + model.workerProviders.map(SwarmaCells.vendorName).joined(separator: ", "))
             }
             iconButton("point.3.connected.trianglepath.dotted", L10n.t("Swarm map"), on: model.showSwarmMap) { model.showSwarmMap.toggle() }
-                .keyboardShortcut("m", modifiers: [.command, .shift])
-            iconButton("gearshape", L10n.t("Settings"), on: false) { AppDelegate.shared?.openSettings() }
+                .keyboardShortcut("m", modifiers: [.command, .shift]).fixedSize()
+            iconButton("gearshape", L10n.t("Settings"), on: false) { AppDelegate.shared?.openSettings() }.fixedSize()
             Button { model.creatingBot = true } label: {
-                Text(verbatim: "+ " + L10n.t("New bot")).font(KS.body(14, .semibold)).foregroundStyle(KS.onSignal)
-                    .padding(.horizontal, 14).frame(height: 32)
-                    .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(KS.signal))
+                Text(verbatim: width >= 760 ? "+ " + L10n.t("New bot") : "+").font(KS.text(.semibold)).foregroundStyle(KS.onSignal)
+                    .padding(.horizontal, 16).frame(height: 32)
+                    .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(KS.signal))
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain).fixedSize()
             .accessibilityLabel(L10n.t("New bot"))
         }
-        // The traffic lights sit at the bar's leading edge.
-        .padding(.leading, 84).padding(.trailing, 16)
+        // The traffic lights sit at the bar's leading edge (16–64 pt).
+        .padding(.leading, 80).padding(.trailing, 16)
         .frame(maxWidth: .infinity, minHeight: KS.topBarHeight, maxHeight: KS.topBarHeight)
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
         .background(KS.topBar)
         .overlay(alignment: .bottom) { Rectangle().fill(KS.hairline).frame(height: 1) }
         .background {
@@ -262,10 +276,10 @@ extension WorkspaceTopBar {
                 let badge = pane == .bots ? model.botsWithUpdates : 0
                 Button { model.pane = pane } label: {
                     HStack(spacing: 6) {
-                        Text(verbatim: title).font(KS.body(13, .medium)).foregroundStyle(on ? KS.strong : KS.textMuted)
+                        Text(verbatim: title).font(KS.text(.medium)).foregroundStyle(on ? KS.strong : KS.textMuted)
                         if badge > 0 { KSBadge(count: badge) }
                     }
-                    .padding(.horizontal, 10).frame(height: 26)
+                    .padding(.horizontal, 12).frame(height: 26)
                     .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(on ? KS.selected : .clear))
                     .contentShape(Rectangle())
                 }
@@ -282,7 +296,7 @@ extension WorkspaceTopBar {
 
     func iconButton(_ symbol: String, _ label: String, on: Bool, _ action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Image(systemName: symbol).font(.system(size: 14, weight: .semibold))
+            Image(systemName: symbol).font(KS.glyph(14, .semibold))
                 .foregroundStyle(on ? KS.onSignal : KS.textSoft)
                 .frame(width: 32, height: 32)
                 .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(on ? KS.signal : KS.chip.opacity(0.6)))
@@ -309,7 +323,7 @@ struct BotWorkspace: View {
                 }
                 tabs
             }
-            .padding(.horizontal, 28).padding(.top, 22)
+            .padding(.horizontal, 24).padding(.top, 24)
             switch model.botTab {
             case .thread: ThreadView(model: model, threadID: bot.threadID).id(bot.threadID)
             case .timeline: BotTimeline(model: model, bot: bot)
@@ -330,7 +344,7 @@ struct BotWorkspace: View {
                 Capsule().fill(KS.signal).frame(width: g.size.width * f)
             }
         }
-        .frame(height: 5).padding(.top, 18).padding(.bottom, 4)
+        .frame(height: 5).padding(.top, 20).padding(.bottom, 4)
         .accessibilityElement().accessibilityLabel(L10n.t("\(swarm.progress.done) of \(swarm.progress.total) steps done"))
         .accessibilityValue("\(Int(f * 100))%")
     }
@@ -340,9 +354,9 @@ struct BotWorkspace: View {
             ForEach(TeamsModel.BotTab.allCases, id: \.self) { tab in
                 let on = model.botTab == tab
                 Button { model.botTab = tab } label: {
-                    Text(verbatim: Self.title(tab)).font(KS.body(15, .medium))
+                    Text(verbatim: Self.title(tab)).font(KS.section())
                         .foregroundStyle(on ? KS.strong : KS.textMuted)
-                        .padding(.horizontal, 14).frame(height: 32)
+                        .padding(.horizontal, 16).frame(height: 32)
                         .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(on ? KS.chip : .clear))
                         .contentShape(Rectangle())
                 }
@@ -351,7 +365,7 @@ struct BotWorkspace: View {
             }
             Spacer()
         }
-        .padding(.top, 14).padding(.bottom, 12)
+        .padding(.top, 16).padding(.bottom, 12)
         .overlay(alignment: .bottom) { Rectangle().fill(KS.hairline).frame(height: 1) }
     }
 
@@ -422,7 +436,7 @@ struct BotTimeline: View {
             VStack(alignment: .leading, spacing: 0) {
                 if r.swarm.isEmpty && r.tasks.isEmpty {
                     Text(verbatim: L10n.t("No steps yet. A swarm's steps and the bot's tasks appear here as it works."))
-                        .font(KS.body(14)).foregroundStyle(KS.textMuted).padding(.vertical, 24)
+                        .font(KS.text()).foregroundStyle(KS.textMuted).padding(.vertical, 24)
                 }
                 if let swarm = model.botSwarm(bot), !r.swarm.isEmpty {
                     HStack {
@@ -430,36 +444,36 @@ struct BotTimeline: View {
                         Spacer()
                         Button(L10n.t("Open swarm")) { model.detailSwarmID = swarm.id }.buttonStyle(.ks(.paper, compact: true))
                     }
-                    .padding(.top, 14).padding(.bottom, 2)
+                    .padding(.top, 16).padding(.bottom, 2)
                     ForEach(r.swarm) { row($0) }
                 }
                 if !r.tasks.isEmpty {
-                    KSLabel(L10n.t("Tasks")).padding(.top, 18).padding(.bottom, 2)
+                    KSLabel(L10n.t("Tasks")).padding(.top, 20).padding(.bottom, 2)
                     ForEach(r.tasks) { row($0) }
                 }
             }
-            .padding(.horizontal, 28).padding(.bottom, 24)
+            .padding(.horizontal, 24).padding(.bottom, 24)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
     private func row(_ r: Row) -> some View {
-        HStack(alignment: .top, spacing: 14) {
+        HStack(alignment: .top, spacing: 16) {
             Self.icon(r.state)
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 8) {
-                    Text(verbatim: r.title).font(KS.body(16, .semibold)).foregroundStyle(KS.strong).lineLimit(2)
+                    Text(verbatim: r.title).font(KS.section()).foregroundStyle(KS.strong).lineLimit(2)
                     if let p = r.provider {
                         KSChip(p, fill: KS.providerTint(p).opacity(0.16), ink: KS.providerTint(p))
                     }
                     if let b = r.branch { KSChip(b, fill: KS.chipAlt, ink: KS.textSoft).textSelection(.enabled) }
                 }
                 if !r.detail.isEmpty {
-                    Text(verbatim: r.detail).font(KS.body(14)).foregroundStyle(KS.textMuted).lineLimit(2)
+                    Text(verbatim: r.detail).font(KS.text()).foregroundStyle(KS.textMuted).lineLimit(2)
                 }
             }
             Spacer(minLength: 8)
-            Text(verbatim: r.trailing).font(KS.mono(12, .regular)).foregroundStyle(KS.textDim).padding(.top, 4)
+            Text(verbatim: r.trailing).font(KS.meta()).foregroundStyle(KS.textDim).padding(.top, 4)
         }
         .padding(.vertical, 12)
         .accessibilityElement(children: .combine)
@@ -473,7 +487,7 @@ struct BotTimeline: View {
         case "running", "claimed": ("ellipsis", KS.signal, L10n.t("Running"))
         default: ("circle.dotted", KS.textMuted, L10n.t("Pending"))
         }
-        Image(systemName: symbol).font(.system(size: 11, weight: .bold)).foregroundStyle(color)
+        Image(systemName: symbol).font(KS.glyph(11, .bold)).foregroundStyle(color)
             .frame(width: 28, height: 28)
             .background(Circle().fill(color.opacity(0.18)))
             .accessibilityLabel(label)
@@ -491,7 +505,7 @@ struct BotLogs: View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 4) {
                 if list.isEmpty {
-                    Text(verbatim: L10n.t("No events yet")).font(KS.body(14)).foregroundStyle(KS.textMuted).padding(.vertical, 24)
+                    Text(verbatim: L10n.t("No events yet")).font(KS.text()).foregroundStyle(KS.textMuted).padding(.vertical, 24)
                 }
                 ForEach(list) { m in
                     HStack(alignment: .firstTextBaseline, spacing: 12) {
@@ -502,11 +516,11 @@ struct BotLogs: View {
                             .foregroundStyle(KS.textSoft).frame(width: 120, alignment: .leading).lineLimit(1)
                         Text(verbatim: Self.line(m)).foregroundStyle(KS.ink).lineLimit(1).truncationMode(.tail)
                     }
-                    .font(KS.mono(12, .regular))
+                    .font(KS.meta())
                     .textSelection(.enabled)
                 }
             }
-            .padding(.horizontal, 28).padding(.vertical, 14)
+            .padding(.horizontal, 24).padding(.vertical, 16)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .defaultScrollAnchor(.bottom)
@@ -542,7 +556,7 @@ struct BotSideColumn: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 16) {
                 needsYou
                 madeBy
                 tokenCard
@@ -566,23 +580,23 @@ struct BotSideColumn: View {
         let tasks = waitingTasks
         let count = questions.count + tasks.count
         VStack(alignment: .leading, spacing: 0) {
-            KSLabel(L10n.t("Needs you") + (count == 0 ? "" : " · \(count)")).padding(.bottom, 10)
+            KSLabel(L10n.t("Needs you") + (count == 0 ? "" : " · \(count)")).padding(.bottom, 12)
             if questions.isEmpty, let t = tasks.first {
                 taskItem(t, more: Array(tasks.dropFirst()))
             } else if let q = questions.first {
                 Text(verbatim: q.action.map { $0.summary.isEmpty ? q.prompt : $0.summary } ?? q.prompt)
-                    .font(KS.body(16, .semibold)).foregroundStyle(KS.strong).lineLimit(4)
+                    .font(KS.section()).foregroundStyle(KS.strong).lineLimit(4)
                 if let place = q.action?.where {
-                    Text(verbatim: place).font(KS.body(13)).foregroundStyle(KS.textMuted).padding(.top, 4)
+                    Text(verbatim: place).font(KS.text()).foregroundStyle(KS.textMuted).padding(.top, 4)
                 }
                 let note = q.action?.detail ?? (q.options.isEmpty ? "" : q.options.joined(separator: " · "))
                 if !note.isEmpty {
-                    Text(verbatim: note).font(q.action != nil ? KS.mono(12, .regular) : KS.body(13)).foregroundStyle(KS.textSoft)
+                    Text(verbatim: note).font(q.action != nil ? KS.meta() : KS.text()).foregroundStyle(KS.textSoft)
                         .lineLimit(6).lineSpacing(2)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 12).padding(.vertical, 10)
-                        .background(RoundedRectangle(cornerRadius: 9).fill(KS.well))
-                        .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(KS.hairline, lineWidth: 1))
+                        .padding(.horizontal, 12).padding(.vertical, 12)
+                        .background(RoundedRectangle(cornerRadius: 8).fill(KS.well))
+                        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(KS.hairline, lineWidth: 1))
                         .padding(.top, 12)
                 }
                 HStack(spacing: 8) {
@@ -599,43 +613,43 @@ struct BotSideColumn: View {
                 .padding(.top, 12)
                 ForEach(questions.dropFirst().prefix(3)) { more in
                     Button { open(more) } label: {
-                        Text(verbatim: "› " + more.prompt).font(KS.body(13)).foregroundStyle(KS.textSoft).lineLimit(1)
+                        Text(verbatim: "› " + more.prompt).font(KS.text()).foregroundStyle(KS.textSoft).lineLimit(1)
                             .frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
                     }
                     .buttonStyle(.plain).padding(.top, 8)
                 }
                 if model.answeringBlocked {
                     Text(verbatim: L10n.t("Ask the owner to allow answering questions from this Mac"))
-                        .font(KS.body(12)).foregroundStyle(KS.needsYouText).padding(.top, 8)
+                        .font(KS.secondary()).foregroundStyle(KS.needsYouText).padding(.top, 8)
                 }
                 if !tasks.isEmpty {
-                    Text(verbatim: L10n.t("\(tasks.count) tasks wait for review")).font(KS.body(12)).foregroundStyle(KS.textMuted).padding(.top, 8)
+                    Text(verbatim: L10n.t("\(tasks.count) tasks wait for review")).font(KS.secondary()).foregroundStyle(KS.textMuted).padding(.top, 8)
                 }
             } else {
-                Text(verbatim: L10n.t("No open questions")).font(KS.body(13)).foregroundStyle(KS.textMuted)
+                Text(verbatim: L10n.t("No open questions")).font(KS.text()).foregroundStyle(KS.textMuted)
             }
         }
         .padding(16).frame(maxWidth: .infinity, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(KS.white))
         .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
             .strokeBorder(count == 0 ? KS.hairline : KS.amber.opacity(0.5), lineWidth: 1))
-        .background(RoundedRectangle(cornerRadius: 15, style: .continuous).fill(KS.amber.opacity(count == 0 ? 0 : 0.08)).padding(-4))
+        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(KS.amber.opacity(count == 0 ? 0 : 0.08)).padding(-4))
     }
 
     /// A task waiting on you, with the same actions its card in the thread has.
     @ViewBuilder private func taskItem(_ t: TeamsTaskCard, more: [TeamsTaskCard]) -> some View {
         let busy = model.busyTasks.contains(t.id)
-        Text(verbatim: t.title ?? L10n.t("Task")).font(KS.body(15, .semibold)).foregroundStyle(KS.strong)
+        Text(verbatim: t.title ?? L10n.t("Task")).font(KS.section()).foregroundStyle(KS.strong)
             .lineLimit(3).help(t.title ?? "")
         Text(verbatim: [TaskCardView.state(t).0, t.branch, t.changedFiles.map { $0 == 1 ? L10n.t("1 file") : L10n.t("\($0) files") }]
             .compactMap { $0 }.joined(separator: " · "))
-            .font(KS.body(13)).foregroundStyle(KS.textMuted).padding(.top, 4).lineLimit(2)
+            .font(KS.text()).foregroundStyle(KS.textMuted).padding(.top, 4).lineLimit(2)
         if let f = t.failure, t.isFailed {
             Text(verbatim: [f.code, f.detail].compactMap { $0 }.joined(separator: " · "))
-                .font(KS.mono(12, .regular)).foregroundStyle(KS.textSoft).lineLimit(4)
+                .font(KS.meta()).foregroundStyle(KS.textSoft).lineLimit(4)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 12).padding(.vertical, 10)
-                .background(RoundedRectangle(cornerRadius: 9).fill(KS.well))
+                .padding(.horizontal, 12).padding(.vertical, 12)
+                .background(RoundedRectangle(cornerRadius: 8).fill(KS.well))
                 .padding(.top, 12)
         }
         VStack(spacing: 8) {
@@ -652,7 +666,7 @@ struct BotSideColumn: View {
         }
         .disabled(busy).padding(.top, 12)
         if !more.isEmpty {
-            Text(verbatim: L10n.t("\(more.count) more in Timeline")).font(KS.body(12)).foregroundStyle(KS.textMuted).padding(.top, 8)
+            Text(verbatim: L10n.t("\(more.count) more in Timeline")).font(KS.secondary()).foregroundStyle(KS.textMuted).padding(.top, 8)
         }
     }
 
@@ -673,22 +687,22 @@ struct BotSideColumn: View {
         let landed = model.botTaskCards(bot).reversed().filter { $0.card.branch != nil && seen.insert($0.card.branch!).inserted }
         return card(L10n.t("Made by this bot")) {
             if landed.isEmpty {
-                Text(verbatim: L10n.t("Files appear as tasks land")).font(KS.body(13)).foregroundStyle(KS.textMuted)
+                Text(verbatim: L10n.t("Files appear as tasks land")).font(KS.text()).foregroundStyle(KS.textMuted)
             } else {
                 VStack(spacing: 6) {
                     ForEach(landed.prefix(8), id: \.card.id) { c in
-                        HStack(spacing: 10) {
-                            Text(verbatim: "GIT").font(KS.mono(9, .semibold)).foregroundStyle(KS.onSignal)
+                        HStack(spacing: 12) {
+                            Text(verbatim: "GIT").font(KS.meta(.semibold)).foregroundStyle(KS.onSignal)
                                 .frame(width: 26, height: 26)
                                 .background(RoundedRectangle(cornerRadius: 6).fill(c.card.isFailed ? KS.coral : KS.sage))
-                            Text(verbatim: c.card.branch ?? "").font(KS.mono(12, .regular)).foregroundStyle(KS.ink)
+                            Text(verbatim: c.card.branch ?? "").font(KS.meta()).foregroundStyle(KS.ink)
                                 .lineLimit(1).truncationMode(.middle).textSelection(.enabled)
                             Spacer(minLength: 4)
                             if let n = c.card.changedFiles {
-                                Text(verbatim: n == 1 ? L10n.t("+1 file") : L10n.t("+\(n) files")).font(KS.mono(11, .regular)).foregroundStyle(KS.textDim).fixedSize()
+                                Text(verbatim: n == 1 ? L10n.t("+1 file") : L10n.t("+\(n) files")).font(KS.meta()).foregroundStyle(KS.textDim).fixedSize()
                             }
                         }
-                        .padding(.horizontal, 10).padding(.vertical, 8)
+                        .padding(.horizontal, 12).padding(.vertical, 8)
                         .background(RoundedRectangle(cornerRadius: 8).fill(Color(hex: 0x0C1A31)))
                         .accessibilityElement(children: .combine)
                     }
@@ -725,7 +739,7 @@ struct BotSideColumn: View {
         return card(L10n.t("Tokens · this bot")) {
             if total == 0 {
                 Text(verbatim: counting ? L10n.t("Counting…") : L10n.t("Token use appears as tasks finish"))
-                    .font(KS.body(13)).foregroundStyle(KS.textMuted)
+                    .font(KS.text()).foregroundStyle(KS.textMuted)
             } else {
                 GeometryReader { g in
                     HStack(spacing: 0) {
@@ -739,22 +753,22 @@ struct BotSideColumn: View {
                     ForEach(order, id: \.key) { p, n in
                         GridRow {
                             Text(verbatim: SwarmaCells.vendorName(p)).foregroundStyle(KS.textMuted)
-                            Text(verbatim: TeamsTaskBulk.tokens(n)).font(KS.mono(13, .regular)).foregroundStyle(KS.strong).gridColumnAlignment(.trailing)
+                            Text(verbatim: TeamsTaskBulk.tokens(n)).font(KS.meta()).foregroundStyle(KS.strong).gridColumnAlignment(.trailing)
                         }
                     }
                     GridRow {
                         Text(verbatim: L10n.t("Total")).foregroundStyle(KS.textMuted)
-                        Text(verbatim: TeamsTaskBulk.tokens(total)).font(KS.mono(13, .medium)).foregroundStyle(KS.strong)
+                        Text(verbatim: TeamsTaskBulk.tokens(total)).font(KS.meta()).foregroundStyle(KS.strong)
                     }
                 }
-                .font(KS.body(13)).padding(.top, 12)
+                .font(KS.text()).padding(.top, 12)
             }
         }
     }
 
     private func card<C: View>(_ title: String, @ViewBuilder _ content: () -> C) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            KSLabel(title).padding(.bottom, 10)
+            KSLabel(title).padding(.bottom, 12)
             content()
         }
         .padding(16).frame(maxWidth: .infinity, alignment: .leading)
@@ -772,18 +786,18 @@ struct SidebarAgents: View {
         VStack(alignment: .leading, spacing: 2) {
             KSSectionLabel(text: L10n.t("Agents")).padding(.leading, 6).padding(.bottom, 6)
             if providers.isEmpty {
-                Text(verbatim: L10n.t("No workers connected")).font(KS.body(13)).foregroundStyle(KS.textMuted).padding(.horizontal, 10)
+                Text(verbatim: L10n.t("No workers connected")).font(KS.text()).foregroundStyle(KS.textMuted).padding(.horizontal, 12)
             }
             ForEach(providers, id: \.self) { p in
                 let n = model.runningCount(provider: p)
-                HStack(spacing: 10) {
+                HStack(spacing: 12) {
                     ProviderMonogram(provider: p, size: 24)
-                    Text(verbatim: SwarmaCells.vendorName(p)).font(KS.body(14)).foregroundStyle(KS.onInkSoft)
+                    Text(verbatim: SwarmaCells.vendorName(p)).font(KS.text()).foregroundStyle(KS.onInkSoft)
                     Spacer()
                     Text(verbatim: n > 0 ? L10n.t("\(n) running") : live.contains(p) ? L10n.t("idle") : L10n.t("offline"))
-                        .font(KS.mono(11, .regular)).foregroundStyle(n > 0 ? KS.signal : KS.textMuted)
+                        .font(KS.meta()).foregroundStyle(n > 0 ? KS.signal : KS.textMuted)
                 }
-                .padding(.horizontal, 10).padding(.vertical, 5)
+                .padding(.horizontal, 12).padding(.vertical, 5)
                 .contentShape(Rectangle())
                 .usageHover(model, p)
                 .accessibilityElement(children: .combine)
@@ -797,7 +811,7 @@ struct SidebarQuota: View {
     var body: some View {
         let usage = model.allUsage
         if !usage.isEmpty {
-            VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 12) {
                 KSSectionLabel(text: L10n.t("Quota · 5 h")).padding(.leading, 6)
                 ForEach(usage, id: \.provider) { u in
                     let w = u.windows.first { $0.name == "5h" } ?? u.windows.first
@@ -809,7 +823,7 @@ struct SidebarQuota: View {
                                 Spacer()
                                 Text(verbatim: w?.usedPercent.map { "\(Int($0))%" } ?? "—")
                             }
-                            .font(KS.mono(12, .regular)).foregroundStyle(KS.textSoft)
+                            .font(KS.meta()).foregroundStyle(KS.textSoft)
                             GeometryReader { g in
                                 ZStack(alignment: .leading) {
                                     Capsule().fill(KS.chip)

@@ -62,22 +62,22 @@ struct StepReportCard: View {
                 let flagged = part == .notChecked
                 if index > 0 { Rectangle().fill(KS.hairline).frame(height: 1) }
                 HStack(alignment: .firstTextBaseline, spacing: 12) {
-                    Text(verbatim: title(part)).font(KS.body(12, .semibold))
+                    Text(verbatim: title(part)).font(KS.secondary(.semibold))
                         .foregroundStyle(flagged ? KS.needsYouText : KS.textSoft)
                         .frame(width: 92, alignment: .leading)
                     Group {
                         if let text = report[part] { Text(MarkdownCache.text(text)).foregroundStyle(KS.ink) }
                         else { Text(verbatim: L10n.t("Not stated")).foregroundStyle(KS.textMuted) }
                     }
-                    .font(KS.body(13)).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                    .font(KS.text()).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .padding(.horizontal, 12).padding(.vertical, 9)
+                .padding(.horizontal, 12).padding(.vertical, 8)
                 .background(flagged ? KS.needsYouTint : .clear)
             }
         }
-        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .frame(maxWidth: 640, alignment: .leading)
-        .ksCard(radius: 16)
+        .ksCard(radius: 12)
     }
 }

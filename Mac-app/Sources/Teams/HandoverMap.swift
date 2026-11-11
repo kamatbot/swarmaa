@@ -178,31 +178,31 @@ private struct HandoverMemberCard: View {
             HStack(spacing: 8) {
                 KSMoji(seed: agent?.avatar ?? (member.agentID ?? "crew"), size: 28)
                 VStack(alignment: .leading, spacing: 0) {
-                    Text(verbatim: agent?.name ?? L10n.t("A crew member")).font(KS.body(13, .bold)).lineLimit(1)
-                    Text(verbatim: TeamsCopy.swarmStatus(member.status)).font(KS.body(11)).foregroundStyle(KS.textMuted)
+                    Text(verbatim: agent?.name ?? L10n.t("A crew member")).font(KS.text(.semibold)).lineLimit(1)
+                    Text(verbatim: TeamsCopy.swarmStatus(member.status)).font(KS.secondary()).foregroundStyle(KS.textMuted)
                 }
             }
             ForEach(member.steps) { s in
                 let (icon, color) = SwarmStepRow.symbol(s.status)
                 let hot = ["running", "waiting_on_you"].contains(s.status)
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Image(systemName: icon).font(.system(size: 11)).foregroundStyle(color)
+                    Image(systemName: icon).font(KS.glyph(11)).foregroundStyle(color)
                     VStack(alignment: .leading, spacing: 1) {
-                        Text(verbatim: s.title).font(KS.body(12, hot ? .semibold : .regular))
+                        Text(verbatim: s.title).font(KS.secondary(hot ? .semibold : .regular))
                             .foregroundStyle(hot ? KS.ink : KS.textSoft).lineLimit(2)
                         if let line = lines[s.id] {
-                            Text(verbatim: line).font(KS.body(11)).foregroundStyle(KS.textMuted).lineLimit(2)
+                            Text(verbatim: line).font(KS.secondary()).foregroundStyle(KS.textMuted).lineLimit(2)
                         }
                     }
                 }
             }
         }
-        .padding(10)
+        .padding(12)
         .frame(width: 210, alignment: .leading)
-        .ksCard(fill: member.active ? KS.sageTint : KS.white, radius: 14)
+        .ksCard(fill: member.active ? KS.sageTint : KS.white, radius: 12)
         .overlay {
             if member.active {
-                RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(KS.lime, lineWidth: 2)
+                RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(KS.lime, lineWidth: 2)
                     .opacity(pulse ? 0.45 : 1)
             }
         }
@@ -227,12 +227,12 @@ struct HandoverStrip: View {
                 let agent = model.agent(id: m.agentID)
                 HStack(spacing: 4) {
                     if i > 0 {
-                        Image(systemName: "arrow.right").font(.system(size: 10, weight: .semibold)).foregroundStyle(KS.textMuted)
+                        Image(systemName: "arrow.right").font(KS.glyph(10, .semibold)).foregroundStyle(KS.textMuted)
                             .accessibilityHidden(true)
                     }
                     HStack(spacing: 5) {
                         KSMoji(seed: agent?.avatar ?? (m.agentID ?? "crew"), size: 18)
-                        Text(verbatim: agent?.name ?? L10n.t("A crew member")).font(KS.body(12, m.active ? .semibold : .regular))
+                        Text(verbatim: agent?.name ?? L10n.t("A crew member")).font(KS.secondary(m.active ? .semibold : .regular))
                     }
                     .padding(.leading, 3).padding(.trailing, 8).frame(height: 24)
                     .background(Capsule().fill(m.active ? KS.selected : KS.neutralTint))

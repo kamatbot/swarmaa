@@ -9,15 +9,15 @@ struct NeedsYouRow: View {
     private var row: TeamsTaskRow { TeamsTaskRow(item) }
 
     var body: some View {
-        HStack(alignment: .center, spacing: 10) {
+        HStack(alignment: .center, spacing: 12) {
             VStack(alignment: .leading, spacing: 3) {
-                Text(verbatim: item.title).font(.system(size: 13, weight: .semibold)).lineLimit(2)
+                Text(verbatim: item.title).font(KS.text(.semibold)).lineLimit(2)
                 TaskStateLine(row: row)
             }
             Spacer(minLength: 8)
             if let at = item.at {
                 Text(at, format: .relative(presentation: .numeric, unitsStyle: .narrow))
-                    .font(.caption).foregroundStyle(KS.textMuted)
+                    .font(KS.secondary()).foregroundStyle(KS.textMuted)
             }
         }
         .padding(.vertical, 3)
@@ -64,15 +64,15 @@ struct RunningSwarmRow: View {
     }
 
     private var summary: some View {
-            HStack(spacing: 10) {
+            HStack(spacing: 12) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(verbatim: swarm.title).font(.system(size: 13, weight: .semibold)).lineLimit(2)
+                    Text(verbatim: swarm.title).font(KS.text(.semibold)).lineLimit(2)
                     let names = swarm.runningAssignees.compactMap { model.agent(id: $0)?.name }
                     Text(verbatim: names.isEmpty ? TeamsCopy.swarmStatus(swarm.status) : names.joined(separator: ", "))
-                        .font(.callout).foregroundStyle(KS.textMuted).lineLimit(2)
+                        .font(KS.text()).foregroundStyle(KS.textMuted).lineLimit(2)
                 }
                 Spacer()
-                Text(verbatim: "\(swarm.progress.done)/\(swarm.progress.total)").font(.system(size: 13, weight: .bold).monospacedDigit())
+                Text(verbatim: "\(swarm.progress.done)/\(swarm.progress.total)").font(KS.meta(.semibold))
             }
             .contentShape(Rectangle())
     }
@@ -84,7 +84,7 @@ struct TaskStateLine: View {
     var body: some View {
         (Text(verbatim: row.word).foregroundColor(KS.ink).fontWeight(.bold)
             + Text(verbatim: row.detail.isEmpty ? "" : " · " + row.detail).foregroundColor(KS.textSoft))
-            .font(KS.body(14)).lineLimit(1)
+            .font(KS.text()).lineLimit(1)
     }
 }
 
@@ -99,9 +99,9 @@ struct TasksPane: View {
         let sections = TeamsTaskGrouping.sections(model.taskRows, search: model.taskSearch, sort: model.taskSort)
         VStack(spacing: 0) {
             KSTopBar {
-                Text(verbatim: L10n.t("Tasks")).font(KS.body(20, .semibold)).foregroundStyle(KS.strong).fixedSize()
+                Text(verbatim: L10n.t("Tasks")).font(KS.title()).foregroundStyle(KS.strong).fixedSize()
                 Text(verbatim: L10n.t("Everything your bots are doing, done or stuck on."))
-                    .font(KS.body(13)).foregroundStyle(KS.textSoft).lineLimit(1)
+                    .font(KS.text()).foregroundStyle(KS.textSoft).lineLimit(1)
                 Spacer(minLength: 0)
                 Button(L10n.t(model.selectingTasks ? "Cancel" : "Select")) {
                     model.selectingTasks.toggle(); model.taskSelection.removeAll(); model.taskDetailID = nil
@@ -116,7 +116,7 @@ struct TasksPane: View {
             }
             HStack(spacing: 0) {
             ScrollView {
-                VStack(alignment: .leading, spacing: 22) {
+                VStack(alignment: .leading, spacing: 24) {
                     if sections.isEmpty {
                         TeamsEmptyState(symbol: "checklist", title: model.taskSearch.isEmpty ? L10n.t("No tasks") : L10n.t("No matches"),
                                         detail: model.taskSearch.isEmpty ? L10n.t("Tasks your bots run show up here.") : nil, action: nil)
@@ -132,7 +132,7 @@ struct TasksPane: View {
                                 .buttonStyle(.ks(.paper)).accessibilityAddTraits(showResolved ? .isSelected : [])
                                 if showResolved { panel(entry.rows, shadow: false) }
                             } else {
-                                VStack(alignment: .leading, spacing: 10) {
+                                VStack(alignment: .leading, spacing: 12) {
                                     HStack(spacing: 8) {
                                         KSLabel(number + " — " + entry.section.title)
                                         KSChip("\(entry.rows.count)", fill: Self.tint(entry.section), ink: entry.section == .failed ? KS.failedText : entry.section == .needsInput ? KS.needsYouText : [.review, .resolved].contains(entry.section) ? KS.readyText : KS.textSoft)
@@ -147,19 +147,19 @@ struct TasksPane: View {
                             .buttonStyle(.ks(.white)).disabled(model.loadingResolved)
                     }
                 }
-                .padding(28)
+                .padding(24)
             }
             if model.taskDetailID != nil {
                 TaskDetailPanel(model: model).frame(minWidth: 290, idealWidth: 350, maxWidth: 390)
             }
             }
             if let message = model.bulkTaskMessage {
-                Text(verbatim: message).font(KS.body(13)).frame(maxWidth: .infinity, alignment: .leading).padding(12)
+                Text(verbatim: message).font(KS.text()).frame(maxWidth: .infinity, alignment: .leading).padding(12)
                     .background(KS.sageTint).accessibilityLabel(message)
             }
             KSBottomBar {
                 if !model.taskSelection.isEmpty {
-                    Text(verbatim: L10n.t("\(model.taskSelection.count) selected")).font(KS.body(14, .bold))
+                    Text(verbatim: L10n.t("\(model.taskSelection.count) selected")).font(KS.text(.semibold))
                     Spacer()
                     ForEach([true, false], id: \.self) { resolved in
                         Button(L10n.t(resolved ? "Resolve" : "Unresolve")) { Task { await model.bulkResolve(resolved) } }
@@ -224,7 +224,7 @@ struct TasksPane: View {
                         if model.selectingTasks {
                             Image(systemName: model.taskSelection.contains(row.id) ? "checkmark.square.fill" : "square")
                                 .foregroundStyle(model.taskSelectable(row) ? KS.ink : KS.textMuted)
-                                .padding(.leading, 14).accessibilityLabel(L10n.t(model.taskSelectable(row) ? "Select task" : "Task cannot be selected"))
+                                .padding(.leading, 16).accessibilityLabel(L10n.t(model.taskSelectable(row) ? "Select task" : "Task cannot be selected"))
                         }
                         TaskRowView(model: model, row: row, selected: model.taskSelection.contains(row.id) || model.taskDetailID == row.id)
                     }
@@ -233,8 +233,8 @@ struct TasksPane: View {
                 .accessibilityAddTraits(model.taskSelection.contains(row.id) ? .isSelected : [])
             }
         }
-        .clipShape(RoundedRectangle(cornerRadius: 16))
-        .ksCard(radius: 16, shadow: shadow)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .ksCard(radius: 12, shadow: shadow)
     }
 }
 
@@ -244,21 +244,21 @@ struct TaskRowView: View {
     var selected = false
 
     var body: some View {
-        HStack(spacing: 14) {
+        HStack(spacing: 16) {
             ZStack {
                 Circle().fill(TasksPane.tint(row.section))
-                if row.section == .resolved { Image(systemName: "checkmark").font(.system(size: 12, weight: .heavy)) }
+                if row.section == .resolved { Image(systemName: "checkmark").font(KS.glyph(12, .heavy)) }
             }
             .frame(width: 26, height: 26).accessibilityLabel(row.section.title)
             VStack(alignment: .leading, spacing: 3) {
-                Text(verbatim: row.title).font(KS.body(16, .bold)).lineLimit(1)
+                Text(verbatim: row.title).font(KS.section()).lineLimit(1)
                     .strikethrough(row.section == .resolved)
                     .foregroundStyle(row.section == .resolved ? KS.textMuted : KS.ink)
                 TaskStateLine(row: row)
             }
             Spacer()
             if let at = row.at {
-                Text(at, format: .relative(presentation: .numeric, unitsStyle: .narrow)).font(KS.mono(10)).foregroundStyle(KS.textMuted)
+                Text(at, format: .relative(presentation: .numeric, unitsStyle: .narrow)).font(KS.meta()).foregroundStyle(KS.textMuted)
             }
         }
         .padding(.horizontal, 16).padding(.vertical, 12)
@@ -309,7 +309,7 @@ struct TaskDetailPanel: View {
                         .buttonStyle(.plain).accessibilityLabel(L10n.t("Close task details"))
                 }
                 if let d = model.taskDetail, d.task.id == model.taskDetailID {
-                    Text(verbatim: d.task.objective).font(KS.body(18, .bold)).textSelection(.enabled)
+                    Text(verbatim: d.task.objective).font(KS.section()).textSelection(.enabled)
                     field("State", d.resolved ? L10n.t("Resolved") : d.task.status)
                     let context = model.taskContext(d.task.id)
                     if !context.isEmpty { field("Team", context.joined(separator: " · ")) }
@@ -319,12 +319,12 @@ struct TaskDetailPanel: View {
                     if d.served?.model == nil { field("Requested model", d.permission?.runner?.model) }
                     field("Effort", d.permission?.runner?.effort)
                     field("Duration", d.result?.durationMS.map(TeamsRun.duration))
-                    VStack(alignment: .leading, spacing: 10) {
+                    VStack(alignment: .leading, spacing: 12) {
                         KSLabel(L10n.t("RUNS") + " · \(d.runs.count)")
                         if d.runs.isEmpty { Text(verbatim: L10n.t("None yet")) }
                         ForEach(Array(d.runs.enumerated()), id: \.offset) { index, run in
                             VStack(alignment: .leading, spacing: 6) {
-                                Text(verbatim: L10n.t("Attempt \(index + 1)")).font(KS.body(14, .bold))
+                                Text(verbatim: L10n.t("Attempt \(index + 1)")).font(KS.text(.semibold))
                                 field("Worker", run.worker_id)
                                 field("Provider", run.provider)
                                 field("Model", run.model)
@@ -357,7 +357,7 @@ struct TaskDetailPanel: View {
                     Text(verbatim: error)
                     Button(L10n.t("Try again")) { if let id = model.taskDetailID { Task { await model.openTaskDetail(id) } } }
                 } else { ProgressView(L10n.t("Loading task…")) }
-            }.font(KS.body(13)).foregroundStyle(KS.ink).padding(20).frame(maxWidth: .infinity, alignment: .leading)
+            }.font(KS.text()).foregroundStyle(KS.ink).padding(20).frame(maxWidth: .infinity, alignment: .leading)
         }.background(KS.white)
     }
 
@@ -365,7 +365,7 @@ struct TaskDetailPanel: View {
     @ViewBuilder private func field(_ label: String.LocalizationValue, _ value: String?) -> some View {
         if let value {
             VStack(alignment: .leading, spacing: 3) {
-                Text(verbatim: L10n.t(label)).font(KS.body(11, .bold)).foregroundStyle(KS.textSoft)
+                Text(verbatim: L10n.t(label)).font(KS.secondary(.semibold)).foregroundStyle(KS.textSoft)
                 Text(verbatim: value).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -418,22 +418,22 @@ private struct ContextUsedSection: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(verbatim: label(item)).textSelection(.enabled)
                         if item.validity == "source_changed" {
-                            Text(verbatim: L10n.t("Source changed — verify")).font(KS.body(11, .bold)).foregroundStyle(KS.needsYouText)
+                            Text(verbatim: L10n.t("Source changed — verify")).font(KS.secondary(.semibold)).foregroundStyle(KS.needsYouText)
                         } else if item.validity == "source_missing" {
-                            Text(verbatim: L10n.t("Source missing")).font(KS.body(11, .bold)).foregroundStyle(KS.needsYouText)
+                            Text(verbatim: L10n.t("Source missing")).font(KS.secondary(.semibold)).foregroundStyle(KS.needsYouText)
                         }
                     }
                 }
                 if !ctx.omitted.isEmpty {
                     Text(verbatim: L10n.t("Left out:") + " " + ctx.omitted.map { i in
                         [i.key ?? i.title ?? i.id ?? i.kind, reason(i.reason).map { "(\($0))" }].compactMap { $0 }.joined(separator: " ")
-                    }.joined(separator: ", ")).font(KS.body(11)).foregroundStyle(KS.textSoft)
+                    }.joined(separator: ", ")).font(KS.secondary()).foregroundStyle(KS.textSoft)
                 }
             }.frame(maxWidth: .infinity, alignment: .leading).padding(.top, 6)
         } label: {
             VStack(alignment: .leading, spacing: 3) {
                 KSLabel(L10n.t("CONTEXT USED"))
-                if !summary.isEmpty { Text(verbatim: summary).font(KS.body(11)).foregroundStyle(KS.textSoft) }
+                if !summary.isEmpty { Text(verbatim: summary).font(KS.secondary()).foregroundStyle(KS.textSoft) }
             }
         }
     }
@@ -448,8 +448,8 @@ struct SetupChecklistView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(verbatim: L10n.t("Setup")).font(.title2.weight(.semibold))
-            VStack(alignment: .leading, spacing: 10) {
+            Text(verbatim: L10n.t("Setup")).font(KS.title())
+            VStack(alignment: .leading, spacing: 12) {
                 if model.setupRows.isEmpty {
                     Text(verbatim: L10n.t("Not checked yet.")).foregroundStyle(KS.textMuted)
                 }
@@ -482,13 +482,13 @@ struct SetupRowView: View {
     }
 
     var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 10) {
-            Text(verbatim: badge.0).font(.system(size: 11, weight: .semibold)).foregroundStyle(badge.1)
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            Text(verbatim: badge.0).font(KS.glyph(11, .semibold)).foregroundStyle(badge.1)
                 .frame(width: 84, alignment: .leading)
             VStack(alignment: .leading, spacing: 2) {
-                Text(verbatim: row.title).font(.body)
+                Text(verbatim: row.title).font(KS.text())
                 if row.state != .ready {
-                    Text(verbatim: row.fix).font(.caption).foregroundStyle(KS.textMuted)
+                    Text(verbatim: row.fix).font(KS.secondary()).foregroundStyle(KS.textMuted)
                         .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
                 }
             }

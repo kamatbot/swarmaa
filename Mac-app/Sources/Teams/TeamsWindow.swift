@@ -24,19 +24,25 @@ final class TeamsWindowController: NSObject, NSWindowDelegate {
             window.setAccessibilityElement(true)
             window.setAccessibilityRole(.window)
             window.setAccessibilityLabel("Swarmaa")
-            window.minSize = NSSize(width: 900, height: 560)
+            window.minSize = NSSize(width: 1000, height: 600)
             // The workspace has one theme, navy; keep the window dark whatever the Mac's appearance.
             window.appearance = NSAppearance(named: .darkAqua)
             let host = TeamsHostingView(rootView: TeamsRootView(model: model))
             host.safeAreaRegions = []
-            window.contentView = host
+            // A plain container holds the SwiftUI view, so the traffic lights can sit above it as siblings:
+            // added inside the hosting view they neither drew nor reached Accessibility.
+            let container = TeamsContentView(frame: NSRect(x: 0, y: 0, width: 1280, height: 820))
+            host.frame = container.bounds
+            host.autoresizingMask = [.width, .height]
+            container.addSubview(host)
+            window.contentView = container
             window.isReleasedWhenClosed = false
             window.delegate = self
             window.setFrameAutosaveName("SwarmaaTeamsWindow")
             if !window.setFrameUsingName("SwarmaaTeamsWindow") { window.center() }
             self.window = window
             // SwiftUI focuses the first text field (the top bar's search); open with nothing focused, so ⌘K is how you search.
-            DispatchQueue.main.async { [weak window] in window?.makeFirstResponder(nil) }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak window] in window?.makeFirstResponder(nil) }
             // The first time the window opens, show the setup checklist if anything is wrong.
             if connect { Task { [model] in
                 await model.runSetup()
@@ -60,7 +66,7 @@ final class TeamsWindowController: NSObject, NSWindowDelegate {
             // clipping their new position or covering the other columns.
             if button.superview !== content {
                 if let parent = button.superview { trafficLightHomes[kind] = (parent, button.frame) }
-                content.addSubview(button)
+                content.addSubview(button, positioned: .above, relativeTo: nil)
             }
             button.isHidden = false
             let top = content.isFlipped ? KS.topBarHeight / 2 : content.bounds.height - KS.topBarHeight / 2
@@ -95,6 +101,11 @@ final class TeamsWindowController: NSObject, NSWindowDelegate {
         model.isVisible = false
         model.stopStream()
     }
+}
+
+/// The window's content: the hosting view, with the traffic lights above it.
+final class TeamsContentView: NSView {
+    override var mouseDownCanMoveWindow: Bool { false }
 }
 
 /// Do not let AppKit turn content controls into window-drag targets.
@@ -143,7 +154,7 @@ struct TeamsConnectionStatus: View {
                 if let date = model.lastUpdated {
                     TimelineView(.periodic(from: .now, by: 60)) { context in
                         Text(verbatim: L10n.t("updated \(max(0, Int(context.date.timeIntervalSince(date) / 60))) min ago"))
-                            .font(KS.body(13)).foregroundStyle(KS.textMuted).lineLimit(1)
+                            .font(KS.text()).foregroundStyle(KS.textMuted).lineLimit(1)
                     }
                 }
                 Button(L10n.t("Retry")) { Task { await model.retryConnection() } }
@@ -157,6 +168,12 @@ struct TeamsConnectionStatus: View {
 
 struct TeamsRootView: View {
     @ObservedObject var model: TeamsModel
+    @State private var width: CGFloat = 1400
+
+    /// The map panel takes what the window can spare: the bot list (264) and a 420 pt centre come first.
+    private var mapWidth: CGFloat {
+        min(model.swarmMapWide ? 560 : 380, max(280, width - 264 - 420))
+    }
 
     var body: some View {
         HStack(spacing: 0) {
@@ -164,9 +181,10 @@ struct TeamsRootView: View {
                 WorkspaceTopBar(model: model)
                 content.frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            if model.showSwarmMap { SwarmMapPanel(model: model).frame(width: model.swarmMapWide ? 560 : 380) }
+            if model.showSwarmMap { SwarmMapPanel(model: model).frame(width: mapWidth) }
         }
-        .frame(minWidth: 900, minHeight: 560)
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
+        .frame(minWidth: 1000, minHeight: 600)
         .background(alignment: .top) { TeamsTitlebarBackground().frame(height: KS.topBarHeight) }
         .background(KS.paper)
         .ignoresSafeArea(.container, edges: .top)
@@ -225,7 +243,7 @@ struct UsageRingButton: View {
                         .stroke(KS.providerTint(usage.provider), style: StrokeStyle(lineWidth: 4.5, lineCap: .butt))
                         .rotationEffect(.degrees(-90))
                 }
-                Text(verbatim: TeamsCopy.providerShort(usage.provider)).font(KS.mono(10, .bold)).foregroundStyle(KS.ink)
+                Text(verbatim: TeamsCopy.providerShort(usage.provider)).font(KS.meta(.semibold)).foregroundStyle(KS.ink)
             }
             .frame(width: 34, height: 34).frame(width: 46, height: 42).contentShape(Rectangle())
         }
@@ -252,19 +270,19 @@ struct UsageCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text(verbatim: SwarmaCells.vendorName(usage.provider)).font(KS.body(17, .semibold)).foregroundStyle(KS.strong)
+                Text(verbatim: SwarmaCells.vendorName(usage.provider)).font(KS.section()).foregroundStyle(KS.strong)
                 if let plan = usage.plan, !plan.isEmpty { KSChip(plan, fill: KS.chip, ink: KS.textSoft) }
                 Spacer()
                 if let h = usage.headroom { KSChip("\(Int(h))% " + L10n.t("left"), fill: KS.providerTint(usage.provider), ink: KS.onSignal) }
             }
-            if let error = usage.error { Text(verbatim: error).font(KS.body(13)).foregroundStyle(KS.coral) }
+            if let error = usage.error { Text(verbatim: error).font(KS.text()).foregroundStyle(KS.coral) }
             ForEach(Array(usage.windows.enumerated()), id: \.offset) { _, w in
                 VStack(alignment: .leading, spacing: 5) {
                     HStack {
-                        Text(verbatim: TeamsCopy.windowName(w.name)).font(KS.body(14)).foregroundStyle(KS.ink)
+                        Text(verbatim: TeamsCopy.windowName(w.name)).font(KS.text()).foregroundStyle(KS.ink)
                         Spacer()
                         Text(verbatim: w.usedPercent.map { "\(Int($0))% " + L10n.t("used") } ?? "—")
-                            .font(KS.mono(12, .semibold)).foregroundStyle(KS.ink)
+                            .font(KS.meta(.semibold)).foregroundStyle(KS.ink)
                     }
                     GeometryReader { g in
                         ZStack(alignment: .leading) {
@@ -274,14 +292,14 @@ struct UsageCard: View {
                         }
                     }.frame(height: 6)
                     if let reset = w.resetsAt {
-                        Text("Resets \(reset, format: .relative(presentation: .named))").font(KS.body(12)).foregroundStyle(KS.textMuted)
+                        Text("Resets \(reset, format: .relative(presentation: .named))").font(KS.secondary()).foregroundStyle(KS.textMuted)
                     }
                 }
             }
             Rectangle().fill(KS.hairline).frame(height: 1)
             HStack {
                 Text(verbatim: routing.map { $0.liveWorker ? L10n.t("Live worker ready") : L10n.t("No live worker") } ?? L10n.t("Not routed"))
-                    .font(KS.body(12)).foregroundStyle(KS.textMuted)
+                    .font(KS.secondary()).foregroundStyle(KS.textMuted)
                 Spacer()
                 Button(L10n.t("Usage")) { model.pane = .usage }.buttonStyle(.ks(.primary, compact: true))
             }
@@ -301,7 +319,7 @@ struct TeamsAvatar: View {
     var size: CGFloat = 32
     var body: some View {
         if isChannel {
-            Text(verbatim: "#").font(KS.mono(size * 0.45, .bold)).foregroundStyle(KS.onSignal).frame(width: size, height: size)
+            Text(verbatim: "#").font(KS.glyph(size * 0.45, .bold, mono: true)).foregroundStyle(KS.onSignal).frame(width: size, height: size)
                 .ksCard(fill: KS.signal, radius: size * 0.3).accessibilityHidden(true)
         } else {
             KSMoji(seed: seed, size: size)
@@ -321,11 +339,11 @@ struct TeamsEmptyState: View {
     let action: (String, () -> Void)?
 
     var body: some View {
-        VStack(spacing: 14) {
-            Image(systemName: symbol).font(.system(size: 24, weight: .medium)).foregroundStyle(KS.signal)
+        VStack(spacing: 16) {
+            Image(systemName: symbol).font(KS.glyph(24, .medium)).foregroundStyle(KS.signal)
                 .frame(width: 56, height: 56).ksCard(fill: KS.chip, radius: 12)
-            Text(verbatim: title).font(KS.body(18, .semibold)).foregroundStyle(KS.strong).multilineTextAlignment(.center)
-            if let detail { Text(verbatim: detail).font(KS.body(14)).foregroundStyle(KS.textMuted).multilineTextAlignment(.center).frame(maxWidth: 420) }
+            Text(verbatim: title).font(KS.section()).foregroundStyle(KS.strong).multilineTextAlignment(.center)
+            if let detail { Text(verbatim: detail).font(KS.text()).foregroundStyle(KS.textMuted).multilineTextAlignment(.center).frame(maxWidth: 420) }
             if let action { Button(action.0, action: action.1).buttonStyle(.ks(.primary)) }
         }
         .padding(40).frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -336,7 +354,7 @@ struct TeamsEmptyState: View {
 struct KSBottomBar<Content: View>: View {
     @ViewBuilder let content: Content
     var body: some View {
-        HStack(spacing: 10) { content }
+        HStack(spacing: 12) { content }
             .padding(.horizontal, 20).padding(.vertical, 12)
             .background(KS.paper)
             .overlay(alignment: .top) { Rectangle().fill(KS.hairline).frame(height: 1) }
@@ -351,18 +369,18 @@ struct UsagePane: View {
     var body: some View {
         VStack(spacing: 0) {
             KSTopBar {
-                Text(verbatim: L10n.t("Usage")).font(KS.body(20, .semibold)).foregroundStyle(KS.strong).fixedSize()
+                Text(verbatim: L10n.t("Usage")).font(KS.title()).foregroundStyle(KS.strong).fixedSize()
                 Text(verbatim: L10n.t("What each subscription has left, and where auto routing sends work next."))
-                    .font(KS.body(13)).foregroundStyle(KS.textSoft).lineLimit(1)
+                    .font(KS.text()).foregroundStyle(KS.textSoft).lineLimit(1)
                 Spacer(minLength: 0)
                 TeamsConnectionStatus(model: model)
                 // Hover a ring for its windows, resets and routing.
                 ForEach(model.allUsage, id: \.provider) { UsageRingButton(model: model, usage: $0) }
             }
             ScrollView {
-                VStack(alignment: .leading, spacing: 22) {
+                VStack(alignment: .leading, spacing: 24) {
                     if case let usage = model.allUsage, !usage.isEmpty {
-                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 280), spacing: 22, alignment: .top)], alignment: .leading, spacing: 22) {
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 280), spacing: 24, alignment: .top)], alignment: .leading, spacing: 24) {
                             ForEach(usage, id: \.provider) { u in UsageProviderCard(usage: u) }
                         }
                         if let routed = model.status?.usage, !routed.isEmpty { RoutingOrderBand(usage: routed) }
@@ -371,11 +389,11 @@ struct UsagePane: View {
                                         detail: L10n.t("Swarmaa shows each provider's quota once a worker reports it."), action: nil)
                     }
                 }
-                .padding(28)
+                .padding(24)
             }
             KSBottomBar {
                 Text(verbatim: model.lastUpdated.map { L10n.t("Updated ") + $0.formatted(.relative(presentation: .named)) } ?? "")
-                    .font(KS.body(14)).foregroundStyle(KS.textMuted)
+                    .font(KS.text()).foregroundStyle(KS.textMuted)
                 Spacer()
                 Button(L10n.t("Routing rules")) { AppDelegate.shared?.openSettings() }.buttonStyle(.ks(.paper))
                 Button(L10n.t("Refresh all")) { Task { await model.refresh() } }.buttonStyle(.ks(.primary))
@@ -397,22 +415,22 @@ struct UsageProviderCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text(verbatim: SwarmaCells.vendorName(usage.provider)).font(KS.body(17, .semibold)).foregroundStyle(KS.strong)
+                Text(verbatim: SwarmaCells.vendorName(usage.provider)).font(KS.section()).foregroundStyle(KS.strong)
                 if let plan = usage.plan, !plan.isEmpty { KSChip(plan, fill: KS.chip, ink: KS.textSoft) }
                 Spacer()
                 if let plan = usage.plan, !plan.isEmpty { KSChip(plan) }
             }
             HStack(alignment: .lastTextBaseline, spacing: 6) {
-                Text(verbatim: usage.headroom.map { "\(Int($0))%" } ?? "—").font(KS.mono(34, .medium)).foregroundStyle(KS.strong)
+                Text(verbatim: usage.headroom.map { "\(Int($0))%" } ?? "—").font(KS.figure()).foregroundStyle(KS.strong)
                 KSLabel(L10n.t("left"))
             }
-            if let error = usage.error { Text(verbatim: error).font(KS.body(13)).foregroundStyle(KS.textSoft) }
+            if let error = usage.error { Text(verbatim: error).font(KS.text()).foregroundStyle(KS.textSoft) }
             ForEach(Array(usage.windows.enumerated()), id: \.offset) { _, w in
                 VStack(alignment: .leading, spacing: 5) {
                     HStack {
-                        Text(verbatim: TeamsCopy.windowName(w.name)).font(KS.body(14))
+                        Text(verbatim: TeamsCopy.windowName(w.name)).font(KS.text())
                         Spacer()
-                        Text(verbatim: w.usedPercent.map { "\(Int($0))% " + L10n.t("used") } ?? "—").font(KS.mono(12, .semibold))
+                        Text(verbatim: w.usedPercent.map { "\(Int($0))% " + L10n.t("used") } ?? "—").font(KS.meta(.semibold))
                     }
                     GeometryReader { g in
                         ZStack(alignment: .leading) {
@@ -422,12 +440,12 @@ struct UsageProviderCard: View {
                         }
                     }.frame(height: 5)
                     if let reset = w.resetsAt {
-                        Text("Resets \(reset, format: .relative(presentation: .named))").font(KS.body(12)).foregroundStyle(KS.textMuted)
+                        Text("Resets \(reset, format: .relative(presentation: .named))").font(KS.secondary()).foregroundStyle(KS.textMuted)
                     }
                 }
             }
         }
-        .padding(18).ksCard(radius: 16)
+        .padding(20).ksCard(radius: 12)
     }
 }
 
@@ -438,11 +456,11 @@ struct RoutingOrderBand: View {
         let order = usage.filter { $0.headroom != nil }.sorted { ($0.headroom ?? 0) > ($1.headroom ?? 0) }
         VStack(alignment: .leading, spacing: 12) {
             KSLabel(L10n.t("01 — Auto routing order, right now"))
-            HStack(spacing: 10) {
+            HStack(spacing: 12) {
                 ForEach(Array(order.enumerated()), id: \.element.provider) { i, u in
                     if i > 0 { Text(verbatim: "→").foregroundStyle(KS.textDim) }
                     KSChip("\(i + 1)", fill: i == 0 ? KS.signal : KS.chip, ink: i == 0 ? KS.onSignal : KS.textSoft)
-                    Text(verbatim: SwarmaCells.vendorName(u.provider)).font(KS.body(15, .semibold)).foregroundStyle(KS.ink)
+                    Text(verbatim: SwarmaCells.vendorName(u.provider)).font(KS.section()).foregroundStyle(KS.ink)
                 }
             }
         }

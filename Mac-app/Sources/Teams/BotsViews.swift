@@ -36,7 +36,7 @@ struct BotsHome: View {
                             TeamsEmptyState(symbol: "bubble.left.and.bubble.right", title: L10n.t("Choose a bot"), detail: nil, action: nil)
                         }
                     }
-                    .frame(minWidth: 460, maxWidth: .infinity, maxHeight: .infinity)
+                    .frame(minWidth: 360, maxWidth: .infinity, maxHeight: .infinity)
                     // The right column needs room; under ~1200 pt of window it folds away.
                     if width >= 1120, model.editingBotID == nil, let bot = model.selectedBot {
                         BotSideColumn(model: model, bot: bot).frame(width: width >= 1300 ? 330 : 300)
@@ -55,7 +55,7 @@ struct BotsSidebar: View {
     var body: some View {
         let bots = model.sortedBots
         let hidden = model.hiddenBots
-        VStack(alignment: .leading, spacing: 22) {
+        VStack(alignment: .leading, spacing: 24) {
             VStack(alignment: .leading, spacing: 8) {
                 KSSectionLabel(text: L10n.t("Bots"), count: bots.count).padding(.leading, 6)
                 ScrollView {
@@ -66,7 +66,7 @@ struct BotsSidebar: View {
                                 withAnimation(reduceMotion ? nil : KS.motion) { model.showHiddenBots.toggle() }
                             } label: {
                                 HStack(spacing: 6) {
-                                    Image(systemName: "chevron.right").font(.system(size: 9, weight: .bold))
+                                    Image(systemName: "chevron.right").font(KS.glyph(9, .bold))
                                         .rotationEffect(.degrees(model.showHiddenBots ? 90 : 0))
                                     KSLabel(L10n.t("Hidden · \(hidden.count)"))
                                     Spacer()
@@ -74,7 +74,7 @@ struct BotsSidebar: View {
                                 .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain).foregroundStyle(KS.textMuted)
-                            .padding(.horizontal, 8).padding(.top, 10)
+                            .padding(.horizontal, 8).padding(.top, 12)
                             .accessibilityLabel(L10n.t("Hidden bots, \(hidden.count)"))
                             if model.showHiddenBots {
                                 ForEach(hidden) { BotRow(model: model, bot: $0) }
@@ -82,7 +82,7 @@ struct BotsSidebar: View {
                             }
                         }
                         if bots.isEmpty && hidden.isEmpty {
-                            Text(verbatim: L10n.t("No bots match")).font(KS.body(13)).foregroundStyle(KS.textMuted).padding(10)
+                            Text(verbatim: L10n.t("No bots match")).font(KS.text()).foregroundStyle(KS.textMuted).padding(12)
                         }
                     }
                 }
@@ -134,24 +134,24 @@ struct BotRow: View {
         let needs = model.botNeedsYou(bot), unread = model.botUnread(bot)
         let latest = model.botLatest(bot)
         Button { model.select(threadID: bot.threadID) } label: {
-            HStack(alignment: .center, spacing: 10) {
+            HStack(alignment: .center, spacing: 12) {
                 StatusDot(state: model.botDot(bot))
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 6) {
-                        Text(verbatim: bot.name).font(KS.body(14, .semibold)).foregroundStyle(KS.strong).lineLimit(1)
+                        Text(verbatim: bot.name).font(KS.text(.semibold)).foregroundStyle(KS.strong).lineLimit(1)
                         Spacer(minLength: 2)
                         if unread > 0, needs == 0 { KSBadge(count: unread) }
                         else if let at = latest?.at {
-                            Text(verbatim: KSClock.short(at)).font(KS.mono(11, .regular)).foregroundStyle(KS.textDim).lineLimit(1)
+                            Text(verbatim: KSClock.short(at)).font(KS.meta()).foregroundStyle(KS.textDim).lineLimit(1)
                         }
                     }
-                    Text(verbatim: subtitle(needs: needs, unread: unread)).font(KS.body(12))
+                    Text(verbatim: subtitle(needs: needs, unread: unread)).font(KS.secondary())
                         .foregroundStyle(needs > 0 ? KS.needsYouText.opacity(0.85) : KS.textMuted).lineLimit(1)
                 }
             }
-            .padding(.horizontal, 10).padding(.vertical, 9)
+            .padding(.horizontal, 12).padding(.vertical, 8)
             .background {
-                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .fill(selected ? KS.selected : hovered ? KS.chip.opacity(0.6) : .clear)
                     .animation(reduceMotion ? nil : KS.motion, value: hovered)
                     .animation(reduceMotion ? nil : KS.motion, value: selected)
@@ -159,7 +159,7 @@ struct BotRow: View {
             .overlay(alignment: .leading) {
                 if selected { RoundedRectangle(cornerRadius: 1).fill(KS.signal).frame(width: 2).padding(.vertical, 4) }
             }
-            .contentShape(RoundedRectangle(cornerRadius: 9))
+            .contentShape(RoundedRectangle(cornerRadius: 8))
         }
         .buttonStyle(.plain)
         .help(latest?.line ?? bot.job)
@@ -222,11 +222,11 @@ struct BotThreadHeader: View {
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 6) {
                     Text(verbatim: settingsOpen ? bot.name + " / " + L10n.t("Settings") : bot.name)
-                        .font(KS.body(26, .semibold)).tracking(-0.3).foregroundStyle(Color(hex: 0xF6F8FC)).lineLimit(1)
+                        .font(KS.title()).tracking(-0.3).foregroundStyle(Color(hex: 0xF6F8FC)).lineLimit(1)
                     if !settingsOpen { botMenu }
                 }
                 if !settingsOpen {
-                    Text(verbatim: meta).font(KS.body(14)).foregroundStyle(KS.textMuted).lineLimit(1).truncationMode(.middle)
+                    Text(verbatim: meta).font(KS.text()).foregroundStyle(KS.textMuted).lineLimit(1).truncationMode(.middle)
                 }
             }
             .layoutPriority(1)
@@ -270,12 +270,12 @@ struct BotThreadHeader: View {
     }
 
     private func pill(_ text: String, _ ink: Color, _ fill: Color) -> some View {
-        HStack(spacing: 7) {
+        HStack(spacing: 8) {
             Circle().fill(ink).frame(width: 7, height: 7)
-            Text(verbatim: text).font(KS.body(13, .semibold))
+            Text(verbatim: text).font(KS.secondary(.semibold))
         }
         .foregroundStyle(ink)
-        .padding(.horizontal, 12).frame(height: 28)
+        .padding(.horizontal, 12).frame(height: 24)
         .background(Capsule().fill(fill))
         .fixedSize()
         .padding(.top, 4)
@@ -294,7 +294,7 @@ struct BotThreadHeader: View {
             Button(L10n.t("Hide bot"), role: .destructive) { Task { await model.setBotHidden(bot, hidden: true) } }
                 .foregroundStyle(KS.danger).disabled(bot.isLegacyAgent || bot.archived || model.savingBot)
         } label: {
-            Image(systemName: "chevron.down").font(.system(size: 11, weight: .semibold)).foregroundStyle(KS.textMuted)
+            Image(systemName: "chevron.down").font(KS.glyph(11, .semibold)).foregroundStyle(KS.textMuted)
                 .frame(width: 24, height: 24).contentShape(Rectangle())
         }
         // `.button` + plain keeps the label as drawn; `.borderlessButton` flattens it to an NSMenu title and image.
@@ -312,21 +312,21 @@ struct TaskCardView: View {
 
     var body: some View {
         let task = message.task
-        VStack(alignment: .leading, spacing: 7) {
-            HStack(spacing: 10) {
-                Text(verbatim: task?.title ?? message.body ?? L10n.t("Task")).font(KS.body(15, .bold)).lineLimit(2)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 12) {
+                Text(verbatim: task?.title ?? message.body ?? L10n.t("Task")).font(KS.section()).lineLimit(2)
                 Spacer()
                 if let task { KSChip(Self.state(task).0, fill: Self.state(task).1, ink: Self.state(task).2) }
             }
-            if let body = message.body, task?.title != nil { Text(verbatim: body).font(KS.body(14)).foregroundStyle(KS.textSoft) }
+            if let body = message.body, task?.title != nil { Text(verbatim: body).font(KS.text()).foregroundStyle(KS.textSoft) }
             if let task {
                 HStack(spacing: 8) {
-                    if let branch = task.branch { Text(verbatim: branch).font(KS.mono(12)).textSelection(.enabled) }
-                    if let n = task.changedFiles { Text(verbatim: n == 1 ? L10n.t("1 file") : L10n.t("\(n) files")).font(KS.body(13)).foregroundStyle(KS.textMuted) }
-                    if let p = task.served?.provider { Text(verbatim: "· " + SwarmaCells.vendorName(p)).font(KS.body(13)).foregroundStyle(KS.textMuted) }
+                    if let branch = task.branch { Text(verbatim: branch).font(KS.meta()).textSelection(.enabled) }
+                    if let n = task.changedFiles { Text(verbatim: n == 1 ? L10n.t("1 file") : L10n.t("\(n) files")).font(KS.text()).foregroundStyle(KS.textMuted) }
+                    if let p = task.served?.provider { Text(verbatim: "· " + SwarmaCells.vendorName(p)).font(KS.text()).foregroundStyle(KS.textMuted) }
                 }
                 if let f = task.failure, task.isFailed {
-                    Text(verbatim: [f.code, f.detail].compactMap { $0 }.joined(separator: " · ")).font(KS.body(13)).foregroundStyle(KS.textSoft)
+                    Text(verbatim: [f.code, f.detail].compactMap { $0 }.joined(separator: " · ")).font(KS.text()).foregroundStyle(KS.textSoft)
                 }
                 HStack(spacing: 8) {
                     if task.isFailed {
@@ -345,7 +345,7 @@ struct TaskCardView: View {
             }
         }
         .padding(12).frame(maxWidth: 640, alignment: .leading)
-        .ksCard(fill: message.task?.isFailed == true ? KS.coralTint : KS.white, radius: 16)
+        .ksCard(fill: message.task?.isFailed == true ? KS.coralTint : KS.white, radius: 12)
     }
 
     static func state(_ t: TeamsTaskCard) -> (String, Color, Color) {
@@ -380,25 +380,25 @@ struct BotSettingsPane: View {
     var body: some View {
         VStack(spacing: 0) {
             BotThreadHeader(model: model, bot: bot)
-                .padding(.horizontal, 28).padding(.top, 22).padding(.bottom, 12)
+                .padding(.horizontal, 24).padding(.top, 24).padding(.bottom, 12)
                 .overlay(alignment: .bottom) { Rectangle().fill(KS.hairline).frame(height: 1) }
 
             ScrollView {
                 if bot.isLegacyAgent {
                     Text(verbatim: L10n.t("This is an agent from before bots. Update the Swarmaa service to give it a crew, routing and rules."))
-                        .font(KS.body(15)).padding(16).frame(maxWidth: .infinity, alignment: .leading)
-                        .ksCard(fill: KS.butter, radius: 18).padding(24)
+                        .font(KS.section()).padding(16).frame(maxWidth: .infinity, alignment: .leading)
+                        .ksCard(fill: KS.butter, radius: 12).padding(24)
                 }
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 380), spacing: 26, alignment: .top)], alignment: .leading, spacing: 26) {
-                    VStack(alignment: .leading, spacing: 22) { jobSection; crewSection }
-                    VStack(alignment: .leading, spacing: 22) { routingSection; rulesSection }
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 380), spacing: 24, alignment: .top)], alignment: .leading, spacing: 24) {
+                    VStack(alignment: .leading, spacing: 24) { jobSection; crewSection }
+                    VStack(alignment: .leading, spacing: 24) { routingSection; rulesSection }
                 }
                 .padding(24)
                 .disabled(bot.isLegacyAgent)
             }
 
             Text(verbatim: L10n.t("Changes apply from the next turn. Running work keeps its settings."))
-                .font(KS.body(14)).foregroundStyle(KS.textMuted)
+                .font(KS.text()).foregroundStyle(KS.textMuted)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 20).padding(.top, 12).padding(.bottom, 2)
                 .background(KS.white)
@@ -442,32 +442,32 @@ struct BotSettingsPane: View {
 
     // 01 — The job
     private var jobSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 12) {
             KSLabel(L10n.t("01 — The job"))
-            VStack(alignment: .leading, spacing: 14) {
-                field(L10n.t("Name")) { TextField("", text: $name).textFieldStyle(.plain).font(KS.body(16)) }
+            VStack(alignment: .leading, spacing: 16) {
+                field(L10n.t("Name")) { TextField("", text: $name).textFieldStyle(.plain).font(KS.section()) }
                 field(L10n.t("What it does")) {
-                    TextEditor(text: $job).font(KS.body(15)).scrollContentBackground(.hidden).frame(minHeight: 96)
+                    TextEditor(text: $job).font(KS.section()).scrollContentBackground(.hidden).frame(minHeight: 96)
                         .accessibilityLabel(L10n.t("What it does"))
                 }
-                HStack { Text(verbatim: L10n.t("Project")).font(KS.body(15, .semibold)); Spacer(); KSChip(bot.scope) }
+                HStack { Text(verbatim: L10n.t("Project")).font(KS.section()); Spacer(); KSChip(bot.scope) }
             }
-            .padding(18).ksCard(radius: 16)
+            .padding(20).ksCard(radius: 12)
         }
     }
 
     private func field<C: View>(_ title: String, @ViewBuilder _ content: () -> C) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(verbatim: title).font(KS.body(15, .semibold))
-            content().padding(.horizontal, 12).padding(.vertical, 9)
-                .background(RoundedRectangle(cornerRadius: 14).fill(KS.white))
-                .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(KS.hairline, lineWidth: 1))
+            Text(verbatim: title).font(KS.section())
+            content().padding(.horizontal, 12).padding(.vertical, 8)
+                .background(RoundedRectangle(cornerRadius: 12).fill(KS.white))
+                .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(KS.hairline, lineWidth: 1))
         }
     }
 
     // 02 — The crew
     private var crewSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 12) {
             KSLabel(L10n.t("02 — The crew"))
             VStack(spacing: 0) {
                 ForEach(Array(([leadID] + members.filter { $0 != leadID }).enumerated()), id: \.element) { i, id in
@@ -475,9 +475,9 @@ struct BotSettingsPane: View {
                     HStack(spacing: 12) {
                         KSMoji(seed: a?.avatar ?? id, size: 34)
                         VStack(alignment: .leading, spacing: 1) {
-                            Text(verbatim: a?.name ?? L10n.t("Unknown agent")).font(KS.body(16, .bold))
+                            Text(verbatim: a?.name ?? L10n.t("Unknown agent")).font(KS.section())
                             Text(verbatim: [a?.role, a?.edits == true ? L10n.t("edits in its own branch, never pushes") : L10n.t("reads only")]
-                                .compactMap { $0 }.joined(separator: " · ")).font(KS.body(13)).foregroundStyle(KS.textMuted)
+                                .compactMap { $0 }.joined(separator: " · ")).font(KS.text()).foregroundStyle(KS.textMuted)
                         }
                         Spacer()
                         if id == leadID { KSChip(L10n.t("Lead")) }
@@ -488,11 +488,11 @@ struct BotSettingsPane: View {
                                 .buttonStyle(.ks(.white, compact: true)).accessibilityLabel(L10n.t("Remove \(a?.name ?? "agent") from the crew"))
                         }
                     }
-                    .padding(.horizontal, 16).padding(.vertical, 11)
+                    .padding(.horizontal, 16).padding(.vertical, 12)
                     .overlay(alignment: .bottom) { if i < members.filter({ $0 != leadID }).count { Rectangle().fill(KS.hairline).frame(height: 1) } }
                 }
             }
-            .ksCard(radius: 16)
+            .ksCard(radius: 12)
             let candidates = scopeAgents.filter { $0.id != leadID && !members.contains($0.id) }
             Menu {
                 ForEach(candidates) { a in Button(a.name + (a.role.map { " · " + $0 } ?? "")) { members.append(a.id) } }
@@ -504,17 +504,17 @@ struct BotSettingsPane: View {
 
     // 03 — Which service does what
     private var routingSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 12) {
             KSLabel(L10n.t("03 — Which service does what"))
             VStack(spacing: 0) {
                 ForEach(Array(TeamsBotRouting.Kind.allCases.enumerated()), id: \.element) { i, kind in
-                    HStack(spacing: 14) {
+                    HStack(spacing: 16) {
                         VStack(alignment: .leading, spacing: 1) {
-                            Text(verbatim: kind.title).font(KS.body(16, .bold))
-                            Text(verbatim: kind.detail).font(KS.body(13)).foregroundStyle(KS.textMuted)
+                            Text(verbatim: kind.title).font(KS.section())
+                            Text(verbatim: kind.detail).font(KS.text()).foregroundStyle(KS.textMuted)
                             if let now = bot.routingNow[kind.rawValue], let p = now.providerNow {
                                 Text(verbatim: L10n.t("Now: ") + SwarmaCells.vendorName(p) + (now.reason.map { " · " + $0 } ?? ""))
-                                    .font(KS.mono(10)).foregroundStyle(KS.textSoft)
+                                    .font(KS.meta()).foregroundStyle(KS.textSoft)
                             }
                         }
                         Spacer(minLength: 8)
@@ -524,7 +524,7 @@ struct BotSettingsPane: View {
                     .overlay(alignment: .bottom) { if i < 3 { Rectangle().fill(KS.hairline).frame(height: 1) } }
                 }
             }
-            .ksCard(radius: 16, shadow: true)
+            .ksCard(radius: 12, shadow: true)
         }
     }
 
@@ -556,7 +556,7 @@ struct BotSettingsPane: View {
 
     // 04 — Rules
     private var rulesSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 12) {
             KSLabel(L10n.t("04 — Rules"))
             VStack(spacing: 0) {
                 ruleRow(L10n.t("Chat replies"),
@@ -570,7 +570,7 @@ struct BotSettingsPane: View {
                 ruleRow(L10n.t("Keep a quota floor"),
                         rules.quotaFloorPct == 0 ? L10n.t("Off: a service may be used until it runs out")
                                                  : L10n.t("Auto work skips a service below \(rules.quotaFloorPct)% left")) {
-                    Stepper(value: $rules.quotaFloorPct, in: 0...50, step: 5) { Text(verbatim: "\(rules.quotaFloorPct)%").font(KS.mono(13, .semibold)) }
+                    Stepper(value: $rules.quotaFloorPct, in: 0...50, step: 5) { Text(verbatim: "\(rules.quotaFloorPct)%").font(KS.meta(.semibold)) }
                         .fixedSize()
                 }
                 ruleRow(L10n.t("Ask me before anything public"), L10n.t("Posts, emails and releases wait for your yes")) {
@@ -587,7 +587,7 @@ struct BotSettingsPane: View {
                         Toggle("", isOn: $scheduled).labelsHidden().toggleStyle(.switch)
                     }
                     if scheduled {
-                        TextField(L10n.t("Cron, e.g. 0 9 * * 1-5"), text: $schedule).textFieldStyle(.plain).font(KS.mono(13))
+                        TextField(L10n.t("Cron, e.g. 0 9 * * 1-5"), text: $schedule).textFieldStyle(.plain).font(KS.meta())
                             .padding(.horizontal, 12).padding(.vertical, 8)
                             .background(RoundedRectangle(cornerRadius: 12).fill(KS.paper))
                             .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(KS.hairline, lineWidth: 1))
@@ -596,7 +596,7 @@ struct BotSettingsPane: View {
                 }
                 .padding(.horizontal, 16).padding(.vertical, 12)
             }
-            .ksCard(radius: 16)
+            .ksCard(radius: 12)
         }
     }
 
@@ -607,10 +607,10 @@ struct BotSettingsPane: View {
     }
 
     private func ruleContent<C: View>(_ title: String, _ detail: String, @ViewBuilder _ control: () -> C) -> some View {
-        HStack(spacing: 14) {
+        HStack(spacing: 16) {
             VStack(alignment: .leading, spacing: 1) {
-                Text(verbatim: title).font(KS.body(16, .bold))
-                Text(verbatim: detail).font(KS.body(13)).foregroundStyle(KS.textMuted)
+                Text(verbatim: title).font(KS.section())
+                Text(verbatim: detail).font(KS.text()).foregroundStyle(KS.textMuted)
             }
             Spacer(minLength: 8)
             control()
@@ -627,14 +627,14 @@ private struct DeleteBotSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text(verbatim: L10n.t("Delete bot?")).font(KS.body(24, .semibold))
+            Text(verbatim: L10n.t("Delete bot?")).font(KS.title())
             Text(verbatim: L10n.t("This permanently deletes the bot and its chat. This cannot be undone."))
-                .font(KS.body(15))
-            Text(verbatim: L10n.t("Type the bot's name exactly to confirm:")).font(KS.body(14))
-            Text(verbatim: bot.name).font(KS.body(16, .bold)).textSelection(.enabled)
+                .font(KS.section())
+            Text(verbatim: L10n.t("Type the bot's name exactly to confirm:")).font(KS.text())
+            Text(verbatim: bot.name).font(KS.section()).textSelection(.enabled)
             TextField(L10n.t("Bot name"), text: $confirmName).textFieldStyle(.roundedBorder)
             if let error = model.botError {
-                Text(verbatim: error).font(KS.body(14)).foregroundStyle(KS.danger)
+                Text(verbatim: error).font(KS.text()).foregroundStyle(KS.danger)
                     .fixedSize(horizontal: false, vertical: true)
             }
             HStack {
@@ -677,15 +677,15 @@ struct NewBotSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text(verbatim: L10n.t("New bot")).font(KS.body(24, .semibold))
+            Text(verbatim: L10n.t("New bot")).font(KS.title())
             Text(verbatim: L10n.t("One job, done for as long as the bot exists. You can add a crew and set its routing after."))
-                .font(KS.body(14)).foregroundStyle(KS.textSoft)
-            labeled(L10n.t("Name")) { TextField(L10n.t("e.g. Launch"), text: $name).textFieldStyle(.plain).font(KS.body(16)) }
+                .font(KS.text()).foregroundStyle(KS.textSoft)
+            labeled(L10n.t("Name")) { TextField(L10n.t("e.g. Launch"), text: $name).textFieldStyle(.plain).font(KS.section()) }
             labeled(L10n.t("What it does")) {
-                TextEditor(text: $job).font(KS.body(15)).scrollContentBackground(.hidden).frame(height: 90)
+                TextEditor(text: $job).font(KS.section()).scrollContentBackground(.hidden).frame(height: 90)
                     .accessibilityLabel(L10n.t("What it does"))
             }
-            HStack(spacing: 14) {
+            HStack(spacing: 16) {
                 labeled(L10n.t("Project")) {
                     Picker("", selection: $scope) { ForEach(scopes, id: \.self) { Text(verbatim: SwarmaCells.scopeLabel($0)).tag($0) } }
                         .labelsHidden()
@@ -698,7 +698,7 @@ struct NewBotSheet: View {
                 }
             }
             if let message = model.botError ?? missing {
-                Text(verbatim: message).font(KS.body(14))
+                Text(verbatim: message).font(KS.text())
                     .foregroundStyle(model.botError != nil ? KS.coral : KS.textMuted)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -726,10 +726,10 @@ struct NewBotSheet: View {
 
     private func labeled<C: View>(_ title: String, @ViewBuilder _ content: () -> C) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(verbatim: title).font(KS.body(15, .semibold))
-            content().padding(.horizontal, 12).padding(.vertical, 9).frame(maxWidth: .infinity, alignment: .leading)
-                .background(RoundedRectangle(cornerRadius: 14).fill(KS.white))
-                .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(KS.hairline, lineWidth: 1))
+            Text(verbatim: title).font(KS.section())
+            content().padding(.horizontal, 12).padding(.vertical, 8).frame(maxWidth: .infinity, alignment: .leading)
+                .background(RoundedRectangle(cornerRadius: 12).fill(KS.white))
+                .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(KS.hairline, lineWidth: 1))
         }
     }
 }
@@ -741,13 +741,13 @@ struct ScheduleCardView: View {
     let message: TeamsMessage
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 12) {
             if let card = message.schedule {
-                Text(verbatim: card.description).font(KS.body(17, .bold))
-                Text(verbatim: card.timezone).font(KS.mono(12)).foregroundStyle(KS.textMuted)
-                if card.paused { Text("Paused").font(KS.body(14)) }
+                Text(verbatim: card.description).font(KS.section())
+                Text(verbatim: card.timezone).font(KS.meta()).foregroundStyle(KS.textMuted)
+                if card.paused { Text("Paused").font(KS.text()) }
                 ForEach(card.nextRuns, id: \.self) { run in
-                    Text(run, format: .relative(presentation: .named)).font(KS.body(14))
+                    Text(run, format: .relative(presentation: .named)).font(KS.text())
                 }
                 if let bot = model.bot(id: card.botID), bot.threadID == message.threadID {
                     HStack {
@@ -767,6 +767,6 @@ struct ScheduleCardView: View {
                     }
                 }
             } else { Text(verbatim: message.body ?? "Schedule") }
-        }.padding(16).frame(maxWidth: 640, alignment: .leading).ksCard(radius: 16)
+        }.padding(16).frame(maxWidth: 640, alignment: .leading).ksCard(radius: 12)
     }
 }

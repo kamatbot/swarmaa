@@ -71,12 +71,25 @@ enum KS {
     static let motion = Animation.timingCurve(0.2, 0, 0, 1, duration: 0.2)
     static let pressMotion = Animation.spring(response: 0.28, dampingFraction: 0.78)
 
-    static func body(_ size: CGFloat = 15, _ weight: Font.Weight = .regular) -> Font {
-        .system(size: size, weight: weight)
-    }
-    static func display(_ size: CGFloat) -> Font { .system(size: size, weight: .semibold) }
-    static func mono(_ size: CGFloat = 11, _ weight: Font.Weight = .medium) -> Font {
-        .system(size: size, weight: weight, design: .monospaced)
+    // MARK: Type scale: the only text sizes the Teams window uses.
+
+    /// Pane and bot titles.
+    static func title(_ weight: Font.Weight = .semibold) -> Font { .system(size: 22, weight: weight) }
+    /// Card titles and section headers.
+    static func section(_ weight: Font.Weight = .semibold) -> Font { .system(size: 15, weight: weight) }
+    /// Body copy, rows, buttons.
+    static func text(_ weight: Font.Weight = .regular) -> Font { .system(size: 13.5, weight: weight) }
+    /// Meta lines, captions, pills.
+    static func secondary(_ weight: Font.Weight = .regular) -> Font { .system(size: 12.5, weight: weight) }
+    /// Upper-case tracked section labels (see KSLabel).
+    static func label() -> Font { .system(size: 11, weight: .semibold) }
+    /// Mono meta: times, durations, branches, counts.
+    static func meta(_ weight: Font.Weight = .regular) -> Font { .system(size: 11.5, weight: weight, design: .monospaced) }
+    /// A headline number (quota left).
+    static func figure() -> Font { .system(size: 22, weight: .medium, design: .monospaced) }
+    /// Icons, monograms and badges only: their size follows their container, not the text scale.
+    static func glyph(_ size: CGFloat, _ weight: Font.Weight = .semibold, mono: Bool = false) -> Font {
+        .system(size: size, weight: weight, design: mono ? .monospaced : .default)
     }
 
     /// A provider's ring colour in the rail and on Usage.
@@ -96,7 +109,7 @@ struct KSLabel: View {
     var color: Color = KS.textMuted
     init(_ text: String, color: Color = KS.textMuted) { self.text = text; self.color = color }
     var body: some View {
-        Text(verbatim: text.uppercased()).font(KS.body(11, .semibold)).tracking(0.9).foregroundStyle(color)
+        Text(verbatim: text.uppercased()).font(KS.label()).tracking(0.9).foregroundStyle(color)
     }
 }
 
@@ -106,10 +119,10 @@ struct KSChip: View {
     var ink: Color = KS.textSoft
     init(_ text: String, fill: Color = KS.neutralTint, ink: Color = KS.textSoft) { self.text = text; self.fill = fill; self.ink = ink }
     var body: some View {
-        Text(verbatim: text).font(KS.mono(11, .medium)).lineLimit(1)
+        Text(verbatim: text).font(KS.meta()).lineLimit(1)
             .foregroundStyle(ink)
-            .padding(.horizontal, 7).frame(height: 20)
-            .background(RoundedRectangle(cornerRadius: 5, style: .continuous).fill(fill))
+            .padding(.horizontal, 8).frame(height: 20)
+            .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(fill))
             .fixedSize()
     }
 }
@@ -120,7 +133,7 @@ struct KSBadge: View {
     var outlined = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
-        Text(verbatim: count > 99 ? "99+" : "\(count)").font(KS.mono(11, .bold)).foregroundStyle(KS.onSignal)
+        Text(verbatim: count > 99 ? "99+" : "\(count)").font(KS.meta(.semibold)).foregroundStyle(KS.onSignal)
             .contentTransition(reduceMotion ? .identity : .numericText())
             .animation(reduceMotion ? nil : KS.motion, value: count)
             .padding(.horizontal, 5).frame(minWidth: 20, minHeight: 20)
@@ -159,7 +172,7 @@ struct KSButtonStyle: ButtonStyle {
         }
         let fg: Color = kind == .primary ? KS.onSignal : kind == .danger ? KS.failedText : KS.ink
         configuration.label
-            .font(KS.body(compact ? 13 : 14, .semibold))
+            .font(KS.text(.semibold))
             .foregroundStyle(fg)
             .padding(.horizontal, compact ? 11 : 15)
             .frame(minHeight: compact ? 30 : 36)
@@ -170,7 +183,7 @@ struct KSButtonStyle: ButtonStyle {
                 }
             }
             .scaleEffect(pressed && !reduceMotion ? 0.985 : 1)
-            .contentShape(RoundedRectangle(cornerRadius: 9))
+            .contentShape(RoundedRectangle(cornerRadius: 8))
             .opacity(isEnabled ? 1 : 0.45)
             .onHover { hovered = $0 }
             .animation(reduceMotion ? nil : KS.pressMotion, value: pressed)
@@ -247,8 +260,8 @@ struct KSSearchField: View {
     @FocusState private var focused: Bool
     var body: some View {
         HStack(spacing: 8) {
-            Image(systemName: "magnifyingglass").font(.system(size: 12, weight: .semibold)).foregroundStyle(KS.textDim)
-            TextField(prompt, text: $text).textFieldStyle(.plain).font(KS.body(13)).foregroundStyle(KS.ink).focused($focused)
+            Image(systemName: "magnifyingglass").font(KS.glyph(12, .semibold)).foregroundStyle(KS.textDim)
+            TextField(prompt, text: $text).textFieldStyle(.plain).font(KS.text()).foregroundStyle(KS.ink).focused($focused)
             if !text.isEmpty {
                 Button { text = ""; focused = true } label: {
                     Image(systemName: "xmark.circle.fill").foregroundStyle(KS.textMuted)
@@ -258,7 +271,7 @@ struct KSSearchField: View {
                 .help(L10n.t("Clear search"))
             }
         }
-        .padding(.horizontal, 10).frame(height: height)
+        .padding(.horizontal, 12).frame(height: height)
         .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(KS.well))
         .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(focused ? KS.signal.opacity(0.7) : KS.searchLine, lineWidth: 1))
     }
@@ -274,7 +287,7 @@ struct KSTopBar<Content: View>: View {
     var fill: Color = KS.paper
     @ViewBuilder var content: Content
     var body: some View {
-        HStack(spacing: 10) { content }
+        HStack(spacing: 12) { content }
             .padding(.horizontal, 12)
             .frame(maxWidth: .infinity, minHeight: KS.topBarHeight, maxHeight: KS.topBarHeight)
             .background(fill)
@@ -313,7 +326,7 @@ struct KSBarButton: View {
     let action: () -> Void
     var body: some View {
         Button(action: action) {
-            Image(systemName: symbol).font(.system(size: 13, weight: .semibold)).frame(width: 32, height: 32)
+            Image(systemName: symbol).font(KS.glyph(13, .semibold)).frame(width: 32, height: 32)
                 .contentShape(Circle())
         }
         .buttonStyle(KSBarButtonStyle(on: on || fill == KS.lime))
