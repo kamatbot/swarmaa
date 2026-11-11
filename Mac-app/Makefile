@@ -169,7 +169,7 @@ archive: gen
 		'<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
 		'<plist version="1.0"><dict>' \
 		'<key>method</key><string>developer-id</string>' \
-		'<key>teamID</key><string>6WFPL8B9FB</string>' \
+		'<key>teamID</key><string>B4F73U5RGR</string>' \
 		'<key>signingStyle</key><string>manual</string>' \
 		'<key>signingCertificate</key><string>Developer ID Application</string>' \
 		'</dict></plist>' > $(RELEASE_DIR)/ExportOptions.plist
