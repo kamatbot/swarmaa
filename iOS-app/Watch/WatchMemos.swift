@@ -164,11 +164,24 @@ struct WatchMemosView: View {
     @State private var deleteCandidate: WatchMemos.Memo?
     @State private var confirmPrevious = false
     @State private var selectedThread = ""
+    private var router: WatchRouter { .shared }
+    private func defaultThread() -> String {
+        guard let bots = store.snapshot?.bots else { return "" }
+        return (bots.first { $0.name.caseInsensitiveCompare("Assistant") == .orderedSame } ?? bots.first { $0.starred } ?? bots.first)?.threadID ?? ""
+    }
+    /// Starts at once when the screen opens or the Action button asks; a no-op when already recording or not connected.
+    private func autoRecord() {
+        guard let generation = store.snapshot?.generation, store.snapshot?.signedIn == true, !memos.recording else { return }
+        if selectedThread.isEmpty { selectedThread = defaultThread() }
+        guard !selectedThread.isEmpty else { return }
+        memos.setGeneration(generation)
+        memos.start(generation: generation, threadID: selectedThread)
+    }
     var body: some View {
         List {
             if let generation = store.snapshot?.generation, store.snapshot?.signedIn == true {
                 Picker("Memo bot", selection: $selectedThread) { ForEach(store.snapshot?.bots ?? []) { bot in Text(bot.name).tag(bot.threadID) } }.disabled(memos.recording).wkRow()
-                if memos.recording { Button("Stop recording") { memos.stop() }.buttonStyle(WKPrimary()).listRowBackground(Color.clear) }
+                if memos.recording { Button { memos.stop() } label: { Label("Stop", systemImage: "stop.fill").font(.title3.weight(.bold)).frame(minHeight: 64) }.buttonStyle(WKPrimary()).listRowBackground(Color.clear) }
                 else { Button("Record memo") { memos.start(generation: generation, threadID: selectedThread) }.buttonStyle(WKPrimary()).disabled(selectedThread.isEmpty).listRowBackground(Color.clear) }
                 Text("Up to 15 minutes. Transfers to iPhone and then Mac when available.").font(WK.caption).foregroundStyle(WK.muted).listRowBackground(Color.clear)
                 ForEach(memos.memos.filter { $0.generation == generation }) { memo in
@@ -188,8 +201,9 @@ struct WatchMemosView: View {
             } else { Text("Open Swarmaa on iPhone to connect before recording.").foregroundStyle(WK.muted).listRowBackground(Color.clear) }
             if let error = memos.error { Text(error).font(WK.caption).foregroundStyle(WK.failed).listRowBackground(Color.clear) }
         }.navigationTitle("Memos").wkScreen().onAppear {
-            if selectedThread.isEmpty, let bots = store.snapshot?.bots { selectedThread = (bots.first(where: { $0.starred }) ?? bots.first)?.threadID ?? "" }
-        }
+            if selectedThread.isEmpty { selectedThread = defaultThread() }
+            autoRecord()
+        }.onChange(of: router.recordRequest) { autoRecord() }
             .alert("Delete previous connection memos?", isPresented: $confirmPrevious) {
                 Button("Delete", role: .destructive) { if let generation = store.snapshot?.generation { memos.deletePrevious(generation: generation) } }
                 Button("Cancel", role: .cancel) {}
