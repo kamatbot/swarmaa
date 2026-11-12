@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs';
 import { runConfiguredChecks, runFlowCheck } from './checks.js';
 import { setTimeout as delay } from 'node:timers/promises';
-import { AUTO_PATCH, AUTO_READ, buildInvocation, withTurnImages, capability, antigravityLogModel, classifyFailure, deniedActions, extractDelegate, extractPartialText, extractServed, extractUsage, finalAnswer, projectCapabilities, steerLine, steerMarker, providerSucceeded, codexThreadId, sessionMissing, UUID } from './adapters.js';
+import { AUTO_PATCH, AUTO_READ, buildInvocation, withTurnImages, capability, antigravityLogModel, classifyFailure, deniedActions, extractActivity, extractDelegate, extractPartialText, extractServed, extractUsage, finalAnswer, projectCapabilities, steerLine, steerMarker, providerSucceeded, codexThreadId, sessionMissing, UUID, type ActivityItem } from './adapters.js';
 import { collectUsage, headroom } from '../usage/index.js';
 import { windowsForModel } from '../usage/antigravity.js';
 import type { UsageProviderId, UsageSnapshot } from '../usage/types.js';
@@ -411,6 +411,7 @@ export class BridgeWorker {
     let lastCheckpointTime = 0;
     let partialTextTimer: NodeJS.Timeout | undefined;
     let checkpointInFlight = false;
+    const activityLog = new Map<string, ActivityItem>();
     // Steering: thread messages the owner sends while a Claude turn runs go into its open stdin (stream-json).
     // The service returns them on checkpoint/heartbeat responses; steered_seq (acknowledged by Claude's replay)
     // tells the service not to start a follow-up turn for them. Unacknowledged ones still get a follow-up turn.
@@ -491,6 +492,12 @@ export class BridgeWorker {
       if (steerAcked) base.steered_seq = steerAcked;
       if (task.kind === 'turn' && agent.provider !== 'antigravity') {
         base.partial_text = untrusted(currentPartialText, 8192);
+      }
+      if (agent.provider !== 'antigravity') {
+        // The tail holds only the latest output: keep what earlier checkpoints saw (updated in place, newest 20).
+        for (const item of extractActivity(agent.provider, progress.stdout_tail)) activityLog.set(item.id, item);
+        while (activityLog.size > 20) activityLog.delete(activityLog.keys().next().value!);
+        if (activityLog.size) base.activity = [...activityLog.values()];
       }
       return base;
     };

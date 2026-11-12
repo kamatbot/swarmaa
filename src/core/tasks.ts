@@ -107,9 +107,9 @@ export function taskView(row:TaskRow):Record<string,unknown> {
 }
 
 /** List summaries deliberately exclude streamed output; detail/claim views stay full. */
-function taskListView(row:TaskRow):Record<string,unknown> {
+export function taskListView(row:TaskRow):Record<string,unknown> {
   const view = taskView(row);
-  const { partial_output, partial_text, ...checkpoint } = row.checkpoint ?? {};
+  const { partial_output, partial_text, activity, ...checkpoint } = row.checkpoint ?? {};
   const result = row.result === null ? null : Object.fromEntries(
     ['answer', 'branch', 'changed_files', 'served', 'failure', 'check', 'summary', 'review_required']
       .filter(key => row.result![key] !== undefined)
@@ -365,7 +365,7 @@ export class TaskService {
       constraints, acceptance_criteria, permission_envelope, required_capability, resource_key, base_ref,
       context_refs, context_versions, status, version, created_by, attempt_count, max_attempts,
       continuation_count, lease_generation, lease_owner, lease_expires_at,
-      CASE WHEN checkpoint IS NULL THEN NULL ELSE (checkpoint - 'partial_output' - 'partial_text') END AS checkpoint,
+      CASE WHEN checkpoint IS NULL THEN NULL ELSE (checkpoint - 'partial_output' - 'partial_text' - 'activity') END AS checkpoint,
       CASE WHEN result IS NULL THEN NULL ELSE jsonb_strip_nulls(jsonb_build_object(
         'answer', left(result->>'answer', 500),
         'branch', result->'branch',
