@@ -145,6 +145,7 @@ export class CoreService implements ToolBackend {
       case 'thread_post': return this.teams.threadPost(principal,input);
       case 'thread_attachment_get': return this.teams.threadAttachmentGet(principal,input);
       case 'thread_read': return this.teams.threadRead(principal,input);
+      case 'message_dismiss': return this.teams.messageDismiss(principal,input);
       case 'thread_mark_read': return this.teams.threadMarkRead(principal,input);
       case 'thread_list': return this.teams.threadList(principal,input);
       case 'channel_create': return this.teams.channelCreate(principal,input);
@@ -217,7 +218,7 @@ export class CoreService implements ToolBackend {
     const names:string[] = [];
     if (hasPermission(p,'memory:read')) names.push('memory.changed');
     if (hasPermission(p,'task:read')) names.push('task.updated','swarm.updated');
-    if (hasPermission(p,'thread:read')) names.push('message.created','message.updated','thread.read','question.created','question.answered');
+    if (hasPermission(p,'thread:read')) names.push('message.created','message.updated','message.deleted','thread.read','question.created','question.answered');
     if (hasPermission(p,'agent:read')) names.push('agent.updated','bot.updated');
     if (!names.length) return {scope,events:[],next_cursor:legacy ? '0.0' : after,has_more:false};
     return transaction(this.pool,async db => {

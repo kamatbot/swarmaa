@@ -825,6 +825,27 @@ export class TeamService {
     };
   }
 
+  async messageDismiss(p: Principal, input: Record<string, unknown>): Promise<unknown> {
+    noExtraKeys(input, ['thread_id', 'seq']);
+    requirePermission(p, 'thread:write');
+    const threadId = uuid(input.thread_id, 'thread_id');
+    const seq = integer(input.seq, 'seq', 1, 9223372036854775807);
+    return transaction(this.pool, async db => {
+      await teamsLock(db, p.tenantId);
+      const thread = (await db.query<ThreadRow>('SELECT * FROM threads WHERE id=$1 AND tenant_id=$2', [threadId, p.tenantId])).rows[0];
+      requireFound(thread, 'Thread');
+      requireScope(p, thread.scope);
+      const msg = (await db.query<{ id: string; author: { kind?: string } }>('SELECT id, author FROM messages WHERE tenant_id=$1 AND thread_id=$2 AND seq=$3 FOR UPDATE', [p.tenantId, threadId, seq])).rows[0];
+      requireFound(msg, 'Message');
+      requireCondition(msg.author?.kind === 'system', 400, 'invalid_arguments', 'Only service notices can be dismissed.');
+      // swarm_steps.result_message_id is ON DELETE SET NULL; nothing else holds a hard FK to messages.
+      await db.query('DELETE FROM messages WHERE id=$1', [msg.id]);
+      await audit(db, p, thread.scope, 'message.delete', msg.id, { thread_id: threadId, seq });
+      await event(db, p, thread.scope, 'message.deleted', msg.id, { thread_id: threadId, message_id: msg.id, seq });
+      return { ok: true, thread_id: threadId, seq };
+    });
+  }
+
   async threadMarkRead(p: Principal, input: Record<string, unknown>): Promise<unknown> {
     noExtraKeys(input, ['thread_id', 'seq']);
     requirePermission(p, 'thread:read');
