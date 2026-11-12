@@ -465,15 +465,23 @@ struct TextBubble: View {
         .onHover { if message.author.kind == "system" { hovering = $0 } }
     }
 
-    @ViewBuilder private func bubble(_ body: String) -> some View {
-        if message.isHuman {
-            Text(MarkdownCache.text(body)).textSelection(.enabled)
+    private func bubble(_ body: String) -> some View { SelectableBubble(text: body, human: message.isHuman).equatable() }
+}
+
+/// Depends only on its text: the model publishes on every stream event, and re-rendering a selectable Text
+/// mid-drag dropped the selection, so chat text could not be selected while a bot was running.
+private struct SelectableBubble: View, Equatable {
+    let text: String
+    let human: Bool
+    var body: some View {
+        if human {
+            Text(MarkdownCache.text(text)).textSelection(.enabled)
                 .font(KS.text()).lineSpacing(3)
                 .padding(.horizontal, 16).padding(.vertical, 12)
                 .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(KS.selected))
                 .foregroundStyle(KS.strong)
         } else {
-            Text(MarkdownCache.text(body)).textSelection(.enabled)
+            Text(MarkdownCache.text(text)).textSelection(.enabled)
                 .font(KS.text()).lineSpacing(5)
                 .padding(.horizontal, 16).padding(.vertical, 12)
                 .frame(maxWidth: .infinity, alignment: .leading)
