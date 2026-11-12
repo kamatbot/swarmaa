@@ -59,6 +59,8 @@ export interface ServerConfig {
   sourcesEnabled?: boolean;
   /** Delete events and audit_log rows older than this many days (hourly). Undefined = retention off. */
   retentionDays?: number;
+  /** Optional JSON file path containing model pricing overrides. */
+  pricingFile?: string;
 }
 
 export interface HttpDependencies {

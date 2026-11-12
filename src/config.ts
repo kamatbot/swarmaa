@@ -32,6 +32,10 @@ function parseTrustedProxies(env: NodeJS.ProcessEnv): { trustProxy: boolean; tru
   return { trustProxy: fromTrustProxy.length > 0, trustedProxies: [...new Set([...list, ...fromTrustProxy])] };
 }
 
+export function getPricingFile(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  return env.SWARMAA_PRICING_FILE?.trim() || undefined;
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
   const port = Number(env.PORT ?? 8787);
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('PORT must be between 1 and 65535.');
@@ -67,5 +71,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     trustedProxies,
     sourcesEnabled,
     retentionDays: retentionDays || undefined,
+    pricingFile: getPricingFile(env),
   };
 }

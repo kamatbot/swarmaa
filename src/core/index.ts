@@ -19,6 +19,7 @@ import { getPolicy, setPolicy } from './routing.js';
 import { SwarmService } from './swarm.js';
 import { SwarmsService } from './swarms.js';
 import { findTask, TaskService, taskWithInstructions, type TaskRow } from './tasks.js';
+import { aggregateUsageCost } from './pricing.js';
 import { TeamService } from './teams.js';
 import { TOOL_PERMISSIONS, TOOLS } from './tools.js';
 
@@ -116,6 +117,7 @@ export class CoreService implements ToolBackend {
       case 'task_submit': return this.tasks.submit(principal,input);
       case 'task_get': return this.tasks.get(principal,input);
       case 'task_list': return this.tasks.list(principal,input);
+      case 'usage_cost': return aggregateUsageCost(this.pool,principal,input);
       case 'task_continue': return this.tasks.continue(principal,input);
       case 'task_claim': return this.tasks.claim(principal,input);
       case 'task_heartbeat': return this.tasks.heartbeat(principal,input);
