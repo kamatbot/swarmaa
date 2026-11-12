@@ -107,16 +107,10 @@ struct SwarmaaShortcuts: AppShortcutsProvider {
                 .preferredColorScheme(.dark)
                 .tint(KS.signal)
                 .onOpenURL { url in
-                    if url.scheme == "swarmaa" {
-                        if url.host == "bot" {
-                            let botId = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-                            if !botId.isEmpty {
-                                Runtime.model.receivePushTap(["bot_id": botId])
-                            }
-                        } else if url.host == "pair" || (url.query?.contains("code=") ?? false) {
-                            Task { try? await Runtime.model.handlePairingURL(url) }
-                        }
-                    }
+                    // A Live Activity tap: swarmaa://bot/<id> opens that bot.
+                    guard url.scheme == "swarmaa", url.host == "bot" else { return }
+                    let botId = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+                    if !botId.isEmpty { Runtime.model.receivePushTap(["bot_id": botId]) }
                 }
         }
     }
