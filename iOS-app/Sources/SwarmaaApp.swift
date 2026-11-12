@@ -718,6 +718,8 @@ struct RootView: View {
                     }.padding(.horizontal, 12).padding(.vertical, 8).frame(maxWidth: .infinity, alignment: .leading)
                 }.frame(maxHeight: .infinity)
                     .scrollDismissesKeyboard(.interactively)
+                    // Tapping the conversation puts the keyboard away; simultaneous, so buttons and links in messages still work.
+                    .simultaneousGesture(TapGesture().onEnded { composerFocused = false })
                     .defaultScrollAnchor(.bottom)
                     .onScrollGeometryChange(for: Bool.self) { geometry in
                         geometry.contentOffset.y + geometry.containerSize.height >= geometry.contentSize.height - 80

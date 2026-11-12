@@ -102,6 +102,22 @@ import XCTest
         add(chatCapture)
     }
 
+    func testTappingConversationDismissesKeyboard() {
+        let app = XCUIApplication()
+        app.launchArguments = ["-demo", "-screen", "thread"]
+        app.launch()
+        let composer = app.textFields["composer"]
+        XCTAssertTrue(composer.waitForExistence(timeout: 10))
+        composer.tap()
+        let focused = { (composer.value(forKey: "hasKeyboardFocus") as? Bool) == true }
+        XCTAssertTrue(focused(), "the reply box takes focus")
+        // A tap in the conversation, away from the reply box.
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.35)).tap()
+        let gone = expectation(for: NSPredicate { _, _ in !focused() }, evaluatedWith: nil)
+        wait(for: [gone], timeout: 3)
+        XCTAssertTrue(app.keyboards.count == 0, "keyboard is down")
+    }
+
     func testPhotoPickerAddsAndRemovesPhoto() {
         let app = XCUIApplication()
         app.launchArguments = ["-demo", "-screen", "thread"]
