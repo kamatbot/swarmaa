@@ -56,6 +56,25 @@ describe('teams phase 1 service foundation', { skip: !connectionString, concurre
   const call = async (p: Principal, name: string, args: Record<string, unknown> = {}) =>
     await core.call(p, name, args) as Record<string, any>;
 
+  it('photo turns never go to antigravity: auto excludes it, a pinned antigravity turn moves to claude', async () => {
+    const user = await createPrincipal(randomUUID(), 'photo-route');
+    const worker = await createPrincipal(user.tenantId, 'photo-route-worker', 'worker');
+    const photo = { name: 'Photo.jpg', media_type: 'image/jpeg', data_base64: (await readFile(new URL('./fixtures/chat-photo.jpg', import.meta.url))).toString('base64') };
+    const make = async (name: string, runner: Record<string, unknown>) => (await call(user, 'agent_create', { name, role: 'Assistant', instructions: 'Help.', scope: 'project:a', runner })).thread;
+    const auto = await make('AutoPhoto', { mode: 'auto' }), pinned = await make('AgyPhoto', { provider: 'antigravity' }), plain = await make('AutoText', { mode: 'auto' });
+    await call(user, 'thread_post', { thread_id: plain.id, body: 'hi', idempotency_key: 't' });
+    await call(user, 'thread_post', { thread_id: auto.id, body: 'look', idempotency_key: 'p', attachments: [photo] });
+    await call(user, 'thread_post', { thread_id: pinned.id, body: 'look', idempotency_key: 'p', attachments: [photo] });
+    const claim = (caps: string[]) => call(worker, 'task_claim', { scope: 'project:a', capabilities: caps, kinds: ['turn'] });
+    const agy = ['auto.read', 'antigravity.read'];
+    assert.equal((await claim(agy)).task.thread_id, plain.id);
+    assert.equal((await claim(agy)).task, null);
+    const got = await claim(['auto.read', 'claude.read']);
+    assert.equal(got.task.thread_id, auto.id);
+    assert.ok(got.route.provider !== 'antigravity' && !got.route.allowed?.includes('antigravity'));
+    assert.equal((await claim(['claude.read'])).task.thread_id, pinned.id);
+  });
+
   it('photos preserve retries, exact read authorization and bounded image context', async () => {
     const user = await createPrincipal(randomUUID(), 'photo-owner');
     const worker = await createPrincipal(user.tenantId, 'photo-worker', 'worker');

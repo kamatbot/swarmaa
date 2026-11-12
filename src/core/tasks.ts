@@ -59,6 +59,8 @@ interface ArtifactRow {
 }
 /** Capabilities some worker can advertise; anything else would sit queued forever. */
 // demo.read is reserved for scripts/demo.ts: no real worker advertises it.
+/** The newest 40 messages (the turn window) hold a photo. ponytail: ignores the 24 KB window trim; over-approximates to claude. */
+const TURN_HAS_PHOTO = `EXISTS (SELECT 1 FROM (SELECT ref FROM messages WHERE thread_id=t.thread_id ORDER BY seq DESC LIMIT 40) m WHERE jsonb_typeof(m.ref->'attachments')='array')`;
 export const VALID_CAPABILITIES = [AUTO_READ,AUTO_PATCH,'claude.read','claude.patch','codex.read','codex.patch','antigravity.read','antigravity.patch','demo.read'] as const;
 const date = (value:Date|null):string|null => value?.toISOString() ?? null;
 const expectedVersion = (value:unknown):number => integer(value, 'expected_version', 1, 2147483647);
@@ -532,6 +534,11 @@ export class TaskService {
         await this.swarms.expireDueQuestions(db,p,scope);
       }
       await this.sweepExpired(db,p,scope);
+      // Antigravity cannot read photos: a queued turn pinned to it moves to claude when its window holds a photo.
+      await db.query(`UPDATE tasks t SET required_capability='claude.'||split_part(required_capability,'.',2),
+        permission_envelope=CASE WHEN permission_envelope#>>'{runner,provider}'='antigravity'
+          THEN jsonb_set(permission_envelope #- '{runner,model}' #- '{runner,effort}','{runner,provider}','"claude"') ELSE permission_envelope END
+        WHERE tenant_id=$1 AND scope=$2 AND kind='turn' AND status='queued' AND required_capability LIKE 'antigravity.%' AND ${TURN_HAS_PHOTO}`,[p.tenantId,scope]);
       const candidates = await db.query<TaskRow>(`SELECT * FROM tasks WHERE tenant_id=$1 AND scope=$2 AND status='queued'
         AND (not_before IS NULL OR not_before<=clock_timestamp())
         AND attempt_count<max_attempts AND required_capability=ANY($3::text[])
@@ -549,6 +556,9 @@ export class TaskService {
           AND r.scope=tasks.scope AND r.resource_key=tasks.resource_key AND r.expires_at>clock_timestamp()))
         ORDER BY created_at,id LIMIT 100 FOR UPDATE SKIP LOCKED`,[p.tenantId,scope,capabilities,kinds]);
       for (const row of candidates.rows) {
+        // Auto turns with a photo never route to antigravity (it throws photo_provider_unsupported).
+        if (row.kind==='turn' && row.required_capability.startsWith('auto.') && !(row.excluded_providers ?? []).includes('antigravity')
+          && (await db.query(`SELECT 1 FROM tasks t WHERE t.id=$1 AND ${TURN_HAS_PHOTO}`,[row.id])).rowCount) row.excluded_providers = [...(row.excluded_providers ?? []),'antigravity'];
         // B2 bot hook: same usage snapshot for eligibility and the execution-bound route.
         const taskPolicy = await taskBotPolicy(db,p.tenantId,row,policy,usage);
         let flowProvider:string|undefined;
