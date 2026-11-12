@@ -863,6 +863,10 @@ actor SwarmaTeamsClient {
         _ = try await raw("thread_mark_read", ["thread_id": id, "seq": seq])
     }
 
+    func messageDismiss(threadID: String, seq: Int) async throws {
+        _ = try await raw("message_dismiss", ["thread_id": threadID, "seq": seq])
+    }
+
     func threadList(kind: String? = nil, agentID: String? = nil) async throws -> [TeamsThread] {
         var input: [String: Any] = [:]
         input["kind"] = kind; input["agent_id"] = agentID

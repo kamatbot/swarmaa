@@ -280,12 +280,16 @@ struct RunnerPicker: View {
 struct MessageRow: View {
     @ObservedObject var model: TeamsModel
     let message: TeamsMessage
+    @State private var hovering = false
 
     var body: some View {
         switch message.kind {
         case .text: TextBubble(model: model, message: message)
-        case .handoff: ServiceLine(symbol: "arrow.right.circle", text: message.body ?? "")
-        case .notice: ServiceLine(symbol: "info.circle", text: message.body ?? "")
+        case .handoff, .notice:
+            VStack(alignment: .leading, spacing: 4) {
+                ServiceLine(symbol: message.kind == .handoff ? "arrow.right.circle" : "info.circle", text: message.body ?? "")
+                MessageFooter(model: model, message: message, hovering: hovering)
+            }.onHover { hovering = $0 }
         case .swarm: SwarmCard(model: model, message: message)
         case .run: RunCard(run: message.run, count: message.ref?.taskIDs.count ?? 0)
         case .question:
@@ -296,6 +300,37 @@ struct MessageRow: View {
         case .schedule: ScheduleCardView(model: model, message: message)
         case .unknown: EmptyView()
         }
+    }
+}
+
+/// Under every text message: copy (raw markdown source); system notices add a dismiss at the trailing edge.
+struct MessageFooter: View {
+    @ObservedObject var model: TeamsModel
+    let message: TeamsMessage
+    var hovering = true
+    @State private var copied = false
+
+    private var failed: Bool { ["Turn failed", "Turn action rejected"].contains { message.body?.hasPrefix($0) == true } }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            if let body = message.body, !body.isEmpty {
+                Button {
+                    NSPasteboard.general.clearContents(); NSPasteboard.general.setString(body, forType: .string)
+                    copied = true
+                    Task { try? await Task.sleep(for: .milliseconds(1200)); copied = false }
+                } label: { Image(systemName: copied ? "checkmark" : "doc.on.doc").font(KS.meta()).foregroundStyle(KS.textMuted) }
+                    .buttonStyle(.plain).help(L10n.t("Copy message")).accessibilityLabel(L10n.t("Copy message"))
+            }
+            if message.author.kind == "system" {
+                Spacer(minLength: 0)
+                Button { Task { await model.dismiss(message) } } label: {
+                    Image(systemName: "xmark").font(KS.meta()).foregroundStyle(KS.textMuted)
+                }
+                .buttonStyle(.plain).help(L10n.t("Dismiss")).accessibilityLabel(L10n.t("Dismiss"))
+                .opacity(hovering || failed ? 1 : 0)
+            }
+        }.padding(.horizontal, 4)
     }
 }
 
@@ -381,6 +416,7 @@ struct BotMessageAvatar: View {
 struct TextBubble: View {
     @ObservedObject var model: TeamsModel
     let message: TeamsMessage
+    @State private var hovering = false
 
     private var author: String {
         message.author.name ?? model.agent(id: message.author.id)?.name ?? L10n.t("Agent")
@@ -420,21 +456,32 @@ struct TextBubble: View {
                         StepReportCard(report: report)
                     } else { bubble(body) }
                 }
+                MessageFooter(model: model, message: message, hovering: hovering)
             }
             if !message.isHuman { Spacer(minLength: 40) }
         }
         .frame(maxWidth: .infinity, alignment: message.isHuman ? .trailing : .leading)
+        // Only system notices track hover: a state change under a human/agent bubble must not re-render its selectable text.
+        .onHover { if message.author.kind == "system" { hovering = $0 } }
     }
 
-    @ViewBuilder private func bubble(_ body: String) -> some View {
-        if message.isHuman {
-            Text(MarkdownCache.text(body)).textSelection(.enabled)
+    private func bubble(_ body: String) -> some View { SelectableBubble(text: body, human: message.isHuman).equatable() }
+}
+
+/// Depends only on its text: the model publishes on every stream event, and re-rendering a selectable Text
+/// mid-drag dropped the selection, so chat text could not be selected while a bot was running.
+private struct SelectableBubble: View, Equatable {
+    let text: String
+    let human: Bool
+    var body: some View {
+        if human {
+            Text(MarkdownCache.text(text)).textSelection(.enabled)
                 .font(KS.text()).lineSpacing(3)
                 .padding(.horizontal, 16).padding(.vertical, 12)
                 .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(KS.selected))
                 .foregroundStyle(KS.strong)
         } else {
-            Text(MarkdownCache.text(body)).textSelection(.enabled)
+            Text(MarkdownCache.text(text)).textSelection(.enabled)
                 .font(KS.text()).lineSpacing(5)
                 .padding(.horizontal, 16).padding(.vertical, 12)
                 .frame(maxWidth: .infinity, alignment: .leading)
