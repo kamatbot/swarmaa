@@ -178,11 +178,30 @@ struct WatchMemosView: View {
         memos.start(generation: generation, threadID: selectedThread)
     }
     var body: some View {
+        Group {
+            if memos.recording { recordingView } else { list }
+        }.onAppear {
+            if selectedThread.isEmpty { selectedThread = defaultThread() }
+            autoRecord()
+        }.onChange(of: router.recordRequest) { autoRecord() }
+    }
+    /// While recording: a pulsing mic, the running time and the bot, with Stop pinned in thumb reach.
+    private var recordingView: some View {
+        VStack(spacing: 6) {
+            Text(store.snapshot?.bots.first { $0.threadID == selectedThread }?.name ?? "Memo").font(WK.caption).foregroundStyle(WK.muted).lineLimit(1)
+            PulsingMic().frame(maxHeight: .infinity)
+            if let started = memos.memos.first(where: { $0.state == "recording" })?.created {
+                Text(started, style: .timer).font(.title3.monospacedDigit().weight(.semibold)).foregroundStyle(WK.strong)
+            }
+            Button { memos.stop() } label: { Label("Stop", systemImage: "stop.fill").font(.title3.weight(.bold)).frame(maxWidth: .infinity, minHeight: 52) }
+                .buttonStyle(WKPrimary()).accessibilityLabel("Stop recording")
+        }.padding(.horizontal, 6).wkScreen().navigationTitle("Recording")
+    }
+    private var list: some View {
         List {
             if let generation = store.snapshot?.generation, store.snapshot?.signedIn == true {
                 Picker("Memo bot", selection: $selectedThread) { ForEach(store.snapshot?.bots ?? []) { bot in Text(bot.name).tag(bot.threadID) } }.disabled(memos.recording).wkRow()
-                if memos.recording { Button { memos.stop() } label: { Label("Stop", systemImage: "stop.fill").font(.title3.weight(.bold)).frame(minHeight: 64) }.buttonStyle(WKPrimary()).listRowBackground(Color.clear) }
-                else { Button("Record memo") { memos.start(generation: generation, threadID: selectedThread) }.buttonStyle(WKPrimary()).disabled(selectedThread.isEmpty).listRowBackground(Color.clear) }
+                Button("Record memo") { memos.start(generation: generation, threadID: selectedThread) }.buttonStyle(WKPrimary()).disabled(selectedThread.isEmpty).listRowBackground(Color.clear)
                 Text("Up to 15 minutes. Transfers to iPhone and then Mac when available.").font(WK.caption).foregroundStyle(WK.muted).listRowBackground(Color.clear)
                 ForEach(memos.memos.filter { $0.generation == generation }) { memo in
                     VStack(alignment: .leading, spacing: 4) {
@@ -200,10 +219,7 @@ struct WatchMemosView: View {
                 }
             } else { Text("Open Swarmaa on iPhone to connect before recording.").foregroundStyle(WK.muted).listRowBackground(Color.clear) }
             if let error = memos.error { Text(error).font(WK.caption).foregroundStyle(WK.failed).listRowBackground(Color.clear) }
-        }.navigationTitle("Memos").wkScreen().onAppear {
-            if selectedThread.isEmpty { selectedThread = defaultThread() }
-            autoRecord()
-        }.onChange(of: router.recordRequest) { autoRecord() }
+        }.navigationTitle("Memos").wkScreen()
             .alert("Delete previous connection memos?", isPresented: $confirmPrevious) {
                 Button("Delete", role: .destructive) { if let generation = store.snapshot?.generation { memos.deletePrevious(generation: generation) } }
                 Button("Cancel", role: .cancel) {}
@@ -212,5 +228,21 @@ struct WatchMemosView: View {
                 Button("Delete", role: .destructive) { if let memo = deleteCandidate { memos.delete(memo) }; deleteCandidate = nil }
                 Button("Cancel", role: .cancel) { deleteCandidate = nil }
             } message: { Text(["phone", "mac"].contains(deleteCandidate?.state ?? "") ? "The iPhone copy remains." : "This memo may not have reached your iPhone.") }
+    }
+}
+
+/// A mic in a ring that breathes while recording; still when Reduce Motion is on.
+private struct PulsingMic: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var pulse = false
+    var body: some View {
+        ZStack {
+            Circle().fill(WK.signal.opacity(0.18)).scaleEffect(pulse ? 1.0 : 0.72).opacity(pulse ? 0.35 : 0.9)
+            Circle().fill(WK.signal.opacity(0.28)).frame(width: 64, height: 64).scaleEffect(pulse ? 1.08 : 0.94)
+            Image(systemName: "mic.fill").font(.system(size: 28, weight: .bold)).foregroundStyle(WK.strong)
+        }
+        .frame(width: 96, height: 96)
+        .accessibilityLabel("Recording")
+        .onAppear { if !reduceMotion { withAnimation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true)) { pulse = true } } }
     }
 }
