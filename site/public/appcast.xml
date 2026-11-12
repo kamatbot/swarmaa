@@ -3,6 +3,14 @@
     <channel>
         <title>Swarmaa</title>
         <item>
+            <title>1.27.3</title>
+            <pubDate>Thu, 12 Nov 2026 23:41:30 +0700</pubDate>
+            <sparkle:version>57</sparkle:version>
+            <sparkle:shortVersionString>1.27.3</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/kamatbot/swarmaa/releases/download/v1.27.3/Swarmaa-1.27.3.dmg" length="13284555" type="application/octet-stream" sparkle:edSignature="WDnnkQcS4VI2VVkp14ZKjbgOFd7QIseuYQ6Ov2AivHS0F3EB7OtxYFvStw0RWQ87L10KNjXLlH4qh1/xMq6mBQ=="/>
+        </item>
+        <item>
             <title>1.27.2</title>
             <pubDate>Thu, 12 Nov 2026 11:04:43 +0700</pubDate>
             <sparkle:version>56</sparkle:version>
