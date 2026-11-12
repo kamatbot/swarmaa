@@ -388,6 +388,7 @@ struct TypingBubble: View {
                     TypingDotsIndicator()
                     Text(verbatim: L10n.t("typing")).font(KS.meta()).foregroundStyle(KS.textDim)
                 }
+                .accessibilityHidden(true)
                 Text(verbatim: typing.text).textSelection(.enabled)
                     .font(KS.text()).lineSpacing(4)
                     .padding(.horizontal, 16).padding(.vertical, 12)
@@ -396,12 +397,126 @@ struct TypingBubble: View {
                     .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(KS.hairline, lineWidth: 1))
                     .foregroundStyle(Color(hex: 0xD3DCEB))
                     .opacity(0.75)
+                    .accessibilityLabel(name + " " + L10n.t("is typing") + ": " + typing.text)
+                if !typing.activity.isEmpty {
+                    TypingActivityList(activities: typing.activity)
+                        .equatable()
+                }
             }
             Spacer(minLength: 40)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(name + " " + L10n.t("is typing") + ": " + typing.text)
+    }
+}
+
+/// Pulsing dotted circle for running tool activity, respecting Reduce Motion.
+struct TypingActivityRunningIcon: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var pulse = false
+
+    var body: some View {
+        Image(systemName: "circle.dotted")
+            .font(.caption)
+            .foregroundStyle(KS.textDim)
+            .opacity(reduceMotion ? 1.0 : (pulse ? 0.35 : 1.0))
+            .onAppear {
+                guard !reduceMotion else { return }
+                withAnimation(.easeInOut(duration: 0.7).repeatForever(autoreverses: true)) {
+                    pulse = true
+                }
+            }
+    }
+}
+
+/// A single live tool-call activity row.
+struct TypingActivityRow: View, Equatable {
+    let item: TeamsToolActivity
+
+    nonisolated static func == (lhs: TypingActivityRow, rhs: TypingActivityRow) -> Bool {
+        lhs.item == rhs.item
+    }
+
+    var body: some View {
+        HStack(spacing: 6) {
+            switch item.state {
+            case .running:
+                TypingActivityRunningIcon()
+            case .done:
+                Image(systemName: "checkmark.circle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            case .failed:
+                Image(systemName: "xmark.octagon")
+                    .font(.caption)
+                    .foregroundStyle(Color.red)
+            }
+            Text(verbatim: item.label)
+                .font(.system(.caption, design: .monospaced))
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .foregroundStyle(KS.textSoft)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(accessibilityText)
+    }
+
+    private var accessibilityText: String {
+        let stateName: String
+        switch item.state {
+        case .running: stateName = "Running"
+        case .done: stateName = "Done"
+        case .failed: stateName = "Failed"
+        }
+        return item.label.isEmpty ? stateName : "\(stateName): \(item.label)"
+    }
+}
+
+/// Compact list of live tool-call activity rows under a typing bubble.
+struct TypingActivityList: View, Equatable {
+    let activities: [TeamsToolActivity]
+    @State private var isExpanded = false
+
+    nonisolated static func == (lhs: TypingActivityList, rhs: TypingActivityList) -> Bool {
+        lhs.activities == rhs.activities
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if activities.count <= 5 {
+                ForEach(activities) { item in
+                    TypingActivityRow(item: item).equatable()
+                }
+            } else {
+                let splitIndex = activities.count - 5
+                let earlier = Array(activities[0..<splitIndex])
+                let newest = Array(activities[splitIndex...])
+                let earlierFailed = earlier.filter { $0.state == .failed }
+
+                DisclosureGroup(isExpanded: $isExpanded) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(earlier) { item in
+                            TypingActivityRow(item: item).equatable()
+                        }
+                    }
+                    .padding(.top, 2)
+                } label: {
+                    Text("+\(earlier.count) earlier")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                if !isExpanded {
+                    ForEach(earlierFailed) { item in
+                        TypingActivityRow(item: item).equatable()
+                    }
+                }
+
+                ForEach(newest) { item in
+                    TypingActivityRow(item: item).equatable()
+                }
+            }
+        }
+        .padding(.top, 2)
     }
 }
 

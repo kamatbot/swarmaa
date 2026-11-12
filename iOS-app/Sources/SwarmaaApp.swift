@@ -698,13 +698,20 @@ struct RootView: View {
                             let agent = model.replyingAgent(typing)
                             HStack(alignment: .top, spacing: 10) {
                                 Avatar(name: agent.name, size: 28, provider: provider(agent.id))
-                                VStack(alignment: .leading, spacing: 3) {
-                                    HStack(alignment: .firstTextBaseline, spacing: 6) {
-                                        Text(agent.name).font(KS.body(.semibold)).foregroundStyle(KS.strong)
-                                        Text("Replying live").font(KS.mono()).foregroundStyle(KS.signal)
+                                VStack(alignment: .leading, spacing: 4) {
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        HStack(alignment: .firstTextBaseline, spacing: 6) {
+                                            Text(agent.name).font(KS.body(.semibold)).foregroundStyle(KS.strong)
+                                            Text("Replying live").font(KS.mono()).foregroundStyle(KS.signal)
+                                        }
+                                        Text(typing["text"].string.isEmpty ? "Thinking…" : typing["text"].string).font(KS.body()).foregroundStyle(KS.soft).lineSpacing(1).fixedSize(horizontal: false, vertical: true)
+                                    }.padding(12).frame(maxWidth: .infinity, alignment: .leading).bubble()
+                                    let activities = ToolActivity.list(from: typing["activity"])
+                                    if !activities.isEmpty {
+                                        ToolActivityListView(activities: activities)
+                                            .equatable()
                                     }
-                                    Text(typing["text"].string.isEmpty ? "Thinking…" : typing["text"].string).font(KS.body()).foregroundStyle(KS.soft).lineSpacing(1).fixedSize(horizontal: false, vertical: true)
-                                }.padding(12).frame(maxWidth: .infinity, alignment: .leading).bubble()
+                                }
                             }
                         }
                         Color.clear.frame(height: 1).id("bottom")
@@ -1638,5 +1645,116 @@ struct CopyButton: View {
         } label: {
             Image(systemName: done ? "checkmark" : "doc.on.doc").font(.caption).foregroundStyle(KS.muted).frame(minWidth: 32, minHeight: 32)
         }.buttonStyle(.plain).accessibilityLabel("Copy message")
+    }
+}
+
+/// Pulsing dotted circle for running tool activity, respecting Reduce Motion.
+struct ToolActivityRunningIcon: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var pulse = false
+
+    var body: some View {
+        Image(systemName: "circle.dotted")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .opacity(reduceMotion ? 1.0 : (pulse ? 0.35 : 1.0))
+            .onAppear {
+                guard !reduceMotion else { return }
+                withAnimation(.easeInOut(duration: 0.7).repeatForever(autoreverses: true)) {
+                    pulse = true
+                }
+            }
+    }
+}
+
+/// A single live tool-call activity row on iOS.
+struct ToolActivityRowView: View, Equatable {
+    let item: ToolActivity
+
+    nonisolated static func == (lhs: ToolActivityRowView, rhs: ToolActivityRowView) -> Bool {
+        lhs.item == rhs.item
+    }
+
+    var body: some View {
+        HStack(spacing: 6) {
+            switch item.state {
+            case .running:
+                ToolActivityRunningIcon()
+            case .done:
+                Image(systemName: "checkmark.circle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            case .failed:
+                Image(systemName: "xmark.octagon")
+                    .font(.caption)
+                    .foregroundStyle(Color.red)
+            }
+            Text(verbatim: item.label)
+                .font(.system(.caption, design: .monospaced))
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .foregroundStyle(KS.soft)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(accessibilityText)
+    }
+
+    private var accessibilityText: String {
+        let stateName: String
+        switch item.state {
+        case .running: stateName = "Running"
+        case .done: stateName = "Done"
+        case .failed: stateName = "Failed"
+        }
+        return item.label.isEmpty ? stateName : "\(stateName): \(item.label)"
+    }
+}
+
+/// Compact list of live tool-call activity rows under a typing bubble on iOS.
+struct ToolActivityListView: View, Equatable {
+    let activities: [ToolActivity]
+    @State private var isExpanded = false
+
+    nonisolated static func == (lhs: ToolActivityListView, rhs: ToolActivityListView) -> Bool {
+        lhs.activities == rhs.activities
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if activities.count <= 5 {
+                ForEach(activities) { item in
+                    ToolActivityRowView(item: item).equatable()
+                }
+            } else {
+                let splitIndex = activities.count - 5
+                let earlier = Array(activities[0..<splitIndex])
+                let newest = Array(activities[splitIndex...])
+                let earlierFailed = earlier.filter { $0.state == .failed }
+
+                DisclosureGroup(isExpanded: $isExpanded) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(earlier) { item in
+                            ToolActivityRowView(item: item).equatable()
+                        }
+                    }
+                    .padding(.top, 2)
+                } label: {
+                    Text("+\(earlier.count) earlier")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                if !isExpanded {
+                    ForEach(earlierFailed) { item in
+                        ToolActivityRowView(item: item).equatable()
+                    }
+                }
+
+                ForEach(newest) { item in
+                    ToolActivityRowView(item: item).equatable()
+                }
+            }
+        }
+        .padding(.top, 2)
     }
 }
