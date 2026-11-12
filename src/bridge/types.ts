@@ -84,6 +84,11 @@ export interface ProcessRequest {
   /** Written with pid/pgid/start marker while the child lives, removed on exit, so a later bridge can fence an orphan. */
   pidfile?: string;
   on_progress?: (progress: { output_bytes: number; stdout_tail: string }) => void;
+  /** Leave stdin open after `input`; the runner hands the caller a writer through on_stdin. */
+  keep_stdin_open?: boolean;
+  on_stdin?: (stdin: { write: (text: string) => boolean; end: () => void }) => void;
+  /** Each complete stdout line, cut to its first 2048 characters (enough for an event's type and opening fields). */
+  on_line?: (head: string) => void;
 }
 export interface ProcessResult {
   exit_code: number | null;

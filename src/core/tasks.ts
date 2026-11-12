@@ -760,7 +760,23 @@ export class TaskService {
         AND subject_id=$3 AND name='task.updated' AND payload->>'action'='checkpointed'
         AND created_at>clock_timestamp()-interval '3 seconds' LIMIT 1`,[p.tenantId,next.scope,next.id])).rowCount;
       if (!recent) await taskChanged(db,p,next,'checkpointed',true,false);
-      return {task:taskView(next)};
+      // Steering: a bridge running a turn with an open stdin asks for owner messages posted since it started
+      // (or since the last one it took). Text only, oldest first; a photo stops the batch so order is kept
+      // and the photo waits for the follow-up turn.
+      let steer: Array<{seq:number;body:string}> | undefined;
+      if (next.kind === 'turn' && next.thread_id && typeof checkpoint.steer_after_seq === 'number' && Number.isSafeInteger(checkpoint.steer_after_seq)) {
+        const after = Math.max(checkpoint.steer_after_seq, Number((next.context_versions as {message_seq?:unknown})?.message_seq) || 0);
+        const rows = (await db.query<{seq:string;kind:string;body:string;has_photos:boolean}>(`SELECT seq, kind, body,
+            jsonb_typeof(ref->'attachments')='array' AS has_photos
+          FROM messages WHERE tenant_id=$1 AND thread_id=$2 AND (author->>'kind')='human' AND seq>$3
+          ORDER BY seq LIMIT 5`,[p.tenantId,next.thread_id,after])).rows;
+        steer = [];
+        for (const m of rows) {
+          if (m.kind !== 'text' || m.has_photos) break;
+          steer.push({seq:Number(m.seq),body:clipUtf8(redactSecrets(m.body),16384)});
+        }
+      }
+      return {task:taskView(next),...(steer?.length ? {steer} : {})};
     });
   }
 
@@ -1133,7 +1149,9 @@ async function finishFollowUpTurn(db:PoolClient,p:Principal,c:FinishCtx):Promise
   const threadId = row.thread_id!;
   const agentRow = (await db.query<AgentRow>('SELECT * FROM agents WHERE id=$1 FOR UPDATE', [row.agent_id])).rows[0];
 
-  const processedSeq = (row.context_versions as any)?.message_seq ?? 0;
+  // Messages the bridge steered into the running turn (and Claude acknowledged) were already handled.
+  const steeredSeq = Number((row.checkpoint as {steered_seq?:unknown}|null)?.steered_seq);
+  const processedSeq = Math.max(Number((row.context_versions as any)?.message_seq ?? 0) || 0, Number.isSafeInteger(steeredSeq) ? steeredSeq : 0);
   const pendingHuman = (await db.query<{ seq: string }>(
     `SELECT seq FROM messages
      WHERE thread_id=$1 AND (author->>'kind')='human' AND seq > $2

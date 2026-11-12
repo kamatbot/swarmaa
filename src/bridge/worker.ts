@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs';
 import { runConfiguredChecks, runFlowCheck } from './checks.js';
 import { setTimeout as delay } from 'node:timers/promises';
-import { AUTO_PATCH, AUTO_READ, buildInvocation, withTurnImages, capability, antigravityLogModel, classifyFailure, deniedActions, extractDelegate, extractPartialText, extractServed, extractUsage, finalAnswer, projectCapabilities, providerSucceeded, codexThreadId, sessionMissing, UUID } from './adapters.js';
+import { AUTO_PATCH, AUTO_READ, buildInvocation, withTurnImages, capability, antigravityLogModel, classifyFailure, deniedActions, extractDelegate, extractPartialText, extractServed, extractUsage, finalAnswer, projectCapabilities, steerLine, steerMarker, providerSucceeded, codexThreadId, sessionMissing, UUID } from './adapters.js';
 import { collectUsage, headroom } from '../usage/index.js';
 import { windowsForModel } from '../usage/antigravity.js';
 import type { UsageProviderId, UsageSnapshot } from '../usage/types.js';
@@ -410,6 +410,47 @@ export class BridgeWorker {
     let lastCheckpointTime = 0;
     let partialTextTimer: NodeJS.Timeout | undefined;
     let checkpointInFlight = false;
+    // Steering: thread messages the owner sends while a Claude turn runs go into its open stdin (stream-json).
+    // The service returns them on checkpoint/heartbeat responses; steered_seq (acknowledged by Claude's replay)
+    // tells the service not to start a follow-up turn for them. Unacknowledged ones still get a follow-up turn.
+    const steerable = task.kind === 'turn' && agent.provider === 'claude';
+    let stdinCtl: { write: (text: string) => boolean; end: () => void } | undefined;
+    let steerWritten = 0, steerAcked = 0, steerCount = 0, stdinClosed = false;
+    let closeTimer: NodeJS.Timeout | undefined;
+    const closeStdin = (): void => {
+      if (closeTimer) { clearTimeout(closeTimer); closeTimer = undefined; }
+      if (stdinClosed) return;
+      stdinClosed = true;
+      stdinCtl?.end();
+    };
+    const takeSteers = (response: unknown): void => {
+      if (!steerable || stdinClosed || !stdinCtl) return;
+      const steer = (response as { steer?: unknown } | undefined)?.steer;
+      if (!Array.isArray(steer)) return;
+      for (const m of steer as Array<{ seq?: unknown; body?: unknown }>) {
+        const seq = Number(m?.seq);
+        if (!Number.isSafeInteger(seq) || seq <= steerWritten || typeof m.body !== 'string') continue;
+        if (!stdinCtl.write(steerLine(seq, m.body))) return;
+        steerWritten = seq; steerCount++;
+        if (closeTimer) { clearTimeout(closeTimer); closeTimer = undefined; }
+        this.logger('turn_steered', { task_id: task.id, seq });
+      }
+    };
+    const onLine = (head: string): void => {
+      if (!head.startsWith('{')) return;
+      const type = /^\{\s*"type"\s*:\s*"([a-z_]+)"/u.exec(head)?.[1];
+      if (type === 'result') {
+        // No steer: the turn is over, close now. After a steer, wait briefly: Claude starts another turn for a
+        // queued message (any new line cancels the close); EOF never aborts a turn already started.
+        if (!steerCount) closeStdin();
+        else if (!closeTimer && !stdinClosed) closeTimer = setTimeout(closeStdin, 2500);
+        return;
+      }
+      if (closeTimer) { clearTimeout(closeTimer); closeTimer = undefined; }
+      if (type === 'user' && steerWritten > steerAcked) {
+        for (let seq = steerWritten; seq > steerAcked; seq--) if (head.includes(steerMarker(seq))) { steerAcked = seq; break; }
+      }
+    };
     const streamParserState = { totalProcessedBytes: 0 };
     const startedAt = new Date().toISOString();
     const onShutdown = (): void => execution.abort();
@@ -445,6 +486,8 @@ export class BridgeWorker {
       };
       if (nativeId) base.native_session = { provider: agent.provider, id: nativeId };
       if (lastFailure) base.last_failure = lastFailure;
+      if (steerable && !stdinClosed && stdinCtl) base.steer_after_seq = steerWritten;
+      if (steerAcked) base.steered_seq = steerAcked;
       if (task.kind === 'turn' && agent.provider !== 'antigravity') {
         base.partial_text = untrusted(currentPartialText, 8192);
       }
@@ -458,7 +501,7 @@ export class BridgeWorker {
       checkpointInFlight = true;
       try {
         // Checkpoint only: lease renewal stays with the heartbeat loop.
-        await this.client.call('task_checkpoint', { ...lease, checkpoint: checkpoint('running') });
+        takeSteers(await this.client.call('task_checkpoint', { ...lease, checkpoint: checkpoint('running') }));
         lastSentPartialText = currentPartialText;
         lastCheckpointTime = Date.now();
       } catch (error) {
@@ -525,7 +568,7 @@ export class BridgeWorker {
           await renew();
           if (leaseLost) return;
           if (!finished) {
-            await this.client.call('task_checkpoint', { ...lease, checkpoint: checkpoint('running') });
+            takeSteers(await this.client.call('task_checkpoint', { ...lease, checkpoint: checkpoint('running') }));
             lastSentPartialText = currentPartialText;
             lastCheckpointTime = Date.now();
           }
@@ -576,11 +619,18 @@ export class BridgeWorker {
             const request = buildInvocation(agent, project, task, context, this.config, execution.signal, process.env, worktree, nativePlan, images, id || lastFailure ? { id, note: lastFailure } : undefined);
             promptText = request.prompt;
             if (worktree && isPatchWork) request.pidfile = providerPidfile(worktree.dir);
+            if (request.keep_stdin_open) {
+              // A retry in this attempt (missing session) starts over with a fresh stdin.
+              stdinClosed = false; steerCount = 0; steerWritten = steerAcked;
+              request.on_stdin = ctl => { stdinCtl = ctl; };
+              request.on_line = onLine;
+            }
             request.on_progress = value => {
               progress = images.length ? { ...value, stdout_tail: "" } : value;
               updatePartialText(progress.stdout_tail, value.output_bytes);
             };
             const output = await this.runner(request);
+            closeStdin();
             return { ...output, stdout: scrub(output.stdout), stderr: scrub(output.stderr) };
           };
           const first = await go(resumed);

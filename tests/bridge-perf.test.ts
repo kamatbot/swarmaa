@@ -508,11 +508,15 @@ test('a delegated turn without a runner model uses the full model and carries it
   const req = buildInvocation(agent, cfg.projects[0]!, task, {}, cfg, new AbortController().signal);
   const i = req.args.indexOf('--model');
   assert.notEqual(i >= 0 ? req.args[i + 1] : undefined, agent.turn_model, 'never the fast model for a delegated turn');
-  assert.ok(!req.input.includes('DELEGATE: <one-line objective>'));
-  const at = req.input.indexOf('Compare the three pricing pages in depth');
+  // Claude turns send the prompt as a stream-json message on an open stdin; check the prompt text itself.
+  assert.equal(req.keep_stdin_open, true);
+  assert.equal((JSON.parse(req.input) as { message: { content: Array<{ text: string }> } }).message.content[0]!.text, req.prompt);
+  const prompt = req.prompt!;
+  assert.ok(!prompt.includes('DELEGATE: <one-line objective>'));
+  const at = prompt.indexOf('Compare the three pricing pages in depth');
   assert.ok(at > 0, 'the objective reaches the model');
-  assert.equal(req.input.lastIndexOf('Compare the three pricing pages in depth'), at, 'only once: not also as trusted instructions');
-  const before = req.input.slice(0, at);
+  assert.equal(prompt.lastIndexOf('Compare the three pricing pages in depth'), at, 'only once: not also as trusted instructions');
+  const before = prompt.slice(0, at);
   assert.match(before.slice(before.lastIndexOf('<<<UNTRUSTED_CONTENT_')), /^<<<UNTRUSTED_CONTENT_[0-9a-f]{16}>>>\n$/, 'inside the untrusted delimiters');
 });
 

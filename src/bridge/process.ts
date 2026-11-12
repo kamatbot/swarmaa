@@ -9,6 +9,7 @@ export function processStart(pid: number): string {
 }
 
 const STDOUT_TAIL_BYTES = 8192;
+const LINE_HEAD = 2048;
 
 /** Last `limit` bytes of `tail` plus `chunk`, without copying the earlier transcript. */
 export function slideTail(tail: Uint8Array, chunk: Uint8Array, limit = STDOUT_TAIL_BYTES): Uint8Array {
@@ -85,13 +86,32 @@ export async function runBoundedProcess(request: ProcessRequest): Promise<Proces
       request.on_progress?.({ output_bytes: bytes, stdout_tail: Buffer.from(stdoutTail).toString('utf8') });
       if (bytes > request.max_output_bytes) stop('output_limit');
     };
-    child.stdout.on('data', (chunk: Buffer) => collect(output, chunk));
+    // Line heads for on_line: bounded per line, so a huge event never buffers more than LINE_HEAD characters.
+    let lineHead = '';
+    const lines = (chunk: Buffer): void => {
+      let start = 0, newline: number;
+      while ((newline = chunk.indexOf(10, start)) >= 0) {
+        if (lineHead.length < LINE_HEAD) lineHead += chunk.subarray(start, Math.min(newline, start + LINE_HEAD)).toString('utf8');
+        const head = lineHead.slice(0, LINE_HEAD);
+        lineHead = '';
+        start = newline + 1;
+        try { request.on_line!(head); } catch { /* a caller bug must not kill the run */ }
+      }
+      if (lineHead.length < LINE_HEAD) lineHead += chunk.subarray(start, Math.min(chunk.length, start + LINE_HEAD)).toString('utf8');
+    };
+    child.stdout.on('data', (chunk: Buffer) => { collect(output, chunk); if (request.on_line) lines(chunk); });
     child.stderr.on('data', (chunk: Buffer) => collect(errors, chunk));
     child.once('error', () => { stopReason = 'spawn_error'; finish(null, null); });
     child.once('close', (code, signal) => finish(code, signal));
     child.stdin.on('error', () => { /* EPIPE when provider exits early is reflected by exit status. */ });
     request.signal?.addEventListener('abort', abort, { once: true });
     if (request.signal?.aborted) abort();
-    child.stdin.end(request.input, 'utf8');
+    if (!request.keep_stdin_open) { child.stdin.end(request.input, 'utf8'); return; }
+    child.stdin.write(request.input, 'utf8');
+    const open = (): boolean => !settled && !child.stdin.destroyed && !child.stdin.writableEnded;
+    request.on_stdin?.({
+      write: text => { if (!open()) return false; child.stdin.write(text, 'utf8'); return true; },
+      end: () => { if (open()) child.stdin.end(); }
+    });
   });
 }

@@ -331,7 +331,9 @@ export function buildInvocation(agent: AgentConfig, project: ProjectConfig, task
   if (effectiveEffort && agent.provider === 'codex') args.push('-c', `model_reasoning_effort="${effectiveEffort}"`);
   else if (effectiveEffort && agent.provider === 'claude') args.push('--effort', effectiveEffort);
   if (images?.length && agent.provider === 'antigravity') throw Object.assign(new Error('Antigravity photo input is not supported'), { code: 'photo_provider_unsupported' });
-  if (images?.length && agent.provider === 'claude') args.push('--input-format', 'stream-json');
+  // Claude turns read stream-json from an open stdin so the owner can steer a running turn (writeSteer);
+  // --replay-user-messages echoes each message back, which is how the bridge knows a steer was received.
+  if (agent.provider === 'claude' && (isTurn || images?.length)) args.push('--input-format', 'stream-json', ...(isTurn ? ['--replay-user-messages'] : []));
   if (images?.length && agent.provider === 'codex') for (const image of images) args.push('--image', image.path!);
   if (agent.provider === 'codex') args.push(...(resume?.id ? [resume.id] : []), '-');
   const input = (task.kind === 'turn'
@@ -348,8 +350,9 @@ export function buildInvocation(agent: AgentConfig, project: ProjectConfig, task
   }
   return {
     command, args, cwd: workspace?.dir ?? project.root, env, prompt: input,
-    input: agent.provider === 'antigravity' ? '' : images?.length && agent.provider === 'claude'
-      ? JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: input }, ...images.flatMap(image => [{ type: 'text', text: `Untrusted photo from message #${image.seq}:` }, { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: image.data } }])] } }) + '\n' : input,
+    input: agent.provider === 'antigravity' ? '' : (isTurn || images?.length) && agent.provider === 'claude'
+      ? JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: input }, ...(images ?? []).flatMap(image => [{ type: 'text', text: `Untrusted photo from message #${image.seq}:` }, { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: image.data } }])] } }) + '\n' : input,
+    ...(agent.provider === 'claude' && isTurn ? { keep_stdin_open: true } : {}),
     timeout_ms: config.task_timeout_seconds * 1000, max_output_bytes: config.max_output_bytes, signal
   };
 }
@@ -477,16 +480,16 @@ export function finalAnswer(provider: string, stdout: string): string {
       const r = (JSON.parse(stdout) as { result?: unknown }).result;
       return typeof r === 'string' ? r : '';
     } catch {
-      for (const line of stdout.trim().split('\n').reverse()) {
+      // A steered turn has one result per user message: the reply is all of them, in order.
+      const results: string[] = [];
+      for (const line of stdout.trim().split('\n')) {
         if (!line.startsWith('{')) continue;
         try {
           const payload = JSON.parse(line) as { type?: string; result?: unknown };
-          if (payload.type === 'result' && typeof payload.result === 'string') {
-            return payload.result;
-          }
+          if (payload.type === 'result' && typeof payload.result === 'string' && payload.result.trim()) results.push(payload.result.trim());
         } catch {}
       }
-      return '';
+      return results.join('\n\n');
     }
   }
   if (provider === 'antigravity') {
@@ -756,4 +759,14 @@ export async function antigravityLogModel(since: number, dir = join(homedir(), '
     if (!mine) return null;
     return [...(await readFile(join(dir, mine.f), 'utf8')).matchAll(/Resolving model (\S+)/g)].pop()?.[1] ?? null;
   } catch { return null; }
+}
+
+/** Marker the bridge looks for in Claude's replayed user messages to know steer #seq was received. */
+export const steerMarker = (seq: number): string => `[owner message #${seq}, sent while you were working]`;
+
+/** One stream-json user message carrying a thread message the owner sent during a running Claude turn. */
+export function steerLine(seq: number, body: string): string {
+  const delimiter = `<<<UNTRUSTED_CONTENT_${randomBytes(8).toString('hex')}>>>`;
+  const text = `${steerMarker(seq)}\n${UNTRUSTED_GUIDANCE}\n${fenceUntrusted(body, delimiter)}\nTake this into account in the work you are doing now, then answer it in your reply.`;
+  return JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'text', text }] } }) + '\n';
 }
