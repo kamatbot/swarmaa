@@ -16,5 +16,5 @@ struct RecordMemoControl: ControlWidget {
 }
 
 @main struct SwarmaaWatchWidgets: WidgetBundle {
-    var body: some Widget { RecordMemoControl() }
+    var body: some Widget { RecordMemoControl(); NeedsYouWidget(); VoiceMemoWidget() }
 }

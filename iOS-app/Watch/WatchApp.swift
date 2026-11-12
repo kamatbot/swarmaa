@@ -1,5 +1,6 @@
 import SwiftUI
 import WatchConnectivity
+import WidgetKit
 
 @MainActor @Observable final class WatchStore: NSObject, WCSessionDelegate {
     static let shared = WatchStore()
@@ -14,6 +15,15 @@ import WatchConnectivity
         super.init()
         if let data = try? Data(contentsOf: file), let state = try? JSONDecoder().decode(State.self, from: data) { snapshot = state.snapshot; queue = state.queue; oldEpochs = state.oldEpochs }
         if WCSession.isSupported() { WCSession.default.delegate = self; WCSession.default.activate() }
+        syncComplication()
+    }
+    /// Shares the open-question count with the complications; reloads them only when it changed.
+    private func syncComplication() {
+        let needs = snapshot?.signedIn == true ? Set((snapshot?.questions ?? []).map(\.threadID)).count : 0
+        let signedIn = snapshot?.signedIn == true
+        guard needs != ComplicationData.needsCount || signedIn != ComplicationData.signedIn else { return }
+        ComplicationData.write(needs: needs, signedIn: signedIn)
+        WidgetCenter.shared.reloadTimelines(ofKind: "app.swarmaa.needs-you")
     }
     @discardableResult private func save() -> Bool {
         do {
@@ -61,7 +71,7 @@ import WatchConnectivity
                 else { oldEpochs.append(previous.epoch); oldEpochs = Array(oldEpochs.suffix(8)) }
             }
             if incoming.generation != snapshot?.generation || !incoming.signedIn { queue = [] }
-            snapshot = incoming; _ = save()
+            snapshot = incoming; _ = save(); syncComplication()
             WatchMemos.shared.setGeneration(incoming.signedIn ? incoming.generation : nil)
             WatchTransactions.shared.invalidateOtherGenerations(incoming.signedIn ? incoming.generation : nil)
         } else if packet.kind == "transaction", let transaction = packet.transaction {
@@ -178,6 +188,7 @@ struct WKPrimary: ButtonStyle {
                     }
                 }.wkScreen().navigationDestination(for: String.self) { _ in WatchMemosView(store: store) }
             }.tint(WK.signal).onAppear { store.refresh() }
+            .onOpenURL { url in if url.host == "record" { router.recordMemo() } else if url.host == "needs" { router.path = [] } }
         }.onChange(of: phase) { _, new in
             // Keep recording when the screen dims or the wrist drops; the audio background mode keeps the session alive.
             if new == .active { store.refresh() }
