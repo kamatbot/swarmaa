@@ -960,10 +960,12 @@ export class SwarmsService {
       const answerBody = clipUtf8(redactSecrets(answerParts.join('\n\n')), 16384);
 
       const answerMsgId = newId();
+      // The answering identity's name (e.g. "iPhone", "Mac app") so the agent sees who answered, not an opaque id.
+      const answerAuthor = { kind: 'human', id: p.id, name: clipUtf8(p.name, 80) };
       await db.query(
         `INSERT INTO messages (id, tenant_id, scope, thread_id, seq, author, kind, body, ref, idempotency_key)
          VALUES ($1, $2, $3, $4, $5, $6::jsonb, 'answer', $7, $8::jsonb, $9)`,
-        [answerMsgId, p.tenantId, q.scope, q.thread_id, nextSeq, JSON.stringify({ kind: 'human', id: p.id }),
+        [answerMsgId, p.tenantId, q.scope, q.thread_id, nextSeq, JSON.stringify(answerAuthor),
          answerBody, JSON.stringify({ question_id: questionId }), idempotency]
       );
 
@@ -978,7 +980,7 @@ export class SwarmsService {
         message_id: answerMsgId,
         seq: Number(nextSeq),
         kind: 'answer',
-        author: { kind: 'human', id: p.id }
+        author: answerAuthor
       });
 
       // Queue the agent's next turn with initiator answer

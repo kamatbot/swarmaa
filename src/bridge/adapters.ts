@@ -41,7 +41,7 @@ export function runnerCapability(runner: RunnerConfig, edits = false): string {
 export interface ThreadMessage {
   id?: string;
   seq: number | bigint;
-  author: { kind: string; id: string };
+  author: { kind: string; id: string; name?: string };
   kind: string;
   body: string;
   created_at?: string | Date;
@@ -149,9 +149,10 @@ export function buildTurnPrompt(
   const wrappedMessages = window.map(msg => {
     const authorKind = msg.author?.kind ?? 'agent';
     const authorId = msg.author?.id ?? 'unknown';
+    const authorName = typeof msg.author?.name === 'string' ? msg.author.name.replace(/[^\p{L}\p{N} ._-]/gu, '').slice(0, 40) : '';
     const newTag = isNew(msg) ? ' [NEW]' : '';
     const photos = (msg.attachments ?? []).map((a, i) => `Photo ${i + 1}: ${a.data_base64 ? 'provided as an image input' : 'older photo unavailable (metadata only)'}`).join('\n');
-    return `${UNTRUSTED_GUIDANCE}\n[Message ${msg.seq !== undefined ? `#${msg.seq} ` : ''}from ${authorKind}:${authorId} (${msg.kind ?? 'text'})${newTag}]:\n${fenceUntrusted(msg.body + (photos ? `\n${photos}` : ""), delimiter)}`;
+    return `${UNTRUSTED_GUIDANCE}\n[Message ${msg.seq !== undefined ? `#${msg.seq} ` : ''}from ${authorKind}:${authorId}${authorName ? ` "${authorName}"` : ''} (${msg.kind ?? 'text'})${newTag}]:\n${fenceUntrusted(msg.body + (photos ? `\n${photos}` : ""), delimiter)}`;
   });
 
   const routerPreamble = 'You are the router for this bot. Do not do the work yourself and do not edit files. Decide who should do it and dispatch with swarm_start or handoff, or ask the human with question_ask. Reply in ≤3 sentences plus the actions block.';
