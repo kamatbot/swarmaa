@@ -41,6 +41,10 @@
 	<string>Turn speech into an editable message.</string>
 	<key>NSSupportsLiveActivities</key>
 	<true/>
+	<key>NSUserActivityTypes</key>
+	<array>
+		<string>INSendMessageIntent</string>
+	</array>
 	<key>UIFileSharingEnabled</key>
 	<true/>
 </dict>

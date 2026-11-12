@@ -13,6 +13,7 @@ settings:
     SWIFT_STRICT_CONCURRENCY: complete
     # The worker is already sandboxed; nested Swift macro sandboxes cannot launch here.
     OTHER_SWIFT_FLAGS[sdk=iphonesimulator*]: "$(inherited) -disable-sandbox"
+    OTHER_SWIFT_FLAGS[sdk=watchsimulator*]: "$(inherited) -disable-sandbox"
 targets:
   Swarmaa:
     type: application
@@ -30,10 +31,13 @@ targets:
         embed: true
       - target: SwarmaaWatch
         embed: true
+      - target: SwarmaaNotifications
+        embed: true
     entitlements:
       path: Swarmaa.entitlements
       properties:
         aps-environment: development
+        com.apple.developer.usernotifications.communication: true
     info:
       path: Info.plist
       properties:
@@ -44,6 +48,8 @@ targets:
         LSSupportsOpeningDocumentsInPlace: YES
         NSSpeechRecognitionUsageDescription: Turn speech into an editable message.
         NSCameraUsageDescription: Take photos to send to your bots in chat.
+        NSUserActivityTypes:
+          - INSendMessageIntent
         CFBundleURLTypes:
           - CFBundleURLName: app.swarmaa.ios.pair
             CFBundleURLSchemes: [swarmaa]
@@ -136,6 +142,26 @@ targets:
         TARGETED_DEVICE_FAMILY: '1,2'
         MARKETING_VERSION: '1.0'
         CURRENT_PROJECT_VERSION: '10'
+  SwarmaaNotifications:
+    type: app-extension
+    platform: iOS
+    sources:
+      - Notifications
+      - Resources
+      - path: Sources/BotAppearance.swift
+    info:
+      path: Notifications/Info.plist
+      properties:
+        CFBundleDisplayName: SwarmaaNotifications
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.usernotifications.service
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).NotificationService
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.swarmaa.ios.notifications
+        TARGETED_DEVICE_FAMILY: '1,2'
+        MARKETING_VERSION: '1.0'
+        CURRENT_PROJECT_VERSION: '10'
   SwarmaaTests:
     type: bundle.unit-test
     platform: iOS
@@ -145,6 +171,7 @@ targets:
       - Tests
       - Shared
       - path: Sources/AppCore.swift
+      - path: Sources/BotAppearance.swift
       - path: ../Mac-app/Sources/Providers/SwarmaRelayTransport.swift
       - path: ../Mac-app/Sources/Teams/ChatMedia.swift
     settings:
@@ -179,6 +206,7 @@ schemes:
       targets:
         Swarmaa: all
         SwarmaaLiveActivity: all
+        SwarmaaNotifications: all
         SwarmaaTests: [test]
         RelayCompatibilityTests: [test]
         SwarmaaUITests: [test]

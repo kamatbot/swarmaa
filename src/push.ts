@@ -25,8 +25,11 @@ export async function pushDevice(db:Db,p:Principal,input:Record<string,unknown>,
 type Environment = 'sandbox'|'production';
 export interface Device {token:string; tenant_id:string; principal_id:string; environment:Environment; updated_at:string}
 export interface PushPayload {
-  aps:{alert:{title:string;body:'Needs you'|'Replied'|'Task failed'|'Ready for review'};sound:'default';'thread-id':string};
+  aps:{alert:{title:string;body:'Needs you'|'Replied'|'Task failed'|'Ready for review'};sound:'default';'thread-id':string;'mutable-content':1};
   bot_id:string;
+  bot_name:string;
+  bot_avatar:string|null;
+  bot_color:string|null;
 }
 export interface PushResult {status:number;reason?:string}
 export interface PushSender {send(device:Device,payload:PushPayload):Promise<PushResult>;close():void}
@@ -35,10 +38,10 @@ export interface PushEvent {name:string;subject_id:string;tenant_id:string;scope
 // Only allowlisted identifiers and fixed labels cross the APNs boundary. Never spread event data.
 export async function eventPayload(db:Db,e:PushEvent):Promise<PushPayload|null> {
   let body:PushPayload['aps']['alert']['body'];
-  let bot:{id:string;name:string}|undefined;
+  let bot:{id:string;name:string;avatar:string|null;color:string|null}|undefined;
   if (e.name === 'task.updated') {
     if (e.payload.action !== 'finished' || !['completed','failed'].includes(String(e.payload.status))) return null;
-    bot = (await db.query<{id:string;name:string}>(`SELECT b.id,b.name FROM tasks t JOIN bots b ON b.id=t.bot_id AND b.tenant_id=t.tenant_id
+    bot = (await db.query<{id:string;name:string;avatar:string|null;color:string|null}>(`SELECT b.id,b.name,b.avatar,b.color FROM tasks t JOIN bots b ON b.id=t.bot_id AND b.tenant_id=t.tenant_id
       WHERE t.id::text=$1 AND t.tenant_id=$2 AND t.scope=$3 AND b.scope=t.scope AND NOT b.archived
       AND ($4='failed' OR (t.result->>'head_commit' IS NOT NULL))`,[e.subject_id,e.tenant_id,e.scope,e.payload.status])).rows[0];
     body = e.payload.status === 'failed' ? 'Task failed' : 'Ready for review';
@@ -48,10 +51,16 @@ export async function eventPayload(db:Db,e:PushEvent):Promise<PushPayload|null> 
       (e.payload.author as {kind?:string}|undefined)?.kind === 'agent') body = 'Replied';
     else return null;
     if (typeof e.payload.thread_id !== 'string') return null;
-    bot = (await db.query<{id:string;name:string}>(`SELECT id,name FROM bots
+    bot = (await db.query<{id:string;name:string;avatar:string|null;color:string|null}>(`SELECT id,name,avatar,color FROM bots
       WHERE thread_id::text=$1 AND tenant_id=$2 AND scope=$3 AND NOT archived`,[e.payload.thread_id,e.tenant_id,e.scope])).rows[0];
   }
-  return bot ? {aps:{alert:{title:bot.name,body},sound:'default','thread-id':bot.id},bot_id:bot.id} : null;
+  return bot ? {
+    aps:{alert:{title:bot.name,body},sound:'default','thread-id':bot.id,'mutable-content':1},
+    bot_id:bot.id,
+    bot_name:bot.name,
+    bot_avatar:bot.avatar ?? null,
+    bot_color:bot.color ?? null,
+  } : null;
 }
 
 export async function deliverPush(db:Db,sender:PushSender,device:Device,payload:PushPayload):Promise<void> {
