@@ -384,4 +384,64 @@ actor IOSRelaySocket: SwarmaRelayTransport.SwarmaWebSocket {
         PhotoCache.clear()
         XCTAssertNil(PhotoCache.data(sha))
     }
+
+    func testBotTurnAttributesContractKeys() throws {
+        let now = Date()
+        let state = BotTurnAttributes.ContentState(status: "running", step: "Processing test turn", startedAt: now, endedAt: now)
+        let stateData = try JSONEncoder().encode(state)
+        let stateDict = try XCTUnwrap(JSONSerialization.jsonObject(with: stateData) as? [String: Any])
+        XCTAssertEqual(Set(stateDict.keys), Set(["status", "step", "startedAt", "endedAt"]))
+        XCTAssertEqual(stateDict["status"] as? String, "running")
+        XCTAssertEqual(stateDict["step"] as? String, "Processing test turn")
+
+        let attrs = BotTurnAttributes(botId: "bot-123", botName: "Scout", avatar: "🤖", color: "#8FB8FF")
+        let attrData = try JSONEncoder().encode(attrs)
+        let attrDict = try XCTUnwrap(JSONSerialization.jsonObject(with: attrData) as? [String: Any])
+        XCTAssertEqual(Set(attrDict.keys), Set(["botId", "botName", "avatar", "color"]))
+        XCTAssertEqual(attrDict["botId"] as? String, "bot-123")
+        XCTAssertEqual(attrDict["botName"] as? String, "Scout")
+        XCTAssertEqual(attrDict["avatar"] as? String, "🤖")
+        XCTAssertEqual(attrDict["color"] as? String, "#8FB8FF")
+
+        // Decodable round-trip
+        let decodedState = try JSONDecoder().decode(BotTurnAttributes.ContentState.self, from: stateData)
+        XCTAssertEqual(decodedState.status, "running")
+        XCTAssertEqual(decodedState.step, "Processing test turn")
+
+        let decodedAttrs = try JSONDecoder().decode(BotTurnAttributes.self, from: attrData)
+        XCTAssertEqual(decodedAttrs.botId, "bot-123")
+        XCTAssertEqual(decodedAttrs.botName, "Scout")
+    }
+
+    func testActivityTokenRegistrationCallsEndpointWithExpectedFields() async throws {
+        let (service, socket) = service()
+        let keychain = ConnectionKeychain(service: "app.swarmaa.ios.tests." + UUID().uuidString)
+        let model = AppModel(keychain: keychain)
+        model.service = service; model.connected = true
+
+        // 1. Device push token registered first
+        let deviceToken = Data(repeating: 0x01, count: 32)
+        await model.registerPushToken(deviceToken)
+        var calls = await socket.calls("push_register")
+        XCTAssertEqual(calls.count, 1)
+        XCTAssertEqual(calls.first?["token"].string, String(repeating: "01", count: 32))
+        XCTAssertNil(calls.first?["activity_start_token"].string)
+
+        // 2. Activity start token updates
+        let startToken = Data(repeating: 0x02, count: 32)
+        await model.registerActivityStartToken(startToken)
+        calls = await socket.calls("push_register")
+        XCTAssertEqual(calls.count, 2)
+        XCTAssertEqual(calls.last?["token"].string, String(repeating: "01", count: 32))
+        XCTAssertEqual(calls.last?["activity_start_token"].string, String(repeating: "02", count: 32))
+
+        // 3. Activity push token updates for an active bot turn
+        let activityToken = Data(repeating: 0x03, count: 32)
+        await model.registerActivityToken(activityToken, botId: "bot-xyz")
+        calls = await socket.calls("push_register")
+        XCTAssertEqual(calls.count, 3)
+        XCTAssertEqual(calls.last?["activity_token"].string, String(repeating: "03", count: 32))
+        XCTAssertEqual(calls.last?["activity_bot_id"].string, "bot-xyz")
+        XCTAssertEqual(calls.last?["token"].string, String(repeating: "01", count: 32))
+    }
 }
