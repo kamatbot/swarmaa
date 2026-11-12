@@ -16,6 +16,10 @@ struct ThreadView: View {
 
     /// Cached history stays on screen while it refreshes, goes stale or fails; the state shows as a banner above it.
     private var messages: [TeamsMessage] { model.messages[threadID] ?? [] }
+    private func messageRow(_ message: TeamsMessage) -> some View {
+        MessageRow(model: model, message: message, agent: model.agent(id: message.author.id),
+                   isLead: model.bot(threadID: message.threadID)?.leadAgentID == message.author.id).equatable().id(message.id)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -50,10 +54,10 @@ struct ThreadView: View {
                                         set: { if $0 { model.expandedWorkingNotes[threadID, default: []].insert(row.id) }
                                                else { model.expandedWorkingNotes[threadID]?.remove(row.id) } }
                                     )) {
-                                        ForEach(row.messages) { MessageRow(model: model, message: $0).id($0.id) }
+                                        ForEach(row.messages) { messageRow($0) }
                                     } label: { Text(row.label).font(KS.meta()).foregroundStyle(KS.textMuted) }
                                 } else if let message = row.messages.first {
-                                    MessageRow(model: model, message: message).id(message.id)
+                                    messageRow(message)
                                 }
                             }
                             ForEach(model.liveTyping(threadID)) { TypingBubble(model: model, typing: $0, threadID: threadID).id("typing:" + $0.id) }
@@ -277,9 +281,15 @@ struct RunnerPicker: View {
 
 // MARK: - Messages
 
-struct MessageRow: View {
-    @ObservedObject var model: TeamsModel
+/// Not observing the model: a non-lazy thread re-rendered every row on each publish (usage every 3 s, typing,
+/// task refreshes), which made scrolling hitch. A row redraws when its message, author or lead changes;
+/// cards inside still observe the model themselves.
+struct MessageRow: View, Equatable {
+    let model: TeamsModel
     let message: TeamsMessage
+    var agent: TeamsAgent? = nil
+    var isLead = false
+    static func == (a: MessageRow, b: MessageRow) -> Bool { a.message == b.message && a.agent == b.agent && a.isLead == b.isLead }
     @State private var hovering = false
 
     var body: some View {
@@ -305,7 +315,7 @@ struct MessageRow: View {
 
 /// Under every text message: copy (raw markdown source); system notices add a dismiss at the trailing edge.
 struct MessageFooter: View {
-    @ObservedObject var model: TeamsModel
+    let model: TeamsModel
     let message: TeamsMessage
     var hovering = true
     @State private var copied = false
@@ -397,7 +407,7 @@ struct TypingBubble: View {
 
 /// An agent's provider monogram (CL, CX, AG); Auto runners show the agent's initials.
 struct BotMessageAvatar: View {
-    @ObservedObject var model: TeamsModel
+    let model: TeamsModel
     let threadID: String?
     let agentID: String
 
@@ -414,7 +424,7 @@ struct BotMessageAvatar: View {
 }
 
 struct TextBubble: View {
-    @ObservedObject var model: TeamsModel
+    let model: TeamsModel
     let message: TeamsMessage
     @State private var hovering = false
 

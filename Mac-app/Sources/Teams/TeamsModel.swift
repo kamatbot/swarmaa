@@ -279,8 +279,9 @@ final class TeamsModel: ObservableObject {
 
     func refreshUsage() async {
         guard hasLoaded, !refreshing, let fresh = try? await client.status() else { return }
-        status = fresh
-        lastUpdated = Date()
+        // Publish only on change: every model publish redraws observers, and the map polls this every 3 s.
+        if fresh != status { status = fresh }
+        if lastUpdated.map({ Date().timeIntervalSince($0) > 30 }) ?? true { lastUpdated = Date() }
     }
 
     func refresh() async {
