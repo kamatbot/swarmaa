@@ -285,7 +285,7 @@ test('a rejected old registration cannot delete a newly re-registered device',as
 });
 
 test('pushDevice registers activity_start_token and per-bot activity_token', async () => {
-  const { pool, calls } = fakeDb();
+  const { pool, calls } = fakeDb([{ scope: 'project:test' }]);
   const core = new CoreService(pool);
   const startToken = 'ee'.repeat(32);
   const actToken = 'ff'.repeat(32);
@@ -309,11 +309,12 @@ test('pushDevice registers activity_start_token and per-bot activity_token', asy
     activity_token: actToken,
     activity_bot_id: botId,
   });
-  assert.equal(calls.length, 2);
+  assert.equal(calls.length, 3);
   assert.match(calls[0]!.sql, /INSERT INTO push_devices/);
-  assert.match(calls[1]!.sql, /INSERT INTO bot_activity_tokens/);
-  assert.match(calls[1]!.sql, /ON CONFLICT \(device_id,bot_id\) DO UPDATE SET token=EXCLUDED\.token/);
-  assert.deepEqual(calls[1]!.args, [principal.tenantId, token, botId, actToken]);
+  assert.match(calls[1]!.sql, /SELECT scope FROM bots/);
+  assert.match(calls[2]!.sql, /INSERT INTO bot_activity_tokens/);
+  assert.match(calls[2]!.sql, /ON CONFLICT \(device_id,bot_id\) DO UPDATE SET token=EXCLUDED\.token/);
+  assert.deepEqual(calls[2]!.args, [principal.tenantId, token, botId, actToken]);
 
   // 3. Rejects activity_token without activity_bot_id
   await assert.rejects(core.call(principal, 'push_register', {

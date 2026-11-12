@@ -6,6 +6,7 @@ import { noExtraKeys, type Db } from './core/shared.js';
 import { requireCondition } from './errors.js';
 import { enumValue, string, uuid } from './validation.js';
 import type { Principal } from './types.js';
+import { requireScope } from './policy.js';
 
 export async function pushDevice(db:Db,p:Principal,input:Record<string,unknown>,register:boolean):Promise<{ok:true}> {
   noExtraKeys(input,register ? ['token','environment','activity_start_token','activity_token','activity_bot_id'] : ['token']);
@@ -44,6 +45,10 @@ export async function pushDevice(db:Db,p:Principal,input:Record<string,unknown>,
     }
 
     if (activityToken && activityBotId) {
+      // Only a bot of this tenant in a scope the device's identity can see.
+      const bot = (await db.query<{scope:string}>('SELECT scope FROM bots WHERE id=$1 AND tenant_id=$2',[activityBotId,p.tenantId])).rows[0];
+      requireCondition(bot,404,'not_found','Bot not found.');
+      requireScope(p,bot.scope);
       await db.query(`INSERT INTO bot_activity_tokens (tenant_id,device_id,bot_id,token,updated_at)
         VALUES ($1,$2,$3,$4,clock_timestamp())
         ON CONFLICT (device_id,bot_id) DO UPDATE SET token=EXCLUDED.token,updated_at=clock_timestamp()`,
@@ -444,8 +449,12 @@ export class PushWorker {
     if (e.name === 'task.updated') {
       const status = String(e.payload.status ?? '');
       const action = String(e.payload.action ?? '');
-      const isRunning = status === 'running';
-      const isFinished = action === 'finished' || ['completed','failed'].includes(status);
+      // Start only when a turn is claimed (checkpoints also report running, and a start per checkpoint would
+      // open duplicate activities before the device registers its token); end only on a final status, not a retry.
+      const isRunning = status === 'running' && (action === 'claimed' || action === 'checkpointed');
+      const isStart = action === 'claimed';
+      const isFinished = action === 'finished' && ['completed','failed','blocked','cancelled'].includes(status)
+        || action === 'cancelled';
       if (!isRunning && !isFinished) return;
 
       const taskRow = (await db.query<{
@@ -479,6 +488,8 @@ export class PushWorker {
             await deliverLiveActivity(db,this.sender,device,bot.id,payload,actToken,false);
           }
         }
+        // That activity is over: the next turn starts a fresh one with the push-to-start token.
+        await db.query('DELETE FROM bot_activity_tokens WHERE tenant_id=$1 AND bot_id=$2',[e.tenant_id,bot.id]);
       } else if (isRunning) {
         let hasUpdates = false;
         for (const device of devices) {
@@ -496,7 +507,7 @@ export class PushWorker {
           }
         }
         for (const device of devices) {
-          if (!tokenMap.has(device.token) && device.activity_start_token) {
+          if (isStart && !tokenMap.has(device.token) && device.activity_start_token) {
             const payload = buildLiveActivityPayload({event:'start',status:'running',step,startedAt,bot,now});
             await deliverLiveActivity(db,this.sender,device,bot.id,payload,device.activity_start_token,true);
           }
