@@ -45,6 +45,11 @@ export function checkProblem(check: unknown): string | null {
 }
 
 /** A step's check, trimmed and redacted, or 400 invalid_steps. */
+/** A step marked kind:'patch' needs an assignee that can edit; otherwise it would run read-only and be marked done. */
+export function patchStepProblem(step: { kind?: string }, agent: { name: string; edits: boolean }): string | null {
+  return step.kind === 'patch' && !agent.edits ? `patch steps need an agent that can edit; ${agent.name} is read-only` : null;
+}
+
 export function stepCheck(check: unknown): string {
   const problem = checkProblem(check);
   if (problem) throw new AppError(400, 'invalid_steps', problem);
@@ -322,6 +327,7 @@ export class SwarmsService {
       needs: string[];
       instructions?: string;
       check: string;
+      kind?: 'patch' | 'research';
     }> = [];
 
     for (let i = 0; i < input.steps.length; i++) {
@@ -332,7 +338,9 @@ export class SwarmsService {
       const needs = Array.isArray(s.needs) ? s.needs.map(n => String(n).trim()) : [];
       const instructions = s.instructions !== undefined ? string(s.instructions, `steps[${i}].instructions`, 16384) : undefined;
       const check = stepCheck(s.check);
+      requireCondition(s.kind === undefined || s.kind === 'patch' || s.kind === 'research', 400, 'invalid_arguments', `steps[${i}].kind must be 'patch' or 'research'.`);
       validatedSteps.push({
+        ...(s.kind ? { kind: s.kind } : {}),
         key,
         title: stepTitle,
         assignee_agent_id: assignee,
@@ -372,6 +380,8 @@ export class SwarmsService {
         [st.assignee_agent_id, p.tenantId, scope]
       )).rows[0];
       requireCondition(Boolean(agent), 400, 'agent_not_found', `Assignee agent '${st.assignee_agent_id}' not found or archived in scope '${scope}'.`);
+      const problem = patchStepProblem(st, agent!);
+      if (problem) throw new AppError(400, 'invalid_arguments', problem);
       if (bot && bot.rules?.lead_mode === 'router' && st.assignee_agent_id === bot.lead_agent_id && agent!.edits) {
         throw new AppError(400, 'router_lead_cannot_edit', 'Cannot assign patch step to router lead.');
       }

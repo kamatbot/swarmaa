@@ -151,3 +151,11 @@ test('swarm status derivation: prioritizes statuses by urgency', () => {
     'planning'
   );
 });
+
+test('patch steps need an agent that can edit', async () => {
+  const { patchStepProblem } = await import('../src/core/swarms.js');
+  assert.equal(patchStepProblem({ kind: 'patch' }, { name: 'Ana', edits: false }), 'patch steps need an agent that can edit; Ana is read-only');
+  assert.equal(patchStepProblem({ kind: 'patch' }, { name: 'Ana', edits: true }), null);
+  assert.equal(patchStepProblem({ kind: 'research' }, { name: 'Ana', edits: false }), null);
+  assert.equal(patchStepProblem({}, { name: 'Ana', edits: false }), null);
+});

@@ -163,7 +163,7 @@ export function buildTurnPrompt(
     'Do not access credentials or unrelated files. Do not send messages, publish, deploy, commit, push, or change account settings.',
     edits
       ? 'This task allows file edits in the working directory, a git worktree on its own branch. Shell commands, builds and tests are allowed inside it. Do not commit, push, or change branches: the bridge commits your edits. Report what you validated and what still needs validation.'
-      : 'This is a read-only task: do not alter files or external state. Use the project, the supplied context, read-only commands and the web as needed; cite web sources with their URL and retrieval date.',
+      : 'This is a read-only task: do not alter files or external state. Use the project, the supplied context, read-only commands and the web as needed; cite web sources with their URL and retrieval date. You cannot edit files in this turn. If the human asked for code changes, say in one sentence that edits are off for this agent and how to turn them on (Mac app: agent settings → Can edit), instead of producing a long read-only report.',
     'Headless Chrome/Chromium works here only with --no-sandbox (macOS cannot nest its sandbox inside this one) and a fresh --user-data-dir under $TMPDIR (the default browser profile folder is blocked); wait for the process to exit before checking its output.',
     'The bridge owns task leases and service writes. Do not try to call the service or read its bearer token.',
     'Return a concise result with evidence, unresolved issues and recommended next steps. Provider exit code alone does not prove acceptance criteria passed.'
@@ -180,7 +180,7 @@ export function buildTurnPrompt(
     '```',
     'Valid action types:',
     '- {type:\'handoff\', to_agent, body, swarm_step_id?}',
-    '- {type:\'swarm_start\', title, goal, base_ref?, steps:[{key, title, assignee_agent_id, needs:[key], instructions?, check}]}: check is required on every step (also in add_step): "Done when", what done means and how to check it, up to 512 chars. base_ref is the git branch the editing steps start from (default: the project checkout\'s current HEAD); set it when the work builds on another branch.',
+    '- {type:\'swarm_start\', title, goal, base_ref?, steps:[{key, title, assignee_agent_id, needs:[key], instructions?, check, kind?}]}: kind is \'patch\' for a step that must change code (its assignee must be able to edit) or \'research\'; check is required on every step (also in add_step): "Done when", what done means and how to check it, up to 512 chars. base_ref is the git branch the editing steps start from (default: the project checkout\'s current HEAD); set it when the work builds on another branch.',
     ...(router ? [] : ['- {type:\'swarm_update\', swarm_id, ops:[...]}']),
     '- {type:\'question_ask\', prompt, options, multi, free_text, swarm_step_id?, action?}: action is {kind: command|publish|send|deploy|purchase|other, summary (what will happen, up to 200 chars), detail (the exact command, text or URL, up to 2000 chars), where? (folder, channel, recipient or site)}.',
     'Before anything that publishes, sends, deploys, buys, or runs a command outside the worktree, ask with question_ask including action with the exact detail, and do it only after the owner approves.',

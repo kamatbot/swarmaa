@@ -1,7 +1,7 @@
 import { BOT_AVATARS, BOT_COLORS } from './bots.js';
 import { AppError } from '../errors.js';
 import { redactSecrets } from '../safety/redact.js';
-import { checkProblem, validateStepGraph } from './swarms.js';
+import { checkProblem, patchStepProblem, validateStepGraph } from './swarms.js';
 import { clipUtf8 } from './teams.js';
 import type { Db } from './shared.js';
 import type { AgentRow, ThreadRow } from './teams.js';
@@ -20,6 +20,8 @@ export interface SwarmStartStepInput {
   needs?: string[];
   instructions?: string;
   check: string;
+  /** 'patch' steps must go to an agent that can edit. */
+  kind?: 'patch' | 'research';
 }
 
 export interface TurnActionSwarmStart {
@@ -287,7 +289,7 @@ export function extractActionsBlock(text: string): ExtractedActions {
         return { cleanText, rawBlock, error: 'swarm_start base_ref must be a git branch, tag or commit name', rejectedAction: item };
       }
       const steps: SwarmStartStepInput[] = [];
-      const stepAllowed = new Set(['key', 'title', 'assignee_agent_id', 'needs', 'instructions', 'check']);
+      const stepAllowed = new Set(['key', 'title', 'assignee_agent_id', 'needs', 'instructions', 'check', 'kind']);
       for (const s of act.steps) {
         if (!s || typeof s !== 'object' || Array.isArray(s)) {
           return { cleanText, rawBlock, error: 'swarm_start step must be an object', rejectedAction: item };
@@ -310,7 +312,11 @@ export function extractActionsBlock(text: string): ExtractedActions {
         }
         const checkError = checkProblem(stepObj.check);
         if (checkError) return { cleanText, rawBlock, error: checkError, rejectedAction: item };
+        if (stepObj.kind !== undefined && stepObj.kind !== 'patch' && stepObj.kind !== 'research') {
+          return { cleanText, rawBlock, error: "step kind must be 'patch' or 'research'", rejectedAction: item };
+        }
         steps.push({
+          ...(stepObj.kind ? { kind: stepObj.kind } : {}),
           key: stepObj.key ? String(stepObj.key) : undefined,
           title: stepObj.title.trim(),
           assignee_agent_id: String(stepObj.assignee_agent_id).trim(),
@@ -530,6 +536,8 @@ export async function validateTurnGrant(
           };
         }
         step.assignee_agent_id = res.rows[0].id;
+        const problem = patchStepProblem(step, res.rows[0]);
+        if (problem) return { valid: false, reason: problem, action: act };
       }
       try {
         validateStepGraph(act.steps.map((st, i) => ({ key: st.key ? String(st.key).trim() : `step_${i + 1}`, needs: st.needs ?? [] })));
