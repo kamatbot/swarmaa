@@ -438,9 +438,17 @@ export class BridgeWorker {
         this.logger('turn_steered', { task_id: task.id, seq });
       }
     };
-    const onLine = (head: string): void => {
+    // An unescaped "type":"…" is JSON structure (quotes inside string values are escaped). Claude puts it
+    // first in most events but near the end of its result event, so look at both ends of the line.
+    const eventType = (head: string, tail: string): string | undefined => {
+      const first = /^\{\s*"type"\s*:\s*"([a-z_]+)"/u.exec(head)?.[1];
+      if (first) return first;
+      if (/"type"\s*:\s*"result"/u.test(tail) && /"subtype"|"terminal_reason"|"is_error"/u.test(head + tail)) return 'result';
+      return undefined;
+    };
+    const onLine = (head: string, tail: string): void => {
       if (!head.startsWith('{')) return;
-      const type = /^\{\s*"type"\s*:\s*"([a-z_]+)"/u.exec(head)?.[1];
+      const type = eventType(head, tail);
       if (type === 'result') {
         // No steer: the turn is over, close now. After a steer, wait briefly: Claude starts another turn for a
         // queued message (any new line cancels the close); EOF never aborts a turn already started.

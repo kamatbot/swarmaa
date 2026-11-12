@@ -86,18 +86,24 @@ export async function runBoundedProcess(request: ProcessRequest): Promise<Proces
       request.on_progress?.({ output_bytes: bytes, stdout_tail: Buffer.from(stdoutTail).toString('utf8') });
       if (bytes > request.max_output_bytes) stop('output_limit');
     };
-    // Line heads for on_line: bounded per line, so a huge event never buffers more than LINE_HEAD characters.
+    // Line head and tail for on_line: bounded per line, so a huge event never buffers more than 2 x LINE_HEAD.
+    // Key order is not fixed (Claude's result event puts "type" near its end), so callers get both ends.
     let lineHead = '';
+    let lineTail: Uint8Array = Buffer.alloc(0);
     const lines = (chunk: Buffer): void => {
       let start = 0, newline: number;
       while ((newline = chunk.indexOf(10, start)) >= 0) {
-        if (lineHead.length < LINE_HEAD) lineHead += chunk.subarray(start, Math.min(newline, start + LINE_HEAD)).toString('utf8');
-        const head = lineHead.slice(0, LINE_HEAD);
-        lineHead = '';
+        const piece = chunk.subarray(start, newline);
+        if (lineHead.length < LINE_HEAD) lineHead += piece.subarray(0, LINE_HEAD).toString('utf8');
+        lineTail = slideTail(lineTail, piece, LINE_HEAD);
+        const head = lineHead.slice(0, LINE_HEAD), tail = Buffer.from(lineTail).toString('utf8');
+        lineHead = ''; lineTail = Buffer.alloc(0);
         start = newline + 1;
-        try { request.on_line!(head); } catch { /* a caller bug must not kill the run */ }
+        try { request.on_line!(head, tail); } catch { /* a caller bug must not kill the run */ }
       }
-      if (lineHead.length < LINE_HEAD) lineHead += chunk.subarray(start, Math.min(chunk.length, start + LINE_HEAD)).toString('utf8');
+      const rest = chunk.subarray(start);
+      if (lineHead.length < LINE_HEAD) lineHead += rest.subarray(0, LINE_HEAD).toString('utf8');
+      lineTail = slideTail(lineTail, rest, LINE_HEAD);
     };
     child.stdout.on('data', (chunk: Buffer) => { collect(output, chunk); if (request.on_line) lines(chunk); });
     child.stderr.on('data', (chunk: Buffer) => collect(errors, chunk));

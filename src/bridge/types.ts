@@ -87,8 +87,8 @@ export interface ProcessRequest {
   /** Leave stdin open after `input`; the runner hands the caller a writer through on_stdin. */
   keep_stdin_open?: boolean;
   on_stdin?: (stdin: { write: (text: string) => boolean; end: () => void }) => void;
-  /** Each complete stdout line, cut to its first 2048 characters (enough for an event's type and opening fields). */
-  on_line?: (head: string) => void;
+  /** Each complete stdout line as its first and last 2048 characters (an event's type may be at either end). */
+  on_line?: (head: string, tail: string) => void;
 }
 export interface ProcessResult {
   exit_code: number | null;
