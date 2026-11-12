@@ -66,7 +66,7 @@ struct StepReportCard: View {
                         .foregroundStyle(flagged ? KS.needsYouText : KS.textSoft)
                         .frame(width: 92, alignment: .leading)
                     Group {
-                        if let text = report[part] { Text(MarkdownCache.text(text)).foregroundStyle(KS.ink) }
+                        if let text = report[part] { ChatMarkdownView(text: text, style: .ks(KS.ink)).equatable() }
                         else { Text(verbatim: L10n.t("Not stated")).foregroundStyle(KS.textMuted) }
                     }
                     .font(KS.text()).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)

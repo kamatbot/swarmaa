@@ -475,14 +475,12 @@ private struct SelectableBubble: View, Equatable {
     let human: Bool
     var body: some View {
         if human {
-            Text(MarkdownCache.text(text)).textSelection(.enabled)
-                .font(KS.text()).lineSpacing(3)
+            ChatMarkdownView(text: text, style: .ks(KS.strong)).equatable()
                 .padding(.horizontal, 16).padding(.vertical, 12)
                 .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(KS.selected))
                 .foregroundStyle(KS.strong)
         } else {
-            Text(MarkdownCache.text(text)).textSelection(.enabled)
-                .font(KS.text()).lineSpacing(5)
+            ChatMarkdownView(text: text, style: .ks(Color(hex: 0xD3DCEB), lineSpacing: 5)).equatable()
                 .padding(.horizontal, 16).padding(.vertical, 12)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(KS.bubble))
@@ -493,17 +491,10 @@ private struct SelectableBubble: View, Equatable {
     }
 }
 
-/// Markdown parsed once per body and kept. Parsing later on a background task made each bubble draw as
-/// plain text, then resize when its formatting landed, so the thread jumped every time a bot opened.
-/// Inline parsing is cheap (well under a millisecond for a long reply), so it runs on first draw.
-@MainActor enum MarkdownCache {
-    private final class Box { let text: AttributedString; init(_ text: AttributedString) { self.text = text } }
-    private static let cache: NSCache<NSString, Box> = { let c = NSCache<NSString, Box>(); c.countLimit = 2000; return c }()
-    static func text(_ body: String) -> AttributedString {
-        if let hit = cache.object(forKey: body as NSString) { return hit.text }
-        let parsed = (try? AttributedString(markdown: body, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(body)
-        cache.setObject(Box(parsed), forKey: body as NSString)
-        return parsed
+extension ChatMarkdownStyle {
+    static func ks(_ text: Color, lineSpacing: CGFloat = 3) -> Self {
+        .init(body: KS.text(), heading: KS.section(), mono: KS.meta(), text: text, muted: KS.textMuted,
+              codeBackground: Color.black.opacity(0.25), lineSpacing: lineSpacing, blockSpacing: 9)
     }
 }
 

@@ -811,8 +811,9 @@ struct RootView: View {
             ForEach(Array(message.raw["attachments"].array.enumerated()), id: \.offset) { _, attachment in
                 ChatAttachmentView(service: model.service, threadID: model.openBot?.threadID ?? "", messageID: message.id, attachment: attachment)
             }
-            if !text.isEmpty || message.raw["attachments"].array.isEmpty { Text(text.isEmpty ? (message.kind == "answer" ? "Answer sent" : message.kind.capitalized) : text)
-                .font(KS.body()).foregroundStyle(message.human ? KS.strong : KS.ink).lineSpacing(2).fixedSize(horizontal: false, vertical: true).textSelection(.enabled) }
+            if !text.isEmpty || message.raw["attachments"].array.isEmpty { ChatMarkdownView(text: text.isEmpty ? (message.kind == "answer" ? "Answer sent" : message.kind.capitalized) : text, style: .init(
+                body: KS.body(), heading: KS.headline(), mono: KS.mono(), text: message.human ? KS.strong : KS.ink, muted: KS.muted,
+                codeBackground: KS.inset, lineSpacing: 2, blockSpacing: 8)).equatable() }
         }
         let system = message.raw["author"]["kind"].string == "system"
         let actions = HStack(spacing: 0) {

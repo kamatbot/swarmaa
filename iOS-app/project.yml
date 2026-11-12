@@ -21,6 +21,7 @@ targets:
       - Sources
       - WatchShared
       - Resources
+      - path: ../Shared
       - path: ../Mac-app/Sources/Providers/SwarmaRelayTransport.swift
       - path: ../Mac-app/Sources/Teams/ChatMedia.swift
     dependencies:

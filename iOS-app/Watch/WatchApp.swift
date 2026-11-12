@@ -213,7 +213,7 @@ struct WatchThread: View {
                     ForEach(current.messages) { message in
                         VStack(alignment: .leading, spacing: 2) {
                             Text(message.human ? "You" : "Bot").font(WK.caption.weight(.semibold)).foregroundStyle(WK.muted)
-                            Text(message.text).foregroundStyle(message.human ? WK.strong : WK.ink)
+                            Text(WatchMarkdown.text(message.text)).foregroundStyle(message.human ? WK.strong : WK.ink)
                         }.wkCard(message.human ? WK.mine : WK.surface)
                     }
                     // A delivered message that already shows in the recent messages is not listed twice.
@@ -257,5 +257,19 @@ struct WatchQuestionView: View {
             Text("Review and answer on iPhone.").font(WK.caption).foregroundStyle(WK.muted)
         }.foregroundStyle(WK.ink).wkCard(WK.surface)
             .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(WK.needs.opacity(0.5), lineWidth: 1))
+    }
+}
+
+/// Light markdown for the watch: inline spans only, after headings, bullets and fences are flattened.
+enum WatchMarkdown {
+    static func text(_ body: String) -> AttributedString {
+        let flat = body.components(separatedBy: "\n").compactMap { line -> String? in
+            let t = line.drop { $0 == " " }
+            if t.hasPrefix("```") { return nil }
+            if t.hasPrefix("#") { return String(t.drop { $0 == "#" }.drop { $0 == " " }) }
+            if t.hasPrefix("- ") || t.hasPrefix("* ") { return "• " + t.dropFirst(2) }
+            return line
+        }.joined(separator: "\n")
+        return (try? AttributedString(markdown: flat, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(body)
     }
 }
