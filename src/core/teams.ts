@@ -31,6 +31,24 @@ export function clipUtf8(value: string, maxBytes: number): string {
   return buf.subarray(0, end + seqLen).toString('utf8');
 }
 
+export function parseActivity(raw: unknown): Array<{ id: string; tool: string; label: string; state: 'running' | 'done' | 'failed' }> {
+  if (!Array.isArray(raw)) return [];
+  const valid: Array<{ id: string; tool: string; label: string; state: 'running' | 'done' | 'failed' }> = [];
+  for (const item of raw) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+    const { id, tool, label, state } = item as Record<string, unknown>;
+    if (typeof id !== 'string' || typeof tool !== 'string' || typeof label !== 'string' || typeof state !== 'string') continue;
+    if (state !== 'running' && state !== 'done' && state !== 'failed') continue;
+    valid.push({
+      id,
+      tool,
+      label: redactSecrets(label).slice(0, 120),
+      state
+    });
+  }
+  return valid.slice(-20);
+}
+
 /** A clear 409 instead of the unique index's 500; callers hold teamsLock, so the check cannot race. */
 async function requireFreeName(db: Db, tenantId: string, scope: string, name: string): Promise<void> {
   const taken = await db.query('SELECT 1 FROM agents WHERE tenant_id=$1 AND scope=$2 AND lower(name)=lower($3) AND NOT archived', [tenantId, scope, name]);
@@ -807,16 +825,28 @@ export class TeamService {
       }
       return view;
     });
-    const typingRows = await this.pool.query<{ task_id: string; agent_id: string; text: unknown; updated_at: Date }>(
-      `SELECT id AS task_id, agent_id, checkpoint->>'partial_text' AS text, updated_at
+    const typingRows = await this.pool.query<{ task_id: string; agent_id: string; text: unknown; activity: unknown; updated_at: Date }>(
+      `SELECT id AS task_id, agent_id, checkpoint->>'partial_text' AS text, checkpoint->'activity' AS activity, updated_at
        FROM tasks WHERE tenant_id=$1 AND scope=$2 AND thread_id=$3 AND kind='turn' AND status='running'
-       AND jsonb_typeof(checkpoint->'partial_text')='string' AND checkpoint->>'partial_text' <> ''
+       AND (
+         (jsonb_typeof(checkpoint->'partial_text')='string' AND checkpoint->>'partial_text' <> '')
+         OR (jsonb_typeof(checkpoint->'activity')='array' AND jsonb_array_length(checkpoint->'activity') > 0)
+       )
        ORDER BY updated_at, id`, [p.tenantId, thread.scope, threadId]
     );
-    const typing = typingRows.rows.filter(r => typeof r.text === 'string' && r.text.length > 0).map(r => ({
-      task_id: r.task_id, agent_id: r.agent_id, text: redactSecrets(r.text as string).slice(-4000),
-      updated_at: r.updated_at.toISOString()
-    }));
+    const typing = typingRows.rows
+      .map(r => {
+        const text = typeof r.text === 'string' ? redactSecrets(r.text).slice(-4000) : '';
+        const activity = parseActivity(r.activity);
+        return {
+          task_id: r.task_id,
+          agent_id: r.agent_id,
+          text,
+          activity,
+          updated_at: r.updated_at.toISOString()
+        };
+      })
+      .filter(entry => entry.text.length > 0 || entry.activity.length > 0);
     return {
       thread_id: threadId,
       typing,

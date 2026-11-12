@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs';
 import { runConfiguredChecks, runFlowCheck } from './checks.js';
 import { setTimeout as delay } from 'node:timers/promises';
-import { AUTO_PATCH, AUTO_READ, buildInvocation, withTurnImages, capability, antigravityLogModel, classifyFailure, deniedActions, extractDelegate, extractPartialText, extractServed, extractUsage, finalAnswer, projectCapabilities, providerSucceeded, codexThreadId, sessionMissing, UUID } from './adapters.js';
+import { AUTO_PATCH, AUTO_READ, buildInvocation, withTurnImages, capability, antigravityLogModel, classifyFailure, deniedActions, extractActivity, extractDelegate, extractPartialText, extractServed, extractUsage, finalAnswer, projectCapabilities, providerSucceeded, codexThreadId, sessionMissing, UUID } from './adapters.js';
 import { collectUsage, headroom } from '../usage/index.js';
 import { windowsForModel } from '../usage/antigravity.js';
 import type { UsageProviderId, UsageSnapshot } from '../usage/types.js';
@@ -447,6 +447,10 @@ export class BridgeWorker {
       if (lastFailure) base.last_failure = lastFailure;
       if (task.kind === 'turn' && agent.provider !== 'antigravity') {
         base.partial_text = untrusted(currentPartialText, 8192);
+      }
+      if (agent.provider !== 'antigravity') {
+        const activity = extractActivity(agent.provider, progress.stdout_tail);
+        if (activity.length) base.activity = activity;
       }
       return base;
     };

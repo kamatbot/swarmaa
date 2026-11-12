@@ -550,6 +550,222 @@ export function extractPartialText(provider: string, stdout: string): string {
   return '';
 }
 
+export interface ActivityItem {
+  id: string;
+  tool: string;
+  label: string;
+  state: 'running' | 'done' | 'failed';
+}
+
+function formatClaudeLabel(name: string, input: Record<string, unknown>): string {
+  let field = '';
+  let val = '';
+
+  if (typeof input.file_path === 'string' && input.file_path.trim()) {
+    field = 'file_path';
+    val = input.file_path.trim();
+  } else if (typeof input.path === 'string' && input.path.trim()) {
+    field = 'path';
+    val = input.path.trim();
+  } else if (typeof input.command === 'string' && input.command.trim()) {
+    field = 'command';
+    val = input.command.trim().split(/\r?\n/)[0]!.trim().slice(0, 80);
+  } else if (typeof input.pattern === 'string' && input.pattern.trim()) {
+    field = 'pattern';
+    val = input.pattern.trim().slice(0, 80);
+  } else if (typeof input.url === 'string' && input.url.trim()) {
+    field = 'url';
+    val = input.url.trim();
+  } else if (typeof input.description === 'string' && input.description.trim()) {
+    field = 'description';
+    val = input.description.trim().slice(0, 80);
+  }
+
+  let rawLabel = name;
+  if (val) {
+    const sep = (field === 'command' || name.toLowerCase() === 'bash') ? ': ' : ' ';
+    rawLabel = `${name}${sep}${val}`;
+  }
+  return redactSecrets(rawLabel).slice(0, 120);
+}
+
+function extractClaudeActivity(stdout: string): ActivityItem[] {
+  const items: ActivityItem[] = [];
+  const byId = new Map<string, ActivityItem>();
+
+  const addOrUpdate = (id: string, name: string, input: Record<string, unknown>) => {
+    const label = formatClaudeLabel(name, input);
+    const existing = byId.get(id);
+    if (existing) {
+      if (name && !existing.tool) existing.tool = name;
+      if (label && (label !== name || !existing.label)) existing.label = label;
+    } else {
+      const entry: ActivityItem = { id, tool: name, label, state: 'running' };
+      items.push(entry);
+      byId.set(id, entry);
+    }
+  };
+
+  const markResult = (toolUseId: string, isError: boolean) => {
+    const existing = byId.get(toolUseId);
+    if (existing) {
+      existing.state = isError ? 'failed' : 'done';
+    }
+  };
+
+  for (const line of stdout.split('\n')) {
+    if (!line.startsWith('{')) continue;
+    try {
+      const obj = JSON.parse(line) as Record<string, unknown>;
+
+      if (obj.type === 'stream_event') {
+        const ev = obj.event as Record<string, unknown> | undefined;
+        if (ev?.type === 'content_block_start') {
+          const cb = ev.content_block as Record<string, unknown> | undefined;
+          if (cb?.type === 'tool_use') {
+            const id = String(cb.id || '');
+            const name = String(cb.name || '');
+            const input = (cb.input && typeof cb.input === 'object' && !Array.isArray(cb.input)) ? cb.input as Record<string, unknown> : {};
+            if (id) addOrUpdate(id, name, input);
+          }
+        }
+      } else if (obj.type === 'content_block_start') {
+        const cb = obj.content_block as Record<string, unknown> | undefined;
+        if (cb?.type === 'tool_use') {
+          const id = String(cb.id || '');
+          const name = String(cb.name || '');
+          const input = (cb.input && typeof cb.input === 'object' && !Array.isArray(cb.input)) ? cb.input as Record<string, unknown> : {};
+          if (id) addOrUpdate(id, name, input);
+        }
+      }
+
+      const msg = obj.message as Record<string, unknown> | undefined;
+      const content = Array.isArray(msg?.content) ? msg.content : (Array.isArray(obj.content) ? obj.content : undefined);
+      if (content) {
+        for (const block of content) {
+          if (!block || typeof block !== 'object') continue;
+          if (block.type === 'tool_use') {
+            const id = String(block.id || '');
+            const name = String(block.name || '');
+            const input = (block.input && typeof block.input === 'object' && !Array.isArray(block.input)) ? block.input as Record<string, unknown> : {};
+            if (id) addOrUpdate(id, name, input);
+          } else if (block.type === 'tool_result') {
+            const toolUseId = String(block.tool_use_id || block.id || '');
+            const isError = Boolean(block.is_error || block.status === 'error');
+            if (toolUseId) markResult(toolUseId, isError);
+          }
+        }
+      }
+
+      if (obj.type === 'tool_use') {
+        const id = String(obj.id || '');
+        const name = String(obj.name || '');
+        const input = (obj.input && typeof obj.input === 'object' && !Array.isArray(obj.input)) ? obj.input as Record<string, unknown> : {};
+        if (id) addOrUpdate(id, name, input);
+      } else if (obj.type === 'tool_result') {
+        const toolUseId = String(obj.tool_use_id || obj.id || '');
+        const isError = Boolean(obj.is_error || obj.status === 'error');
+        if (toolUseId) markResult(toolUseId, isError);
+      }
+    } catch {}
+  }
+
+  return items.slice(-20);
+}
+
+function formatCodexLabel(type: string, item: Record<string, unknown>): string {
+  let rawLabel = type;
+  if (type === 'command_execution') {
+    const rawCmd = typeof item.command === 'string' ? item.command : (typeof item.cmd === 'string' ? item.cmd : '');
+    const firstLine = rawCmd.trim().split(/\r?\n/)[0]!.trim().slice(0, 80);
+    rawLabel = firstLine ? `Run: ${firstLine}` : 'Run';
+  } else if (type === 'file_change') {
+    const p = typeof item.path === 'string' ? item.path : (typeof item.file_path === 'string' ? item.file_path : (typeof item.filename === 'string' ? item.filename : ''));
+    rawLabel = p ? `Edit ${p.trim()}` : 'Edit';
+  } else if (type === 'mcp_tool_call') {
+    const server = typeof item.server === 'string' ? item.server.trim() : (typeof item.server_name === 'string' ? item.server_name.trim() : '');
+    const tName = typeof item.tool === 'string' ? item.tool.trim() : (typeof item.tool_name === 'string' ? item.tool_name.trim() : (typeof item.name === 'string' ? item.name.trim() : ''));
+    if (server && tName && !tName.startsWith(server + '.')) {
+      rawLabel = `${server}.${tName}`;
+    } else {
+      rawLabel = tName || server || 'mcp_tool_call';
+    }
+  } else if (type === 'web_search') {
+    const query = typeof item.query === 'string' && item.query.trim() ? item.query.trim().slice(0, 80) : '';
+    rawLabel = query ? `Web search: ${query}` : 'Web search';
+  }
+  return redactSecrets(rawLabel).slice(0, 120);
+}
+
+const CODEX_SUPPORTED_TYPES = new Set(['command_execution', 'file_change', 'mcp_tool_call', 'web_search']);
+
+function extractCodexActivity(stdout: string): ActivityItem[] {
+  const items: ActivityItem[] = [];
+  const byId = new Map<string, ActivityItem>();
+  let fallbackIdCounter = 0;
+
+  for (const line of stdout.split('\n')) {
+    if (!line.startsWith('{')) continue;
+    try {
+      const e = JSON.parse(line) as Record<string, unknown>;
+      const evType = e.type;
+      if (evType !== 'item.started' && evType !== 'item.completed' && evType !== 'item.failed') continue;
+
+      const item = (e.item && typeof e.item === 'object' && !Array.isArray(e.item) ? e.item : e) as Record<string, unknown>;
+      const itemType = String(item.type || '');
+      if (!CODEX_SUPPORTED_TYPES.has(itemType)) continue;
+
+      const rawId = item.id || e.item_id || item.call_id;
+      const id = typeof rawId === 'string' || typeof rawId === 'number' ? String(rawId) : `codex_${++fallbackIdCounter}`;
+
+      const existing = byId.get(id);
+
+      if (evType === 'item.started') {
+        const label = formatCodexLabel(itemType, item);
+        if (existing) {
+          if (itemType) existing.tool = itemType;
+          if (label) existing.label = label;
+        } else {
+          const entry: ActivityItem = { id, tool: itemType, label, state: 'running' };
+          items.push(entry);
+          byId.set(id, entry);
+        }
+      } else if (evType === 'item.completed' || evType === 'item.failed') {
+        const exitCode = item.exit_code !== undefined ? item.exit_code : e.exit_code;
+        const hasNonZeroExit = exitCode !== undefined && exitCode !== null && exitCode !== 0 && exitCode !== '0';
+        const isFailed = evType === 'item.failed' ||
+          item.status === 'failed' ||
+          e.status === 'failed' ||
+          item.is_error === true ||
+          hasNonZeroExit;
+        const state: 'failed' | 'done' = isFailed ? 'failed' : 'done';
+
+        if (existing) {
+          existing.state = state;
+          const updatedLabel = formatCodexLabel(itemType, item);
+          if (updatedLabel && updatedLabel !== itemType) {
+            existing.label = updatedLabel;
+          }
+        } else {
+          const label = formatCodexLabel(itemType, item);
+          const entry: ActivityItem = { id, tool: itemType, label, state };
+          items.push(entry);
+          byId.set(id, entry);
+        }
+      }
+    } catch {}
+  }
+
+  return items.slice(-20);
+}
+
+/** Extracts live tool-call activity so far (Claude stream-json or Codex item events). Antigravity returns []. */
+export function extractActivity(provider: string, stdout: string): ActivityItem[] {
+  if (provider === 'claude') return extractClaudeActivity(stdout);
+  if (provider === 'codex') return extractCodexActivity(stdout);
+  return [];
+}
+
 /**
  * Strips the final `DELEGATE: <objective>` line from the answer in fast first-reply mode.
  * Returns cleanAnswer and optional delegate object with objective clipped to 500 characters.
