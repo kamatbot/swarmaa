@@ -76,6 +76,7 @@ export interface SourceRow {
   accept_mode: 'off' | 'observe' | 'auto';
   rules: SourceRules;
   bot_id: string | null;
+  cooldown_seconds: number;
   created_by: string;
   version: number;
   archived: boolean;
@@ -121,6 +122,7 @@ export function sourceView(row: SourceRow, counts: Record<string, number> = {}, 
     accept_mode: row.accept_mode,
     rules: row.rules,
     bot_id: row.bot_id,
+    cooldown_seconds: row.cooldown_seconds ?? 0,
     version: row.version,
     archived: row.archived,
     webhook_url: base ? `${base}/hooks/github/${row.id}` : `/hooks/github/${row.id}`,
@@ -161,9 +163,9 @@ export class SourceService {
     input: Record<string, unknown>,
     encryptionKey: string,
     publicUrl = ''
-  ): Promise<{ id: string; name: string; repo_full_name: string; accept_mode: string; webhook_url: string; secret: string }> {
+  ): Promise<{ id: string; name: string; repo_full_name: string; accept_mode: string; cooldown_seconds: number; webhook_url: string; secret: string }> {
     requireCondition(Boolean(encryptionKey && /^[0-9a-f]{64}$/i.test(encryptionKey)), 503, 'events_not_configured', 'EVENT_ENCRYPTION_KEY is required.');
-    noExtraKeys(input, ['scope', 'repo_full_name', 'name', 'bot_id', 'rules']);
+    noExtraKeys(input, ['scope', 'repo_full_name', 'name', 'bot_id', 'rules', 'cooldown_seconds']);
     const scope = scopeName(input.scope);
     assertKnownScope(p, scope);
     requireScope(p, scope);
@@ -174,6 +176,9 @@ export class SourceService {
     const name = input.name !== undefined ? string(input.name, 'name', 64) : repoFullName.slice(0, 64);
     const botId = input.bot_id !== undefined ? uuid(input.bot_id, 'bot_id') : null;
     const rules = validateSourceRules(input.rules);
+    const cooldownSeconds = input.cooldown_seconds !== undefined
+      ? integer(input.cooldown_seconds, 'cooldown_seconds', 0, 86400)
+      : 0;
 
     const id = newId();
     const rawSecret = randomBytes(32).toString('hex');
@@ -182,12 +187,12 @@ export class SourceService {
 
     await this.pool.query(
       `INSERT INTO sources
-         (id, tenant_id, scope, kind, name, repo_full_name, secret_ciphertext, accept_mode, rules, bot_id, created_by)
-       VALUES ($1, $2, $3, 'github', $4, $5, $6, 'observe', $7::jsonb, $8, $9)`,
-      [id, p.tenantId, scope, name, repoFullName, ciphertext, JSON.stringify(rules), botId, p.id]
+         (id, tenant_id, scope, kind, name, repo_full_name, secret_ciphertext, accept_mode, rules, bot_id, created_by, cooldown_seconds)
+       VALUES ($1, $2, $3, 'github', $4, $5, $6, 'observe', $7::jsonb, $8, $9, $10)`,
+      [id, p.tenantId, scope, name, repoFullName, ciphertext, JSON.stringify(rules), botId, p.id, cooldownSeconds]
     );
 
-    await audit(this.pool, p, scope, 'source.create', id, { repo: repoFullName, name });
+    await audit(this.pool, p, scope, 'source.create', id, { repo: repoFullName, name, cooldown_seconds: cooldownSeconds });
 
     const base = publicUrl ? publicUrl.replace(/\/$/, '') : '';
     return {
@@ -195,6 +200,7 @@ export class SourceService {
       name,
       repo_full_name: repoFullName,
       accept_mode: 'observe',
+      cooldown_seconds: cooldownSeconds,
       webhook_url: base ? `${base}/hooks/github/${id}` : `/hooks/github/${id}`,
       secret: rawSecret,
     };
@@ -270,7 +276,7 @@ export class SourceService {
   }
 
   async update(p: Principal, input: Record<string, unknown>): Promise<{ source: unknown }> {
-    noExtraKeys(input, ['source_id', 'expected_version', 'name', 'rules', 'bot_id', 'accept_mode']);
+    noExtraKeys(input, ['source_id', 'expected_version', 'name', 'rules', 'bot_id', 'accept_mode', 'cooldown_seconds']);
     requirePermission(p, 'routing:manage');
 
     const sourceId = uuid(input.source_id, 'source_id');
@@ -301,18 +307,22 @@ export class SourceService {
       const nextName = input.name !== undefined ? string(input.name, 'name', 64) : existing.name;
       const nextRules = input.rules !== undefined ? validateSourceRules(input.rules, existing.rules) : existing.rules;
       const nextBotId = input.bot_id !== undefined ? (input.bot_id === null ? null : uuid(input.bot_id, 'bot_id')) : existing.bot_id;
+      const nextCooldownSeconds = input.cooldown_seconds !== undefined
+        ? integer(input.cooldown_seconds, 'cooldown_seconds', 0, 86400)
+        : (existing.cooldown_seconds ?? 0);
 
       const updated = (await db.query<SourceRow>(
         `UPDATE sources
          SET name = $1, rules = $2::jsonb, bot_id = $3, accept_mode = $4,
-             version = version + 1, updated_at = clock_timestamp()
-         WHERE id = $5 RETURNING *`,
-        [nextName, JSON.stringify(nextRules), nextBotId, nextMode, sourceId]
+             cooldown_seconds = $5, version = version + 1, updated_at = clock_timestamp()
+         WHERE id = $6 RETURNING *`,
+        [nextName, JSON.stringify(nextRules), nextBotId, nextMode, nextCooldownSeconds, sourceId]
       )).rows[0]!;
 
       await audit(db, p, existing.scope, 'source.update', sourceId, {
         name: nextName,
         accept_mode: nextMode,
+        cooldown_seconds: nextCooldownSeconds,
         version: updated.version,
       });
 
@@ -841,7 +851,32 @@ export async function tickSourceDeliveries(pool: Pool): Promise<void> {
   }
 }
 
-async function processOneDelivery(pool: Pool, deliveryId: string): Promise<void> {
+export const RECOVERY_RE = /\b(resolved|recovered|closed|back to normal|ok)\b/i;
+
+export function isRecoveryDelivery(delivery: { action?: string | null; digest?: NormalizedDigest | Record<string, unknown> | string | null }): boolean {
+  const parts: string[] = [];
+  if (delivery.action) parts.push(delivery.action);
+  let d = delivery.digest as any;
+  if (typeof d === 'string') {
+    try {
+      d = JSON.parse(d);
+    } catch {
+      parts.push(d);
+    }
+  }
+  if (d && typeof d === 'object') {
+    if (typeof d.title === 'string') parts.push(d.title);
+    if (typeof d.body_excerpt === 'string') parts.push(d.body_excerpt);
+    if (typeof d.action === 'string') parts.push(d.action);
+    if (typeof d.body === 'string') parts.push(d.body);
+    if (typeof d.text === 'string') parts.push(d.text);
+    if (typeof d.comment === 'string') parts.push(d.comment);
+    if (typeof d.message === 'string') parts.push(d.message);
+  }
+  return RECOVERY_RE.test(parts.join(' '));
+}
+
+export async function processOneDelivery(pool: Pool, deliveryId: string): Promise<void> {
   await transaction(pool, async db => {
     const delivery = (await db.query<SourceDeliveryRow>(
       `SELECT * FROM source_deliveries
@@ -855,7 +890,7 @@ async function processOneDelivery(pool: Pool, deliveryId: string): Promise<void>
     await db.query('SAVEPOINT delivery');
     try {
       const source = (await db.query<SourceRow>(
-        'SELECT * FROM sources WHERE id = $1',
+        'SELECT * FROM sources WHERE id = $1 FOR UPDATE',
         [delivery.source_id]
       )).rows[0];
 
@@ -1086,6 +1121,31 @@ async function processOneDelivery(pool: Pool, deliveryId: string): Promise<void>
         )).rows[0];
 
         if (target) {
+          if (delivery.classification === 'explicit' && (source.cooldown_seconds ?? 0) > 0) {
+            const isRecovery = isRecoveryDelivery(delivery);
+            if (!isRecovery) {
+              const recentRun = (await db.query<{ id: string }>(
+                `SELECT id FROM source_deliveries
+                 WHERE source_id = $1
+                   AND id != $2
+                   AND status = 'dispatched'
+                   AND classification = 'explicit'
+                   AND processed_at IS NOT NULL
+                   AND processed_at >= clock_timestamp() - ($3 * interval '1 second')
+                 LIMIT 1`,
+                [source.id, delivery.id, source.cooldown_seconds]
+              )).rows[0];
+
+              if (recentRun) {
+                await db.query(
+                  "UPDATE source_deliveries SET status = 'ignored', reason = 'cooldown', processed_at = clock_timestamp() WHERE id = $1",
+                  [delivery.id]
+                );
+                return;
+              }
+            }
+          }
+
           const bot = {
             id: target.bot_id,
             thread_id: target.thread_id,
@@ -1143,8 +1203,9 @@ async function processOneDelivery(pool: Pool, deliveryId: string): Promise<void>
             kind: 'source_event',
           });
 
+          let turnTaskId: string | null = null;
           if (delivery.classification === 'explicit') {
-            await enqueueAgentTurn(db, p, {
+            turnTaskId = await enqueueAgentTurn(db, p, {
               thread: { id: bot.thread_id, kind: 'bot' },
               agent: leadAgent,
               bot,
@@ -1155,9 +1216,10 @@ async function processOneDelivery(pool: Pool, deliveryId: string): Promise<void>
           }
 
           await db.query(
-            "UPDATE source_deliveries SET status = 'dispatched', message_id = $2, processed_at = clock_timestamp() WHERE id = $1",
-            [delivery.id, msgId]
+            "UPDATE source_deliveries SET status = 'dispatched', message_id = $2, task_id = $3, processed_at = clock_timestamp() WHERE id = $1",
+            [delivery.id, msgId, turnTaskId]
           );
+          return;
           return;
         }
       }
