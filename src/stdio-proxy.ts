@@ -1,5 +1,6 @@
 import { pathToFileURL } from 'node:url';
 import { resolve } from 'node:path';
+import { readFileSync } from 'node:fs';
 import { boundedResponse, MAX_HTTP_RESPONSE_BYTES } from './bridge/client.js';
 import { serviceUrl } from './bridge/config.js';
 
@@ -20,9 +21,10 @@ export function encodeMcpName(value: string): string {
 export class StdioHttpProxy {
   private protocolVersion = '2025-11-25';
   private readonly endpoint: string;
-  constructor(origin: string, private readonly token: string, private readonly fetcher: typeof fetch = fetch) {
+  /** token is a fixed string, or a reader called on every request so a rotated or revoked token file takes effect without restarting the CLI. */
+  constructor(origin: string, private readonly token: string | (() => string), private readonly fetcher: typeof fetch = fetch) {
     this.endpoint = `${serviceUrl(origin)}/mcp`;
-    if (!token || /[\r\n]/u.test(token)) throw new Error('Set the client bearer token through the configured environment variable');
+    if (typeof token === 'string' && (!token || /[\r\n]/u.test(token))) throw new Error('Set the client bearer token through the configured environment variable');
   }
   async forward(value: unknown): Promise<RpcMessage | undefined> {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return rpcError(null, -32600, 'Expected one JSON-RPC message');
@@ -30,7 +32,8 @@ export class StdioHttpProxy {
     const hasId = Object.hasOwn(message, 'id');
     if (message.jsonrpc !== '2.0' || typeof message.method !== 'string' || (hasId && message.id !== null && typeof message.id !== 'string' && typeof message.id !== 'number')) return rpcError(null, -32600, 'Invalid JSON-RPC request');
     try {
-      const headers: Record<string, string> = { Authorization: `Bearer ${this.token}`, 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', 'MCP-Protocol-Version': this.protocolVersion };
+      const token = typeof this.token === 'string' ? this.token : this.token();
+      const headers: Record<string, string> = { ...(token && !/[\r\n]/u.test(token) ? { Authorization: `Bearer ${token}` } : {}), 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', 'MCP-Protocol-Version': this.protocolVersion };
       // Modern MCP is self-contained per request. Mirror its metadata as routing headers;
       // never invent capabilities or silently upgrade a legacy client's protocol.
       const params = message.params && typeof message.params === 'object' && !Array.isArray(message.params) ? message.params as Record<string, unknown> : undefined;
@@ -64,15 +67,21 @@ export class StdioHttpProxy {
 export async function main(args = process.argv.slice(2)): Promise<void> {
   let origin = process.env.SWARMAA_URL ?? process.env.COLLECTIVE_URL;
   let tokenEnv = process.env.SWARMAA_MCP_TOKEN && !process.env.COLLECTIVE_MCP_TOKEN ? 'SWARMAA_MCP_TOKEN' : 'COLLECTIVE_MCP_TOKEN';
+  let tokenFile: string | undefined;
   for (let i = 0; i < args.length; i++) {
     const flag = args[i];
     if (flag === '--url') origin = args[++i];
     else if (flag === '--token-env') tokenEnv = args[++i] ?? '';
-    else throw new Error('Usage: stdio-proxy --url https://network.example --token-env COLLECTIVE_CLAUDE_TOKEN');
+    else if (flag === '--token-file') tokenFile = args[++i];
+    else throw new Error('Usage: stdio-proxy --url https://network.example (--token-env COLLECTIVE_CLAUDE_TOKEN | --token-file <path>)');
   }
+  if (tokenFile !== undefined && !tokenFile) throw new Error('--token-file needs a path');
   if (!origin || !/^(?:COLLECTIVE|SWARMAA)_[A-Z0-9_]+$/u.test(tokenEnv)) throw new Error('A service origin and COLLECTIVE_ or SWARMAA_ token variable name are required');
   const fallbackEnv = tokenEnv.startsWith('COLLECTIVE_') ? tokenEnv.replace(/^COLLECTIVE_/u, 'SWARMAA_') : tokenEnv.replace(/^SWARMAA_/u, 'COLLECTIVE_');
-  const proxy = new StdioHttpProxy(origin, process.env[tokenEnv] ?? process.env[fallbackEnv] ?? '');
+  // A token file is re-read per request (a missing file sends no credential, so revocation is immediate).
+  const proxy = new StdioHttpProxy(origin, tokenFile
+    ? () => { try { return readFileSync(tokenFile, 'utf8').trim(); } catch { return ''; } }
+    : process.env[tokenEnv] ?? process.env[fallbackEnv] ?? '');
   // Iterating with backpressure prevents an unbounded promise queue from a noisy client.
   let pending = Buffer.alloc(0);
   const write = async (response: RpcMessage): Promise<void> => {

@@ -47,3 +47,20 @@ test('notifications produce no stdout response and remote errors never echo secr
   assert.ok(!JSON.stringify(error).includes('secret-token'));
   assert.equal(error?.id,3);
 });
+
+test('token reader is called per request, so rotation and revocation apply without a restart', async () => {
+  const auth: (string | null)[]=[];
+  const fetcher:typeof fetch=async(_input,init)=>{
+    auth.push(new Headers(init!.headers).get('authorization'));
+    const message=JSON.parse(init!.body as string) as {id:number};
+    return new Response(JSON.stringify({jsonrpc:'2.0',id:message.id,result:{}}),{headers:{'content-type':'application/json'}});
+  };
+  let token='first';
+  const proxy=new StdioHttpProxy('https://collective.example',()=>token,fetcher);
+  await proxy.forward({jsonrpc:'2.0',id:1,method:'tools/list'});
+  token='second';
+  await proxy.forward({jsonrpc:'2.0',id:2,method:'tools/list'});
+  token='';
+  await proxy.forward({jsonrpc:'2.0',id:3,method:'tools/list'});
+  assert.deepEqual(auth,['Bearer first','Bearer second',null]);
+});
