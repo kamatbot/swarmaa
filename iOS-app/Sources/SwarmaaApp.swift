@@ -52,7 +52,12 @@ struct SwarmaaShortcuts: AppShortcutsProvider {
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         UNUserNotificationCenter.current().delegate = self
         if !ProcessInfo.processInfo.arguments.contains("-demo") {
-            Runtime.model.onConnectionChanged = { WatchBridge.shared.changed() }
+            Runtime.model.onConnectionChanged = {
+                WatchBridge.shared.changed()
+                if Runtime.model.connected {
+                    LiveActivityManager.shared.start(model: Runtime.model)
+                }
+            }
             WatchBridge.shared.changed()
         }
         Runtime.model.onFirstBotList = {
@@ -63,6 +68,7 @@ struct SwarmaaShortcuts: AppShortcutsProvider {
             }
             guard Runtime.model.connected else { return }
             UIApplication.shared.registerForRemoteNotifications()
+            LiveActivityManager.shared.start(model: Runtime.model)
         }
         return true
     }
@@ -96,7 +102,23 @@ struct SwarmaaShortcuts: AppShortcutsProvider {
 @main struct SwarmaaApp: App {
     @UIApplicationDelegateAdaptor(PushDelegate.self) private var pushDelegate
     var body: some Scene {
-        WindowGroup { RootView(model: Runtime.model).preferredColorScheme(.dark).tint(KS.signal) }
+        WindowGroup {
+            RootView(model: Runtime.model)
+                .preferredColorScheme(.dark)
+                .tint(KS.signal)
+                .onOpenURL { url in
+                    if url.scheme == "swarmaa" {
+                        if url.host == "bot" {
+                            let botId = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+                            if !botId.isEmpty {
+                                Runtime.model.receivePushTap(["bot_id": botId])
+                            }
+                        } else if url.host == "pair" || (url.query?.contains("code=") ?? false) {
+                            Task { try? await Runtime.model.handlePairingURL(url) }
+                        }
+                    }
+                }
+        }
     }
 }
 

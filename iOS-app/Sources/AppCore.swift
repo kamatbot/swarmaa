@@ -553,6 +553,7 @@ enum PushNotification {
     var onFirstBotList: (@MainActor () async -> Void)?
     var onConnectionChanged: (@MainActor () -> Void)?
     private var pushToken: String?
+    private var activityStartToken: String?
     private var signingOut = false
     /// Tasks resolved from this device. A thread's task card is a snapshot that a re-read can bring back
     /// unresolved, so these stay patched in memory (the Mac app's card lagged until a full reload).
@@ -578,7 +579,38 @@ enum PushNotification {
         guard connected, !isDemo, !signingOut, let service else { return }
         let token = PushNotification.tokenHex(data)
         pushToken = token
-        _ = try? await service.call("push_register", ["token": .string(token), "environment": .string(PushNotification.environment)])
+        var payload: [String: JSON] = [
+            "token": .string(token),
+            "environment": .string(PushNotification.environment)
+        ]
+        if let activityStartToken {
+            payload["activity_start_token"] = .string(activityStartToken)
+        }
+        _ = try? await service.call("push_register", payload)
+    }
+    func registerActivityStartToken(_ data: Data) async {
+        let token = PushNotification.tokenHex(data)
+        activityStartToken = token
+        guard connected, !isDemo, !signingOut, let service, let pushToken else { return }
+        let payload: [String: JSON] = [
+            "token": .string(pushToken),
+            "environment": .string(PushNotification.environment),
+            "activity_start_token": .string(token)
+        ]
+        _ = try? await service.call("push_register", payload)
+    }
+    func registerActivityToken(_ data: Data, botId: String) async {
+        let token = PushNotification.tokenHex(data)
+        guard connected, !isDemo, !signingOut, let service else { return }
+        var payload: [String: JSON] = [
+            "environment": .string(PushNotification.environment),
+            "activity_token": .string(token),
+            "activity_bot_id": .string(botId)
+        ]
+        if let pushToken {
+            payload["token"] = .string(pushToken)
+        }
+        _ = try? await service.call("push_register", payload)
     }
     private var streamTask: Task<Void, Never>?
     private var presenceTask: Task<Void, Never>?
@@ -955,7 +987,7 @@ enum PushNotification {
         }
         try keychain.delete()
         onConnectionChanged?()
-        pushToken = nil; didLoadBots = false; pendingPushBotID = nil; visibleThreadBotID = nil
+        pushToken = nil; activityStartToken = nil; didLoadBots = false; pendingPushBotID = nil; visibleThreadBotID = nil
         streamTask?.cancel(); presenceTask?.cancel()
         if let service = service as? RelayService { await service.transport.disconnect() }
         service = nil; connected = false; online = false; openBot = nil

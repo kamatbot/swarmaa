@@ -39,6 +39,8 @@
 	<string>Dictate messages to your bots.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>Turn speech into an editable message.</string>
+	<key>NSSupportsLiveActivities</key>
+	<true/>
 	<key>UIFileSharingEnabled</key>
 	<true/>
 </dict>
