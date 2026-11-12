@@ -1220,7 +1220,6 @@ export async function processOneDelivery(pool: Pool, deliveryId: string): Promis
             [delivery.id, msgId, turnTaskId]
           );
           return;
-          return;
         }
       }
 
