@@ -956,6 +956,14 @@ final class TeamsModel: ObservableObject {
         }
     }
 
+    /// Removes a system notice (`message_dismiss`); the message disappears locally once the service confirms.
+    func dismiss(_ message: TeamsMessage) async {
+        do {
+            try await client.messageDismiss(threadID: message.threadID, seq: message.seq)
+            messages[message.threadID]?.removeAll { $0.seq == message.seq }
+        } catch { self.error = SwarmaTeamsClient.Failure.map(error).message }
+    }
+
     func markSelectedRead() {
         guard threadIsVisible, let t = selectedThreadID, !loadingThreads.contains(t), !staleThreads.contains(t), threadErrors[t] == nil, let seq = messages[t]?.last?.seq,
               seq > (markedSeq[t] ?? -1), pendingReads.insert(t).inserted else { return }
@@ -1151,6 +1159,9 @@ final class TeamsModel: ObservableObject {
             // Only task cards and questions change the task lists; any other message only moves a bot's preview.
             if event.kind == nil || ["task", "question", "answer", "swarm"].contains(event.kind!) { scheduleTaskRefresh(scope: event.scope) }
             else if bot(threadID: t) != nil { scheduleBotRefresh() }
+        case "message.deleted":
+            guard let t = event.threadID, let seq = event.seq else { return }
+            messages[t]?.removeAll { $0.seq == seq }
         case "swarm.updated":
             guard let id = event.subjectID else { return }
             guard let s = try? await client.swarmGet(id: id) else { return }
