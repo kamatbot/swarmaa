@@ -18,7 +18,7 @@ All examples below show **tool arguments and unwrapped tool results**, without t
 | `memory_propose` | `memory:write` and `memory:read` | Exact authorized scope |
 | `memory_promote`, `memory_retract` | `memory:moderate` and `memory:read` | Admin role; never a worker or frontend self-approval |
 | `task_submit`, `task_continue` | `task:submit` and `task:read` | Exact authorized scope |
-| `task_get`, `task_list` | `task:read` | Exact authorized scope |
+| `task_get`, `task_list`, `usage_cost` | `task:read` | Exact authorized scope |
 | `task_claim` | `task:claim` and `task:read` | Worker role; patch claims additionally need `task:patch` |
 | `task_heartbeat`, `task_checkpoint`, `task_finish` | `task:work` and `task:read` | Worker role and current owned lease; exact completion replay is the documented exception |
 | `task_cancel` | `task:cancel` and `task:read` | Expected current task version |
@@ -228,6 +228,33 @@ Result: `{task, replayed: boolean}`. The key is unique per tenant and submitting
 `task_get({task_id, session?})` returns `{task}`, including appended instructions and run metadata. It marks related inbox items read for the caller in that session (the principal stream when omitted), if the caller also has `events:read`. Other sessions remain independent. IDs outside the principal's tenant/scopes return `not_found` rather than leaking a body before checking permission.
 
 `task_list({scope, status?, limit?, before_id?})` returns `{tasks, next_before_id: string | null}`. Default limit 20, maximum 100. Sort is newest creation time then UUID. Pass the returned cursor as `before_id` for the next page; cursors must identify a task in that same scope. Listing is not a transactional snapshot across pages. Status filters can change as workers act, so clients should reconcile displayed tasks by ID.
+
+### `usage_cost`
+
+`usage_cost({scope, since?, group_by?})` aggregates token usage and estimated API cost across tasks in that exact scope with recorded token usage. Prices are loaded from `DEFAULT_PRICES` combined with owner overrides configured in `SWARMAA_PRICING_FILE`. Usage is grouped by provider and model first before pricing to ensure accurate per-model rates rather than pricing pre-summed totals.
+
+Arguments:
+- `scope` (string, required): exact authorized scope.
+- `since` (string, optional): ISO-8601 timestamp (defaults to first day of current UTC month).
+- `group_by` (`'bot'` | `'model'` | `'provider'` | `'day'`, optional, default `'bot'`): grouping dimension. For `'bot'`, `label` is the bot name.
+
+Result:
+```ts
+{
+  since: string;
+  groups: Array<{
+    key: string;
+    label: string;
+    input_tokens: number;
+    cached_input_tokens: number;
+    output_tokens: number;
+    usd: number | null;
+    runs: number;
+  }>;
+  total_usd: number;
+  has_unpriced: boolean;
+}
+```
 
 ### `task_claim`
 
