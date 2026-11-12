@@ -1150,9 +1150,11 @@ struct AnswerView: View {
         VStack(alignment: .leading, spacing: 14) {
             HStack { CloseButton(action: close).accessibilityIdentifier("close-sheet"); Eyebrow("Your bot asks") }
             Text(question["prompt"].string).font(KS.title()).foregroundStyle(KS.strong).fixedSize(horizontal: false, vertical: true)
-            Text(question["multi"].bool ? "Pick any. Nothing is posted until you approve the drafts." : "Choose one answer.").font(KS.body()).foregroundStyle(KS.soft)
+            // A secret is stored in the Mac's Keychain, so from the phone the only answer is "Not now".
+            let credential = question["credential"].string
+            Text(!credential.isEmpty ? "It needs \(credential). Add it in Swarmaa on your Mac: it is saved to the Mac's Keychain and never sent through chat." : question["multi"].bool ? "Pick any. Nothing is posted until you approve the drafts." : "Choose one answer.").font(KS.body()).foregroundStyle(KS.soft)
                 VStack(alignment: .leading, spacing: 10) {
-                    ForEach(question["options"].array.map(\.string), id: \.self) { option in
+                    ForEach(question["options"].array.map(\.string).filter { credential.isEmpty || $0 == "Not now" }, id: \.self) { option in
                         Button {
                             if choices.contains(option) { choices.remove(option) }
                             else { if !question["multi"].bool { choices = [] }; choices.insert(option) }

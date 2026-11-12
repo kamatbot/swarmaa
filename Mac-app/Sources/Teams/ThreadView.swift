@@ -693,6 +693,8 @@ struct QuestionCard: View {
     @State private var choices: [String] = []
     @State private var text = ""
     @State private var sending = false
+    @State private var secret = ""
+    @State private var secretFailed = false
 
     @State private var contentHeight: CGFloat = 200
     @State private var detailHeight: CGFloat = 60
@@ -704,7 +706,7 @@ struct QuestionCard: View {
                 }.frame(height: min(contentHeight, 320))
             } else { card }
             // An approval's buttons answer it directly; no Send step.
-            if interactive && question.status == "open" && question.action == nil {
+            if interactive && question.status == "open" && question.action == nil && question.credential == nil {
                 HStack {
                     Spacer()
                     Button(L10n.t("Send")) {
@@ -731,6 +733,8 @@ struct QuestionCard: View {
             } else if question.status == "expired" {
                 Text(verbatim: question.prompt).font(KS.text())
                 Text(verbatim: L10n.t("This question expired")).font(KS.text()).foregroundStyle(KS.textMuted)
+            } else if let name = question.credential {
+                credentialAsk(name)
             } else if let action = question.action {
                 approval(action)
             } else if !interactive {
@@ -764,6 +768,38 @@ struct QuestionCard: View {
                 Text(verbatim: TeamsSetup.grantCommand).font(KS.meta())
                     .textSelection(.enabled).foregroundStyle(KS.textMuted)
             }
+        }
+    }
+
+    /// A bot needs a secret: the value goes straight to this Mac's Keychain, and the bot only hears "Added".
+    @ViewBuilder private func credentialAsk(_ name: String) -> some View {
+        HStack {
+            KSLabel(L10n.t("A bot needs a secret"))
+            Spacer()
+            KSChip(L10n.t("Needs you"), fill: KS.needsYouTint, ink: KS.needsYouText)
+        }
+        Text(verbatim: question.prompt).font(KS.section()).textSelection(.enabled)
+        Text(verbatim: name).font(KS.meta()).foregroundStyle(KS.ink).textSelection(.enabled)
+        if interactive {
+            SecureField(L10n.t("Paste \(name)"), text: $secret).textFieldStyle(.roundedBorder)
+            Text(verbatim: L10n.t("Saved in this Mac's Keychain and given only to this project's bots on this Mac. It is never sent to Swarmaa or shown in the chat."))
+                .font(KS.secondary()).foregroundStyle(KS.textMuted)
+            if secretFailed {
+                Label(L10n.t("Couldn't save to the Keychain"), systemImage: "exclamationmark.triangle").font(KS.text(.semibold)).foregroundStyle(KS.needsYouText)
+            }
+            HStack {
+                Button(L10n.t("Not now")) { send(["Not now"]) }.buttonStyle(.ks(.paper)).disabled(sending)
+                Spacer()
+                Button(L10n.t("Save to Keychain")) {
+                    let scope = question.scope ?? ""
+                    guard BotSecretStore.save(scope: scope, name: name, value: secret) else { secretFailed = true; return }
+                    secret = ""; secretFailed = false
+                    send(["Added"])
+                }
+                .buttonStyle(.ks(.primary))
+                .disabled(sending || secret.isEmpty || (question.scope ?? "").isEmpty)
+            }
+            blockedNote
         }
     }
 

@@ -780,6 +780,7 @@ export class TeamService {
       if (q && r.kind === 'question') view.question = {
         id: q.id, prompt: q.prompt, options: q.options, multi: q.multi, free_text: q.free_text,
         status: q.status, swarm_step_id: q.swarm_step_id, action: q.action ?? null, created_at: q.created_at.toISOString(),
+        credential: q.credential ?? null, scope: q.scope,
         answer: q.status === 'answered' ? { choices: q.choices, text: q.answer_text } : null
       };
       if (q && r.kind === 'answer') view.answer = { question_id: q.id, choices: q.choices, text: q.answer_text };

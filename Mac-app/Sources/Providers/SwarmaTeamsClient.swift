@@ -286,6 +286,9 @@ struct TeamsQuestion: Decodable, Equatable, Identifiable {
     var createdAt: Date?
     /// Set on an approval: the exact action the bot will take if you say yes.
     var action: Action?
+    /// Set when the bot asks for a secret: the environment variable name. The value goes to the Keychain, never the chat.
+    var credential: String?
+    var scope: String?
 
     struct Action: Decodable, Equatable {
         enum Kind: String { case command, publish, send, deploy, purchase, other }
@@ -303,7 +306,7 @@ struct TeamsQuestion: Decodable, Equatable, Identifiable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, prompt, options, multi, status, answer, action
+        case id, prompt, options, multi, status, answer, action, credential, scope
         case threadID = "thread_id", agentID = "agent_id", freeText = "free_text", swarmStepID = "swarm_step_id"
         case createdAt = "created_at"
     }
@@ -326,6 +329,8 @@ struct TeamsQuestion: Decodable, Equatable, Identifiable {
         answer = c.opt(TeamsAnswer.self, .answer)
         createdAt = c.opt(Date.self, .createdAt)
         action = c.opt(Action.self, .action)
+        credential = c.opt(String.self, .credential).flatMap { $0.isEmpty ? nil : $0 }
+        scope = c.opt(String.self, .scope)
     }
 }
 

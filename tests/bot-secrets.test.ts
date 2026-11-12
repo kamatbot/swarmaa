@@ -26,7 +26,7 @@ test('a credential ask is answered only Added / Not now and rejects bad names', 
   const parse = (action: unknown) => extractActionsBlock(`Need it\n\n\`\`\`swarmaa-actions\n${JSON.stringify([action])}\n\`\`\``);
   const ok = parse({ type: 'question_ask', prompt: 'I need a GitHub token', options: ['x'], free_text: true, credential: 'GITHUB_TOKEN' });
   assert.equal(ok.error, undefined);
-  assert.deepEqual(ok.actions[0], { type: 'question_ask', prompt: 'I need a GitHub token', options: ['Added', 'Not now'], multi: false, free_text: false, swarm_step_id: undefined, expires_in: undefined, credential: 'GITHUB_TOKEN' });
+  assert.deepEqual(ok.actions?.[0], { type: 'question_ask', prompt: 'I need a GitHub token', options: ['Added', 'Not now'], multi: false, free_text: false, swarm_step_id: undefined, expires_in: undefined, credential: 'GITHUB_TOKEN' });
   for (const credential of ['github_token', 'SWARMAA_WORKER_TOKEN', 'COLLECTIVE_X', 'A', 7]) {
     assert.ok(parse({ type: 'question_ask', prompt: 'p', options: [], credential }).error, String(credential));
   }
