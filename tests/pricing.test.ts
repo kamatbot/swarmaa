@@ -139,8 +139,8 @@ test('SWARMAA_PRICING_FILE owner override is read and merged', () => {
         cached_input_tokens: 800_000,
         output_tokens: 100_000,
       });
-      // 1.0 * 1.25 + 0.8 * 0.125 + 0.1 * 10.0 = 1.25 + 0.1 + 1.0 = 2.35
-      assert.equal(priced.usd, 2.35);
+      // Codex counts cached tokens inside input_tokens: (1.0 - 0.8) * 1.25 + 0.8 * 0.125 + 0.1 * 10.0 = 0.25 + 0.1 + 1.0
+      assert.equal(priced.usd, 1.35);
     } finally {
       if (oldEnv === undefined) delete process.env.SWARMAA_PRICING_FILE;
       else process.env.SWARMAA_PRICING_FILE = oldEnv;
@@ -353,9 +353,9 @@ test('aggregateUsageCost correctly aggregates SQL rows across models and groups'
   assert.equal(alpha.output_tokens, 300_000);
   assert.equal(alpha.runs, 5);
   // sonnet cost: 1.0 * 3.0 + 0.5 * 0.3 + 0.1 * 15.0 = 3.0 + 0.15 + 1.5 = 4.65
-  // gpt-4o cost: 2.0 * 2.5 + 1.0 * 1.25 + 0.2 * 10.0 = 5.0 + 1.25 + 2.0 = 8.25
-  // total alpha cost = 4.65 + 8.25 = 12.9
-  assert.equal(alpha.usd, 12.9);
+  // gpt-4o (codex; cached inside input): (2.0 - 1.0) * 2.5 + 1.0 * 1.25 + 0.2 * 10.0 = 2.5 + 1.25 + 2.0 = 5.75
+  // total alpha cost = 4.65 + 5.75 = 10.4
+  assert.equal(alpha.usd, 10.4);
 
   // Group 2: BetaBot (has unpriced model)
   const beta = res.groups.find(g => g.key === 'bot-2')!;
@@ -364,6 +364,6 @@ test('aggregateUsageCost correctly aggregates SQL rows across models and groups'
   assert.equal(beta.runs, 1);
 
   // Overall totals
-  assert.equal(res.total_usd, 12.9);
+  assert.equal(res.total_usd, 10.4);
   assert.equal(res.has_unpriced, true);
 });

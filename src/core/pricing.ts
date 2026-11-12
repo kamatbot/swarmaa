@@ -161,10 +161,13 @@ export function priceUsage(
   const cachedTokens = typeof usage.cached_input_tokens === 'number' && usage.cached_input_tokens > 0 ? usage.cached_input_tokens : 0;
   const outputTokens = typeof usage.output_tokens === 'number' && usage.output_tokens > 0 ? usage.output_tokens : 0;
 
-  const cachedRate = typeof pricing.cached_input === 'number' ? pricing.cached_input : 0;
+  // No cached price: charge cached tokens as input (an upper bound, never free).
+  const cachedRate = typeof pricing.cached_input === 'number' ? pricing.cached_input : pricing.input;
+  // Codex reports cached tokens inside input_tokens; Claude's input_tokens (as the bridge records it) excludes them.
+  const uncachedTokens = provider === 'codex' ? Math.max(0, inputTokens - cachedTokens) : inputTokens;
 
   // Cached input is charged at the cached rate, not the input rate.
-  const cost = (inputTokens * pricing.input + cachedTokens * cachedRate + outputTokens * pricing.output) / 1_000_000;
+  const cost = (uncachedTokens * pricing.input + cachedTokens * cachedRate + outputTokens * pricing.output) / 1_000_000;
   const usd = Number(cost.toFixed(8));
   return { usd };
 }
