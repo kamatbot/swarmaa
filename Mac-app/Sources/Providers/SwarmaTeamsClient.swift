@@ -473,14 +473,79 @@ enum TeamsAnswerValidation: Error, Equatable {
     }
 }
 
+/// One live tool-call activity item during an agent's running turn.
+struct TeamsToolActivity: Decodable, Equatable, Identifiable, Sendable {
+    var id: String
+    var tool: String
+    var label: String
+    var state: State
+
+    enum State: String, Decodable, Equatable, Sendable {
+        case running
+        case done
+        case failed
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.singleValueContainer()
+            let raw = (try? container.decode(String.self))?.lowercased() ?? "running"
+            switch raw {
+            case "done", "completed", "success": self = .done
+            case "failed", "error": self = .failed
+            default: self = .running
+            }
+        }
+    }
+
+    init(id: String = UUID().uuidString, tool: String = "", label: String, state: State = .running) {
+        self.id = id
+        self.tool = tool
+        self.label = label
+        self.state = state
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, tool, label, state
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let rawID = (try? c.decode(String.self, forKey: .id)) ?? ""
+        self.id = rawID.isEmpty ? UUID().uuidString : rawID
+        self.tool = (try? c.decode(String.self, forKey: .tool)) ?? ""
+        self.label = (try? c.decode(String.self, forKey: .label)) ?? ""
+        self.state = (try? c.decode(State.self, forKey: .state)) ?? .running
+    }
+}
+
 /// One `thread_read` `typing` entry: a running turn's reply so far, redacted by the service.
 struct TeamsTyping: Decodable, Equatable, Identifiable {
     var taskID: String
     var agentID: String
     var text: String
     var updatedAt: Date?
+    var activity: [TeamsToolActivity] = []
     var id: String { taskID }
-    private enum CodingKeys: String, CodingKey { case text, taskID = "task_id", agentID = "agent_id", updatedAt = "updated_at" }
+
+    init(taskID: String, agentID: String, text: String, updatedAt: Date? = nil, activity: [TeamsToolActivity] = []) {
+        self.taskID = taskID
+        self.agentID = agentID
+        self.text = text
+        self.updatedAt = updatedAt
+        self.activity = activity
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case text, taskID = "task_id", agentID = "agent_id", updatedAt = "updated_at", activity
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        taskID = (try? c.decode(String.self, forKey: .taskID)) ?? ""
+        agentID = (try? c.decode(String.self, forKey: .agentID)) ?? ""
+        text = (try? c.decode(String.self, forKey: .text)) ?? ""
+        updatedAt = try? c.decodeIfPresent(Date.self, forKey: .updatedAt)
+        activity = (try? c.decodeIfPresent([TeamsToolActivity].self, forKey: .activity)) ?? []
+    }
 }
 
 // MARK: - Live stream

@@ -117,6 +117,42 @@ struct Message: Identifiable, Equatable, Sendable {
     var report: StepReport? { raw["author"]["kind"].string == "agent" && kind == "text" ? StepReport(text) : nil }
 }
 
+/// One live tool-call activity item during an agent's running turn.
+struct ToolActivity: Identifiable, Equatable, Sendable {
+    var id: String
+    var tool: String
+    var label: String
+    var state: State
+
+    enum State: String, Equatable, Sendable {
+        case running, done, failed
+    }
+
+    init(raw: JSON) {
+        let rawID = raw["id"].string
+        self.id = rawID.isEmpty ? UUID().uuidString : rawID
+        self.tool = raw["tool"].string
+        self.label = raw["label"].string
+        let s = raw["state"].string.lowercased()
+        switch s {
+        case "done", "completed", "success": self.state = .done
+        case "failed", "error": self.state = .failed
+        default: self.state = .running
+        }
+    }
+
+    init(id: String = UUID().uuidString, tool: String = "", label: String, state: State = .running) {
+        self.id = id
+        self.tool = tool
+        self.label = label
+        self.state = state
+    }
+
+    static func list(from json: JSON) -> [ToolActivity] {
+        json.array.map { ToolActivity(raw: $0) }
+    }
+}
+
 /// The exact action an approval question asks for (handover brief, part 4). Unknown kinds read as "other".
 struct ApprovalAction: Equatable, Sendable {
     let kind, summary, detail, where_: String

@@ -10,6 +10,8 @@ settings:
   base:
     SWIFT_VERSION: "5.0"
     SWIFT_STRICT_CONCURRENCY: minimal
+    # The worker is already sandboxed; nested Swift macro sandboxes cannot launch here.
+    OTHER_SWIFT_FLAGS: "$(inherited) -disable-sandbox"
     # Sparkle compares CFBundleVersion to decide what is newer, and
     # Sources/Info.plist reads both from here — hardcoding them there instead
     # silently pins every build to one version, so no customer ever sees an

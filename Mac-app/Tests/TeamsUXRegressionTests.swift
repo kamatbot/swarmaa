@@ -653,6 +653,14 @@ extension TeamsUXRegressionTests {
         let page = try SwarmaClient.decoder.decode(SwarmaTeamsClient.MessagePage.self, from: with)
         XCTAssertEqual(page.typing?.first?.agentID, "a")
         XCTAssertNotNil(page.typing?.first?.updatedAt)
+        XCTAssertEqual(page.typing?.first?.activity, [], "typing JSON without an activity key still decodes to empty activity")
+
+        let withActivity = Data(#"{"messages":[],"typing":[{"task_id":"k","agent_id":"a","text":"working","updated_at":"2026-10-28T10:00:05Z","activity":[{"id":"1","tool":"bash","label":"Running tests","state":"running"},{"id":"2","tool":"read_file","label":"Read src/x.swift","state":"done"},{"id":"3","tool":"edit_file","label":"Failed to patch","state":"failed"}]}]}"#.utf8)
+        let pageWithActivity = try SwarmaClient.decoder.decode(SwarmaTeamsClient.MessagePage.self, from: withActivity)
+        XCTAssertEqual(pageWithActivity.typing?.first?.activity.count, 3)
+        XCTAssertEqual(pageWithActivity.typing?.first?.activity.first?.state, .running)
+        XCTAssertEqual(pageWithActivity.typing?.first?.activity.first?.label, "Running tests")
+
         XCTAssertNil(try SwarmaClient.decoder.decode(SwarmaTeamsClient.MessagePage.self, from: Data(#"{"messages":[]}"#.utf8)).typing)
         let event = try XCTUnwrap(TeamsEvent(SSEParser.Frame(id: nil, event: "task.updated",
             data: #"{"scope":"s","payload":{"task_id":"k","status":"running","kind":"turn","thread_id":"t","version":4}}"#)))

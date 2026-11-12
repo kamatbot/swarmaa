@@ -238,6 +238,7 @@ actor IOSRelaySocket: SwarmaRelayTransport.SwarmaWebSocket {
         var reads = await socket.calls("thread_read")
         XCTAssertEqual(reads.count, 1)
         XCTAssertEqual(model.typing.first?["text"].string, "Checking the plan…")
+        XCTAssertEqual(ToolActivity.list(from: model.typing.first?["activity"] ?? .null), [], "typing JSON without an activity key still decodes to empty activity")
         try await model.post("Plan launch")
         XCTAssertEqual(model.messages.first?.text, "The launch is ready.")
         try await model.handle(try JSON.parse("{\"name\":\"task.updated\",\"subject_id\":\"changed\",\"payload\":{\"kind\":\"turn\"}}"))
