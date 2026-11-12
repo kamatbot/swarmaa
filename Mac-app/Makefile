@@ -127,21 +127,16 @@ clean:
 # The path to a notarized .dmg. Run `make release` for the whole thing, or the
 # steps one at a time while something is going wrong.
 #
-# One-time setup, which you have to run yourself because it takes a password:
-#
-#   xcrun notarytool store-credentials Swarmaa \
-#       --apple-id <your-apple-id> --team-id 6WFPL8B9FB --password <app-specific-password>
-#
-# A credential stored earlier under another label works too:
-# `make release NOTARY_PROFILE=<label>`.
-#
-# The app-specific password comes from appleid.apple.com → Sign-In and Security
-# → App-Specific Passwords. Not your Apple ID password.
+# Notarization uses the App Store Connect API key (the same one as TestFlight
+# uploads): ~/.appstoreconnect/private_keys/AuthKey_<KEYID>.p8 plus ASC_ISSUER_ID
+# in ~/.appstoreconnect/asc.env. Nothing is stored in the keychain.
+# A stored notarytool profile still works: `make release NOTARY_PROFILE=<label>`.
 
 RELEASE_DIR := build/release
 APP_NAME    := Swarmaa
-# The label of the stored notarytool credential in the login keychain.
-NOTARY_PROFILE ?= Swarmaa
+# Empty: notarize with the App Store Connect API key. A keychain profile label uses that instead.
+NOTARY_PROFILE ?=
+ASC_DIR := $(HOME)/.appstoreconnect
 VERSION := $(shell awk -F'"' '/MARKETING_VERSION:/ {print $$2}' project.yml)
 TAG     ?= v$(VERSION)
 # Release artifacts carry the version, so every download URL is new: under
@@ -210,7 +205,17 @@ dmg: archive
 # Submits and waits. `--wait` blocks until Apple answers, which is usually a
 # couple of minutes; on rejection, the log says which binary failed and why.
 notarize: dmg
-	xcrun notarytool submit $(DMG) --keychain-profile $(NOTARY_PROFILE) --wait
+	@if [ -n "$(NOTARY_PROFILE)" ]; then \
+		xcrun notarytool submit $(DMG) --keychain-profile $(NOTARY_PROFILE) --wait; \
+	else \
+		key=$$(ls $(ASC_DIR)/private_keys/AuthKey_*.p8 2>/dev/null | head -1); \
+		test -n "$$key" || { echo "No App Store Connect API key in $(ASC_DIR)/private_keys"; exit 1; }; \
+		id=$$(basename "$$key" .p8); id=$${id#AuthKey_}; \
+		issuer=$$(awk -F= '/^ASC_ISSUER_ID=/ {print $$2}' $(ASC_DIR)/asc.env); \
+		test -n "$$issuer" || { echo "No ASC_ISSUER_ID in $(ASC_DIR)/asc.env"; exit 1; }; \
+		echo "Notarizing with App Store Connect API key $$id"; \
+		xcrun notarytool submit $(DMG) --key "$$key" --key-id "$$id" --issuer "$$issuer" --wait; \
+	fi
 	xcrun stapler staple $(DMG)
 
 # The same notarized app as a zip, for the GitHub release page. Taken from the
