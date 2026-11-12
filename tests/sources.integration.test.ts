@@ -1374,4 +1374,106 @@ describe('sources and github intake integration tests (§8.2)', { skip: !connect
       await rm(tempDir, { recursive: true, force: true }).catch(() => {});
     }
   });
+
+  it('source cooldown: second delivery inside cooldown is ignored as cooldown; resolved delivery bypasses cooldown', async () => {
+    const owner = await createPrincipal('t_cooldown', 'owner_cooldown', 'admin', ['project:demo']);
+
+    const botRes = await call(owner, 'bot_create', {
+      scope: 'project:demo',
+      name: 'CooldownBot',
+      job: 'handle cooldown events',
+    });
+    const bot = botRes.bot;
+
+    const source = await core.sources.createSource(owner, {
+      scope: 'project:demo',
+      repo_full_name: 'kamatbot/cooldown-test',
+      bot_id: bot.id,
+      cooldown_seconds: 60,
+      rules: { allow_authors: ['mayurkamat'], mention: '@swarmaa' },
+    }, encKey);
+    await core.sources.setMode(owner, source.id, 'auto');
+
+    // 1. First explicit delivery -> starts a task
+    const deliv1 = randomUUID();
+    const payload1 = JSON.stringify({
+      repository: { full_name: 'kamatbot/cooldown-test' },
+      comment: { body: 'Disk full alert @swarmaa', user: { login: 'mayurkamat', type: 'User' } },
+      action: 'created',
+      issue: { number: 100, pull_request: {} },
+    });
+    const res1 = await fetch(`${origin}/hooks/github/${source.id}`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-github-event': 'issue_comment',
+        'x-github-delivery': deliv1,
+        'x-hub-signature-256': sign(source.secret, payload1),
+      },
+      body: payload1,
+    });
+    assert.equal(res1.status, 202);
+
+    await tickSourceDeliveries(pool);
+
+    const d1 = (await pool.query<any>('SELECT * FROM source_deliveries WHERE source_id=$1 AND delivery_id=$2', [source.id, deliv1])).rows[0];
+    assert.equal(d1.status, 'dispatched');
+
+    const tasksAfter1 = (await pool.query<any>('SELECT count(*)::int FROM tasks WHERE bot_id=$1 AND initiator_kind=$2', [bot.id, 'source'])).rows[0].count;
+    assert.equal(tasksAfter1, 1);
+
+    // 2. Second delivery within 60s -> recorded as cooldown and starts no task
+    const deliv2 = randomUUID();
+    const payload2 = JSON.stringify({
+      repository: { full_name: 'kamatbot/cooldown-test' },
+      comment: { body: 'Disk full alert retry @swarmaa', user: { login: 'mayurkamat', type: 'User' } },
+      action: 'created',
+      issue: { number: 100, pull_request: {} },
+    });
+    const res2 = await fetch(`${origin}/hooks/github/${source.id}`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-github-event': 'issue_comment',
+        'x-github-delivery': deliv2,
+        'x-hub-signature-256': sign(source.secret, payload2),
+      },
+      body: payload2,
+    });
+    assert.equal(res2.status, 202);
+
+    await tickSourceDeliveries(pool);
+
+    const d2 = (await pool.query<any>('SELECT * FROM source_deliveries WHERE source_id=$1 AND delivery_id=$2', [source.id, deliv2])).rows[0];
+    assert.equal(d2.status, 'ignored');
+    assert.equal(d2.reason, 'cooldown');
+
+    const tasksAfter2 = (await pool.query<any>('SELECT count(*)::int FROM tasks WHERE bot_id=$1 AND initiator_kind=$2', [bot.id, 'source'])).rows[0].count;
+    assert.equal(tasksAfter2, 1); // No new task started!
+
+    // 3. Third delivery within cooldown containing 'resolved' -> starts a task (recovery bypass)
+    const deliv3 = randomUUID();
+    const payload3 = JSON.stringify({
+      repository: { full_name: 'kamatbot/cooldown-test' },
+      comment: { body: 'Disk alert resolved @swarmaa', user: { login: 'mayurkamat', type: 'User' } },
+      action: 'created',
+      issue: { number: 100, pull_request: {} },
+    });
+    const res3 = await fetch(`${origin}/hooks/github/${source.id}`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-github-event': 'issue_comment',
+        'x-github-delivery': deliv3,
+        'x-hub-signature-256': sign(source.secret, payload3),
+      },
+      body: payload3,
+    });
+    assert.equal(res3.status, 202);
+
+    await tickSourceDeliveries(pool);
+
+    const d3 = (await pool.query<any>('SELECT * FROM source_deliveries WHERE source_id=$1 AND delivery_id=$2', [source.id, deliv3])).rows[0];
+    assert.equal(d3.status, 'dispatched');
+  });
 });
