@@ -13,6 +13,7 @@ import { annotateEvidence, contextReceipt } from './context-receipt.js';
 import { createWorktree, finishWorktree, inspectWorktree, providerPidfile, removeSnapshot, type PatchOutcome, type Worktree } from './worktree.js';
 import type { AgentConfig, BridgeConfig, BridgeLogger, Claim, Lease, ProcessResult, ProcessRunner, ProjectConfig, Task, ToolClient } from './types.js';
 import { redactSecrets } from '../safety/redact.js';
+import { botSecrets, scrubSecrets } from './bot-secrets.js';
 
 function cleanText(value: string, maxBytes: number): string {
   // PostgreSQL text cannot contain NUL. Clip by UTF-8 bytes, not character count.
@@ -614,7 +615,9 @@ export class BridgeWorker {
           result = {exit_code:checkFact.exit_code,signal:null,stdout:checkFact.output_tail,stderr:'',duration_ms:checkFact.duration_ms,stop_reason:checkFact.stop_reason as ProcessResult['stop_reason']};
         } else {
           result = await withTurnImages(agent, task, context, async images => {
-          const scrub = (s: string) => images.length ? s.replace(/[A-Za-z0-9+/]{128,}={0,2}/gu, "[photo removed]") : s;
+          // Secrets the owner added for this project in the Mac app (a bot asked with question_ask credential).
+          const secrets = task.kind === 'turn' ? botSecrets(task.scope) : {};
+          const scrub = (s: string) => scrubSecrets(images.length ? s.replace(/[A-Za-z0-9+/]{128,}={0,2}/gu, "[photo removed]") : s, secrets);
           const go = async (id?: string): Promise<ProcessResult> => {
             const request = buildInvocation(agent, project, task, context, this.config, execution.signal, process.env, worktree, nativePlan, images, id || lastFailure ? { id, note: lastFailure } : undefined);
             promptText = request.prompt;
@@ -625,8 +628,9 @@ export class BridgeWorker {
               request.on_stdin = ctl => { stdinCtl = ctl; };
               request.on_line = onLine;
             }
+            Object.assign(request.env, secrets);
             request.on_progress = value => {
-              progress = images.length ? { ...value, stdout_tail: "" } : value;
+              progress = images.length ? { ...value, stdout_tail: "" } : { ...value, stdout_tail: scrubSecrets(value.stdout_tail, secrets) };
               updatePartialText(progress.stdout_tail, value.output_bytes);
             };
             const output = await this.runner(request);

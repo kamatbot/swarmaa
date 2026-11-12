@@ -119,6 +119,7 @@ export interface QuestionRow {
   answered_at: Date | null;
   expires_at: Date | null;
   action: QuestionAction | null;
+  credential?: string | null;
   created_at: Date;
   updated_at: Date;
 }
@@ -276,6 +277,7 @@ export function questionView(q: QuestionRow): Record<string, unknown> {
     answered_at: q.answered_at ? q.answered_at.toISOString() : null,
     expires_at: q.expires_at ? q.expires_at.toISOString() : null,
     action: q.action ?? null,
+    credential: q.credential ?? null,
     created_at: q.created_at.toISOString(),
     updated_at: q.updated_at.toISOString()
   };
@@ -928,6 +930,8 @@ export class SwarmsService {
       if (!q.multi && choices.length > 1) {
         throw new AppError(400, 'invalid_choice', 'Multiple choices not permitted for this question.');
       }
+      // A credential is stored in the Mac's Keychain, never sent as an answer.
+      requireCondition(!q.credential || text === null || text.trim().length === 0, 400, 'credential_not_text', 'Add this credential in the Mac app (it goes to your Keychain), then answer Added.');
       if (!q.free_text && text !== null && text.trim().length > 0) {
         throw new AppError(400, 'invalid_choice', 'Free text is not permitted for this question.');
       }
@@ -1636,12 +1640,12 @@ export class SwarmsService {
 
       await db.query(
         `INSERT INTO questions
-           (id, tenant_id, scope, thread_id, agent_id, swarm_step_id, prompt, options, multi, free_text, status, expires_at, action)
+           (id, tenant_id, scope, thread_id, agent_id, swarm_step_id, prompt, options, multi, free_text, status, expires_at, action, credential)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, 'open',
-           CASE WHEN $11::integer IS NULL THEN NULL ELSE clock_timestamp() + $11::integer * interval '1 second' END, $12::jsonb)`,
+           CASE WHEN $11::integer IS NULL THEN NULL ELSE clock_timestamp() + $11::integer * interval '1 second' END, $12::jsonb, $13)`,
         [questionId, ctx.tenantId, ctx.scope, ctx.thread.id, ctx.agent.id, act.swarm_step_id ?? null,
          act.prompt, JSON.stringify(act.options), act.multi ?? false, act.free_text ?? false, act.expires_in ?? null,
-         act.action ? JSON.stringify(act.action) : null]
+         act.action ? JSON.stringify(act.action) : null, act.credential ?? null]
       );
 
       const cardSeq = await assignThreadSeq(db, ctx.tenantId, ctx.thread.id);

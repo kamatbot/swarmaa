@@ -748,6 +748,26 @@ describe('teams phase 2 swarms and coordination', { skip: !connectionString, con
     assert.equal(step2Check.assignee_agent_id, a2.id);
   });
 
+  it('a credential question refuses a typed secret and names the answering identity to the bot', async () => {
+    const tenantId = randomUUID();
+    const owner = await createPrincipal(tenantId, 'iPhone', 'admin', ['project:cred']);
+    const { agent } = await call(owner, 'agent_create', { name: 'Cred', role: 'R', instructions: 'I', scope: 'project:cred', runner: { provider: 'codex' } });
+    const qId = randomUUID();
+    await pool.query(
+      `INSERT INTO questions (id, tenant_id, scope, thread_id, agent_id, prompt, options, multi, free_text, status, credential)
+       VALUES ($1, $2, 'project:cred', $3, $4, 'I need a GitHub token', '["Added","Not now"]'::jsonb, false, false, 'open', 'GITHUB_TOKEN')`,
+      [qId, tenantId, agent.main_thread_id, agent.id]
+    );
+    await assert.rejects(pool.query(`UPDATE questions SET credential='SWARMAA_WORKER_TOKEN' WHERE id=$1`, [qId]));
+    await assert.rejects(async () => {
+      await call(owner, 'question_answer', { question_id: qId, choices: ['Added'], text: 'ghp_secretvalue123', idempotency_key: 'c1' });
+    }, (err: any) => err.status === 400 && err.code === 'credential_not_text');
+    const answered = await call(owner, 'question_answer', { question_id: qId, choices: ['Added'], idempotency_key: 'c2' });
+    assert.equal(answered.question.credential, 'GITHUB_TOKEN');
+    const msg = (await pool.query(`SELECT author FROM messages WHERE thread_id=$1 AND kind='answer'`, [agent.main_thread_id])).rows[0];
+    assert.equal(msg.author.name, 'iPhone');
+  });
+
   it('finding 10: question_answer requires owner principal and rejects expired questions with notice and blocked step', async () => {
     const tenantId = randomUUID();
     const userOwner = await createPrincipal(tenantId, 'user-owner', 'admin', ['project:f10']);

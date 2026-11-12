@@ -68,6 +68,9 @@ export function parseQuestionAction(value: unknown): QuestionAction | string {
   };
 }
 
+export const CREDENTIAL_NAME = /^[A-Z][A-Z0-9_]{1,63}$/u;
+export const CREDENTIAL_CHOICES = ['Added', 'Not now'] as const;
+
 export interface TurnActionQuestionAsk {
   type: 'question_ask';
   prompt: string;
@@ -77,6 +80,8 @@ export interface TurnActionQuestionAsk {
   swarm_step_id?: string;
   expires_in?: number;
   action?: QuestionAction;
+  /** Environment variable the bot needs; the owner adds the value in the Mac app's Keychain, never as text. */
+  credential?: string;
 }
 
 export interface TurnActionChannelPost {
@@ -351,7 +356,7 @@ export function extractActionsBlock(text: string): ExtractedActions {
         ops: act.ops as Array<Record<string, unknown>>
       });
     } else if (type === 'question_ask') {
-      const allowed = new Set(['type', 'prompt', 'options', 'multi', 'free_text', 'swarm_step_id', 'expires_in', 'action']);
+      const allowed = new Set(['type', 'prompt', 'options', 'multi', 'free_text', 'swarm_step_id', 'expires_in', 'action', 'credential']);
       for (const k of Object.keys(act)) {
         if (!allowed.has(k)) {
           return { cleanText, rawBlock, error: `unknown field '${k}' in question_ask action`, rejectedAction: item };
@@ -376,16 +381,22 @@ export function extractActionsBlock(text: string): ExtractedActions {
       }
       const action = act.action !== undefined ? parseQuestionAction(act.action) : undefined;
       if (typeof action === 'string') return { cleanText, rawBlock, error: action, rejectedAction: item };
+      const credential = act.credential === undefined ? undefined : act.credential;
+      if (credential !== undefined && (typeof credential !== 'string' || !CREDENTIAL_NAME.test(credential) || /^(?:COLLECTIVE|SWARMAA)_/u.test(credential) || action)) {
+        return { cleanText, rawBlock, error: 'question_ask credential must be an environment variable name like GITHUB_TOKEN (not COLLECTIVE_/SWARMAA_), without action', rejectedAction: item };
+      }
       actions.push({
         type: 'question_ask',
         prompt,
-        // An approval with no options is answered Approve or Deny.
-        options: action && options.length === 0 ? ['Approve', 'Deny'] : options,
-        multi: Boolean(act.multi),
-        free_text: Boolean(act.free_text),
+        // An approval with no options is answered Approve or Deny; a credential ask only Added or Not now,
+        // and never with text, so the secret cannot be typed into the chat.
+        options: credential ? [...CREDENTIAL_CHOICES] : action && options.length === 0 ? ['Approve', 'Deny'] : options,
+        multi: credential ? false : Boolean(act.multi),
+        free_text: credential ? false : Boolean(act.free_text),
         swarm_step_id: act.swarm_step_id ? String(act.swarm_step_id).trim() : undefined,
         expires_in: typeof act.expires_in === 'number' ? Math.max(1, Math.floor(act.expires_in)) : undefined,
-        ...(action ? { action } : {})
+        ...(action ? { action } : {}),
+        ...(credential ? { credential } : {})
       });
     } else if (type === 'channel_post') {
       const allowed = new Set(['type', 'channel_id', 'body']);
