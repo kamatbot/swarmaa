@@ -679,6 +679,15 @@ enum PushNotification {
             }
         } catch { self.error = safeError(error) }
     }
+    func dismissMessage(_ message: Message) async throws {
+        guard let service, let bot = openBot else { return }
+        _ = try await service.call("message_dismiss", ["thread_id": .string(bot.threadID), "seq": .number(Double(message.seq))])
+        removeMessage(message.id)
+    }
+    func removeMessage(_ id: String) {
+        messages.removeAll { $0.id == id }
+        if let bot = openBot { threadCache[bot.id] = messages }
+    }
     func readThread(_ bot: Bot, incremental: Bool = false) async throws {
         guard let service else { return }
         do {
@@ -754,6 +763,11 @@ enum PushNotification {
             let id = value("bot_id").string.isEmpty ? value("subject_id").string : value("bot_id").string
             removeBot(id)
             return
+        }
+        if name == "message.deleted", value("thread_id").string == openBot?.threadID {
+            let id = value("message_id").string
+            if !id.isEmpty { removeMessage(id) } else { messages.removeAll { $0.seq == value("seq").int } }
+            if let bot = openBot { threadCache[bot.id] = messages }
         }
         if let bot = openBot,
            (name.hasPrefix("message.") && value("thread_id").string == bot.threadID)

@@ -814,12 +814,25 @@ struct RootView: View {
             if !text.isEmpty || message.raw["attachments"].array.isEmpty { Text(text.isEmpty ? (message.kind == "answer" ? "Answer sent" : message.kind.capitalized) : text)
                 .font(KS.body()).foregroundStyle(message.human ? KS.strong : KS.ink).lineSpacing(2).fixedSize(horizontal: false, vertical: true).textSelection(.enabled) }
         }
-        if message.human {
-            HStack {
-                Spacer(minLength: 48)
-                content.padding(.horizontal, 14).padding(.vertical, 10).bubble(human: true)
+        let system = message.raw["author"]["kind"].string == "system"
+        let actions = HStack(spacing: 0) {
+            CopyButton(text: message.text)
+            if system {
+                Button { perform { try await model.dismissMessage(message) } } label: {
+                    Image(systemName: "xmark").font(.caption).foregroundStyle(KS.muted).frame(minWidth: 32, minHeight: 32)
+                }.buttonStyle(.plain).accessibilityLabel("Dismiss")
             }
+        }
+        if message.human {
+            VStack(alignment: .trailing, spacing: 0) {
+                HStack {
+                    Spacer(minLength: 48)
+                    content.padding(.horizontal, 14).padding(.vertical, 10).bubble(human: true)
+                }
+                actions
+            }.frame(maxWidth: .infinity, alignment: .trailing)
         } else {
+            VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .top, spacing: 10) {
                 Avatar(name: author.isEmpty ? (model.openBot?.name ?? "Bot") : author, size: 28,
                        colorHex: runner.isEmpty ? model.openBot?.colorHex : nil, provider: runner)
@@ -834,6 +847,8 @@ struct RootView: View {
                     }
                     content
                 }.padding(12).frame(maxWidth: .infinity, alignment: .leading).bubble()
+            }
+            actions
             }
         }
     }
@@ -1588,5 +1603,21 @@ private struct ChatAttachmentView: View {
             image = decoded; failed = false
             PhotoCache.store(data, sha256: sha)
         } catch { failed = true }
+    }
+}
+
+/// Copies a message's raw body; the icon flips to a checkmark for a moment.
+struct CopyButton: View {
+    let text: String
+    @State private var done = false
+    var body: some View {
+        Button {
+            UIPasteboard.general.string = text
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            done = true
+            Task { try? await Task.sleep(for: .seconds(1.2)); done = false }
+        } label: {
+            Image(systemName: done ? "checkmark" : "doc.on.doc").font(.caption).foregroundStyle(KS.muted).frame(minWidth: 32, minHeight: 32)
+        }.buttonStyle(.plain).accessibilityLabel("Copy message")
     }
 }
