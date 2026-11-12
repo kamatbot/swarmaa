@@ -267,7 +267,7 @@ struct WorkspaceTopBar: View {
         .padding(.leading, 80).padding(.trailing, 16)
         .frame(maxWidth: .infinity, minHeight: KS.topBarHeight, maxHeight: KS.topBarHeight)
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
-        .background(KS.topBar)
+        .background(WindowDragArea().background(KS.topBar))
         .overlay(alignment: .bottom) { Rectangle().fill(KS.hairline).frame(height: 1) }
         .background {
             Button(L10n.t("Search bots")) { searchFocused = true }

@@ -21,6 +21,10 @@ final class TeamsWindowController: NSObject, NSWindowDelegate {
             window.titlebarAppearsTransparent = true
             window.titleVisibility = .hidden
             window.isMovableByWindowBackground = false
+            // Not movable by AppKit: a movable full-size-content window recomputes its title-bar drag region over every
+            // view on each frame while the pointer is in it, and the chat's thousands of views made scrolling hitch
+            // (9.5 s of 12 s on the main thread). The top bar moves the window itself (WindowDragArea).
+            window.isMovable = false
             window.setAccessibilityElement(true)
             window.setAccessibilityRole(.window)
             window.setAccessibilityLabel("Swarmaa")
@@ -511,5 +515,30 @@ enum TeamsCopy {
             return L10n.t("Week") + " · " + model.prefix(1).uppercased() + model.dropFirst()
         default: return name!.prefix(1).uppercased() + name!.dropFirst()
         }
+    }
+}
+
+/// The top bar's backdrop: dragging it moves the window, double-clicking zooms. The window is not AppKit-movable
+/// (see show()), so this sets the frame directly from the pointer's screen position.
+struct WindowDragArea: View {
+    @State private var start: (mouse: NSPoint, origin: NSPoint)?
+    var body: some View {
+        Color.clear.contentShape(Rectangle())
+            .gesture(DragGesture(minimumDistance: 2, coordinateSpace: .global)
+                .onChanged { _ in
+                    guard let window = NSApp.keyWindow else { return }
+                    let mouse = NSEvent.mouseLocation
+                    if start == nil { start = (mouse, window.frame.origin) }
+                    if let s = start { window.setFrameOrigin(NSPoint(x: s.origin.x + mouse.x - s.mouse.x, y: s.origin.y + mouse.y - s.mouse.y)) }
+                }
+                .onEnded { _ in start = nil })
+            .simultaneousGesture(TapGesture(count: 2).onEnded {
+                guard let window = NSApp.keyWindow else { return }
+                switch UserDefaults.standard.string(forKey: "AppleActionOnDoubleClick") {
+                case "Minimize": window.performMiniaturize(nil)
+                case "None": break
+                default: window.performZoom(nil)
+                }
+            })
     }
 }
