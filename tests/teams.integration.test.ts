@@ -75,6 +75,22 @@ describe('teams phase 1 service foundation', { skip: !connectionString, concurre
     assert.equal((await claim(['claude.read'])).task.thread_id, pinned.id);
   });
 
+  it('message_dismiss deletes only system notices and emits message.deleted', async () => {
+    const user = await createPrincipal(randomUUID(), 'dismiss-owner');
+    const other = await createPrincipal(randomUUID(), 'dismiss-other');
+    const { thread } = await call(user, 'agent_create', { name: 'Dismiss', role: 'Assistant', instructions: 'Help.', scope: 'project:a', runner: { provider: 'codex' } });
+    const human = (await call(user, 'thread_post', { thread_id: thread.id, body: 'hi', idempotency_key: 'd' })).message;
+    const { rows: [notice] } = await pool.query(`INSERT INTO messages(id,tenant_id,scope,thread_id,seq,author,kind,body)
+      VALUES($1,$2,'project:a',$3,$4,'{"kind":"system","id":"service"}','notice','Turn failed: x') RETURNING seq`, [randomUUID(), user.tenantId, thread.id, human.seq + 1]);
+    await assert.rejects(call(user, 'message_dismiss', { thread_id: thread.id, seq: human.seq }), { code: 'invalid_arguments' });
+    await assert.rejects(call(user, 'message_dismiss', { thread_id: thread.id, seq: 999 }), { code: 'not_found' });
+    await assert.rejects(call(other, 'message_dismiss', { thread_id: thread.id, seq: Number(notice.seq) }), { code: 'not_found' });
+    assert.deepEqual(await call(user, 'message_dismiss', { thread_id: thread.id, seq: Number(notice.seq) }), { ok: true, thread_id: thread.id, seq: Number(notice.seq) });
+    assert.deepEqual((await call(user, 'thread_read', { thread_id: thread.id })).messages.map((m: any) => m.seq), [human.seq]);
+    const ev = await pool.query(`SELECT payload FROM events WHERE tenant_id=$1 AND name='message.deleted'`, [user.tenantId]);
+    assert.equal(ev.rows[0].payload.seq, Number(notice.seq));
+  });
+
   it('photos preserve retries, exact read authorization and bounded image context', async () => {
     const user = await createPrincipal(randomUUID(), 'photo-owner');
     const worker = await createPrincipal(user.tenantId, 'photo-worker', 'worker');
