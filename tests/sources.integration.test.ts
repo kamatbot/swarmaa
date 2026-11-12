@@ -1378,10 +1378,15 @@ describe('sources and github intake integration tests (§8.2)', { skip: !connect
   it('source cooldown: second delivery inside cooldown is ignored as cooldown; resolved delivery bypasses cooldown', async () => {
     const owner = await createPrincipal('t_cooldown', 'owner_cooldown', 'admin', ['project:demo']);
 
+    const lead = (await call(owner, 'agent_create', {
+      name: 'Cooler', role: 'Lead', instructions: 'Help', scope: 'project:demo',
+      runner: { provider: 'claude' }, edits: true,
+    })).agent;
     const botRes = await call(owner, 'bot_create', {
       scope: 'project:demo',
       name: 'CooldownBot',
       job: 'handle cooldown events',
+      lead_agent_id: lead.id, member_agent_ids: [lead.id],
     });
     const bot = botRes.bot;
 
