@@ -8,7 +8,7 @@ import type { Principal } from '../src/types.js';
 const principal:Principal = {id:'11111111-1111-4111-8111-111111111111',tenantId:'tenant-a',name:'phone',role:'frontend',scopes:['project:test'],permissions:['agent:read']};
 const token = 'ab'.repeat(32);
 const device:Device = {token,tenant_id:principal.tenantId,principal_id:principal.id,environment:'sandbox',updated_at:'2026-10-28 15:20:00.123456+00'};
-const bot = {id:'22222222-2222-4222-8222-222222222222',name:'Helper'};
+const bot = {id:'22222222-2222-4222-8222-222222222222',name:'Helper',avatar:'runner',color:'sky'};
 const base:PushEvent = {name:'question.created',subject_id:'subject',tenant_id:principal.tenantId,scope:'project:test',payload:{thread_id:'thread',prompt:'SECRET message content'}};
 function fakeDb(rows:unknown[] = []) {
   const calls:{sql:string;args:unknown[]}[] = [];
@@ -62,11 +62,30 @@ test('event mapping emits only content-free fixed labels and bot identifiers',as
   ];
   for (const [e,body] of cases) {
     const payload = await eventPayload(pool,e);
-    assert.deepEqual(payload,{aps:{alert:{title:bot.name,body},sound:'default','thread-id':bot.id},bot_id:bot.id});
+    assert.deepEqual(payload,{
+      aps:{alert:{title:bot.name,body},sound:'default','thread-id':bot.id,'mutable-content':1},
+      bot_id:bot.id,
+      bot_name:bot.name,
+      bot_avatar:bot.avatar,
+      bot_color:bot.color,
+    });
     assert.equal(JSON.stringify(payload).includes('SECRET'),false);
     assert.deepEqual(calls.at(-1)!.args.slice(1,3),[principal.tenantId,'project:test']);
   }
   assert.match(calls.at(-1)!.sql,/t.result->>'head_commit' IS NOT NULL/);
+});
+
+test('event mapping preserves null avatar and color when unset',async () => {
+  const plainBot = {id:'44444444-4444-4444-8444-444444444444',name:'Plain',avatar:null,color:null};
+  const {pool} = fakeDb([plainBot]);
+  const payload = await eventPayload(pool,base);
+  assert.deepEqual(payload,{
+    aps:{alert:{title:'Plain',body:'Needs you'},sound:'default','thread-id':plainBot.id,'mutable-content':1},
+    bot_id:plainBot.id,
+    bot_name:'Plain',
+    bot_avatar:null,
+    bot_color:null,
+  });
 });
 
 test('ignores humans, system notices, question cards, nonterminal and unrelated events',async () => {
