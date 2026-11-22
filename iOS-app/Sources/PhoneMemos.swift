@@ -21,10 +21,14 @@ import AVFoundation
     var error: String?
     private var player: AVAudioPlayer?
     private var transcribing = Set<String>()
+    /// Lowercased ids of ring memos that `RingLink` is transcribing itself (live stream or its own file pass);
+    /// it writes their .txt, so a second whole-file recognition here would only compete for the recognizer.
+    @ObservationIgnored var liveTranscribing = Set<String>()
     private func transcriptURL(_ audio: URL) -> URL { audio.deletingPathExtension().appendingPathExtension("txt") }
     /// Writes <id>.txt next to each memo once on-device recognition finishes (empty on failure) and then re-triggers delivery.
     private func ensureTranscripts(_ urls: [URL]) {
-        for url in urls where !FileManager.default.fileExists(atPath: transcriptURL(url).path) && transcribing.insert(url.path).inserted {
+        for url in urls where !FileManager.default.fileExists(atPath: transcriptURL(url).path)
+            && !liveTranscribing.contains(url.deletingPathExtension().lastPathComponent.lowercased()) && transcribing.insert(url.path).inserted {
             Task {
                 let text = await MemoTranscriber.transcribe(url)
                 try? text.write(to: transcriptURL(url), atomically: true, encoding: .utf8)
@@ -102,8 +106,11 @@ import AVFoundation
             if latest.state == "mac" { acknowledged(latest); continue }
             let url = Self.root.appendingPathComponent(generation).appendingPathComponent(entry.id + ".m4a")
             do {
-                let hash = try await Task.detached { try MemoLimits.hash(url) }.value
-                guard valid(), hash == entry.hash, deliveryIndex(entry) != nil else { continue }
+                // A never-attempted delivery was hashed by assign/retain moments ago; the host verifies sha256 anyway.
+                if latest.attempted {
+                    let hash = try await Task.detached { try MemoLimits.hash(url) }.value
+                    guard valid(), hash == entry.hash, deliveryIndex(entry) != nil else { continue }
+                }
                 guard transcriptReady(url) else { continue }
                 let transcript = (try? String(contentsOf: transcriptURL(url), encoding: .utf8)) ?? ""
                 var received = Set<Int>()

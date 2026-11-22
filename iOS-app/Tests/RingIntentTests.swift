@@ -71,6 +71,51 @@ import XCTest
         XCTAssertEqual(RingIntent.notificationText(.init(memoID: "m", route: "delegate")).body, "Sent to your bot")
     }
 
+    func testNotificationTextForQueuedAndRunningActions() {
+        let running = VoiceIntentResult(memoID: "M", route: "local", actions: [
+            .init(id: "1", type: "reminder.create", status: "running", summary: "Reminder: Call mom · Today 17:00", undoable: false)
+        ])
+        XCTAssertTrue(RingIntent.isPending(running))
+        XCTAssertEqual(RingIntent.notificationText(running).title, "Working on it…")
+        XCTAssertEqual(RingIntent.notificationText(running).body, "Reminder: Call mom · Today 17:00")
+
+        let queuedNoSummary = VoiceIntentResult(memoID: "m", route: "local", actions: [.init(id: "1", type: "note.append", status: "queued", summary: " ", undoable: false)])
+        XCTAssertEqual(RingIntent.notificationText(queuedNoSummary).title, "Working on it…")
+        XCTAssertEqual(RingIntent.notificationText(queuedNoSummary).body, "Your Mac is finishing the action.")
+
+        // A failure wins over a still-running sibling.
+        let mixed = VoiceIntentResult(memoID: "m", route: "local", actions: [
+            .init(id: "1", type: "reminder.create", status: "failed", summary: "Allow Reminders for Swarmaa", undoable: false),
+            .init(id: "2", type: "note.append", status: "running", summary: "Saving note", undoable: false)
+        ])
+        XCTAssertFalse(RingIntent.notificationText(mixed).title == "Working on it…")
+        XCTAssertEqual(RingIntent.notificationText(mixed).title, "Ring memo needs attention")
+
+        XCTAssertEqual(RingIntent.notificationIdentifier(running), "ring-intent-m")
+    }
+
+    func testFollowUpMergesListedActionsById() throws {
+        let first = VoiceIntentResult(memoID: "m", route: "local", messageSeq: 3, actions: [
+            .init(id: "a1", type: "reminder.create", status: "running", summary: "Reminder: Call mom", undoable: false),
+            .init(id: "a2", type: "note.append", status: "done", summary: "Note saved", undoable: true)
+        ])
+        let listed = try RingIntent.listedActions(Data("""
+        {"actions":[{"id":"zz","type":"timer.start","status":"done","summary":"Other memo","undoable":true,"created_at":"x"},
+                    {"id":"a1","type":"reminder.create","status":"done","summary":"Reminder set: Call mom · Today 17:00","undoable":true},
+                    {"type":"broken"}]}
+        """.utf8))
+        XCTAssertEqual(listed.map(\.id), ["zz", "a1"])
+        let merged = RingIntent.merging(first, with: listed)
+        XCTAssertEqual(merged.actions.map(\.id), ["a1", "a2"])
+        XCTAssertEqual(merged.actions[0].status, "done")
+        XCTAssertEqual(merged.messageSeq, 3)
+        XCTAssertFalse(RingIntent.isPending(merged))
+        XCTAssertEqual(RingIntent.notificationText(merged).title, "Ring memo")
+        XCTAssertEqual(RingIntent.notificationText(merged).body, "Reminder set: Call mom · Today 17:00\nNote saved")
+        XCTAssertEqual(RingIntent.merging(first, with: []), first)
+        XCTAssertEqual(try RingIntent.listedActions(Data("{}".utf8)), [])
+    }
+
     func testTimingsKeepFirstMarkAndOrderTheLogLine() {
         let start = Date(timeIntervalSince1970: 1_000)
         var timings = RingTimings(origin: start, fromIdleEdge: true)

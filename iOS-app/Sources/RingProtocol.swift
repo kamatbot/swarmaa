@@ -248,12 +248,25 @@ extension SR116Protocol {
 
         private(set) var totalPackets = 0
         private(set) var receivedPackets = 0
-        private(set) var opus: [Data] = []
+        /// Opus packets back to back, `opusPacketBytes` each: one growing buffer instead of one `Data` per packet.
+        private(set) var opusBytes = Data()
+        private(set) var opusCount = 0
         private(set) var firstDeviceSeconds: UInt64?
         private var lastPayload: Data?
 
         var isComplete: Bool { totalPackets > 0 && receivedPackets == totalPackets }
-        var seconds: Double { Double(opus.count) * Double(SR116Protocol.opusFramesPerPacket) / SR116Protocol.opusSampleRate }
+        var seconds: Double { Double(opusCount) * Double(SR116Protocol.opusFramesPerPacket) / SR116Protocol.opusSampleRate }
+        /// Packet-by-packet view (tests, diagnostics); the transfer path reads `opusBytes`.
+        var opus: [Data] {
+            stride(from: 0, to: opusBytes.count, by: SR116Protocol.opusPacketBytes).map { start in
+                Data(opusBytes[opusBytes.startIndex + start ..< opusBytes.startIndex + start + SR116Protocol.opusPacketBytes])
+            }
+        }
+        /// Bytes of packets `index`… as a slice of `opusBytes` (no copy until appended elsewhere).
+        func opusSlice(fromPacket index: Int) -> Data {
+            let start = min(opusBytes.count, max(0, index) * SR116Protocol.opusPacketBytes)
+            return opusBytes[(opusBytes.startIndex + start)...]
+        }
 
         /// Returns true when the frame was consumed. Exact retransmissions of the last packet are ignored.
         mutating func accept(_ frame: Frame) throws -> Bool {
@@ -271,12 +284,12 @@ extension SR116Protocol {
             var r = Reader(frame.payload)
             guard let t = r.seconds6() else { throw Failure.misaligned }
             if firstDeviceSeconds == nil { firstDeviceSeconds = t }
-            let body = [UInt8](frame.payload.dropFirst(6))
+            let body = frame.payload.dropFirst(6)
             guard body.count % SR116Protocol.opusPacketBytes == 0 else { throw Failure.misaligned }
-            guard (opus.count * SR116Protocol.opusPacketBytes) + body.count <= Self.maxOpusBytes else { throw Failure.tooLarge }
-            for start in stride(from: 0, to: body.count, by: SR116Protocol.opusPacketBytes) {
-                opus.append(Data(body[start..<start + SR116Protocol.opusPacketBytes]))
-            }
+            guard opusBytes.count + body.count <= Self.maxOpusBytes else { throw Failure.tooLarge }
+            if receivedPackets == 0 { opusBytes.reserveCapacity(min(Self.maxOpusBytes, total * body.count)) }
+            opusBytes.append(contentsOf: body)
+            opusCount += body.count / SR116Protocol.opusPacketBytes
             receivedPackets = current
             lastPayload = frame.payload
             return true
