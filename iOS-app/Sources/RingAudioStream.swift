@@ -112,18 +112,23 @@ import Speech
 
     /// Ends the audio and waits for the final transcript; nil on failure, silence or timeout.
     func finish(timeout seconds: Double) async -> String? {
-        if !ended {
-            ended = true
-            if failure == nil { drain(end: true) }
-            if failure != nil || frames == 0 { cancel(); return nil }
-            request.endAudio()
-        }
+        end()
+        if done && text == nil { return nil }
         let deadline = Date().addingTimeInterval(max(1, seconds))
         while !done && Date() < deadline {
             try? await Task.sleep(nanoseconds: 30_000_000)
         }
         if !done { failure = "timed out"; cancel() }
         return text
+    }
+
+    /// Flushes the decoder and ends the audio so the recognizer can finalise; safe to call twice.
+    func end() {
+        guard !ended else { return }
+        ended = true
+        if failure == nil { drain(end: true) }
+        if failure != nil || frames == 0 { cancel(); return }
+        request.endAudio()
     }
 
     func cancel() {

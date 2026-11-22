@@ -18,7 +18,7 @@ import AVFoundation
 
     struct Candidate: Identifiable { let id: UUID; let name: String }
     private(set) var candidates: [Candidate] = []
-    private(set) var status = "Not connected." { didSet { if status != oldValue { note(status) } } }
+    private(set) var status = "Not connected." { didSet { if status != oldValue, !status.hasSuffix("%") { note(status) } } }
     /// Recent ring events with time and app state, so background behaviour can be checked afterwards.
     private(set) var log: [String] = UserDefaults.standard.stringArray(forKey: "ring.log") ?? []
     func note(_ event: String) {
@@ -65,7 +65,17 @@ import AVFoundation
     @ObservationIgnored private var relayUsers = 0
     @ObservationIgnored private var relayLinger: Task<Void, Never>?
     /// Host that answered `voice_intent` with 404 for a valid thread (predates the tool); skipped until relaunch.
-    @ObservationIgnored private var intentUnsupportedHost: String?
+    /// Persisted for a day: background relaunches would otherwise re-probe on every memo.
+    private var intentUnsupportedHost: String? {
+        get {
+            guard let at = defaults.object(forKey: "ring.intentUnsupportedAt") as? Date, Date().timeIntervalSince(at) < 86_400 else { return nil }
+            return defaults.string(forKey: "ring.intentUnsupportedHost")
+        }
+        set {
+            defaults.set(newValue, forKey: "ring.intentUnsupportedHost")
+            defaults.set(newValue == nil ? nil : Date(), forKey: "ring.intentUnsupportedAt")
+        }
+    }
 
     private override init() { super.init() }
 
@@ -152,7 +162,7 @@ import AVFoundation
     private func beginDownload() {
         guard assembler == nil else { return }
         guard WatchBridge.shared.memoGeneration != nil else { status = "Sign in to a host to receive ring memos."; return }
-        hold()
+        hold(); warmRelay()
         busy = true; status = "Downloading recording…"
         assembler = .init()
         let id = UUID()
@@ -244,7 +254,10 @@ import AVFoundation
                         fed = a.opus.count
                     }
                 }
-                if let a = assembler, a.totalPackets > 0 { status = "Downloading recording… \(a.receivedPackets * 100 / a.totalPackets)%" }
+                if let a = assembler, a.totalPackets > 0 {
+                    let progress = "Downloading recording… \(a.receivedPackets * 100 / a.totalPackets)%"
+                    if progress != status { status = progress }
+                }
             } catch { abort("Recording transfer was out of order. It stays on the ring and will be retried.") }
             return
         }
@@ -253,6 +266,7 @@ import AVFoundation
                 abort("Recording arrived incomplete. It stays on the ring and will be retried."); return
             }
             mark("last_packet")
+            stream?.end() // recognizer finalises while the M4A is saved
             finish(a, remaining: remaining)
         }
     }
