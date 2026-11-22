@@ -59,6 +59,7 @@ struct SwarmaaShortcuts: AppShortcutsProvider {
                 }
             }
             WatchBridge.shared.changed()
+            RingLink.shared.start()
         }
         Runtime.model.onFirstBotList = {
             let center = UNUserNotificationCenter.current()
@@ -313,9 +314,9 @@ struct ContentSheet<Content: View>: View {
 
 enum Screen: String { case home, thread, tasks, usage, connect, settings }
 enum Sheet: Identifiable {
-    case you, question(JSON), newBot, changes(String), memos, transactions
+    case you, question(JSON), newBot, changes(String), memos, transactions, ring
     var id: String {
-        switch self { case .you: "you"; case .question(let q): "question-" + q["id"].string; case .newBot: "newBot"; case .changes: "changes"; case .memos: "memos"; case .transactions: "transactions" }
+        switch self { case .you: "you"; case .question(let q): "question-" + q["id"].string; case .newBot: "newBot"; case .changes: "changes"; case .memos: "memos"; case .transactions: "transactions"; case .ring: "ring" }
     }
 }
 
@@ -398,6 +399,7 @@ struct RootView: View {
                 switch item {
                 case .you: you
                 case .memos: PhoneMemosView { sheet = nil }
+                case .ring: RingView { sheet = nil }
                 case .transactions: PhoneTransactionReviewsView { sheet = nil }
                 case .question(let question): AnswerView(model: model, question: question) { sheet = nil }
                 case .newBot: NewBotView(model: model) { sheet = nil }
@@ -1026,6 +1028,7 @@ struct RootView: View {
             } label: { menuRow("Bot settings", "Crew, chat replies and your starred shortcut", icon: "slider.horizontal.3") }.buttonStyle(Pill(fill: KS.surface))
             Button { sheet = .transactions } label: { menuRow("Watch transactions", "Review transaction previews", icon: "list.bullet.rectangle") }.buttonStyle(Pill(fill: KS.surface)).disabled(model.isDemo)
             Button { sheet = .memos } label: { menuRow("Watch memos", "Play and share recordings saved on this iPhone", icon: "waveform") }.buttonStyle(Pill(fill: KS.surface)).disabled(model.isDemo)
+            Button { sheet = .ring } label: { menuRow("Ring", "Talk to a bot from your SR116 ring", icon: "circle.circle") }.buttonStyle(Pill(fill: KS.surface)).disabled(model.isDemo)
             Button("Sign out of this host") { perform { try await model.signOut(); sheet = nil; screen = .connect } }.font(KS.body(.semibold)).foregroundStyle(KS.failedText).frame(maxWidth: .infinity, minHeight: 44).disabled(model.isDemo)
         }
     }

@@ -48,6 +48,8 @@ targets:
         LSSupportsOpeningDocumentsInPlace: YES
         NSSpeechRecognitionUsageDescription: Turn speech into an editable message.
         NSCameraUsageDescription: Take photos to send to your bots in chat.
+        NSBluetoothAlwaysUsageDescription: Connect to your SR116 ring so recordings you make on it reach your bots.
+        UIBackgroundModes: [bluetooth-central]
         NSUserActivityTypes:
           - INSendMessageIntent
         CFBundleURLTypes:

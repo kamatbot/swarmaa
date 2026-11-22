@@ -3,6 +3,8 @@ import Speech
 
 /// On-device transcription of a Watch memo. Always yields a string; failures and missing permission give "".
 enum MemoTranscriber {
+    /// Ask once in the foreground so background ring memos can be transcribed.
+    static func requestAccess() { SFSpeechRecognizer.requestAuthorization { _ in } }
     static func transcribe(_ url: URL) async -> String {
         let status: SFSpeechRecognizerAuthorizationStatus = await withCheckedContinuation { c in SFSpeechRecognizer.requestAuthorization { c.resume(returning: $0) } }
         guard status == .authorized, let recognizer = SFSpeechRecognizer(), recognizer.isAvailable, recognizer.supportsOnDeviceRecognition else { return "" }

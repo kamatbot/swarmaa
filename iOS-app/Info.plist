@@ -33,6 +33,8 @@
 	<false/>
 	<key>LSSupportsOpeningDocumentsInPlace</key>
 	<true/>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>Connect to your SR116 ring so recordings you make on it reach your bots.</string>
 	<key>NSCameraUsageDescription</key>
 	<string>Take photos to send to your bots in chat.</string>
 	<key>NSMicrophoneUsageDescription</key>
@@ -44,6 +46,10 @@
 	<key>NSUserActivityTypes</key>
 	<array>
 		<string>INSendMessageIntent</string>
+	</array>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>bluetooth-central</string>
 	</array>
 	<key>UIFileSharingEnabled</key>
 	<true/>
