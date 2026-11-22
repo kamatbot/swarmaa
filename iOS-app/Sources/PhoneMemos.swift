@@ -34,7 +34,7 @@ import AVFoundation
         let age = Date().timeIntervalSince((try? url.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? .distantPast)
         return age > 180
     }
-    static var root: URL { FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("Watch Memos", isDirectory: true) }
+    nonisolated static var root: URL { FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("Watch Memos", isDirectory: true) }
     func refresh(generation: String?) {
         guard let generation, UUID(uuidString: generation) != nil else { items = []; return }
         let folder = Self.root.appendingPathComponent(generation, isDirectory: true)
