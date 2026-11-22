@@ -18,7 +18,7 @@ import AVFoundation
 
     struct Candidate: Identifiable { let id: UUID; let name: String }
     private(set) var candidates: [Candidate] = []
-    private(set) var status = "Not connected." { didSet { if status != oldValue { note(status) } } }
+    private(set) var status = "Not connected." { didSet { if status != oldValue, !status.hasSuffix("%") { note(status) } } }
     /// Recent ring events with time and app state, so background behaviour can be checked afterwards.
     private(set) var log: [String] = UserDefaults.standard.stringArray(forKey: "ring.log") ?? []
     @ObservationIgnored private var logSave: Task<Void, Never>?
@@ -83,7 +83,17 @@ import AVFoundation
     @ObservationIgnored private var relayLinger: Task<Void, Never>?
     @ObservationIgnored private var warming = false
     /// Host that answered `voice_intent` with 404 for a valid thread (predates the tool); skipped until relaunch.
-    @ObservationIgnored private var intentUnsupportedHost: String?
+    /// Persisted for a day: background relaunches would otherwise re-probe on every memo.
+    private var intentUnsupportedHost: String? {
+        get {
+            guard let at = defaults.object(forKey: "ring.intentUnsupportedAt") as? Date, Date().timeIntervalSince(at) < 86_400 else { return nil }
+            return defaults.string(forKey: "ring.intentUnsupportedHost")
+        }
+        set {
+            defaults.set(newValue, forKey: "ring.intentUnsupportedHost")
+            defaults.set(newValue == nil ? nil : Date(), forKey: "ring.intentUnsupportedAt")
+        }
+    }
     /// Host that answered `voice_warm` with 404 (predates the tool); the warm-up then only connects.
     @ObservationIgnored private var warmUnsupportedHost: String?
 
@@ -196,7 +206,7 @@ import AVFoundation
             release() // the idle edge may have claimed background time
             return
         }
-        hold()
+        hold(); warmRelay()
         busy = true; status = "Downloading recording…"
         assembler = .init()
         let id = UUID()
@@ -308,7 +318,10 @@ import AVFoundation
                         fed = a.opusCount
                     }
                 }
-                if let a = assembler, a.totalPackets > 0 { status = "Downloading recording… \(a.receivedPackets * 100 / a.totalPackets)%" }
+                if let a = assembler, a.totalPackets > 0 {
+                    let progress = "Downloading recording… \(a.receivedPackets * 100 / a.totalPackets)%"
+                    if progress != status { status = progress }
+                }
             } catch { abort("Recording transfer was out of order. It stays on the ring and will be retried.") }
             return
         }
