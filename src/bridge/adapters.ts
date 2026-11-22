@@ -107,6 +107,7 @@ export function buildTurnPrompt(
   let agents: Array<{ id: string; name: string; role?: string }> = [];
   let router = false;
   const projectBots = ((inputOrTask as { project_bots?: Array<{ name: string; scope: string; job?: string }> }).project_bots ?? []);
+  const localActions = (inputOrTask as { local_actions?: unknown }).local_actions === true;
 
   if ('instructions' in inputOrTask && 'messages' in inputOrTask) {
     instructions = inputOrTask.instructions ?? '';
@@ -189,6 +190,9 @@ export function buildTurnPrompt(
     ...(router ? [] : ['- {type:\'channel_post\', channel_id, body}']),
     ...(projectBots.length ? [
       "- {type:'project_dispatch', bot, body}: send a request to another project's bot (bot = its name from the Project bots list). That bot does the work in its own repository and its reply is posted back here. Put the owner's request in body in plain words, keeping any agent they named (\"use agy to …\", \"ask codex …\") so it runs on that agent. Use this whenever the owner asks for work in one of those projects; do not do that work yourself."
+    ] : []),
+    ...(localActions ? [
+      "- {type:'local_action', action}: do it on the owner's Mac now, at most 5 per turn. action is one of {type:'reminder.create', title, due_at?, notes?, list?:'default'|'todo'}, {type:'event.create', title, start_at, end_at, all_day?, location?, notes?}, {type:'note.append', text, notebook?:'daily'|'inbox'|'meetings', title?}, {type:'timer.start', label, fire_at}; times are ISO 8601 UTC. The result shows as a card in this thread; say what you set in one line."
     ] : []),
     ...(botTurn || router ? [
       "- {type:'bot_appearance', avatar?, color?}: change only this bot; provide at least one field. Allowed in every turn, read-only ones included: listing it in the actions block is the whole change, the service applies it, and you call nothing. When the owner asks for a new look, include it; never say you can't change your appearance.",

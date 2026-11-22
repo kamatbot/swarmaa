@@ -12,6 +12,7 @@ import { integer, object, string, uuid } from '../validation.js';
 import { audit, event, newId, noExtraKeys, teamsLock } from './shared.js';
 import { redactSecrets } from '../safety/redact.js';
 import { assignThreadSeq, clipUtf8, enqueueAgentTurn, type AgentRow } from './teams.js';
+import { memoObjective } from './voice.js';
 
 const CHUNK = 131072, MAX = 20 * 1024 * 1024;
 const digest = (v: Buffer | string) => createHash('sha256').update(v).digest('hex');
@@ -136,8 +137,15 @@ export class WatchServices {
       const row = (await db.query('UPDATE watch_memos SET announced=true WHERE tenant_id=$1 AND thread_id=$2 AND memo_id=$3 AND status=\'stored\' AND NOT announced RETURNING transcript,byte_length,captured_at',[p.tenantId,threadId,memo])).rows[0];
       if (!row) return;
       const transcript = String(row.transcript).trim();
-      const body = clipUtf8(redactSecrets(`🎙 Voice memo\n\n${transcript || '(no transcript)'}`),16384);
       const ref = {voice_memo:{memo_id:memo,byte_length:row.byte_length,captured_at:new Date(row.captured_at).toISOString()}};
+      // voice_intent already posted the memo and acted on it: attach the audio to that message and queue nothing.
+      const intent = (await db.query('SELECT message_id FROM voice_intents WHERE tenant_id=$1 AND thread_id=$2 AND memo_id=$3',[p.tenantId,threadId,memo])).rows[0];
+      if (intent) {
+        const updated = (await db.query(`UPDATE messages SET ref=COALESCE(ref,'{}'::jsonb) || $3::jsonb WHERE id=$1 AND tenant_id=$2 RETURNING seq`,[intent.message_id,p.tenantId,JSON.stringify(ref)])).rows[0];
+        if (updated) await event(db,p,thread.scope,'message.updated',intent.message_id,{thread_id:threadId,message_id:intent.message_id,seq:Number(updated.seq),kind:'text'});
+        return;
+      }
+      const body = clipUtf8(redactSecrets(`🎙 Voice memo\n\n${transcript || '(no transcript)'}`),16384);
       const seq = await assignThreadSeq(db,p.tenantId,threadId), msgId = newId(), author = {kind:'human',id:p.id};
       await db.query(`INSERT INTO messages (id,tenant_id,scope,thread_id,seq,author,kind,body,ref,idempotency_key) VALUES ($1,$2,$3,$4,$5,$6::jsonb,'text',$7,$8::jsonb,$9)`,[msgId,p.tenantId,thread.scope,threadId,seq,JSON.stringify(author),body,JSON.stringify(ref),`voice-memo:${memo}`]);
       await db.query('UPDATE threads SET updated_at=clock_timestamp() WHERE id=$1',[threadId]);
@@ -145,11 +153,10 @@ export class WatchServices {
       await event(db,p,thread.scope,'message.created',msgId,{thread_id:threadId,message_id:msgId,seq:Number(seq),kind:'text',author});
       const bot = thread.kind === 'bot' ? (await db.query('SELECT id,routing,rules,lead_agent_id FROM bots WHERE thread_id=$1 AND tenant_id=$2 AND NOT archived',[threadId,p.tenantId])).rows[0] : undefined;
       const agent = bot && (await db.query<AgentRow>('SELECT * FROM agents WHERE id=$1 FOR UPDATE',[bot.lead_agent_id])).rows[0];
-      if (bot && agent) await enqueueAgentTurn(db,p,{thread,agent,bot,seq,initiatorKind:'person',objective:MEMO_OBJECTIVE});
+      if (bot && agent) await enqueueAgentTurn(db,p,{thread,agent,bot,seq,initiatorKind:'person',objective:memoObjective(transcript ? 'freeform' : 'no_transcript')});
     });
   }
 }
-const MEMO_OBJECTIVE = 'The user just sent a voice memo (see the latest "Voice memo" message). If it directly asks for work in a project and you can send work with project_dispatch, send it now and say so. Otherwise summarize it, list the action items, then ask the user with a structured question (question_ask) with options "Do it now", "Remind me later", "Done" so it shows as Needs you.';
 
 function transactionConfig(p:Principal): {origin:string,user:string,cookieFile:string} {
   const allowed = (process.env.SWARMAA_RETIREODDS_PRINCIPALS || '').split(',').map(x => x.trim().toLowerCase()).filter(Boolean);

@@ -25,3 +25,24 @@ Flow (`iOS-app/Sources/RingLink.swift`):
 
 Limits: the iPhone copy is the durable copy once acked (Watch-memo cap of 20
 files applies). Force-quitting Swarmaa stops background wakes until reopened.
+
+## Voice agent: memo → action
+
+Design and frozen contract: [RING-AGENT.md](RING-AGENT.md). Service side
+(`src/core/voice.ts`, migration `044_voice_actions`):
+
+- `voice_intent` (transcript first, audio trails) posts the "🎙 Voice memo"
+  message (key `voice-memo:<memo>`), parses it with `src/voice/intent.ts`, and
+  either queues one closed local action (reminder, event, note, timer; run
+  after commit, waited on up to 4 s, result card = `notice` with
+  `ref.local_action`), delegates "ask/tell <bot>" into that bot's thread as the
+  person, or queues one Assistant turn with a hint-specific objective. A
+  disabled/unavailable action falls back to the Assistant. Idempotent per
+  `(tenant, thread, memo)`; a different transcript is `409 memo_conflict`.
+- When the audio later lands (`watch_memo_put`), `announce` attaches
+  `ref.voice_memo` to that message and queues no second turn. Audio-only memos
+  keep the old path (one Assistant turn).
+- `local_action_run|undo|list|check` expose the runner directly; bots with
+  `rules.local_actions: true` may emit `{type:'local_action', action}` (≤ 5
+  per turn). Rows left queued/running are rerun by a server sweep (30 s, 3
+  attempts).

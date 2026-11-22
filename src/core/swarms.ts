@@ -13,6 +13,7 @@ import { cancelTask, taskView, type TaskRow } from './tasks.js';
 import { botCapability, leadTurnProfile, memberCapability } from './bots.js';
 import type { QuestionAction, TurnAction, TurnGrantContext, SwarmStartStepInput } from './actions.js';
 import { isBaseRef } from './actions.js';
+import { queueLocalAction } from './voice.js';
 
 // Teams writes take teamsLock first.
 
@@ -1681,32 +1682,17 @@ export class SwarmsService {
       }
     } else if (act.type === 'project_dispatch') {
       // validateTurnGrant resolved act.bot to an id and checked this bot may dispatch.
-      const target = (await db.query<{ id: string; name: string; scope: string; thread_id: string; lead_agent_id: string; routing: Record<string, unknown>; rules: Record<string, unknown> }>(
-        'SELECT id, name, scope, thread_id, lead_agent_id, routing, rules FROM bots WHERE id=$1 AND tenant_id=$2 AND NOT archived FOR UPDATE',
-        [act.bot, ctx.tenantId]
-      )).rows[0];
-      if (!target) throw new AppError(404, 'not_found', 'target bot not found');
-      const thread = (await db.query<ThreadRow>('SELECT * FROM threads WHERE id=$1 AND tenant_id=$2 FOR UPDATE', [target.thread_id, ctx.tenantId])).rows[0];
-      const lead = (await db.query<AgentRow>('SELECT * FROM agents WHERE id=$1 AND NOT archived FOR UPDATE', [target.lead_agent_id])).rows[0];
-      if (!thread || !lead) throw new AppError(409, 'invalid_state', `bot '${target.name}' has no thread or lead agent`);
-      if (!(await this.takeTurn(db, p, budget, target.name))) return;
-      const seq = await assignThreadSeq(db, ctx.tenantId, thread.id);
-      const msgId = newId();
-      const author = { kind: 'agent', id: ctx.agent.id };
-      await db.query(
-        `INSERT INTO messages (id, tenant_id, scope, thread_id, seq, author, kind, body, ref)
-         VALUES ($1, $2, $3, $4, $5, $6::jsonb, 'text', $7, $8::jsonb)`,
-        [msgId, ctx.tenantId, target.scope, thread.id, seq, JSON.stringify(author), act.body,
-         JSON.stringify({ dispatched_from: { thread_id: ctx.thread.id, bot_id: ctx.botId } })]
-      );
-      await db.query('UPDATE threads SET updated_at=clock_timestamp() WHERE id=$1', [thread.id]);
-      await event(db, p, target.scope, 'message.created', msgId, { thread_id: thread.id, message_id: msgId, seq: Number(seq), kind: 'text', author });
-      await enqueueAgentTurn(db, p, {
-        thread, agent: lead, bot: target, seq, initiatorKind: 'handoff', hopDepth: budget.hop + 1,
-        objective: clipUtf8(act.body, 256), provider: requestedProvider(act.body),
-        dispatchedFrom: { thread_id: ctx.thread.id, scope: ctx.scope, bot_id: ctx.botId! }
+      const sent = await dispatchToBot(db, p, {
+        botId: act.bot, body: act.body, author: { kind: 'agent', id: ctx.agent.id }, initiatorKind: 'handoff', hopDepth: budget.hop + 1,
+        from: { thread_id: ctx.thread.id, scope: ctx.scope, bot_id: ctx.botId! },
+        beforePost: name => this.takeTurn(db, p, budget, name)
       });
-      await this.postNotice(db, p, ctx.scope, ctx.thread.id, `Sent to ${target.name}: ${clipUtf8(act.body, 200)}`);
+      if (!sent) return;
+      await this.postNotice(db, p, ctx.scope, ctx.thread.id, `Sent to ${sent.name}: ${clipUtf8(act.body, 200)}`);
+    } else if (act.type === 'local_action') {
+      // validateTurnGrant checked rules.local_actions; the action runs after commit (voice.ts runOriginActions).
+      requireCondition(ctx.taskId, 409, 'invalid_state', 'local_action requires a turn task');
+      await queueLocalAction(db, p, { scope: ctx.scope, threadId: ctx.thread.id, originKind: 'turn', originId: ctx.taskId!, action: act.action });
     } else if (act.type === 'channel_post') {
       const chanSeq = await assignThreadSeq(db, ctx.tenantId, act.channel_id);
       const chanMsgId = newId();
@@ -1966,4 +1952,43 @@ export class SwarmsService {
       });
     }
   }
+}
+
+/**
+ * Posts a request into another bot's thread and queues its lead turn (project_dispatch and voice delegation).
+ * `from` is the coordinator bot thread the reply is copied back to. `beforePost` may veto (turn fan-out budget).
+ * Returns undefined when vetoed.
+ */
+export async function dispatchToBot(db: Db, p: Principal, opts: {
+  botId: string; body: string; author: { kind: 'agent' | 'human'; id: string };
+  initiatorKind: 'handoff' | 'person'; hopDepth?: number; idempotencyKey?: string; ref?: Record<string, unknown>;
+  from?: { thread_id: string; scope: string; bot_id: string } | null;
+  beforePost?: (name: string) => Promise<boolean>;
+}): Promise<{ name: string; thread_id: string; seq: number; message_id: string; task_id: string } | undefined> {
+  const target = (await db.query<{ id: string; name: string; scope: string; thread_id: string; lead_agent_id: string; routing: Record<string, unknown>; rules: Record<string, unknown> }>(
+    'SELECT id, name, scope, thread_id, lead_agent_id, routing, rules FROM bots WHERE id=$1 AND tenant_id=$2 AND NOT archived FOR UPDATE',
+    [opts.botId, p.tenantId]
+  )).rows[0];
+  if (!target) throw new AppError(404, 'not_found', 'target bot not found');
+  const thread = (await db.query<ThreadRow>('SELECT * FROM threads WHERE id=$1 AND tenant_id=$2 FOR UPDATE', [target.thread_id, p.tenantId])).rows[0];
+  const lead = (await db.query<AgentRow>('SELECT * FROM agents WHERE id=$1 AND NOT archived FOR UPDATE', [target.lead_agent_id])).rows[0];
+  if (!thread || !lead) throw new AppError(409, 'invalid_state', `bot '${target.name}' has no thread or lead agent`);
+  if (opts.beforePost && !(await opts.beforePost(target.name))) return undefined;
+  const seq = await assignThreadSeq(db, p.tenantId, thread.id);
+  const msgId = newId();
+  const ref = { ...(opts.ref ?? {}), ...(opts.from ? { dispatched_from: { thread_id: opts.from.thread_id, bot_id: opts.from.bot_id } } : {}) };
+  await db.query(
+    `INSERT INTO messages (id, tenant_id, scope, thread_id, seq, author, kind, body, ref, idempotency_key)
+     VALUES ($1, $2, $3, $4, $5, $6::jsonb, 'text', $7, $8::jsonb, $9)`,
+    [msgId, p.tenantId, target.scope, thread.id, seq, JSON.stringify(opts.author), opts.body,
+     Object.keys(ref).length ? JSON.stringify(ref) : null, opts.idempotencyKey ?? null]
+  );
+  await db.query('UPDATE threads SET updated_at=clock_timestamp() WHERE id=$1', [thread.id]);
+  await event(db, p, target.scope, 'message.created', msgId, { thread_id: thread.id, message_id: msgId, seq: Number(seq), kind: 'text', author: opts.author });
+  const taskId = await enqueueAgentTurn(db, p, {
+    thread, agent: lead, bot: target, seq, initiatorKind: opts.initiatorKind, hopDepth: opts.hopDepth ?? 0,
+    objective: clipUtf8(opts.body, 256), provider: requestedProvider(opts.body),
+    ...(opts.from ? { dispatchedFrom: opts.from } : {})
+  });
+  return { name: target.name, thread_id: thread.id, seq: Number(seq), message_id: msgId, task_id: taskId };
 }
