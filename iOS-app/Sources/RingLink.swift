@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import UserNotifications
 import UIKit
 import AVFoundation
 @preconcurrency import CoreBluetooth
@@ -17,7 +18,15 @@ import AVFoundation
 
     struct Candidate: Identifiable { let id: UUID; let name: String }
     private(set) var candidates: [Candidate] = []
-    private(set) var status = "Not connected."
+    private(set) var status = "Not connected." { didSet { if status != oldValue { note(status) } } }
+    /// Recent ring events with time and app state, so background behaviour can be checked afterwards.
+    private(set) var log: [String] = UserDefaults.standard.stringArray(forKey: "ring.log") ?? []
+    func note(_ event: String) {
+        let state = switch UIApplication.shared.applicationState { case .active: "fg"; case .inactive: "inactive"; default: "bg" }
+        log.append("\(Date().formatted(date: .omitted, time: .standard)) [\(state)] \(event)")
+        if log.count > 80 { log.removeFirst(log.count - 80) }
+        defaults.set(log, forKey: "ring.log")
+    }
     private(set) var connected = false
     private(set) var busy = false
     private(set) var lastMemo: Date?
@@ -52,7 +61,27 @@ import AVFoundation
     /// Swarmaa in the background when the ring sends a notification.
     func start() {
         guard central == nil, pairedID != nil else { return }
+        note("Launch (\(UIApplication.shared.applicationState == .background ? "woken in background" : "opened"))")
         makeCentral()
+        NotificationCenter.default.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { _ in
+            MainActor.assumeIsolated { RingLink.shared.becameActive() }
+        }
+    }
+    /// Foreground catch-up: anything recorded or saved while Swarmaa couldn't finish in the background.
+    private func becameActive() {
+        if connected { checkNow() } else { connect() }
+        guard let generation = WatchBridge.shared.memoGeneration else { return }
+        let waiting = deferred
+        deferred = []
+        Task {
+            for url in waiting where FileManager.default.fileExists(atPath: url.path) { await self.deliver(url, generation: generation) }
+            await self.upload(generation: generation)
+        }
+    }
+    /// Memos saved in the background whose on-device transcription could not run there.
+    private var deferred: [URL] {
+        get { (defaults.stringArray(forKey: "ring.deferred") ?? []).map { URL(fileURLWithPath: $0) } }
+        set { defaults.set(newValue.map(\.path), forKey: "ring.deferred") }
     }
     private func makeCentral() {
         central = CBCentralManager(delegate: self, queue: .main, options: [
@@ -143,9 +172,11 @@ import AVFoundation
 
     private func received(_ frame: SR116Protocol.Frame) {
         if let recording = SR116Protocol.isRecording(frame) {
+            note("Ring state push: \(recording ? "recording" : "idle")")
             if recording { status = "Ring is recording…" }
             // Finished recording: the ring flips 0x50 → 0x40.
-            if wasRecording && !recording { scheduleCheck(after: 1) }
+            // Finished (or woke us after a relaunch, when the earlier 'recording' push was missed).
+            if !recording { scheduleCheck(after: 1) }
             wasRecording = recording
             return
         }
@@ -203,8 +234,18 @@ import AVFoundation
     private func deliver(_ item: URL, generation: String) async {
         hold()
         defer { release() }
-        let text = await MemoTranscriber.transcribe(item)
-        try? text.write(to: item.deletingPathExtension().appendingPathExtension("txt"), atomically: true, encoding: .utf8)
+        note("Transcribing…")
+        let started = Date()
+        let text = await Self.transcribe(item, timeout: 25)
+        note("Transcript: \(text.map { "\($0.count) chars" } ?? "timed out") after \(Int(Date().timeIntervalSince(started))) s")
+        guard text?.isEmpty == false || UIApplication.shared.applicationState == .active else {
+            // iOS may not run speech recognition in the background. Keep the memo and finish when Swarmaa opens.
+            deferred = deferred + [item]
+            status = "Recording saved. Open Swarmaa to transcribe and send it."
+            Self.remind()
+            return
+        }
+        try? (text ?? "").write(to: item.deletingPathExtension().appendingPathExtension("txt"), atomically: true, encoding: .utf8)
         await upload(generation: generation, assign: item)
     }
 
@@ -254,8 +295,35 @@ import AVFoundation
     private func hold() {
         guard background == .invalid else { return }
         background = UIApplication.shared.beginBackgroundTask(withName: "ring-memo") { [weak self] in
-            Task { @MainActor in self?.release() }
+            // Must always end the task here, or iOS terminates the app.
+            MainActor.assumeIsolated {
+                guard let self, self.background != .invalid else { return }
+                self.note("Background time ran out")
+                UIApplication.shared.endBackgroundTask(self.background); self.background = .invalid
+            }
         }
+    }
+
+    @MainActor private final class Once { var done = false }
+    /// On-device transcription with a deadline; nil when it doesn't finish in time.
+    private static func transcribe(_ url: URL, timeout: UInt64) async -> String? {
+        let once = Once()
+        return await withCheckedContinuation { (c: CheckedContinuation<String?, Never>) in
+            Task { @MainActor in
+                let text = await MemoTranscriber.transcribe(url)
+                if !once.done { once.done = true; c.resume(returning: text) }
+            }
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: timeout * 1_000_000_000)
+                if !once.done { once.done = true; c.resume(returning: nil) }
+            }
+        }
+    }
+    private static func remind() {
+        let content = UNMutableNotificationContent()
+        content.title = "Ring memo saved"
+        content.body = "Open Swarmaa to send it to your bot."
+        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "ring-memo-deferred", content: content, trigger: nil))
     }
     private func release() {
         guard background != .invalid, assembler == nil, !uploading else { return }
@@ -419,6 +487,14 @@ struct RingView: View {
                 ForEach(ring.candidates) { candidate in
                     Button(candidate.name) { ring.pair(candidate); MemoTranscriber.requestAccess() }.buttonStyle(Pill())
                 }
+            }
+            if !ring.log.isEmpty {
+                Eyebrow("Recent ring activity")
+                ScrollView {
+                    Text(ring.log.reversed().joined(separator: "\n")).font(.caption.monospaced()).foregroundStyle(KS.muted)
+                        .frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled)
+                }.frame(maxHeight: 220)
+                ShareLink(item: ring.log.joined(separator: "\n")) { Text("Share activity log") }.buttonStyle(Pill())
             }
             Spacer()
         }.onAppear {
