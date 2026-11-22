@@ -10,20 +10,22 @@ import { CoreService } from '../src/core/index.js';
 import { setLocalActionRunner, setLocalActionWait, sweepLocalActions } from '../src/core/voice.js';
 import { ROLE_PERMISSIONS } from '../src/policy.js';
 import type { Principal } from '../src/types.js';
-import type { LocalAction, LocalActionResult, LocalActionRunner } from '../src/voice/types.js';
+import type { LocalAction, LocalActionResult, LocalActionRunner, LocalActionRunOptions } from '../src/voice/types.js';
 
 const connectionString = process.env.TEST_DATABASE_URL;
 
 describe('voice service', { skip: !connectionString, concurrency: false }, () => {
   const schema = `voice_service_test_${randomUUID().replaceAll('-', '')}`;
   let control: Pool, pool: Pool, core: CoreService, dir: string;
-  const runs: Array<{ id: string; action: LocalAction }> = [], undos: Array<{ id: string; handle: string }> = [];
+  const runs: Array<{ id: string; action: LocalAction; opts?: LocalActionRunOptions }> = [], undos: Array<{ id: string; handle: string }> = [];
   let next: (action: LocalAction) => LocalActionResult = a => ({ ok: true, handle: `h-${runs.length}`, summary: `Done: ${a.type}` });
   const fake: LocalActionRunner = {
-    async run(id, action) { runs.push({ id, action }); return next(action); },
+    async run(id, action, opts) { runs.push({ id, action, opts }); return next(action); },
     async undo(id, _action, handle) { undos.push({ id, handle }); return { ok: true, summary: 'Removed' }; },
     async check() { return { reminders: 'ok', calendar: 'disabled', notes: 'ok' }; },
+    async warm() { warms++; },
   };
+  let warms = 0;
 
   before(async () => {
     control = new pg.Pool({ connectionString, max: 1 });
@@ -235,5 +237,66 @@ describe('voice service', { skip: !connectionString, concurrency: false }, () =>
     const plainTask = await turn(plain.thread.id);
     assert.equal((await pool.query("SELECT 1 FROM local_actions WHERE origin_id=$1", [plainTask])).rowCount, 0);
     assert.ok((await pool.query("SELECT 1 FROM messages WHERE thread_id=$1 AND body LIKE 'Turn action rejected: local_action%'", [plain.thread.id])).rowCount);
+  });
+
+  it('voice_warm: closed schema, no workers, never waits on the runner', async () => {
+    const { tenant, user } = await setup();
+    const worker = await principal(tenant, 'worker');
+    await rejects(call(worker, 'voice_warm', {}), 403, 'forbidden');
+    const writerWorker = { ...worker, permissions: [...worker.permissions, 'thread:read', 'thread:write'] as Principal['permissions'] };
+    await rejects(call(writerWorker, 'voice_warm', {}), 403, 'forbidden');
+    await rejects(call(user, 'voice_warm', { thread_id: randomUUID() }), 400, 'invalid_arguments');
+    const reader = { ...user, permissions: user.permissions.filter(x => x !== 'thread:write') };
+    await rejects(call(reader, 'voice_warm', {}), 403, 'forbidden');
+    const before = warms;
+    const original = fake.warm;
+    fake.warm = () => new Promise(() => {}); // a hung osascript launch must not hold the reply
+    try { assert.deepEqual(await call(user, 'voice_warm', {}), { ok: true }); } finally { fake.warm = original; }
+    assert.deepEqual(await call(user, 'voice_warm', {}), { ok: true });
+    assert.equal(warms, before + 1);
+    assert.ok(core.listTools(user).some(t => t.name === 'voice_warm'));
+    assert.ok(!core.listTools(worker).some(t => t.name === 'voice_warm'));
+  });
+
+  it('passes fresh on attempt 1 and the memo zone to the card; a sweep rerun is not fresh', async () => {
+    const { user, thread } = await setup();
+    const req = memo(thread, 'Remind me to call mom at 5 pm');
+    await call(user, 'voice_intent', req);
+    const first = runs.at(-1)!;
+    assert.deepEqual(first.opts, { fresh: true, timeZone: 'Asia/Bangkok' });
+    // A row left running by a crash (attempt 1 claimed, never finished) is rerun with the marker lookup.
+    const id = randomUUID();
+    await pool.query(`INSERT INTO local_actions (id,tenant_id,scope,thread_id,origin_kind,origin_id,ordinal,type,action,action_sha256,created_by,status,attempts,updated_at)
+      VALUES ($1,$2,'project:a',$3,'tool',$4,0,'timer.start',$5::jsonb,$6,$7,'running',1,clock_timestamp() - interval '1 minute')`,
+    [id, user.tenantId, thread, `${user.id}:crashed`, JSON.stringify({ type: 'timer.start', label: 'Tea', fire_at: '2026-11-22T04:00:00Z' }), 'b'.repeat(64), user.id]);
+    await sweepLocalActions(pool);
+    const rerun = runs.find(r => r.id === id)!;
+    assert.deepEqual(rerun.opts, { fresh: false }, 'tool origin: no zone, default formatting');
+    assert.equal((await pool.query('SELECT status FROM local_actions WHERE id=$1', [id])).rows[0].status, 'done');
+  });
+
+  it('a replayed memo whose action is still running waits for it and answers done', async () => {
+    const { user, thread } = await setup();
+    let release!: () => void;
+    const gate = new Promise<void>(r => { release = r; });
+    const original = fake.run;
+    fake.run = async (id, a, o) => { await gate; return original(id, a, o); };
+    const req = memo(thread, 'Remind me to stretch at 6 pm');
+    let actionId = '';
+    try {
+      setLocalActionWait(50);
+      const slow = await call(user, 'voice_intent', req);
+      assert.equal(slow.actions[0].status, 'running');
+      setLocalActionWait(4000);
+      setTimeout(release, 100);
+      const replay = await call(user, 'voice_intent', req);
+      assert.equal(replay.route, 'local');
+      assert.equal(replay.actions[0].status, 'done');
+      assert.equal(replay.actions[0].undoable, true);
+      assert.equal(replay.actions[0].id, slow.actions[0].id);
+      actionId = slow.actions[0].id;
+      assert.deepEqual(await call(user, 'voice_intent', req), replay);
+    } finally { release(); fake.run = original; setLocalActionWait(4000); }
+    assert.equal(runs.filter(r => r.id === actionId).length, 1, 'the replay joined the running execution');
   });
 });

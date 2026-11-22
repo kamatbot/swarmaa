@@ -30,10 +30,20 @@ export interface LocalActionResult { ok: boolean; code?: LocalActionCode; handle
 export type LocalApp = 'reminders' | 'calendar' | 'notes';
 export type LocalAppState = 'ok' | 'permission_denied' | 'disabled';
 
+/** Optional per-run hints (additive, latency review F7/F18). */
+export interface LocalActionRunOptions {
+  /** First attempt of a freshly claimed row: no earlier run can have created the item, so the marker lookup is skipped. */
+  fresh?: boolean;
+  /** IANA zone for the card summary (the memo's phone zone); default is the runner's zone. */
+  timeZone?: string;
+}
+
 export interface LocalActionRunner {
-  run(id: string, action: LocalAction): Promise<LocalActionResult>;
+  run(id: string, action: LocalAction, opts?: LocalActionRunOptions): Promise<LocalActionResult>;
   undo(id: string, action: LocalAction, handle: string): Promise<LocalActionResult>;
   check(): Promise<Record<LocalApp, LocalAppState>>;
+  /** Best effort: start the action helper and launch apps whose last check or run was ok. Never throws. */
+  warm?(): Promise<void>;
 }
 
 export interface LocalActionRunnerOptions {

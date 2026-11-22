@@ -1,4 +1,4 @@
-/** Needs a disposable PostgreSQL database via TEST_DATABASE_URL; skipped otherwise. Memo storage needs macOS. */
+/** Needs a disposable PostgreSQL database via TEST_DATABASE_URL; skipped otherwise. Memo storage is Mac-only; the tests fake the platform (the file I/O works anywhere). */
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
@@ -78,6 +78,12 @@ describe('watch services', { skip: !connectionString, concurrency: false }, () =
     if (dir) await rm(dir, { recursive: true, force: true });
   });
 
+  // Memo storage refuses non-Mac hosts; the file I/O itself works anywhere.
+  async function asMac(fn: () => Promise<void>) {
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
+    Object.defineProperty(process, 'platform', { value: 'darwin' });
+    try { await fn(); } finally { Object.defineProperty(process, 'platform', platform); }
+  }
   const call = async (p: Principal, name: string, args: Record<string, unknown>) => await core.call(p, name, args) as Record<string, any>;
   const rejects = (promise: Promise<unknown>, status: number, code: string) =>
     assert.rejects(promise, (e: any) => { assert.equal(e.code, code); assert.equal(e.status, status); return true; });
@@ -140,7 +146,7 @@ describe('watch services', { skip: !connectionString, concurrency: false }, () =
     await rejects(call(user, 'watch_transaction_confirm', { thread_id: thread, review_id: expired.reviewId, review_token: expired.reviewToken, confirmation_id: randomUUID() }), 409, 'review_expired');
   });
 
-  it('stores a chunked memo idempotently and rejects conflicting chunks', { skip: process.platform !== 'darwin' }, async () => {
+  it('stores a chunked memo idempotently and rejects conflicting chunks', () => asMac(async () => {
     const { user, thread } = await setup();
     const data = Buffer.alloc(200_000, 7);
     data.write('ftypM4A ', 4, 'ascii');
@@ -155,9 +161,29 @@ describe('watch services', { skip: !connectionString, concurrency: false }, () =
     const stored = await call(user, 'watch_memo_put', chunk(1));
     assert.equal(stored.status, 'stored'); assert.equal(stored.stored_on, 'mac');
     assert.equal((await call(user, 'watch_memo_status', { memo_id: base.memo_id, thread_id: thread })).status, 'stored');
-  });
+  }));
 
-  it('announces a stored memo once: transcript file, thread message and one bot turn', { skip: process.platform !== 'darwin' }, async () => {
+  it('assembles out-of-order chunks only when the last one arrives and still checks integrity', () => asMac(async () => {
+    const { user, thread } = await setup();
+    const { createHash } = await import('node:crypto');
+    const data = Buffer.alloc(300_000, 9); data.write('ftypM4A ', 4, 'ascii');
+    const base = { memo_id: randomUUID(), thread_id: thread, sha256: createHash('sha256').update(data).digest('hex'), byte_length: data.length, captured_at: '2026-11-11T10:00:00Z' };
+    const chunk = (index: number) => ({ ...base, index, data_base64: data.subarray(index * 131072, (index + 1) * 131072).toString('base64') });
+    assert.equal((await call(user, 'watch_memo_put', chunk(2))).status, 'uploading');
+    assert.equal((await call(user, 'watch_memo_put', chunk(0))).status, 'uploading');
+    assert.deepEqual((await call(user, 'watch_memo_status', { memo_id: base.memo_id, thread_id: thread })).received_indices, [0, 2]);
+    assert.equal((await call(user, 'watch_memo_put', chunk(1))).status, 'stored');
+    const file = path.join(dir, 'memos', createHash('sha256').update(user.tenantId).digest('hex'), thread, `${base.memo_id}.m4a`);
+    assert.ok((await readFile(file)).equals(data));
+    // Every chunk well-formed but the whole is not what the sha256 promised: rejected, nothing stored.
+    const bad = { ...base, memo_id: randomUUID(), sha256: 'a'.repeat(64) };
+    await call(user, 'watch_memo_put', { ...bad, index: 0, data_base64: chunk(0).data_base64 });
+    await call(user, 'watch_memo_put', { ...bad, index: 1, data_base64: chunk(1).data_base64 });
+    await rejects(call(user, 'watch_memo_put', { ...bad, index: 2, data_base64: chunk(2).data_base64 }), 400, 'memo_invalid');
+    assert.equal((await call(user, 'watch_memo_status', { memo_id: bad.memo_id, thread_id: thread })).status, 'uploading');
+  }));
+
+  it('announces a stored memo once: transcript file, thread message and one bot turn', () => asMac(async () => {
     const { tenant, user, thread } = await setup();
     const data = Buffer.alloc(200_000, 7);
     data.write('ftypM4A ', 4, 'ascii');
@@ -180,8 +206,8 @@ describe('watch services', { skip: !connectionString, concurrency: false }, () =
     const { createHash: h } = await import('node:crypto');
     const txt = path.join(dir, 'memos', h('sha256').update(tenant).digest('hex'), thread, `${base.memo_id}.txt`);
     assert.equal(await readFile(txt, 'utf8'), 'Call the plumber tomorrow');
-  });
-  it('limits in-flight uploads, not stored memos, and drops chunks once stored', { skip: process.platform !== 'darwin' }, async () => {
+  }));
+  it('limits in-flight uploads, not stored memos, and drops chunks once stored', () => asMac(async () => {
     const { user, thread } = await setup();
     const { createHash } = await import('node:crypto');
     const memo = (fill: number) => {
@@ -191,5 +217,5 @@ describe('watch services', { skip: !connectionString, concurrency: false }, () =
     for (let i = 0; i < 21; i++) assert.equal((await call(user, 'watch_memo_put', memo(i + 1))).status, 'stored');
     const left = (await pool.query('SELECT count(*)::int AS n FROM watch_memo_chunks WHERE thread_id=$1', [thread])).rows[0].n;
     assert.equal(left, 0);
-  });
+  }));
 });

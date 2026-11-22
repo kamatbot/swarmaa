@@ -113,8 +113,12 @@ export class WatchServices {
         row.status = 'uploading';
         return response(row,[]);
       }
-      const chunks = (await db.query('SELECT chunk_index,data FROM watch_memo_chunks WHERE tenant_id=$1 AND thread_id=$2 AND memo_id=$3 ORDER BY chunk_index',[p.tenantId,thread,memo])).rows;
-      if (parsed && chunks.length === Math.ceil(row.byte_length/CHUNK)) {
+      // No chunk data until the last chunk is in: a put only counts, status lists indices (was O(n²) bytes per upload).
+      const total = Math.ceil(row.byte_length/CHUNK);
+      const indices:number[] = parsed ? [] : (await db.query('SELECT chunk_index FROM watch_memo_chunks WHERE tenant_id=$1 AND thread_id=$2 AND memo_id=$3 ORDER BY chunk_index',[p.tenantId,thread,memo])).rows.map(c => c.chunk_index);
+      const received = parsed ? Number((await db.query('SELECT count(*)::int AS n FROM watch_memo_chunks WHERE tenant_id=$1 AND thread_id=$2 AND memo_id=$3',[p.tenantId,thread,memo])).rows[0].n) : indices.length;
+      if (parsed && received === total) {
+        const chunks = (await db.query('SELECT data FROM watch_memo_chunks WHERE tenant_id=$1 AND thread_id=$2 AND memo_id=$3 ORDER BY chunk_index',[p.tenantId,thread,memo])).rows;
         const data = Buffer.concat(chunks.map(c => c.data));
         requireCondition(data.length === row.byte_length && digest(data) === row.sha256 && data.length >= 12 && data.toString('ascii',4,8) === 'ftyp' && /^(M4A |M4B |isom|mp4[12])$/.test(data.toString('ascii',8,12)),400,'memo_invalid','Memo failed integrity or M4A validation.');
         await durableSave(filename,data);
@@ -123,7 +127,7 @@ export class WatchServices {
         // The durable file is the copy now; a later invalid file resets the row to 'uploading' and the client re-sends.
         await db.query('DELETE FROM watch_memo_chunks WHERE tenant_id=$1 AND thread_id=$2 AND memo_id=$3',[p.tenantId,thread,memo]);
       }
-      return response(row,action === 'status' ? (row.status === 'uploading' && chunks.length === Math.ceil(row.byte_length / CHUNK) ? [] : chunks.map(c => c.chunk_index)) : undefined);
+      return response(row,action === 'status' ? (row.status === 'uploading' && received === total ? [] : indices) : undefined);
     });
     if ((result as any).status === 'stored' && action !== 'delete') await this.announce(p,thread,memo);
     return result;

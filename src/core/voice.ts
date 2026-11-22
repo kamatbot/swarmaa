@@ -17,6 +17,10 @@ import { assignThreadSeq, clipUtf8, enqueueAgentTurn, type AgentRow, type Thread
 let runner: LocalActionRunner | undefined;
 export function setLocalActionRunner(next: LocalActionRunner | undefined): void { runner = next; }
 function localRunner(): LocalActionRunner { return runner ??= createLocalActionRunner(); }
+/** Fire-and-forget: start the action helper and launch apps known to work (server start, voice_warm). Never throws. */
+export function warmLocalActions(): void {
+  try { const r = localRunner(); if (r.warm) void r.warm().catch(() => {}); } catch { /* best effort */ }
+}
 
 const WAIT_MS = 4000, STALE_SECONDS = 30, MAX_ATTEMPTS = 3;
 let waitMs = WAIT_MS;
@@ -35,6 +39,8 @@ interface ActionRow {
   id: string; tenant_id: string; scope: string; thread_id: string; origin_kind: 'memo' | 'turn' | 'tool'; origin_id: string; ordinal: number;
   type: LocalAction['type']; action: LocalAction; status: LocalActionStatus; attempts: number; code: string | null; handle: string | null;
   summary: string; message_id: string | null; created_by: string; created_at: Date; updated_at: Date;
+  /** Only on a claimed row: the memo's phone zone (voice_intents.time_zone), null for turn/tool origins. */
+  time_zone?: string | null;
 }
 
 const actionView = (r: ActionRow) => ({ id: r.id, type: r.type, status: r.status, summary: r.summary || pendingSummary(r.action),
@@ -70,22 +76,37 @@ export async function queueLocalAction(db: Db, p: Principal, o: { scope: string;
 }
 
 const actor = (r: ActionRow): Principal => ({ id: r.created_by, tenantId: r.tenant_id, name: 'service', role: 'frontend', scopes: [r.scope], permissions: [] });
+const appOf = (t: LocalAction['type']) => t === 'event.create' ? 'calendar' : t === 'note.append' ? 'notes' : 'reminders';
+/** A memo whose action was turned off or impossible went to the Assistant (finalize switches the route in the same transaction). */
+const memoRoute = (route: string, rows: ActionRow[]) => rows.some(r => r.status === 'failed' && (r.code === 'action_disabled' || r.code === 'unavailable')) ? 'assistant' : route;
 
-/** Claims a queued (or stale running) row, runs it outside any transaction, then records the result. */
-async function execute(pool: Pool, id: string): Promise<void> {
-  const claimed = (await pool.query<ActionRow>(`UPDATE local_actions SET status='running', attempts=attempts+1, updated_at=clock_timestamp()
-    WHERE id=$1 AND attempts<$2 AND (status='queued' OR (status='running' AND updated_at < clock_timestamp() - $3 * interval '1 second')) RETURNING *`,
+/** Claims a queued (or stale running) row, runs it outside any transaction, then records the result. Returns the final row. */
+async function execute(pool: Pool, id: string): Promise<ActionRow | undefined> {
+  const claimed = (await pool.query<ActionRow>(`UPDATE local_actions la SET status='running', attempts=attempts+1, updated_at=clock_timestamp()
+    WHERE id=$1 AND attempts<$2 AND (status='queued' OR (status='running' AND updated_at < clock_timestamp() - $3 * interval '1 second'))
+    RETURNING la.*, (SELECT v.time_zone FROM voice_intents v WHERE la.origin_kind='memo' AND v.tenant_id=la.tenant_id AND v.thread_id=la.thread_id AND v.memo_id::text=la.origin_id) AS time_zone`,
   [id, MAX_ATTEMPTS, STALE_SECONDS])).rows[0];
-  if (!claimed) return;
+  if (!claimed) return undefined;
   const started = Date.now();
   let result: LocalActionResult;
-  try { result = await localRunner().run(claimed.id, claimed.action); }
+  // Attempt 1 cannot have created anything yet, so the script skips its marker scan; sweep reruns keep it.
+  try { result = await localRunner().run(claimed.id, claimed.action, { fresh: claimed.attempts === 1, ...(claimed.time_zone ? { timeZone: claimed.time_zone } : {}) }); }
   catch { result = { ok: false, code: 'failed', summary: 'The action failed.' }; }
-  await finalize(pool, claimed, result, Date.now() - started);
+  return finalize(pool, claimed, result, Date.now() - started);
 }
 
-async function finalize(pool: Pool, row: ActionRow, result: LocalActionResult, execMs: number): Promise<void> {
-  await transaction(pool, async db => {
+// In-process executions by row id: a replayed voice_intent waits on the run already in flight instead of answering `running`.
+const inflight = new Map<string, Promise<ActionRow | undefined>>();
+function track(pool: Pool, id: string): Promise<ActionRow | undefined> {
+  const running = inflight.get(id);
+  if (running) return running;
+  const p = execute(pool, id).finally(() => { inflight.delete(id); });
+  inflight.set(id, p);
+  return p;
+}
+
+async function finalize(pool: Pool, row: ActionRow, result: LocalActionResult, execMs: number): Promise<ActionRow | undefined> {
+  return transaction(pool, async db => {
     await teamsLock(db, row.tenant_id);
     const p = actor(row);
     const status: LocalActionStatus = result.ok ? 'done' : 'failed';
@@ -93,20 +114,24 @@ async function finalize(pool: Pool, row: ActionRow, result: LocalActionResult, e
     const summary = clipUtf8(redactSecrets(String(result.summary ?? '')), 2000) || pendingSummary(row.action);
     const handle = result.ok && typeof result.handle === 'string' && result.handle.length > 0 ? clipUtf8(result.handle, 1024) : null;
     // Fenced on the claimed attempt: a stale rerun that lost the race does not overwrite a newer result.
-    const updated = (await db.query<ActionRow>(`UPDATE local_actions SET status=$3, code=$4, handle=$5, summary=$6, exec_ms=$7, updated_at=clock_timestamp()
-      WHERE id=$1 AND status='running' AND attempts=$2 RETURNING *`, [row.id, row.attempts, status, code, handle, summary, execMs])).rows[0];
-    if (!updated) return;
+    // The memo's exec_ms is recorded in the same statement.
+    const updated = (await db.query<ActionRow>(`WITH u AS (UPDATE local_actions SET status=$3, code=$4, handle=$5, summary=$6, exec_ms=$7, updated_at=clock_timestamp()
+        WHERE id=$1 AND status='running' AND attempts=$2 RETURNING *),
+      v AS (UPDATE voice_intents vi SET exec_ms=$7, updated_at=clock_timestamp() FROM u
+        WHERE u.origin_kind='memo' AND vi.tenant_id=u.tenant_id AND vi.thread_id=u.thread_id AND vi.memo_id::text=u.origin_id RETURNING 1)
+      SELECT * FROM u`, [row.id, row.attempts, status, code, handle, summary, execMs])).rows[0];
+    if (!updated) return undefined;
     await audit(db, p, row.scope, result.ok ? 'local_action.run' : 'local_action.fail', row.id, { type: row.type, origin_kind: row.origin_kind, ...(code ? { code } : {}), exec_ms: execMs });
-    if (row.origin_kind === 'memo') await db.query('UPDATE voice_intents SET exec_ms=$4, updated_at=clock_timestamp() WHERE tenant_id=$1 AND thread_id=$2 AND memo_id=$3', [row.tenant_id, row.thread_id, row.origin_id, execMs]);
     // A memo whose action is turned off or impossible here goes to the Assistant instead of failing.
     if (row.origin_kind === 'memo' && (code === 'action_disabled' || code === 'unavailable')) {
       await db.query("UPDATE voice_intents SET route='assistant', hint='freeform', updated_at=clock_timestamp() WHERE tenant_id=$1 AND thread_id=$2 AND memo_id=$3", [row.tenant_id, row.thread_id, row.origin_id]);
       const thread = (await db.query<ThreadRow>('SELECT * FROM threads WHERE id=$1 AND tenant_id=$2 FOR UPDATE', [row.thread_id, row.tenant_id])).rows[0];
       const seq = (await db.query('SELECT message_seq FROM voice_intents WHERE tenant_id=$1 AND thread_id=$2 AND memo_id=$3', [row.tenant_id, row.thread_id, row.origin_id])).rows[0]?.message_seq;
       if (thread && seq) await assistantTurn(db, p, thread, Number(seq), 'freeform');
-      return;
+      return updated;
     }
     await postCard(db, p, updated);
+    return updated;
   });
 }
 
@@ -121,10 +146,12 @@ async function postCard(db: Db, p: Principal, r: ActionRow): Promise<void> {
     return;
   }
   const seq = await assignThreadSeq(db, r.tenant_id, r.thread_id), id = newId();
-  await db.query(`INSERT INTO messages (id,tenant_id,scope,thread_id,seq,author,kind,body,ref,idempotency_key) VALUES ($1,$2,$3,$4,$5,$6::jsonb,'notice',$7,$8::jsonb,$9)`,
-    [id, r.tenant_id, r.scope, r.thread_id, seq, JSON.stringify(author), body, JSON.stringify({ local_action: card }), `local-action:${r.id}`]);
-  await db.query('UPDATE local_actions SET message_id=$2 WHERE id=$1', [r.id, id]);
-  await db.query('UPDATE threads SET updated_at=clock_timestamp() WHERE id=$1', [r.thread_id]);
+  // One round trip: the card, its link on the action row, and the thread's activity time.
+  await db.query(`WITH m AS (INSERT INTO messages (id,tenant_id,scope,thread_id,seq,author,kind,body,ref,idempotency_key) VALUES ($1,$2,$3,$4,$5,$6::jsonb,'notice',$7,$8::jsonb,$9) RETURNING id),
+      a AS (UPDATE local_actions SET message_id=$1 WHERE id=$10),
+      t AS (UPDATE threads SET updated_at=clock_timestamp() WHERE id=$4)
+    SELECT 1`,
+  [id, r.tenant_id, r.scope, r.thread_id, seq, JSON.stringify(author), body, JSON.stringify({ local_action: card }), `local-action:${r.id}`, r.id]);
   await event(db, p, r.scope, 'message.created', id, { thread_id: r.thread_id, message_id: id, seq: Number(seq), kind: 'notice', author });
 }
 
@@ -137,18 +164,25 @@ async function assistantTurn(db: Db, p: Principal, thread: ThreadRow, seq: numbe
   return enqueueAgentTurn(db, p, { thread, agent, bot, seq, initiatorKind: 'person', objective: memoObjective(hint) });
 }
 
-async function runWithWait(pool: Pool, ids: string[]): Promise<void> {
-  const all = (async () => { for (const id of ids) await execute(pool, id); })().catch(() => {
+/** Runs (or joins the in-flight run of) each row in order, for up to the wait. Returns the rows that finished. */
+async function runWithWait(pool: Pool, ids: string[]): Promise<Map<string, ActionRow>> {
+  const done = new Map<string, ActionRow>();
+  const all = (async () => { for (const id of ids) { const r = await track(pool, id); if (r) done.set(id, r); } })().catch(() => {
     process.stderr.write('Local action run failed. Check database health.\n');
   });
-  await Promise.race([all, new Promise<void>(resolve => { const t = setTimeout(resolve, waitMs); t.unref?.(); })]);
+  let timer: NodeJS.Timeout | undefined;
+  await Promise.race([all, new Promise<void>(resolve => { timer = setTimeout(resolve, waitMs); timer.unref?.(); })]);
+  clearTimeout(timer);
+  return done;
 }
 
-/** After a turn commits: run its queued local_action rows in the background. */
+/** After a turn commits: run its queued local_action rows in the background, apps in parallel, each app in order. */
 export function runOriginActions(pool: Pool, tenantId: string, originKind: 'turn', originId: string): void {
   void (async () => {
-    const ids = (await pool.query<{ id: string }>("SELECT id FROM local_actions WHERE tenant_id=$1 AND origin_kind=$2 AND origin_id=$3 AND status='queued' ORDER BY ordinal", [tenantId, originKind, originId])).rows.map(r => r.id);
-    for (const id of ids) await execute(pool, id);
+    const rows = (await pool.query<{ id: string; type: LocalAction['type'] }>("SELECT id,type FROM local_actions WHERE tenant_id=$1 AND origin_kind=$2 AND origin_id=$3 AND status='queued' ORDER BY ordinal", [tenantId, originKind, originId])).rows;
+    const byApp = new Map<string, string[]>();
+    for (const r of rows) byApp.set(appOf(r.type), [...(byApp.get(appOf(r.type)) ?? []), r.id]);
+    await Promise.all([...byApp.values()].map(async ids => { for (const id of ids) await track(pool, id).catch(() => undefined); }));
   })().catch(() => { /* the sweep retries */ });
 }
 
@@ -157,7 +191,8 @@ export async function sweepLocalActions(pool: Pool): Promise<number> {
   const stale = (await pool.query<ActionRow>(`SELECT * FROM local_actions WHERE status IN ('queued','running')
     AND updated_at < clock_timestamp() - $1 * interval '1 second' ORDER BY updated_at LIMIT 20`, [STALE_SECONDS])).rows;
   for (const row of stale) {
-    if (row.attempts < MAX_ATTEMPTS) { await execute(pool, row.id); continue; }
+    if (inflight.has(row.id)) continue; // still running in this process: not a crash leftover
+    if (row.attempts < MAX_ATTEMPTS) { await track(pool, row.id); continue; }
     if (row.status === 'running') await finalize(pool, row, { ok: false, code: 'timeout', summary: `${pendingSummary(row.action)} (timed out)` }, 0);
     else await pool.query("UPDATE local_actions SET status='failed', code='failed', updated_at=clock_timestamp() WHERE id=$1 AND status='queued'", [row.id]);
   }
@@ -211,14 +246,22 @@ export class VoiceService {
     requireCondition(['ring', 'watch', 'phone'].includes(input.source as string), 400, 'invalid_arguments', 'source must be ring, watch or phone.');
     const source = input.source as string, clientTimings = timings(input.timings), hash = sha256(transcript);
 
-    const queued = await transaction(this.pool, async db => {
+    type Planned = { route: string; seq: number; delegated?: { bot_id: string; name: string }; ids: string[]; rows?: ActionRow[] };
+    const planned = await transaction(this.pool, async (db): Promise<Planned> => {
       await teamsLock(db, p.tenantId);
       const thread = await authorizeThread(db, p, threadId, true);
-      const existing = (await db.query('SELECT transcript_sha256 FROM voice_intents WHERE tenant_id=$1 AND thread_id=$2 AND memo_id=$3', [p.tenantId, threadId, memo])).rows[0];
-      if (existing) {
-        requireCondition(existing.transcript_sha256 === hash, 409, 'memo_conflict', 'This memo was already sent with a different transcript.');
-        // A retry nudges an action that never started (crash after commit); execute() claims it at most once.
-        return (await db.query<{ id: string }>("SELECT id FROM local_actions WHERE tenant_id=$1 AND origin_kind='memo' AND origin_id=$2 AND status='queued'", [p.tenantId, memo])).rows.map(r => r.id);
+      // One read for both idempotency checks: this memo's intent record, and an announce that got here first.
+      const prior = (await db.query(`SELECT v.transcript_sha256, v.route, v.message_seq, v.delegated_bot_id, v.delegated_name, m.id AS announced_id, m.seq AS announced_seq
+        FROM (SELECT 1) one LEFT JOIN voice_intents v ON v.tenant_id=$1 AND v.thread_id=$2 AND v.memo_id=$3
+        LEFT JOIN LATERAL (SELECT id, seq FROM messages WHERE tenant_id=$1 AND thread_id=$2 AND idempotency_key=$4 LIMIT 1) m ON true`,
+      [p.tenantId, threadId, memo, `voice-memo:${memo}`])).rows[0];
+      if (prior.transcript_sha256) {
+        requireCondition(prior.transcript_sha256 === hash, 409, 'memo_conflict', 'This memo was already sent with a different transcript.');
+        const rows = (await db.query<ActionRow>("SELECT * FROM local_actions WHERE tenant_id=$1 AND origin_kind='memo' AND origin_id=$2 AND thread_id=$3 ORDER BY ordinal", [p.tenantId, memo, threadId])).rows;
+        // A retry runs an action that never started (crash after commit) and waits for one still running, so the
+        // phone's resend gets the result instead of `running`; execute() claims each row at most once.
+        return { route: prior.route, seq: Number(prior.message_seq), ...(prior.route === 'delegate' && prior.delegated_bot_id ? { delegated: { bot_id: prior.delegated_bot_id, name: prior.delegated_name } } : {}),
+          ids: rows.filter(r => r.status === 'queued' || r.status === 'running').map(r => r.id), rows };
       }
       const record = async (route: string, hint: string | null, msg: { id: string; seq: number }, extra: { parse_ms?: number; bot?: { id: string; name: string } } = {}) =>
         db.query(`INSERT INTO voice_intents (tenant_id,scope,thread_id,memo_id,principal_id,transcript_sha256,source,route,hint,message_id,message_seq,delegated_bot_id,delegated_name,captured_at,spoken_at,time_zone,duration_seconds,timings,parse_ms)
@@ -226,12 +269,15 @@ export class VoiceService {
         [p.tenantId, thread.scope, threadId, memo, p.id, hash, source, route, hint, msg.id, msg.seq, extra.bot?.id ?? null, extra.bot?.name ?? null,
           captured, spoken, zone, duration ?? null, JSON.stringify({ ...clientTimings, ...(extra.parse_ms !== undefined ? { parse_ms: extra.parse_ms } : {}) }), extra.parse_ms ?? null]);
       // The audio arrived first and announce already queued a turn: record the memo and add nothing.
-      const announced = (await db.query('SELECT id,seq FROM messages WHERE tenant_id=$1 AND thread_id=$2 AND idempotency_key=$3', [p.tenantId, threadId, `voice-memo:${memo}`])).rows[0];
-      if (announced) { await record('assistant', 'freeform', { id: announced.id, seq: Number(announced.seq) }); return []; }
+      if (prior.announced_id) {
+        await record('assistant', 'freeform', { id: prior.announced_id, seq: Number(prior.announced_seq) });
+        return { route: 'assistant', seq: Number(prior.announced_seq), ids: [] };
+      }
 
-      const ownBot = thread.kind === 'bot' ? (await db.query<{ id: string }>('SELECT id FROM bots WHERE thread_id=$1 AND tenant_id=$2 AND NOT archived', [threadId, p.tenantId])).rows[0] : undefined;
-      // Delegation names: other live bots in scopes this connection may use.
-      const bots = (await db.query<{ id: string; name: string; scope: string }>('SELECT id,name,scope FROM bots WHERE tenant_id=$1 AND NOT archived AND thread_id<>$2 ORDER BY created_at LIMIT 200', [p.tenantId, threadId])).rows
+      // This thread's own bot (sorted first) and the delegation names: other live bots in scopes this connection may use.
+      const live = (await db.query<{ id: string; name: string; scope: string; thread_id: string }>('SELECT id,name,scope,thread_id FROM bots WHERE tenant_id=$1 AND NOT archived ORDER BY (thread_id=$2) DESC, created_at LIMIT 201', [p.tenantId, threadId])).rows;
+      const ownBot = thread.kind === 'bot' ? live.find(b => b.thread_id === threadId) : undefined;
+      const bots = live.filter(b => b.thread_id !== threadId).slice(0, 200)
         .filter(b => canAccessScope(p, b.scope)).map(b => ({ id: b.id, name: b.name.trim() }));
       const t0 = performance.now();
       let intent = parseIntent({ transcript, spokenAt: spoken, timeZone: zone, ...(duration !== undefined ? { durationSeconds: duration } : {}), bots });
@@ -252,7 +298,7 @@ export class VoiceService {
 
       if (intent.route === 'local') {
         await record('local', null, { id: msgId, seq }, { parse_ms: parseMs });
-        return [await queueLocalAction(db, p, { scope: thread.scope, threadId, originKind: 'memo', originId: memo, ordinal: 0, action: action! })];
+        return { route: 'local', seq, ids: [await queueLocalAction(db, p, { scope: thread.scope, threadId, originKind: 'memo', originId: memo, ordinal: 0, action: action! })] };
       }
       if (intent.route === 'delegate') {
         const target = bots.find(b => b.id === intent.bot_id);
@@ -263,13 +309,20 @@ export class VoiceService {
           ref: { voice_intent: { memo_id: memo, source, route: 'delegate' } },
           from: ownBot ? { thread_id: threadId, scope: thread.scope, bot_id: ownBot.id } : null
         });
-        return [];
+        return { route: 'delegate', seq, delegated: { bot_id: target.id, name: target.name }, ids: [] };
       }
       await record('assistant', intent.hint, { id: msgId, seq }, { parse_ms: parseMs });
       await assistantTurn(db, p, thread, seq, intent.hint);
-      return [];
+      return { route: 'assistant', seq, ids: [] };
     });
-    if (queued.length) await runWithWait(this.pool, queued);
+    const response = (rows: ActionRow[]) => ({ memo_id: memo, route: memoRoute(planned.route, rows), message_seq: planned.seq, actions: rows.map(actionView),
+      ...(planned.delegated ? { delegated_to: planned.delegated } : {}) });
+    if (!planned.ids.length) return response(planned.rows ?? []);
+    const finished = await runWithWait(this.pool, planned.ids);
+    // Every pending row finished in the wait: answer from the rows execute() returned instead of re-reading.
+    if (planned.ids.every(id => finished.has(id)) && (planned.rows || planned.ids.length === 1)) {
+      return response(planned.rows ? planned.rows.map(r => finished.get(r.id) ?? r) : [finished.get(planned.ids[0]!)!]);
+    }
     return this.intentResponse(p, threadId, memo);
   }
 
@@ -288,8 +341,18 @@ export class VoiceService {
       const thread = await authorizeThread(db, p, threadId, true);
       return queueLocalAction(db, p, { scope: thread.scope, threadId, originKind: 'tool', originId: `${p.id}:${key}`, ordinal: 0, action });
     });
-    await runWithWait(this.pool, [id]);
-    return { action: actionView(await this.row(id)) };
+    const finished = await runWithWait(this.pool, [id]);
+    return { action: actionView(finished.get(id) ?? await this.row(id)) };
+  }
+
+  /** voice_warm: the phone calls this at the ring's idle edge, while the memo downloads. Never waits on osascript. */
+  async warm(p: Principal, input: Record<string, unknown>): Promise<unknown> {
+    noExtraKeys(input, []);
+    requireCondition(p.role !== 'worker', 403, 'forbidden', 'Workers cannot use voice or local actions.');
+    requirePermission(p, 'thread:write');
+    await this.pool.query('SELECT 1');
+    warmLocalActions();
+    return { ok: true };
   }
 
   async undo(p: Principal, input: Record<string, unknown>): Promise<unknown> {

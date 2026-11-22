@@ -49,6 +49,12 @@ async function beforeStart<T>(call: () => Promise<T>, signal: AbortSignal): Prom
     }
   }
 }
+/** context.task with the task view the 'starting' checkpoint returned (same taskView shape; instructions/runs kept). */
+function withStartedTask(context: unknown, started: unknown): unknown {
+  const ctx = context as { task?: Record<string, unknown> } | null, next = (started as { task?: Record<string, unknown> } | null)?.task;
+  if (!ctx || typeof ctx !== 'object' || !ctx.task || typeof ctx.task !== 'object' || !next || typeof next !== 'object' || next.id !== ctx.task.id) return context;
+  return { ...ctx, task: { ...ctx.task, ...next } };
+}
 const BLOCKED_SUMMARY: Record<string, string> = {
   photo_provider_unsupported: 'This provider does not support photo input; retry with Claude or Codex.',
   not_a_git_repo: 'The project folder is not a git repository, so edit work has no worktree to run in. Run `git init` and commit once in the project folder, then retry.',
@@ -601,8 +607,14 @@ export class BridgeWorker {
     this.logger('task_claimed', { task_id: task.id, scope: task.scope, provider: task.kind==='check' ? 'bridge' : agent.provider, kind: task.kind });
     try {
       if (leaseLost) return;
-      await beforeStart(() => this.client.call('task_checkpoint', { ...lease, checkpoint: checkpoint('starting') }, execution.signal), execution.signal);
-      context = await beforeStart(() => this.client.call('context_get', { scope: task.scope, task_id: task.id, limit: 12 }, execution.signal), execution.signal);
+      // Independent reads/writes, so one round trip instead of two. The only coupling: context.task is the task row,
+      // and serially it showed the 'starting' checkpoint and version. Overlay the checkpoint's returned row so the
+      // prompt is the same whichever finishes first. A refused checkpoint still fails the attempt before anything runs.
+      const [started, fetched] = await Promise.all([
+        beforeStart(() => this.client.call('task_checkpoint', { ...lease, checkpoint: checkpoint('starting') }, execution.signal), execution.signal),
+        beforeStart(() => this.client.call('context_get', { scope: task.scope, task_id: task.id, limit: 12 }, execution.signal), execution.signal),
+      ]);
+      context = withStartedTask(fetched, started);
       // Patch work gets its own worktree+branch, so parallel patch tasks on one project never share files.
       // ponytail: flow commits must exist locally; cross-host execution needs reviewed commit transfer.
       const isPatchWork = task.kind === 'patch' || (task.kind === 'turn' && task.required_capability.endsWith('.patch'));

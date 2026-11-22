@@ -1,8 +1,10 @@
 // Local action executor (docs/RING-AGENT.md §5.1–5.3, §5.7, §7, §8.1). Reminders, Calendar and timers run the fixed
-// JXA script in ./jxa.ts through /usr/bin/osascript (execFile, no shell, JSON on stdin); notes go to ./notebook.ts.
-import { execFile } from 'node:child_process';
+// JXA script in ./jxa.ts through /usr/bin/osascript (no shell, JSON on stdin); notes go to ./notebook.ts.
+// Runs and undos go to one persistent osascript helper (the same script in loop mode, line-delimited JSON) so each
+// action skips the 0.2–0.4 s osascript cold start; any helper failure falls back to a one-shot execFile for that request.
+import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { redactSecrets } from '../safety/redact.js';
-import { LIMITS, type LocalAction, type LocalActionCode, type LocalActionResult, type LocalActionRunner, type LocalActionRunnerOptions, type LocalApp, type LocalAppState } from '../voice/types.js';
+import { LIMITS, type LocalAction, type LocalActionCode, type LocalActionResult, type LocalActionRunner, type LocalActionRunnerOptions, type LocalActionRunOptions, type LocalApp, type LocalAppState } from '../voice/types.js';
 import { JXA_SCRIPT } from './jxa.js';
 import { appendNote, checkNotebook, NOTEBOOKS, NotebookError, notesRoot, removeNote, type Notebook } from './notebook.js';
 
@@ -11,6 +13,8 @@ export const RUN_TIMEOUT_MS = 8000;
 /** `check` is the attended first run: osascript blocks while macOS shows the Automation prompt. */
 export const CHECK_TIMEOUT_MS = 60000;
 export const MAX_OUTPUT = 64 * 1024;
+/** The helper exits after this long without a request. */
+export const HELPER_IDLE_MS = 10 * 60 * 1000;
 const ID = /^[A-Za-z0-9_-]{1,64}$/;
 const ISO = /^\d{4}-\d\d-\d\dT\d\d:\d\d(?::\d\d(?:\.\d{1,3})?)?(?:Z|[+-]\d\d:\d\d)$/;
 const CODES: readonly LocalActionCode[] = ['permission_denied', 'action_disabled', 'timeout', 'unavailable', 'failed'];
@@ -23,6 +27,12 @@ export interface LocalRunnerOptions extends LocalActionRunnerOptions {
   platform?: NodeJS.Platform;
   timeoutMs?: number;
   checkTimeoutMs?: number;
+  /**
+   * Starts the persistent helper (`osascript … loop`). Default: the real osascript on darwin when no `exec` is injected;
+   * with `exec` injected and no `spawn`, every request is one-shot. With both, `exec` is the one-shot fallback.
+   */
+  spawn?: () => ChildProcess;
+  helperIdleMs?: number;
 }
 
 /** Thrown (or rejected) by an exec to say the subprocess was killed for running too long. */
@@ -42,6 +52,91 @@ export function osascriptExec(timeoutMs: number): Exec {
     child.stdin?.on('error', () => {});
     child.stdin?.end(stdin);
   });
+}
+
+/** Real helper: same fixed script in loop mode, same minimal env, no shell; stderr discarded. */
+export function spawnOsascriptHelper(): ChildProcess {
+  return spawn(OSASCRIPT, ['-l', 'JavaScript', '-e', JXA_SCRIPT, 'loop'], { env: { PATH: '/usr/bin:/bin' }, stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true });
+}
+
+/** The helper broke (spawn failure, exit, broken pipe, protocol error): the request falls back to one-shot. */
+class HelperFailure extends Error { constructor(m: string) { super(m); this.name = 'HelperFailure'; } }
+
+/** Request lines are ASCII-only JSON so the JXA side can split reads anywhere. */
+const asciiJson = (v: unknown) => JSON.stringify(v).replace(/[\u007f-\uffff]/g, c => '\\u' + c.charCodeAt(0).toString(16).padStart(4, '0'));
+
+/**
+ * One persistent osascript child. Requests are serialized by the caller (one pending at a time). A request that runs
+ * past its limit SIGKILLs the child (the next request respawns it); a child that sits idle is closed.
+ */
+function createHelper(start: () => ChildProcess, idleMs: number) {
+  let child: ChildProcess | undefined, buf = Buffer.alloc(0), idle: NodeJS.Timeout | undefined;
+  let pending: { resolve: (line: string) => void; reject: (e: Error) => void; timer: NodeJS.Timeout } | undefined;
+  const settle = (fn: (p: NonNullable<typeof pending>) => void) => {
+    const p = pending; if (!p) return;
+    pending = undefined; clearTimeout(p.timer); fn(p);
+    idle = setTimeout(close, idleMs); idle.unref?.();
+  };
+  const kill = (c: ChildProcess) => { try { c.kill('SIGKILL'); } catch { /* already gone */ } };
+  function drop(c: ChildProcess | undefined, why: string, exited = false) {
+    if (!c) return;
+    if (child === c) { child = undefined; buf = Buffer.alloc(0); settle(p => p.reject(new HelperFailure(why))); }
+    if (!exited) kill(c);
+  }
+  function close() {
+    const c = child; if (!c || pending) return;
+    child = undefined; buf = Buffer.alloc(0);
+    try { c.stdin?.end(); } catch { /* ignore */ }
+    const t = setTimeout(() => kill(c), 1000); t.unref?.();
+  }
+  function ensure(): ChildProcess {
+    if (child) return child;
+    const c = start();
+    child = c; buf = Buffer.alloc(0);
+    c.on('error', () => drop(c, 'helper error'));
+    c.on('exit', () => drop(c, 'helper exited', true));
+    c.stdin?.on('error', () => drop(c, 'helper stdin'));
+    c.stdout?.on('data', (chunk: Buffer) => {
+      if (child !== c) return;
+      buf = Buffer.concat([buf, Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk))]);
+      for (let nl = buf.indexOf(10); nl >= 0; nl = buf.indexOf(10)) {
+        const line = buf.subarray(0, nl).toString('utf8').trim(); buf = buf.subarray(nl + 1);
+        if (!line) continue;
+        if (!pending) return drop(c, 'unsolicited output');
+        settle(p => p.resolve(line));
+      }
+      if (buf.length > MAX_OUTPUT) drop(c, 'oversized output');
+    });
+    // The helper never keeps the service's event loop alive.
+    c.unref?.(); (c.stdin as { unref?: () => void } | null)?.unref?.(); (c.stdout as { unref?: () => void } | null)?.unref?.();
+    return c;
+  }
+  return {
+    request(line: string, limitMs: number): Promise<string> {
+      return new Promise((resolve, reject) => {
+        if (pending) return reject(new HelperFailure('helper busy'));
+        clearTimeout(idle);
+        let c: ChildProcess;
+        try { c = ensure(); } catch { return reject(new HelperFailure('helper spawn failed')); }
+        const timer = setTimeout(() => {
+          if (pending?.timer !== timer) return;
+          pending = undefined;
+          if (child === c) { child = undefined; buf = Buffer.alloc(0); }
+          kill(c); // respawned by the next request
+          reject(new ExecTimeout());
+        }, limitMs);
+        pending = { resolve, reject, timer };
+        try { c.stdin!.write(line + '\n'); } catch { drop(c, 'helper stdin'); }
+      });
+    },
+    /** Spawns the child ahead of the first request (osascript cold start off the action path). */
+    prestart(): void {
+      if (child) return;
+      try { ensure(); } catch { return; }
+      clearTimeout(idle); idle = setTimeout(close, idleMs); idle.unref?.();
+    },
+    reset(): void { drop(child, 'reset'); },
+  };
 }
 
 // ---------------------------------------------------------------------------------------------------- validation
@@ -215,26 +310,51 @@ export function createLocalActionRunner(opts: LocalRunnerOptions = {}): LocalAct
   const timeoutMs = opts.timeoutMs ?? RUN_TIMEOUT_MS, checkTimeoutMs = opts.checkTimeoutMs ?? CHECK_TIMEOUT_MS;
   const exec = opts.exec ?? osascriptExec(timeoutMs);
   const checkExec = opts.exec ?? osascriptExec(checkTimeoutMs);
+  const spawnHelper = opts.spawn ?? (!opts.exec && platform === 'darwin' ? spawnOsascriptHelper : undefined);
+  const helper = spawnHelper ? createHelper(spawnHelper, opts.helperIdleMs ?? HELPER_IDLE_MS) : undefined;
   const enabled = enabledApps(env);
   const tz = validZone(env.SWARMAA_TIME_ZONE);
   const config = { reminders_list: bounded(env.SWARMAA_REMINDERS_LIST), todo_list: bounded(env.SWARMAA_TODO_LIST), calendar: bounded(env.SWARMAA_CALENDAR_NAME) };
+  /** Apps whose last check (or last run) was ok: the only ones warm() may launch. */
+  const reachable = new Set<LocalApp>();
+  const note = (app: LocalApp, ok: boolean) => { if (ok) reachable.add(app); else reachable.delete(app); };
 
-  // One osascript at a time; notebook writes have their own queue so a slow Apple app never delays a note.
+  // One run/undo at a time through the helper; notebook writes have their own queue so a slow Apple app never delays
+  // a note, and `check` (up to 60 s while macOS shows the Automation prompt) has its own so it never holds runs.
   const queue = () => { let tail: Promise<unknown> = Promise.resolve(); return <T>(fn: () => Promise<T>): Promise<T> => { const p = tail.then(fn, fn); tail = p.catch(() => {}); return p; }; };
-  const jxaQueue = queue(), noteQueue = queue();
+  const jxaQueue = queue(), noteQueue = queue(), checkQueue = queue();
 
-  async function jxa(request: object, limitMs: number, run: Exec): Promise<Parsed> {
+  async function oneShot(request: object, limitMs: number, run: Exec): Promise<Parsed> {
+    let timer: NodeJS.Timeout | undefined;
+    // Backstop for an exec that never settles (the real one SIGKILLs at limitMs): keeps the queue moving.
+    const backstop = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new ExecTimeout()), limitMs + 1000); });
+    try {
+      const out = await Promise.race([run(JXA_SCRIPT, JSON.stringify(request)), backstop]);
+      return parseOutput(String(out.stdout ?? '').slice(0, MAX_OUTPUT), out.code);
+    } catch (e: any) {
+      const timedOut = e instanceof ExecTimeout || e?.killed || e?.signal === 'SIGKILL' || e?.code === 'ETIMEDOUT';
+      return { ok: false, code: timedOut ? 'timeout' : 'failed' } as Parsed;
+    } finally { clearTimeout(timer); }
+  }
+
+  /** Runs/undos (and warm reads): helper first; a helper failure retries one-shot, a helper timeout is final. */
+  function jxa(request: { op: string; fresh?: boolean } & Record<string, unknown>): Promise<Parsed> {
     return jxaQueue(async () => {
-      let timer: NodeJS.Timeout | undefined;
-      // Backstop for an exec that never settles (the real one SIGKILLs at limitMs): keeps the queue moving.
-      const backstop = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new ExecTimeout()), limitMs + 1000); });
-      try {
-        const out = await Promise.race([run(JXA_SCRIPT, JSON.stringify(request)), backstop]);
-        return parseOutput(String(out.stdout ?? '').slice(0, MAX_OUTPUT), out.code);
-      } catch (e: any) {
-        const timedOut = e instanceof ExecTimeout || e?.killed || e?.signal === 'SIGKILL' || e?.code === 'ETIMEDOUT';
-        return { ok: false, code: timedOut ? 'timeout' : 'failed' } as Parsed;
-      } finally { clearTimeout(timer); }
+      if (helper) {
+        try {
+          const line = await helper.request(asciiJson(request), timeoutMs);
+          let v: unknown; try { v = JSON.parse(line); } catch { v = undefined; }
+          if (v && typeof v === 'object' && typeof (v as { ok?: unknown }).ok === 'boolean') return parseOutput(line, 0);
+          helper.reset();
+        } catch (e) {
+          // A timed-out run may have reached the app: no second attempt here (the sweep retries, with the marker lookup).
+          if (e instanceof ExecTimeout) return { ok: false, code: 'timeout' } as Parsed;
+        }
+        // The request may have reached the helper before it broke: the fallback always does the marker lookup.
+        const { fresh: _fresh, ...rest } = request;
+        return oneShot(rest, timeoutMs, exec);
+      }
+      return oneShot(request, timeoutMs, exec);
     });
   }
 
@@ -256,20 +376,33 @@ export function createLocalActionRunner(opts: LocalRunnerOptions = {}): LocalAct
     return { action };
   }
 
+  let warming: Promise<void> | undefined;
+  async function warmApps(): Promise<void> {
+    if (platform !== 'darwin') return;
+    helper?.prestart();
+    // One cheap read per app, each its own queue entry, so a run that arrives meanwhile goes before the next launch.
+    for (const app of ['reminders', 'calendar'] as const) {
+      if (!enabled.has(app) || !reachable.has(app)) continue;
+      const out = await jxa({ op: 'check', apps: [app], config });
+      if (!out.ok || (out.apps?.[app] !== undefined && out.apps[app] !== 'ok')) note(app, false);
+    }
+  }
+
   return {
-    async run(id, value) {
+    async run(id, value, runOpts?: LocalActionRunOptions) {
       const g = gate(id, value, false); if ('result' in g) return g.result;
-      const action = g.action, at = now();
+      const action = g.action, at = now(), zone = validZone(runOpts?.timeZone) ?? tz;
       if (action.type === 'note.append') {
         return notebook(action.type, false, async root => {
           const r = await appendNote(root, id, action, at, tz);
-          return { ok: true, handle: r.handle, summary: successSummary(action, at, tz) };
+          return { ok: true, handle: r.handle, summary: successSummary(action, at, zone) };
         });
       }
-      const out = await jxa({ op: 'run', id, action, config }, timeoutMs, exec);
+      const out = await jxa({ op: 'run', id, action, fresh: runOpts?.fresh === true, config });
+      if (out.ok || out.code === 'permission_denied') note(APP_OF[action.type], out.ok);
       if (!out.ok) return failure(action.type, false, out.code, out.detail);
       if (!out.handle) return failure(action.type, false, 'failed');
-      return { ok: true, handle: out.handle, summary: successSummary(action, at, tz) };
+      return { ok: true, handle: out.handle, summary: successSummary(action, at, zone) };
     },
     async undo(id, value, handle) {
       const g = gate(id, value, true); if ('result' in g) return g.result;
@@ -278,7 +411,7 @@ export function createLocalActionRunner(opts: LocalRunnerOptions = {}): LocalAct
       if (action.type === 'note.append') {
         return notebook(action.type, true, async root => { await removeNote(root, id, handle); return { ok: true, handle, summary: undoSummary(action) }; });
       }
-      const out = await jxa({ op: 'undo', id, action, handle, config }, timeoutMs, exec);
+      const out = await jxa({ op: 'undo', id, action, handle, config });
       if (!out.ok) return failure(action.type, true, out.code, out.detail);
       return { ok: true, handle, summary: undoSummary(action) };
     },
@@ -289,11 +422,15 @@ export function createLocalActionRunner(opts: LocalRunnerOptions = {}): LocalAct
       }
       const apps = (['reminders', 'calendar'] as const).filter(a => enabled.has(a));
       if (apps.length && platform === 'darwin') {
-        const out = await jxa({ op: 'check', apps, config }, checkTimeoutMs, checkExec);
+        // Always one-shot with the long timeout, on its own queue: the attended prompt never blocks a spoken action.
+        const out = await checkQueue(() => oneShot({ op: 'check', apps, config }, checkTimeoutMs, checkExec));
         // LocalAppState has no "failed": anything but a confirmed ok means the owner must look at Automation settings.
-        for (const a of apps) result[a] = out.ok && out.apps?.[a] === 'ok' ? 'ok' : 'permission_denied';
+        for (const a of apps) { result[a] = out.ok && out.apps?.[a] === 'ok' ? 'ok' : 'permission_denied'; note(a, result[a] === 'ok'); }
       }
       return result;
+    },
+    warm() {
+      return warming ??= warmApps().catch(() => {}).finally(() => { warming = undefined; });
     },
   };
 }

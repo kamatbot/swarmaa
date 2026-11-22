@@ -61,6 +61,7 @@ const sweepLocal = () => {
   }).finally(() => { localSweep = undefined; });
 };
 sweepLocal();
+core.warmLocalActions(); // pre-spawn the osascript helper (latency review F5/F6)
 const localTimer = setInterval(sweepLocal,15000);
 localTimer.unref();
 

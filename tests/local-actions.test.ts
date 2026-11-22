@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
+import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
+import type { ChildProcess } from 'node:child_process';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -263,4 +266,192 @@ test('summaries: tomorrow, other days, all-day, cross-day', async () => {
   assert.equal((await r.run('a', { ...timer, fire_at: '2026-11-23T07:00:00Z' })).summary, 'Timer set: Tea · Tomorrow 07:00');
   const bkk = runner({ exec: fake(() => ({ ok: true, handle: 'h' })), env: { SWARMAA_TIME_ZONE: 'Asia/Bangkok' } });
   assert.equal((await bkk.run('a', reminder)).summary, 'Reminder set: Call mom · Tomorrow 00:00');
+});
+
+// ---------------------------------------------------------------- latency review F5–F7, F18: helper, warm, fresh, zone
+type FakeChild = EventEmitter & { stdin: PassThrough; stdout: PassThrough; requests: any[]; lines: string[]; killedWith?: string; kill(sig?: string): boolean };
+/** A fake `osascript … loop` child: answers each stdin line with reply(req); 'hang' never answers, 'die' exits. */
+function fakeHelper(reply: (req: any, child: FakeChild) => unknown) {
+  const spawned: FakeChild[] = [];
+  const spawn = () => {
+    const child = Object.assign(new EventEmitter(), { stdin: new PassThrough(), stdout: new PassThrough(), requests: [] as any[], lines: [] as string[] }) as FakeChild;
+    child.kill = (sig?: string) => { child.killedWith = sig; setImmediate(() => child.emit('exit', null, sig)); return true; };
+    let buf = '';
+    child.stdin.on('data', (d: Buffer) => {
+      buf += d.toString('utf8');
+      for (let nl = buf.indexOf('\n'); nl >= 0; nl = buf.indexOf('\n')) {
+        const line = buf.slice(0, nl); buf = buf.slice(nl + 1);
+        child.lines.push(line); const req = JSON.parse(line); child.requests.push(req);
+        const r = reply(req, child);
+        if (r === 'hang') continue;
+        if (r === 'die') { child.emit('exit', 1, null); continue; }
+        child.stdout.write(typeof r === 'string' ? r + '\n' : JSON.stringify(r) + '\n');
+      }
+    });
+    spawned.push(child);
+    return child as unknown as ChildProcess;
+  };
+  return { spawn, spawned };
+}
+
+test('fresh: attempt 1 sends fresh:true, a rerun sends fresh:false; zone override formats the card', async () => {
+  const calls: Call[] = [];
+  const r = runner({ exec: fake(() => ({ ok: true, handle: 'h' }), calls) });
+  const first = await r.run(ID, reminder, { fresh: true, timeZone: 'Asia/Bangkok' });
+  await r.run(ID, reminder);
+  await r.run(ID, reminder, { fresh: false });
+  assert.deepEqual(calls.map(c => JSON.parse(c.stdin).fresh), [true, false, false]);
+  assert.equal(first.summary, 'Reminder set: Call mom · Tomorrow 00:00', 'phone zone, not SWARMAA_TIME_ZONE');
+  assert.equal((await r.run(ID, reminder, { timeZone: 'Not/AZone' })).summary, 'Reminder set: Call mom · Today 17:00', 'bad zone falls back');
+});
+
+test('real JXA: fresh skips the marker scan, a rerun keeps it', async () => {
+  const apps = fakeApps(), r = runner({ exec: apps.exec });
+  const first = await r.run(ID, reminder, { fresh: true });
+  const rerun = await r.run(ID, reminder, { fresh: false });
+  assert.equal(rerun.handle, first.handle);
+  assert.equal(apps.reminders.length, 1);
+  await r.run(ID, reminder, { fresh: true }); // only ever sent on attempt 1: proves no lookup happened
+  assert.equal(apps.reminders.length, 2);
+  const ev = await r.run('ev1', event, { fresh: true });
+  assert.equal((await r.run('ev1', event)).handle, ev.handle);
+  assert.equal(apps.events.length, 1);
+});
+
+test('JXA loop mode: one response line per request line, reads split mid-line, exits on EOF', () => {
+  const chunks = ['{"op":"run","id":"a1","action":{"type":"reminder.create","title":"Caf\\u00e9"},"fresh":true,"con', 'fig":{}}\n\n{"op":"nope","id":"a2","action":{}}\n', ''];
+  const written: string[] = [], made: any[] = [];
+  const $ = {
+    NSFileHandle: { fileHandleWithStandardInput: { get availableData() { return chunks.shift() ?? ''; } }, fileHandleWithStandardOutput: { writeData: (d: string) => { written.push(d); } } },
+    NSString: { alloc: { initWithDataEncoding: (d: string) => d, initWithUTF8String: (s: string) => ({ dataUsingEncoding: () => s }) } },
+    NSUTF8StringEncoding: 4,
+  };
+  const list = { reminders: { whose() { throw new Error('fresh must not scan'); }, push(r: any) { r.data.id = 'x-apple-reminder://1'; made.push(r.data); } } };
+  const ctx = vm.createContext({ ObjC: { import() {}, unwrap: (x: unknown) => x }, $, Application: () => ({ defaultList: () => list, Reminder: (p: any) => { const data = { ...p }; return { data, id: () => data.id }; } }) });
+  new vm.Script(JXA_SCRIPT).runInContext(ctx);
+  assert.equal(ctx.run(['loop']), '');
+  assert.equal(written.length, 2);
+  assert.ok(written.every(w => w.endsWith('\n') && /^[\x00-\x7f]*$/.test(w)));
+  assert.deepEqual(JSON.parse(written[0]!), { ok: true, handle: 'x-apple-reminder://1' });
+  assert.deepEqual(JSON.parse(written[1]!), { ok: false, code: 'failed', detail: 'bad_input' });
+  assert.equal(made[0].name, 'Café');
+});
+
+test('helper: two runs share one spawn, payload is ASCII JSON on stdin, script and argv fixed', async () => {
+  const h = fakeHelper(() => ({ ok: true, handle: 'x-apple-reminder://H' }));
+  let oneShots = 0;
+  const r = runner({ spawn: h.spawn, exec: async () => { oneShots++; return { stdout: '', code: 1 }; } });
+  const a = await r.run(ID, { ...reminder, title: 'Café ☕' }, { fresh: true });
+  const b = await r.run('second', timer);
+  assert.ok(a.ok && b.ok);
+  assert.equal(a.summary, 'Reminder set: Café ☕ · Today 17:00');
+  assert.equal(h.spawned.length, 1);
+  assert.equal(oneShots, 0);
+  const [first, second] = h.spawned[0]!.requests;
+  assert.equal(first.op, 'run'); assert.equal(first.fresh, true); assert.equal(first.action.title, 'Café ☕');
+  assert.equal(second.fresh, false);
+  assert.ok(h.spawned[0]!.lines.every(l => /^[\x20-\x7e]*$/.test(l)), 'request lines are ASCII');
+});
+
+test('helper: a timeout SIGKILLs the child and the next request respawns; no one-shot retry of a timed-out run', async () => {
+  let n = 0;
+  const h = fakeHelper(() => ++n === 1 ? 'hang' : { ok: true, handle: 'h2' });
+  let oneShots = 0;
+  const r = runner({ spawn: h.spawn, timeoutMs: 20, exec: async () => { oneShots++; return { stdout: '{"ok":true,"handle":"x"}', code: 0 }; } });
+  const hung = await r.run(ID, reminder, { fresh: true });
+  assert.equal(hung.code, 'timeout');
+  assert.equal(h.spawned[0]!.killedWith, 'SIGKILL');
+  assert.equal(oneShots, 0, 'the timed-out run may have reached Reminders');
+  const next = await r.run('next', reminder);
+  assert.equal(next.ok, true); assert.equal(next.handle, 'h2');
+  assert.equal(h.spawned.length, 2);
+});
+
+test('helper: a crash, a garbage line or a spawn failure falls back to one-shot with the marker lookup', async () => {
+  const oneShot: any[] = [];
+  const exec: NonNullable<LocalRunnerOptions['exec']> = async (_s, stdin) => { oneShot.push(JSON.parse(stdin)); return { stdout: '{"ok":true,"handle":"one-shot"}', code: 0 }; };
+  const dies = fakeHelper(() => 'die');
+  const r1 = await runner({ spawn: dies.spawn, exec }).run(ID, reminder, { fresh: true });
+  assert.equal(r1.handle, 'one-shot');
+  assert.equal(oneShot[0].fresh, undefined, 'fallback never skips the marker scan');
+  const garbage = fakeHelper(() => 'osascript: something odd');
+  const r2 = runner({ spawn: garbage.spawn, exec });
+  assert.equal((await r2.run(ID, reminder)).handle, 'one-shot');
+  assert.equal(garbage.spawned[0]!.killedWith, 'SIGKILL');
+  assert.equal((await r2.run(ID, reminder)).handle, 'one-shot');
+  assert.equal(garbage.spawned.length, 2, 'a broken helper is replaced');
+  const r3 = await runner({ spawn: () => { throw new Error('ENOENT'); }, exec }).run(ID, event);
+  assert.equal(r3.handle, 'one-shot');
+  assert.equal(oneShot.length, 4);
+});
+
+test('helper: exits after the idle period', async () => {
+  const h = fakeHelper(() => ({ ok: true, handle: 'h' }));
+  const r = runner({ spawn: h.spawn, helperIdleMs: 10, exec: async () => ({ stdout: '', code: 1 }) });
+  await r.run(ID, reminder);
+  let ended = false; h.spawned[0]!.stdin.on('finish', () => { ended = true; });
+  await new Promise(res => setTimeout(res, 40));
+  assert.ok(ended, 'stdin closed: osascript sees EOF and exits');
+  await r.run('again', reminder);
+  assert.equal(h.spawned.length, 2);
+});
+
+test('check is one-shot on its own queue: an attended prompt never blocks a run', async () => {
+  let release!: () => void;
+  const prompt = new Promise<void>(res => { release = res; });
+  const h = fakeHelper(() => ({ ok: true, handle: 'h' }));
+  const checks: any[] = [];
+  const exec: NonNullable<LocalRunnerOptions['exec']> = async (_s, stdin) => { checks.push(JSON.parse(stdin)); await prompt; return { stdout: '{"ok":true,"apps":{"reminders":"ok","calendar":"ok"}}', code: 0 }; };
+  const r = runner({ spawn: h.spawn, exec, env: { SWARMAA_LOCAL_ACTIONS: 'reminders,calendar' } });
+  const check = r.check();
+  await new Promise(res => setImmediate(res));
+  const run = await Promise.race([r.run(ID, reminder), new Promise<'blocked'>(res => setTimeout(() => res('blocked'), 200))]);
+  assert.notEqual(run, 'blocked');
+  assert.equal(checks.length, 1); assert.equal(checks[0].op, 'check');
+  assert.ok(h.spawned[0]!.requests.every(q => q.op !== 'check'), 'check never goes to the helper');
+  release();
+  assert.deepEqual(await check, { reminders: 'ok', calendar: 'ok', notes: 'disabled' });
+  // Same without a helper (injected exec only): the check queue is separate from the run queue.
+  let release2!: () => void;
+  const prompt2 = new Promise<void>(res => { release2 = res; });
+  const r2 = runner({ exec: async (_s, stdin) => JSON.parse(stdin).op === 'check' ? (await prompt2, { stdout: '{"ok":true,"apps":{}}', code: 0 }) : { stdout: '{"ok":true,"handle":"h"}', code: 0 } });
+  const c2 = r2.check();
+  assert.equal((await r2.run(ID, reminder)).ok, true);
+  release2(); await c2;
+});
+
+test('warm launches only enabled apps whose last check or run was ok', async () => {
+  const seen: any[] = [];
+  let apps: Record<string, string> = { reminders: 'ok', calendar: 'permission_denied' };
+  const exec: NonNullable<LocalRunnerOptions['exec']> = async (_s, stdin) => { const q = JSON.parse(stdin); seen.push(q); return { stdout: JSON.stringify(q.op === 'check' ? { ok: true, apps: Object.fromEntries((q.apps as string[]).map(a => [a, apps[a]])) } : { ok: true, handle: 'h' }), code: 0 }; };
+  const r = runner({ exec });
+  await r.warm!();
+  assert.equal(seen.length, 0, 'nothing known to work yet: no app is touched');
+  await r.check(); seen.length = 0;
+  await r.warm!();
+  assert.deepEqual(seen.map(q => [q.op, q.apps]), [['check', ['reminders']]], 'calendar was not ok: never touched');
+  // The owner grants Calendar; a successful run marks it reachable.
+  apps = { reminders: 'ok', calendar: 'ok' };
+  await r.run('ev', event); seen.length = 0;
+  await r.warm!();
+  assert.deepEqual(seen.map(q => q.apps), [['reminders'], ['calendar']]);
+  apps = { reminders: 'permission_denied', calendar: 'ok' }; seen.length = 0;
+  await r.warm!(); seen.length = 0;
+  await r.warm!();
+  assert.deepEqual(seen.map(q => q.apps), [['calendar']], 'a warm read that is denied unmarks the app');
+  const off = runner({ exec, env: { SWARMAA_LOCAL_ACTIONS: 'notes' } }); seen.length = 0;
+  await off.check(); await off.warm!();
+  assert.equal(seen.length, 0);
+  await runner({ exec, platform: 'linux' }).warm!();
+  assert.equal(seen.length, 0);
+});
+
+test('warm pre-spawns the helper without touching an app', async () => {
+  const h = fakeHelper(() => ({ ok: true, handle: 'h' }));
+  const r = runner({ spawn: h.spawn, exec: async () => ({ stdout: '', code: 1 }) });
+  await r.warm!();
+  assert.equal(h.spawned.length, 1);
+  assert.equal(h.spawned[0]!.requests.length, 0);
+  await r.run(ID, reminder);
+  assert.equal(h.spawned.length, 1, 'the first run reuses the warmed helper');
 });

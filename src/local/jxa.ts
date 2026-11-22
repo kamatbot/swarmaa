@@ -1,12 +1,16 @@
 // The one fixed JXA program run by `/usr/bin/osascript -l JavaScript -e` (docs/RING-AGENT.md §5.2, §8.1).
 // Input is JSON on stdin; every field is treated as data (no eval, no doShellScript, nothing concatenated into code).
 // Output is exactly one JSON line: {"ok":true,"handle":…} | {"ok":false,"code":…,"detail"?,"error_number"?} | check: {"ok":true,"apps":{…}}.
-// Request: {"op":"run"|"undo"|"check","id":…,"action":…,"handle":…,"config":{reminders_list,todo_list,calendar},"apps":[…]}.
+// Request: {"op":"run"|"undo"|"check","id":…,"action":…,"handle":…,"fresh"?:bool,"config":{reminders_list,todo_list,calendar},"apps":[…]}.
+// `fresh: true` (first attempt of a claimed row) skips the marker lookup; retries keep it.
+// Loop mode (argv[0] === "loop", the persistent helper): one request per stdin line, one response line per request on
+// stdout, until EOF. Both directions are ASCII-only JSON (non-ASCII is \u-escaped), so a read split mid-line is safe.
 export const JXA_SCRIPT = String.raw`
 ObjC.import('Foundation');
 var MARK = 'swarmaa:';
 var ID = /^[A-Za-z0-9_-]{1,64}$/;
 var WINDOW_MS = 36 * 3600 * 1000;
+var MAX_LINE = 1024 * 1024;
 
 function Fail(code, detail) { this.code = code; this.detail = detail; }
 function str(v, max) { if (typeof v !== 'string' || v.length > max) throw new Fail('failed', 'bad_input'); return v; }
@@ -39,9 +43,9 @@ function reminderList(app, name) {
   if (name) { var found = app.lists.whose({ name: name }); if (found.length < 1) throw new Fail('failed', 'list_not_found'); return found[0]; }
   return app.defaultList();
 }
-function createReminder(listName, id, props) {
+function createReminder(listName, id, props, fresh) {
   var app = Application('Reminders'), list = reminderList(app, listName);
-  var hits = list.reminders.whose({ body: { _contains: MARK + id } });
+  var hits = fresh ? { length: 0 } : list.reminders.whose({ body: { _contains: MARK + id } });
   if (hits.length > 0) {
     var bodies = hits.body(), ids = hits.id();
     for (var i = 0; i < ids.length; i++) if (hasMarker(bodies[i], id)) return { ok: true, handle: ids[i], existed: true };
@@ -65,11 +69,11 @@ function pickCalendar(app, name) {
   for (var i = 0; i < all.length; i++) if (all[i].writable()) return all[i];
   throw new Fail('failed', 'no_writable_calendar');
 }
-function createEvent(calName, id, a) {
+function createEvent(calName, id, a, fresh) {
   var app = Application('Calendar'), cal = pickCalendar(app, calName);
   var start = when(a.start_at), end = when(a.end_at);
   if (end.getTime() < start.getTime()) throw new Fail('failed', 'bad_input');
-  var hits = cal.events.whose({ _and: [
+  var hits = fresh ? { length: 0 } : cal.events.whose({ _and: [
     { startDate: { _greaterThan: new Date(start.getTime() - WINDOW_MS) } },
     { startDate: { _lessThan: new Date(start.getTime() + WINDOW_MS) } },
     { description: { _contains: MARK + id } }
@@ -126,19 +130,43 @@ function handle(req) {
     throw new Fail('failed', 'bad_input');
   }
   if (req.op !== 'run') throw new Fail('failed', 'bad_input');
+  var fresh = req.fresh === true;
   if (a.type === 'reminder.create') {
     var props = { name: str(a.title, 200), body: withMarker(opt(a.notes, 4000), id) };
     if (a.due_at) { props.dueDate = when(a.due_at); props.remindMeDate = when(a.due_at); }
-    return createReminder(a.list === 'todo' ? (todoList || remindersList) : remindersList, id, props);
+    return createReminder(a.list === 'todo' ? (todoList || remindersList) : remindersList, id, props, fresh);
   }
   if (a.type === 'timer.start') {
     var fire = when(a.fire_at);
-    return createReminder(remindersList, id, { name: '⏱ ' + str(a.label, 200), body: withMarker('', id), dueDate: fire, remindMeDate: fire });
+    return createReminder(remindersList, id, { name: '⏱ ' + str(a.label, 200), body: withMarker('', id), dueDate: fire, remindMeDate: fire }, fresh);
   }
-  if (a.type === 'event.create') return createEvent(calendar, id, a);
+  if (a.type === 'event.create') return createEvent(calendar, id, a, fresh);
   throw new Fail('failed', 'bad_input');
 }
-function run() {
+function ascii(s) { return s.replace(/[\u007f-\uffff]/g, function (c) { return '\\u' + ('0000' + c.charCodeAt(0).toString(16)).slice(-4); }); }
+function respond(line) {
+  var out;
+  try { out = handle(JSON.parse(line)); } catch (e) { out = classify(e); }
+  return ascii(JSON.stringify(out));
+}
+// Persistent helper: blocks in availableData, answers each complete line, exits on EOF, a broken pipe or an oversized line.
+function loop() {
+  var input = $.NSFileHandle.fileHandleWithStandardInput, output = $.NSFileHandle.fileHandleWithStandardOutput, buf = '';
+  for (;;) {
+    var data = input.availableData;
+    if (!data || data.length === 0) return '';
+    buf += ObjC.unwrap($.NSString.alloc.initWithDataEncoding(data, $.NSUTF8StringEncoding)) || '';
+    for (var nl = buf.indexOf('\n'); nl >= 0; nl = buf.indexOf('\n')) {
+      var line = buf.slice(0, nl); buf = buf.slice(nl + 1);
+      if (!line.trim()) continue;
+      var reply = $.NSString.alloc.initWithUTF8String(respond(line) + '\n').dataUsingEncoding($.NSUTF8StringEncoding);
+      try { output.writeData(reply); } catch (e) { return ''; } // writeData on a pipe is unbuffered: nothing to flush
+    }
+    if (buf.length > MAX_LINE) return '';
+  }
+}
+function run(argv) {
+  if (argv && argv[0] === 'loop') return loop();
   var out;
   try { out = handle(readInput()); } catch (e) { out = classify(e); }
   return JSON.stringify(out);

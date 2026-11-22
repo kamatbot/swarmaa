@@ -160,7 +160,7 @@ Timestamps in `ring.log`, sent as `timings` in `voice_intent`: `idle`, `count_re
 ### 6.3 Notes
 
 - **Streaming transcription:** one long-lived `AVAudioConverter`, PCM appended as frames arrive. iOS 26: `SpeechAnalyzer`/`SpeechTranscriber` behind `#available`; iOS 18–25: `SFSpeechAudioBufferRecognitionRequest` with `requiresOnDeviceRecognition`. The M4A path stays as fallback.
-- **Background recognition:** keep the deferral, timeout `max(6, 1.5 × duration)` s, log which engine answered.
+- **Background recognition:** live finalisation timeout `min(8, 2 + 0.05 × duration)` s, file fallback `min(20, 4 + 0.5 × duration)` s (review F9); if both fail in the background, the audio still uploads and the Assistant gets a `no_transcript` turn. Log which engine answered.
 - **Memo id** allocated in `beginDownload` so `voice_intent` can go as soon as the transcript finalises.
 - **Live mode (0x30 mode 2):** the ring reports live recording off; experiment after this PR.
 
@@ -203,6 +203,27 @@ export function createLocalActionRunner(opts?: { exec?: (script: string, stdin: 
 ```
 
 `summary` is the card body. JXA stdin: `{"op":"run"|"undo"|"check","id":…,"action":…,"handle":…,"config":{reminders_list,todo_list,calendar}}`; stdout one JSON line `{"ok":true,"handle":"…"}` or `{"ok":false,"code":"…"}`.
+
+Additions (latency review 2026-11-22, F4–F7, F18; all optional, old callers unchanged):
+
+```ts
+export interface LocalActionRunOptions { fresh?: boolean; timeZone?: string }
+interface LocalActionRunner {
+  run(id: string, action: LocalAction, opts?: LocalActionRunOptions): Promise<LocalActionResult>;
+  warm?(): Promise<void>;   // best effort, never throws
+}
+```
+
+- `fresh: true` is passed on a row's first claimed attempt (`attempts === 1`) and sent to JXA as `"fresh":true`, which skips the `swarmaa:<id>` marker scan (nothing can exist yet). Sweep reruns and any one-shot fallback after a helper failure send `fresh:false` and keep the scan.
+- `timeZone` is the memo's `voice_intents.time_zone`; the card summary is formatted in it. Turn and tool origins use `SWARMAA_TIME_ZONE`/system zone as before. Note file dates stay in the Mac's zone.
+- Persistent helper: run, undo and warm requests go to one long-lived `/usr/bin/osascript -l JavaScript -e <JXA_SCRIPT> loop` (spawn, no shell, env `PATH=/usr/bin:/bin`). Loop mode reads stdin with `availableData`, answers each `\n`-terminated request line with one response line on stdout; both directions are ASCII-only JSON (non-ASCII `\u`-escaped). One request at a time; a request past 8 s SIGKILLs the helper (respawned on the next request) and returns `timeout`; a helper that has been idle 10 min is closed; a spawn failure, exit, broken pipe or non-JSON line falls back to the one-shot `execFile` for that request. `check` is always one-shot (60 s) on its own queue and never holds runs.
+- `warm()` spawns the helper and, for each enabled app whose last `check` (or last run) in this process was `ok`, sends a `check` read (`Application('Reminders').lists.length` / `Application('Calendar').calendars.length`), which launches the app. An app never seen ok is never touched. Called once at service start and by `voice_warm`.
+
+### 8.4 `voice_warm`
+
+`voice_warm {}` → `{ ok: true }`. Permission `thread:write`, `role === 'worker'` refused, closed schema. Runs `SELECT 1` and calls `runner.warm()` fire-and-forget (never waits on osascript). The phone sends it at the ring's idle edge so the relay socket, DB pool, helper and apps are warm while the memo downloads.
+
+`voice_intent` replay (same memo, same transcript) whose action is `queued` or `running` now runs or joins that execution and waits up to the normal 4 s before answering, so a resend after a lost reply returns `done` instead of `running`.
 
 ### 8.2 `voice_intent`
 
