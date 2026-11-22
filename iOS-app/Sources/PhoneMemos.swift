@@ -4,7 +4,12 @@ import AVFoundation
 @MainActor @Observable final class PhoneMemos {
     static let shared = PhoneMemos()
     struct Item: Identifiable { let id: String; let url: URL; let date: Date; var delivery: Delivery? }
-    struct Delivery: Codable { let id, generation, threadID, hash, capturedAt: String; let bytes: Int; var state: String }
+    struct Delivery: Codable {
+        let id, generation, threadID, hash, capturedAt: String; let bytes: Int; var state: String
+        /// False until the first chunk is sent, so a brand-new memo skips `watch_memo_status` (it would only 404).
+        var attempted = false
+        enum CodingKeys: String, CodingKey { case id, generation, threadID, hash, capturedAt, bytes, state, attempted }
+    }
     private var deliveries: [Delivery] = []
     private let manifest = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("phone-memo-uploads.json")
     private init() { if let data = try? Data(contentsOf: manifest), let saved = try? JSONDecoder().decode([Delivery].self, from: data) { deliveries = saved } }
@@ -102,7 +107,7 @@ import AVFoundation
                 guard transcriptReady(url) else { continue }
                 let transcript = (try? String(contentsOf: transcriptURL(url), encoding: .utf8)) ?? ""
                 var received = Set<Int>()
-                do {
+                if latest.attempted { do {
                     let status = try await service.call("watch_memo_status", ["memo_id": .string(entry.id), "thread_id": .string(entry.threadID)])
                     guard valid() else { return false }
                     guard deliveryIndex(entry) != nil else { continue }
@@ -113,7 +118,12 @@ import AVFoundation
                     }
                     guard status["status"].string == "uploading", status["memo_id"].string.lowercased() == entry.id.lowercased(), status["sha256"].string == entry.hash, status["byte_length"].int == entry.bytes else { throw MemoFailure.invalid }
                     received = Set(status["received_indices"].array.map(\.int))
-                } catch AppFailure.service(404) { /* New memo: no chunks have been uploaded yet. */ }
+                } catch AppFailure.service(404) { /* New memo: no chunks have been uploaded yet. */ } }
+                else if let index = deliveryIndex(entry) {
+                    // Never attempted: nothing can be on the host yet. Record the attempt before the first chunk.
+                    deliveries[index].attempted = true
+                    if !save() { deliveries[index].attempted = false }
+                }
                 let total = (entry.bytes + 131_071) / 131_072
                 let missing = (0..<total).filter { !received.contains($0) }
                 let handle = try FileHandle(forReadingFrom: url)
@@ -149,6 +159,21 @@ import AVFoundation
         catch { self.error = "Could not delete the iPhone copy." }
     }
     enum MemoFailure: Error { case invalid, full }
+}
+
+extension PhoneMemos.Delivery {
+    /// Manifests written before `attempted` existed may describe partial uploads, so they decode as attempted.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        generation = try c.decode(String.self, forKey: .generation)
+        threadID = try c.decode(String.self, forKey: .threadID)
+        hash = try c.decode(String.self, forKey: .hash)
+        capturedAt = try c.decode(String.self, forKey: .capturedAt)
+        bytes = try c.decode(Int.self, forKey: .bytes)
+        state = try c.decode(String.self, forKey: .state)
+        attempted = try c.decodeIfPresent(Bool.self, forKey: .attempted) ?? true
+    }
 }
 struct PhoneMemosView: View {
     let close: () -> Void

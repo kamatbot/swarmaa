@@ -54,6 +54,18 @@ import AVFoundation
     @ObservationIgnored private var pending: [URL] = []
     /// Count replies are broadcast to every app on the link; act only on ours.
     @ObservationIgnored private var countRequestedAt: Date?
+    /// Allocated at download start so the saved file's id is the `voice_intent` memo_id.
+    @ObservationIgnored private var memoID: UUID?
+    @ObservationIgnored private var stream: RingAudioStream?
+    @ObservationIgnored private var streamTried = false
+    @ObservationIgnored private var fed = 0
+    @ObservationIgnored private var timings: RingTimings?
+    /// Relay owned by the ring path when the foreground one isn't connected; kept warm between memos.
+    @ObservationIgnored private var ownedRelay: RelayService?
+    @ObservationIgnored private var relayUsers = 0
+    @ObservationIgnored private var relayLinger: Task<Void, Never>?
+    /// Host that answered `voice_intent` with 404 for a valid thread (predates the tool); skipped until relaunch.
+    @ObservationIgnored private var intentUnsupportedHost: String?
 
     private override init() { super.init() }
 
@@ -143,13 +155,26 @@ import AVFoundation
         hold()
         busy = true; status = "Downloading recording…"
         assembler = .init()
+        let id = UUID()
+        memoID = id; stream = nil; streamTried = false; fed = 0
         send(SR116Protocol.encode(.stop)) // clear any stale transfer first, as the vendor app does
         arm(seconds: 20)
+        let delay = stopDelayMs
         Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 1_000_000_000)
-            guard let self, self.assembler != nil else { return }
+            try? await Task.sleep(nanoseconds: delay * 1_000_000)
+            guard let self, self.assembler != nil, self.memoID == id else { return }
+            self.send(SR116Protocol.encode(.requestNext))
+            // The ring sometimes ignores a request that follows the stop too closely: ask once more.
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            guard self.memoID == id, self.assembler?.receivedPackets == 0 else { return }
+            self.note("No audio packet after 1.5 s; requesting again")
             self.send(SR116Protocol.encode(.requestNext))
         }
+    }
+    /// Pause between 0x40 stop and 0x34 request; `ring.stopDelayMs` overrides for field tests.
+    private var stopDelayMs: UInt64 {
+        let value = defaults.object(forKey: "ring.stopDelayMs") as? Int ?? 150
+        return UInt64(min(max(value, 0), 2000))
     }
 
     private func arm(seconds: UInt64) {
@@ -168,7 +193,15 @@ import AVFoundation
         status = message
         release()
     }
-    private func reset() { deadline?.cancel(); deadline = nil; assembler = nil; busy = false }
+    private func reset() {
+        deadline?.cancel(); deadline = nil; assembler = nil; busy = false
+        memoID = nil; stream?.cancel(); stream = nil; streamTried = false; fed = 0; timings = nil
+    }
+    private func mark(_ stage: String) {
+        guard var t = timings else { return }
+        t.mark(stage)
+        timings = t
+    }
 
     private func received(_ frame: SR116Protocol.Frame) {
         if let recording = SR116Protocol.isRecording(frame) {
@@ -176,15 +209,22 @@ import AVFoundation
             if recording { status = "Ring is recording…" }
             // Finished (0x50 → 0x40), or woke us after a relaunch that missed the 'recording' push.
             // Claim background time now so iOS doesn't suspend us before the download starts.
-            if !recording { hold(); checkNow() }
+            if !recording {
+                if assembler == nil { timings = RingTimings(fromIdleEdge: true) }
+                hold(); warmRelay(); checkNow()
+            }
             wasRecording = recording
             return
         }
         if let count = SR116Protocol.recordingCount(frame) {
             guard let asked = countRequestedAt, Date().timeIntervalSince(asked) < 15 else { return }
             countRequestedAt = nil
-            if count > 0 && assembler == nil { beginDownload() }
-            else if count == 0 && assembler == nil { status = "Connected. Ring has no new recordings."; release() }
+            if count > 0 && assembler == nil {
+                if timings == nil { timings = RingTimings(origin: asked, fromIdleEdge: false) }
+                mark("count_reply")
+                beginDownload()
+            }
+            else if count == 0 && assembler == nil { timings = nil; status = "Connected. Ring has no new recordings."; release() }
             return
         }
         guard assembler != nil else { return }
@@ -192,6 +232,18 @@ import AVFoundation
             do {
                 _ = try assembler?.accept(frame)
                 arm(seconds: 20)
+                if let a = assembler, a.receivedPackets > 0 {
+                    if !streamTried {
+                        streamTried = true
+                        mark("first_packet")
+                        stream = RingAudioStream()
+                        if stream == nil { note("Live transcription unavailable; the saved file will be transcribed") }
+                    }
+                    if a.opus.count > fed {
+                        stream?.append(Array(a.opus[fed...]))
+                        fed = a.opus.count
+                    }
+                }
                 if let a = assembler, a.totalPackets > 0 { status = "Downloading recording… \(a.receivedPackets * 100 / a.totalPackets)%" }
             } catch { abort("Recording transfer was out of order. It stays on the ring and will be retried.") }
             return
@@ -200,6 +252,7 @@ import AVFoundation
             guard let a = assembler, a.isComplete, !a.opus.isEmpty else {
                 abort("Recording arrived incomplete. It stays on the ring and will be retried."); return
             }
+            mark("last_packet")
             finish(a, remaining: remaining)
         }
     }
@@ -216,13 +269,16 @@ import AVFoundation
         do {
             guard let generation = WatchBridge.shared.memoGeneration else { throw RingFailure.signedOut }
             let captured = recording.firstDeviceSeconds.map { SR116Protocol.date(fromDeviceSeconds: $0) } ?? Date()
-            let item = try RingMemoFile.save(opus: recording.opus, generation: generation, captured: captured)
+            let item = try RingMemoFile.save(opus: recording.opus, generation: generation, captured: captured, id: memoID ?? UUID())
             // Saved and re-read: only now may the ring delete its copy.
             send(SR116Protocol.deleteAck(remaining: remaining))
+            mark("saved")
+            let live = LiveCapture(stream: stream, timings: timings ?? RingTimings(fromIdleEdge: false), captured: captured, duration: recording.seconds)
+            stream = nil // handed over: reset() must not cancel it
             reset()
             lastMemo = Date()
             status = "Recording saved (\(Int(recording.seconds.rounded())) s). Sending to your bot…"
-            Task { await self.deliver(item, generation: generation) }
+            Task { await self.deliver(item, generation: generation, live: live) }
             scheduleCheck(after: 2) // more recordings queued on the ring?
         } catch {
             abort("Couldn't save the recording (\(error.localizedDescription)). It stays on the ring.")
@@ -231,22 +287,93 @@ import AVFoundation
 
     // MARK: Delivery (same pipeline as Watch memos)
 
-    private func deliver(_ item: URL, generation: String) async {
+    /// Per-recording state handed from the download to delivery.
+    @MainActor private final class LiveCapture {
+        let stream: RingAudioStream?
+        var timings: RingTimings
+        let captured: Date
+        let duration: Double
+        init(stream: RingAudioStream?, timings: RingTimings, captured: Date, duration: Double) {
+            self.stream = stream; self.timings = timings; self.captured = captured; self.duration = duration
+        }
+        func mark(_ stage: String) { timings.mark(stage) }
+        /// When speech ended: the idle push if this download followed one, else the ring's start time plus length.
+        var spokenAt: Date {
+            min(Date(), timings.fromIdleEdge ? timings.origin : captured.addingTimeInterval(duration))
+        }
+    }
+
+    private func deliver(_ item: URL, generation: String, live: LiveCapture? = nil) async {
         hold()
         defer { release() }
-        note("Transcribing…")
         let started = Date()
-        let text = await Self.transcribe(item, timeout: 25)
-        note("Transcript: \(text.map { "\($0.count) chars" } ?? "timed out") after \(Int(Date().timeIntervalSince(started))) s")
+        var text: String?
+        var engine = "file"
+        if let stream = live?.stream {
+            text = await stream.finish(timeout: max(6, 1.5 * (live?.duration ?? 0)))
+            if text != nil { engine = "live" }
+            else { note("Live transcription gave nothing (\(stream.failure ?? "unknown")); transcribing the saved file") }
+        }
+        if text == nil {
+            note("Transcribing…")
+            text = await Self.transcribe(item, timeout: 25)
+        }
+        live?.mark("transcribed")
+        note("Transcript (\(engine)): \(text.map { "\($0.count) chars" } ?? "timed out") after \(Int(Date().timeIntervalSince(started))) s")
         guard text?.isEmpty == false || UIApplication.shared.applicationState == .active else {
             // iOS may not run speech recognition in the background. Keep the memo and finish when Swarmaa opens.
             deferred = deferred + [item]
             status = "Recording saved. Open Swarmaa to transcribe and send it."
             Self.remind()
+            if let live { note("Timings ms: \(live.timings.line)") }
             return
         }
         try? (text ?? "").write(to: item.deletingPathExtension().appendingPathExtension("txt"), atomically: true, encoding: .utf8)
+        // Transcript first: the action doesn't wait for the audio upload, which trails.
+        let memo = item.deletingPathExtension().lastPathComponent.lowercased()
+        var result: VoiceIntentResult?
+        if let text, !text.isEmpty {
+            let captured = live?.captured ?? (try? item.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? Date()
+            result = await sendIntent(memo: memo, transcript: text, captured: captured, live: live)
+            if let result {
+                live?.mark("intent_ack")
+                RingIntent.notify(result)
+                status = RingIntent.notificationText(result).body
+            }
+        }
         await upload(generation: generation, assign: item)
+        if PhoneMemos.shared.items.first(where: { $0.id.lowercased() == memo })?.delivery?.state == "mac" { live?.mark("audio_stored") }
+        if let result { status = RingIntent.notificationText(result).body }
+        if let live { note("Timings ms: \(live.timings.line)") }
+    }
+
+    /// One `voice_intent` call. nil means use the existing memo flow (older host, offline, no bot).
+    private func sendIntent(memo: String, transcript: String, captured: Date, live: LiveCapture?) async -> VoiceIntentResult? {
+        guard let connection = try? ConnectionKeychain().load(), intentUnsupportedHost != connection.hostID else { return nil }
+        let service = acquireRelay(connection)
+        defer { releaseRelay() }
+        func request(_ thread: String) -> VoiceIntentRequest {
+            VoiceIntentRequest(memoID: memo, threadID: thread, transcript: transcript, capturedAt: captured, spokenAt: live?.spokenAt ?? captured,
+                               durationSeconds: live?.duration, source: "ring", timings: live?.timings.marks)
+        }
+        do {
+            guard let target = try await ringTarget(service, connection: connection) else { return nil }
+            do { return try await RingIntent.send(request(target.thread), service: service) }
+            catch AppFailure.service(404) {
+                // Either the cached thread is gone or the host predates voice_intent; a fresh bot list tells them apart.
+                cachedTarget = nil
+                guard let fresh = try await ringTarget(service, connection: connection) else { return nil }
+                guard fresh.thread != target.thread else {
+                    intentUnsupportedHost = connection.hostID
+                    note("voice_intent unavailable on this host; sending the memo as before")
+                    return nil
+                }
+                return try await RingIntent.send(request(fresh.thread), service: service)
+            }
+        } catch {
+            note("voice_intent failed (\(safeError(error))); sending the memo as before")
+            return nil
+        }
     }
 
     /// Assigns any new ring memo to the ring's bot and flushes pending deliveries.
@@ -259,36 +386,96 @@ import AVFoundation
 
     private func uploadOnce(generation: String) async {
         guard let connection = try? ConnectionKeychain().load() else { status = "Sign in to a host to deliver ring memos."; return }
-        let candidate = Runtime.model.connected ? Runtime.model.service as? RelayService : nil
-        let shared: RelayService? = candidate?.connection.hostID == connection.hostID && candidate?.connection.relay == connection.relay
-            && candidate?.connection.token == connection.token ? candidate : nil
-        let owned = shared == nil ? RelayService(connection: connection) : nil
-        let service: any HostService = shared ?? owned!
-        defer { if let owned { Task { await owned.transport.disconnect() } } }
+        let service = acquireRelay(connection)
+        defer { releaseRelay() }
         do {
-            let list = try await service.call("bot_list", ["limit": .number(100)])
-            let bots = list["bots"].array.map { Bot(raw: $0) }.filter { !$0.archived && UUID(uuidString: $0.threadID) != nil }
-            let allowed = Set(bots.map(\.threadID))
-            let target = allowed.contains(threadID) ? threadID
-                : (bots.first { $0.name.caseInsensitiveCompare("Assistant") == .orderedSame } ?? bots.first { $0.starred } ?? Bot.sorted(bots).first)?.threadID
-            guard let target else { status = "Recording saved on iPhone. Create a bot to receive ring memos."; return }
+            guard let target = try await ringTarget(service, connection: connection) else {
+                status = "Recording saved on iPhone. Create a bot to receive ring memos."; return
+            }
             let memos = PhoneMemos.shared
             memos.refresh(generation: generation)
             for file in pending {
                 if let item = memos.items.first(where: { $0.url.standardizedFileURL == file.standardizedFileURL }), item.delivery == nil {
-                    memos.assign(item, generation: generation, threadID: target)
+                    memos.assign(item, generation: generation, threadID: target.thread)
                 }
             }
             pending = []
             for _ in 0..<8 {
-                let more = await memos.flush(service: service, generation: generation, allowedThreads: allowed, valid: { true }) { _ in }
+                let more = await memos.flush(service: service, generation: generation, allowedThreads: Set(target.allowed), valid: { true }) { _ in }
                 if !more { break }
             }
-            if let error = memos.error { status = error; memos.error = nil }
-            else { status = "Ring memo sent to \(bots.first { $0.threadID == target }?.name ?? "your bot")." }
+            if let error = memos.error { status = error; memos.error = nil; cachedTarget = nil } // re-read bot_list next time
+            else { status = "Ring memo sent to \(target.name.isEmpty ? "your bot" : target.name)." }
         } catch {
+            cachedTarget = nil
             status = "Recording saved on iPhone. Delivery will retry: \(error.localizedDescription)"
         }
+    }
+
+    // MARK: Relay and target (warm path)
+
+    /// The ring's bot, cached so a memo costs no `bot_list` round trip. Re-read when missing, when the host or the
+    /// chosen bot changes, and after a delivery error (e.g. thread not found).
+    private struct RingTarget: Codable {
+        let host: String
+        let preference: String
+        let thread: String
+        let name: String
+        let allowed: [String]
+    }
+    private var cachedTarget: RingTarget? {
+        get { defaults.data(forKey: "ring.target").flatMap { try? JSONDecoder().decode(RingTarget.self, from: $0) } }
+        set { defaults.set(newValue.flatMap { try? JSONEncoder().encode($0) }, forKey: "ring.target") }
+    }
+    private func ringTarget(_ service: any HostService, connection: HostConnection) async throws -> RingTarget? {
+        if let cached = cachedTarget, cached.host == connection.hostID, cached.preference == threadID,
+           UUID(uuidString: cached.thread) != nil, cached.allowed.contains(cached.thread) { return cached }
+        let list = try await service.call("bot_list", ["limit": .number(100)])
+        let bots = list["bots"].array.map { Bot(raw: $0) }.filter { !$0.archived && UUID(uuidString: $0.threadID) != nil }
+        let preferred = threadID
+        let chosen = bots.first { $0.threadID == preferred }
+            ?? bots.first { $0.name.caseInsensitiveCompare("Assistant") == .orderedSame } ?? bots.first { $0.starred } ?? Bot.sorted(bots).first
+        guard let chosen else { cachedTarget = nil; return nil }
+        let target = RingTarget(host: connection.hostID, preference: preferred, thread: chosen.threadID, name: chosen.name, allowed: bots.map(\.threadID))
+        cachedTarget = target
+        return target
+    }
+
+    /// The foreground relay when it is connected to the same host, else one owned here and kept ~60 s after last use.
+    private func acquireRelay(_ connection: HostConnection) -> any HostService {
+        relayLinger?.cancel(); relayLinger = nil
+        relayUsers += 1
+        let candidate = Runtime.model.connected ? Runtime.model.service as? RelayService : nil
+        if let candidate, Self.same(candidate.connection, connection) { return candidate }
+        if let owned = ownedRelay, Self.same(owned.connection, connection) { return owned }
+        if let old = ownedRelay { Task { await old.transport.disconnect() } }
+        let owned = RelayService(connection: connection)
+        ownedRelay = owned
+        return owned
+    }
+    private func releaseRelay() {
+        relayUsers = max(0, relayUsers - 1)
+        guard relayUsers == 0, ownedRelay != nil else { return }
+        relayLinger?.cancel()
+        relayLinger = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 60_000_000_000)
+            guard !Task.isCancelled, let self, self.relayUsers == 0, let owned = self.ownedRelay else { return }
+            self.ownedRelay = nil; self.relayLinger = nil
+            await owned.transport.disconnect()
+        }
+    }
+    /// At the idle edge: open the socket while the ring is still being asked for its recording.
+    private func warmRelay() {
+        guard WatchBridge.shared.memoGeneration != nil, let connection = try? ConnectionKeychain().load() else { return }
+        let service = acquireRelay(connection)
+        if let owned = ownedRelay, service === owned {
+            let transport = owned.transport
+            Task { try? await transport.connect() }
+        }
+        releaseRelay()
+    }
+    private static func same(_ a: HostConnection, _ b: HostConnection) -> Bool {
+        a.hostID == b.hostID && a.relay == b.relay && a.token == b.token
     }
 
     // Background time while a transfer or upload is in flight.
@@ -398,7 +585,7 @@ extension RingLink: @preconcurrency CBCentralManagerDelegate, @preconcurrency CB
 
 /// Decodes the ring's Opus packets into the Watch-memo folder as AAC M4A.
 enum RingMemoFile {
-    static func save(opus: [Data], generation: String, captured: Date) throws -> URL {
+    static func save(opus: [Data], generation: String, captured: Date, id: UUID = UUID()) throws -> URL {
         let manager = FileManager.default
         let folder = PhoneMemos.root.appendingPathComponent(generation, isDirectory: true)
         try manager.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -406,7 +593,7 @@ enum RingMemoFile {
         guard existing.count < MemoLimits.count else { throw RingLink.RingFailure.full }
         let pcm = try decode(opus)
         guard pcm.frameLength > 0 else { throw RingLink.RingFailure.empty }
-        let target = folder.appendingPathComponent(UUID().uuidString.lowercased() + ".m4a")
+        let target = folder.appendingPathComponent(id.uuidString.lowercased() + ".m4a")
         let staged = folder.appendingPathComponent("." + UUID().uuidString + ".m4a")
         defer { try? manager.removeItem(at: staged) }
         do {
