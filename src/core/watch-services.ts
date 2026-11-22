@@ -88,8 +88,10 @@ export class WatchServices {
       const scope = await authorize(db,p,thread,true);
       let row = (await db.query('SELECT * FROM watch_memos WHERE tenant_id=$1 AND thread_id=$2 AND memo_id=$3 FOR UPDATE',[p.tenantId,thread,memo])).rows[0];
       if (!row && parsed) {
-        const count = Number((await db.query('SELECT count(*) AS n FROM watch_memos WHERE tenant_id=$1 AND thread_id=$2',[p.tenantId,thread])).rows[0].n);
-        requireCondition(count < 20,409,'memo_limit','Thread memo limit reached.');
+        // Bounds in-flight uploads only. Stored memos live as files on the Mac (their chunks are dropped below),
+        // so a ring or Watch used every day never fills the thread.
+        const count = Number((await db.query("SELECT count(*) AS n FROM watch_memos WHERE tenant_id=$1 AND thread_id=$2 AND status<>'stored'",[p.tenantId,thread])).rows[0].n);
+        requireCondition(count < 20,409,'memo_limit','Too many memo uploads in progress for this thread.');
         row = (await db.query('INSERT INTO watch_memos (tenant_id,scope,thread_id,memo_id,sha256,byte_length,captured_at) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *',[p.tenantId,scope,thread,memo,parsed.sha,parsed.length,parsed.captured])).rows[0];
       }
       requireCondition(row,404,'memo_not_found','Memo not found.');
@@ -103,7 +105,7 @@ export class WatchServices {
         const old = (await db.query('SELECT data FROM watch_memo_chunks WHERE tenant_id=$1 AND thread_id=$2 AND memo_id=$3 AND chunk_index=$4',[p.tenantId,thread,memo,parsed.index])).rows[0];
         requireCondition(!old || old.data.equals(parsed.data),409,'memo_conflict','Memo chunk conflicts.');
         if (parsed.transcript && !row.transcript) { await db.query('UPDATE watch_memos SET transcript=$4 WHERE tenant_id=$1 AND thread_id=$2 AND memo_id=$3',[p.tenantId,thread,memo,parsed.transcript]); row.transcript = parsed.transcript; }
-        if (!old) await db.query('INSERT INTO watch_memo_chunks VALUES ($1,$2,$3,$4,$5)',[p.tenantId,thread,memo,parsed.index,parsed.data]);
+        if (!old && row.status !== 'stored') await db.query('INSERT INTO watch_memo_chunks VALUES ($1,$2,$3,$4,$5)',[p.tenantId,thread,memo,parsed.index,parsed.data]);
       }
       if (action === 'status' && row.status === 'stored' && !await storedFileValid(filename,row.byte_length,row.sha256)) {
         await db.query("UPDATE watch_memos SET status='uploading' WHERE tenant_id=$1 AND thread_id=$2 AND memo_id=$3",[p.tenantId,thread,memo]);
@@ -117,6 +119,8 @@ export class WatchServices {
         await durableSave(filename,data);
         await durableSave(filename.replace(/\.m4a$/,'.txt'),Buffer.from(row.transcript,'utf8')).catch(() => {}); // best effort; the DB keeps the transcript
         await db.query("UPDATE watch_memos SET status='stored' WHERE tenant_id=$1 AND thread_id=$2 AND memo_id=$3",[p.tenantId,thread,memo]); row.status = 'stored';
+        // The durable file is the copy now; a later invalid file resets the row to 'uploading' and the client re-sends.
+        await db.query('DELETE FROM watch_memo_chunks WHERE tenant_id=$1 AND thread_id=$2 AND memo_id=$3',[p.tenantId,thread,memo]);
       }
       return response(row,action === 'status' ? (row.status === 'uploading' && chunks.length === Math.ceil(row.byte_length / CHUNK) ? [] : chunks.map(c => c.chunk_index)) : undefined);
     });

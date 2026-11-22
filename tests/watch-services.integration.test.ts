@@ -181,4 +181,15 @@ describe('watch services', { skip: !connectionString, concurrency: false }, () =
     const txt = path.join(dir, 'memos', h('sha256').update(tenant).digest('hex'), thread, `${base.memo_id}.txt`);
     assert.equal(await readFile(txt, 'utf8'), 'Call the plumber tomorrow');
   });
+  it('limits in-flight uploads, not stored memos, and drops chunks once stored', { skip: process.platform !== 'darwin' }, async () => {
+    const { user, thread } = await setup();
+    const { createHash } = await import('node:crypto');
+    const memo = (fill: number) => {
+      const data = Buffer.alloc(1_000, fill); data.write('ftypM4A ', 4, 'ascii');
+      return { memo_id: randomUUID(), thread_id: thread, sha256: createHash('sha256').update(data).digest('hex'), byte_length: data.length, captured_at: '2026-11-22T10:00:00Z', index: 0, data_base64: data.toString('base64') };
+    };
+    for (let i = 0; i < 21; i++) assert.equal((await call(user, 'watch_memo_put', memo(i + 1))).status, 'stored');
+    const left = (await pool.query('SELECT count(*)::int AS n FROM watch_memo_chunks WHERE thread_id=$1', [thread])).rows[0].n;
+    assert.equal(left, 0);
+  });
 });
