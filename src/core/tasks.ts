@@ -18,6 +18,7 @@ import { redactSecrets } from '../safety/redact.js';
 import { clipUtf8, assignThreadSeq, getTurnWindow, type AgentRow } from './teams.js';
 import { booleanOption } from './memory.js';
 import { extractActionsBlock, validateTurnGrant, type TurnGrantContext } from './actions.js';
+import { runOriginActions } from './voice.js';
 import { SwarmsService, deriveSwarmStatus, type SwarmRow, type SwarmStepRow, type TurnBudget } from './swarms.js';
 
 function effectiveRoutingKind(row: { kind: string; required_capability: string }): RoutingKind {
@@ -637,6 +638,7 @@ export class TaskService {
               'SELECT name, scope, job FROM bots WHERE tenant_id=$1 AND id<>$2 AND NOT archived ORDER BY name',[p.tenantId,next.bot_id])).rows;
             claimTask = {...claimTask, project_bots: bots.map(b => ({name:b.name.trim(),scope:b.scope,job:clipUtf8(b.job ?? '',200)}))};
           }
+          if (own?.rules?.local_actions === true) claimTask = {...claimTask, local_actions: true};
         }
         return {task:claimTask,lease_token:token,lease_generation:generation,...(route ? {route} : {})};
       }
@@ -789,7 +791,7 @@ export class TaskService {
     const result = jsonObject(input.result,'result',65536);
     const artifactIds = uuidArray(input.artifact_ids,'artifact_ids');
     patchResult(result);
-    return transaction(this.pool,async db => {
+    const out = await transaction(this.pool,async db => {
       const v = await finishValidate(db,p,lease,outcome,result,artifactIds);
       if ('replay' in v) return v.replay;
       const c = v.ctx;
@@ -809,6 +811,9 @@ export class TaskService {
       await taskChanged(db,p,next,'finished');
       return {task:await taskWithInstructions(db,next),replayed:false};
     });
+    // Turn local_action rows run after commit (docs/RING-AGENT.md §5.3); the sweep retries any that do not start.
+    if (outcome === 'completed') runOriginActions(this.pool,p.tenantId,'turn',lease.taskId.toLowerCase());
+    return out;
   }
 
   /** Thread reply, native session, turn actions or failure notice for an agent turn. */
@@ -881,7 +886,8 @@ export class TaskService {
           scope: row.scope,
           hopDepth: typeof currentHop === 'number' ? currentHop : 0,
           botId: row.bot_id ?? null,
-          leadMode: routerLead ? 'router' : 'default'
+          leadMode: routerLead ? 'router' : 'default',
+          taskId: row.id
         };
 
         if (extracted.error) {

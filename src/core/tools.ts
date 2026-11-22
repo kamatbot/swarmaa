@@ -17,6 +17,14 @@ const leaseRequired = ['task_id','lease_token','lease_generation'];
 const lessonId = { type: 'string', pattern: '^lesson_[0-9a-f]{64}$' };
 const lessonEvidence = { type:'array', minItems:1, maxItems:10, items:{ type:'object', properties:{ session_id:id, turns:{type:'array',items:{type:'integer',minimum:0,maximum:100000},maxItems:20}, summary:text(200) }, required:['session_id','turns','summary'], additionalProperties:false } };
 
+const isoTime = { type: 'string', format: 'date-time' };
+const localAction = { type: 'object', oneOf: [
+  { properties: { type: { const: 'reminder.create' }, title: text(200), due_at: isoTime, notes: text(4000), list: { enum: ['default','todo'] } }, required: ['type','title'], additionalProperties: false },
+  { properties: { type: { const: 'event.create' }, title: text(200), start_at: isoTime, end_at: isoTime, all_day: { type: 'boolean' }, location: text(200), notes: text(4000) }, required: ['type','title','start_at','end_at'], additionalProperties: false },
+  { properties: { type: { const: 'note.append' }, text: text(16384), notebook: { enum: ['daily','inbox','meetings'] }, title: text(200) }, required: ['type','text'], additionalProperties: false },
+  { properties: { type: { const: 'timer.start' }, label: text(200), fire_at: isoTime }, required: ['type','label','fire_at'], additionalProperties: false },
+] };
+
 type Spec = [name: string, permission: Permission, description: string, properties: Record<string, unknown>, required: string[], readOnly?: boolean];
 const specs: Spec[] = [
   ['push_register','agent:read','Register this device for content-free bot notifications.', {token:{type:'string',pattern:'^[0-9a-fA-F]{64,200}$'},environment:{enum:['sandbox','production']},activity_start_token:{type:'string',pattern:'^[0-9a-fA-F]{1,512}$'},activity_token:{type:'string',pattern:'^[0-9a-fA-F]{1,512}$'},activity_bot_id:id}, ['token','environment']],
@@ -70,6 +78,11 @@ const specs: Spec[] = [
   ['watch_memo_put','thread:write','Upload one deterministic memo chunk to the Mac.', {memo_id:id,thread_id:id,sha256:{type:'string',pattern:'^[0-9a-f]{64}$'},byte_length:{type:'integer',minimum:1,maximum:20971520},captured_at:{type:'string',format:'date-time'},index:{type:'integer',minimum:0,maximum:159},data_base64:text(174764),transcript:text(16384)}, ['memo_id','thread_id','sha256','byte_length','captured_at','index','data_base64']],
   ['watch_memo_status','thread:read','Get a memo upload status and received chunk indices.', {memo_id:id,thread_id:id}, ['memo_id','thread_id'], true],
   ['watch_memo_delete','thread:write','Delete a memo from this thread.', {memo_id:id,thread_id:id}, ['memo_id','thread_id']],
+  ['voice_intent','thread:write','Send a voice memo transcript: the Mac runs a closed local action (reminder, event, note, timer), delegates to a named bot, or queues the Assistant. Idempotent per memo; a different transcript for the same memo is memo_conflict.', {memo_id:id,thread_id:id,transcript:{type:'string',maxLength:16384},captured_at:{type:'string',format:'date-time'},spoken_at:{type:'string',format:'date-time'},time_zone:text(64),duration_seconds:{type:'number',minimum:0,maximum:86400},source:{enum:['ring','watch','phone']},timings:{type:'object',maxProperties:16,additionalProperties:{type:['number','string']}}}, ['memo_id','thread_id','transcript','captured_at','spoken_at','time_zone','source']],
+  ['local_action_run','thread:write','Run one closed local action on the Mac (reminder.create, event.create, note.append, timer.start) and post its result card. Retries with the same idempotency_key return the same action.', {thread_id:id,action:localAction,idempotency_key:text(200)}, ['thread_id','action','idempotency_key']],
+  ['local_action_undo','thread:write','Undo a finished local action (deletes the reminder or event, removes the note block).', {action_id:id}, ['action_id']],
+  ['local_action_list','thread:read','List recent local actions for a thread.', {thread_id:id,limit:{type:'integer',minimum:1,maximum:100}}, ['thread_id'], true],
+  ['local_action_check','thread:read','Check per app whether local actions work on the Mac: ok, permission_denied or disabled.', {}, [], true],
   ['watch_transaction_preview','thread:write','Prepare a RetireOdds transaction for explicit review.', {thread_id:id,request_id:id,operation:{enum:['create','update']},expense_id:text(200),values:{type:'object',properties:{payee:text(200),date:text(10),amount:text(32),currency:{enum:['THB','USD','EUR']},category:text(200)},required:['payee','date','amount','currency','category'],additionalProperties:false}}, ['thread_id','request_id','operation','values']],
   ['watch_transaction_confirm','thread:write','Confirm a reviewed RetireOdds transaction.', {thread_id:id,review_id:text(200),review_token:text(4096),confirmation_id:id}, ['thread_id','review_id','review_token','confirmation_id']],
   ['watch_transaction_get','thread:read','Get a RetireOdds review and receipt.', {thread_id:id,review_id:text(200)}, ['thread_id','review_id'], true],
