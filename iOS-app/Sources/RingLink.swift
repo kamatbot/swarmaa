@@ -174,14 +174,14 @@ import AVFoundation
         if let recording = SR116Protocol.isRecording(frame) {
             note("Ring state push: \(recording ? "recording" : "idle")")
             if recording { status = "Ring is recording…" }
-            // Finished recording: the ring flips 0x50 → 0x40.
-            // Finished (or woke us after a relaunch, when the earlier 'recording' push was missed).
-            if !recording { scheduleCheck(after: 1) }
+            // Finished (0x50 → 0x40), or woke us after a relaunch that missed the 'recording' push.
+            // Claim background time now so iOS doesn't suspend us before the download starts.
+            if !recording { hold(); checkNow() }
             wasRecording = recording
             return
         }
         if let count = SR116Protocol.recordingCount(frame) {
-            guard let asked = countRequestedAt, Date().timeIntervalSince(asked) < 5 else { return }
+            guard let asked = countRequestedAt, Date().timeIntervalSince(asked) < 15 else { return }
             countRequestedAt = nil
             if count > 0 && assembler == nil { beginDownload() }
             else if count == 0 && assembler == nil { status = "Connected. Ring has no new recordings."; release() }
