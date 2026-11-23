@@ -1,4 +1,5 @@
 import XCTest
+import UserNotifications
 @testable import Swarmaa
 
 @MainActor final class RingIntentTests: XCTestCase {
@@ -114,6 +115,62 @@ import XCTest
         XCTAssertEqual(RingIntent.notificationText(merged).body, "Reminder set: Call mom · Today 17:00\nNote saved")
         XCTAssertEqual(RingIntent.merging(first, with: []), first)
         XCTAssertEqual(try RingIntent.listedActions(Data("{}".utf8)), [])
+    }
+
+    func testRequestCarriesDeviceIDAndBoundedDeviceActions() throws {
+        let device = "6A1F0C2B-3D4E-4F50-8A6B-7C8D9E0F1A2B"
+        let request = VoiceIntentRequest(memoID: UUID().uuidString, threadID: UUID().uuidString, transcript: "remind me", capturedAt: Date(), spokenAt: Date(),
+                                         deviceID: device, deviceActions: ["reminders", "calendar", "reminders", String(repeating: "x", count: 33)])
+        let json = try object(request)
+        XCTAssertEqual(json["device_id"] as? String, device.lowercased())
+        XCTAssertEqual(json["device_actions"] as? [String], ["reminders", "calendar"])
+        // Device-capable with nothing allowed yet still says so (rule 3 of §11.1).
+        let none = try object(VoiceIntentRequest(memoID: UUID().uuidString, threadID: UUID().uuidString, transcript: "x", capturedAt: Date(), spokenAt: Date(),
+                                                 deviceID: device, deviceActions: []))
+        XCTAssertEqual(none["device_actions"] as? [String], [])
+        // device_actions requires device_id.
+        let orphan = try object(VoiceIntentRequest(memoID: UUID().uuidString, threadID: UUID().uuidString, transcript: "x", capturedAt: Date(), spokenAt: Date(),
+                                                   deviceID: "not-a-uuid", deviceActions: ["reminders"]))
+        XCTAssertNil(orphan["device_id"])
+        XCTAssertNil(orphan["device_actions"])
+    }
+
+    func testResultDecodesDeviceRowsAndOldRowsDefaultToMac() throws {
+        let device = try JSONDecoder().decode(VoiceIntentResult.self, from: Data("""
+        {"memo_id":"m","route":"device","message_seq":5,"actions":[{"id":"a1","type":"reminder.create","status":"queued",
+         "summary":"Reminder: Call mom · Today 17:00 · waiting for your iPhone","undoable":false,"runner":"device",
+         "action":{"type":"reminder.create","title":"Call mom","due_at":"2026-11-23T10:00:00Z","extra":1}}]}
+        """.utf8))
+        XCTAssertEqual(device.route, "device")
+        let row = try XCTUnwrap(device.actions.first)
+        XCTAssertEqual(row.runner, "device")
+        XCTAssertEqual(row.action, DeviceAction(type: "reminder.create", title: "Call mom", dueAt: "2026-11-23T10:00:00Z"))
+        XCTAssertTrue(RingIntent.runsHere(row))
+        XCTAssertTrue(RingIntent.isPending(device))
+        XCTAssertFalse(RingIntent.isPendingOnMac(device))
+        XCTAssertEqual(RingIntent.notificationText(device).title, "Working on it…")
+
+        let old = try JSONDecoder().decode(VoiceIntentResult.self, from: Data("""
+        {"memo_id":"m","route":"local","actions":[{"id":"a1","type":"reminder.create","status":"running","summary":"Reminder: Call mom","undoable":false}]}
+        """.utf8))
+        XCTAssertEqual(old.actions.first?.runner, "mac")
+        XCTAssertNil(old.actions.first?.action)
+        XCTAssertFalse(RingIntent.runsHere(try XCTUnwrap(old.actions.first)))
+        XCTAssertTrue(RingIntent.isPendingOnMac(old))
+
+        let blocked = VoiceIntentResult(memoID: "m", route: "device", actions: [
+            .init(id: "1", type: "reminder.create", status: "blocked", summary: "Allow Reminders to finish: Call mom", undoable: false, runner: "device")
+        ])
+        XCTAssertEqual(RingIntent.notificationText(blocked).title, "Ring memo needs attention")
+        XCTAssertEqual(RingIntent.notificationText(.init(memoID: "m", route: "device")).body, "Done on this iPhone")
+    }
+
+    func testUndoRequestReadsTheNotificationPayload() {
+        XCTAssertEqual(RingIntent.undoRequest(["action_id": "a1", "handle": "x-1"])?.handle, "x-1")
+        XCTAssertNil(RingIntent.undoRequest(["action_id": "a1"]))
+        XCTAssertNil(RingIntent.undoRequest(["action_id": "a1", "handle": ""]))
+        XCTAssertEqual(RingIntent.category.identifier, "RING_ACTION")
+        XCTAssertEqual(RingIntent.category.actions.map(\.identifier), [RingIntent.undoAction])
     }
 
     func testTimingsKeepFirstMarkAndOrderTheLogLine() {

@@ -33,14 +33,22 @@
 	<false/>
 	<key>LSSupportsOpeningDocumentsInPlace</key>
 	<true/>
+	<key>NSAlarmKitUsageDescription</key>
+	<string>Set the alarms and timers you speak to your ring.</string>
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>Connect to your SR116 ring so recordings you make on it reach your bots.</string>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>Add the events you speak to your ring, and remove one when you undo it.</string>
+	<key>NSCalendarsWriteOnlyAccessUsageDescription</key>
+	<string>Add the events you speak to your ring.</string>
 	<key>NSCameraUsageDescription</key>
 	<string>Take photos to send to your bots in chat.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Dictate messages to your bots.</string>
+	<key>NSRemindersFullAccessUsageDescription</key>
+	<string>Create the reminders and to-dos you speak to your ring, and remove one when you undo it.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
-	<string>Turn speech into an editable message.</string>
+	<string>Turn what you say to your ring or the app into text, on this iPhone.</string>
 	<key>NSSupportsLiveActivities</key>
 	<true/>
 	<key>NSUserActivityTypes</key>

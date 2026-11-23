@@ -13,14 +13,19 @@ struct VoiceIntentRequest: Codable, Equatable, Sendable {
     let durationSeconds: Double?
     let source: String
     let timings: [String: Int]?
+    /// §11.3: this install's random id and the capabilities it can run (empty = none allowed yet, still device-capable).
+    let deviceID: String?
+    let deviceActions: [String]?
 
     enum CodingKeys: String, CodingKey {
         case memoID = "memo_id", threadID = "thread_id", transcript, capturedAt = "captured_at", spokenAt = "spoken_at"
         case timeZone = "time_zone", durationSeconds = "duration_seconds", source, timings
+        case deviceID = "device_id", deviceActions = "device_actions"
     }
 
     init(memoID: String, threadID: String, transcript: String, capturedAt: Date, spokenAt: Date, timeZone: TimeZone = .current,
-         durationSeconds: Double? = nil, source: String = "ring", timings: [String: Int]? = nil) {
+         durationSeconds: Double? = nil, source: String = "ring", timings: [String: Int]? = nil,
+         deviceID: String? = nil, deviceActions: [String]? = nil) {
         let iso = ISO8601DateFormatter()
         self.memoID = memoID.lowercased()
         self.threadID = threadID.lowercased()
@@ -31,6 +36,12 @@ struct VoiceIntentRequest: Codable, Equatable, Sendable {
         self.durationSeconds = durationSeconds.flatMap { $0.isFinite && $0 >= 0 ? ($0 * 10).rounded() / 10 : nil }
         self.source = source
         self.timings = timings?.isEmpty == true ? nil : timings
+        let device = deviceID.flatMap { UUID(uuidString: $0) }?.uuidString.lowercased()
+        self.deviceID = device
+        // Requires device_id; ≤ 8 unique names of ≤ 32 characters.
+        var names: [String] = []
+        for name in deviceActions ?? [] where !name.isEmpty && name.count <= 32 && !names.contains(name) && names.count < 8 { names.append(name) }
+        self.deviceActions = device == nil ? nil : deviceActions.map { _ in names }
     }
 
     /// Tool arguments with the same keys as the Codable form.
@@ -40,6 +51,8 @@ struct VoiceIntentRequest: Codable, Equatable, Sendable {
                                     "source": .string(source)]
         if let durationSeconds { args["duration_seconds"] = .number(durationSeconds) }
         if let timings { args["timings"] = .object(timings.mapValues { JSON.number(Double($0)) }) }
+        if let deviceID { args["device_id"] = .string(deviceID) }
+        if let deviceActions { args["device_actions"] = .strings(deviceActions) }
         return args
     }
 }
@@ -52,9 +65,13 @@ struct VoiceIntentResult: Codable, Equatable, Sendable {
         let status: String
         let summary: String
         let undoable: Bool
-        enum CodingKeys: String, CodingKey { case id, type, status, summary, undoable }
-        init(id: String, type: String, status: String, summary: String, undoable: Bool) {
+        /// "mac" (default, older hosts) or "device": this iPhone runs `action` (§11.3).
+        let runner: String
+        let action: DeviceAction?
+        enum CodingKeys: String, CodingKey { case id, type, status, summary, undoable, runner, action }
+        init(id: String, type: String, status: String, summary: String, undoable: Bool, runner: String = "mac", action: DeviceAction? = nil) {
             self.id = id; self.type = type; self.status = status; self.summary = summary; self.undoable = undoable
+            self.runner = runner; self.action = action
         }
         init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -63,6 +80,8 @@ struct VoiceIntentResult: Codable, Equatable, Sendable {
             status = try c.decode(String.self, forKey: .status)
             summary = try c.decodeIfPresent(String.self, forKey: .summary) ?? ""
             undoable = try c.decodeIfPresent(Bool.self, forKey: .undoable) ?? false
+            runner = try c.decodeIfPresent(String.self, forKey: .runner) ?? "mac"
+            action = (try? c.decodeIfPresent(DeviceAction.self, forKey: .action)) ?? nil
         }
     }
     struct Delegate: Codable, Equatable, Sendable {
@@ -182,6 +201,15 @@ enum RingIntent {
     /// Statuses that mean the Mac hasn't finished the action yet.
     static func isPending(_ action: VoiceIntentResult.Action) -> Bool { action.status == "queued" || action.status == "running" }
     static func isPending(_ result: VoiceIntentResult) -> Bool { result.actions.contains { isPending($0) } }
+    /// Only Mac rows are worth the follow-up `local_action_list` read; device rows finish on this iPhone.
+    static func isPendingOnMac(_ result: VoiceIntentResult) -> Bool { result.actions.contains { $0.runner != "device" && isPending($0) } }
+    /// A device row this iPhone should run now.
+    static func runsHere(_ action: VoiceIntentResult.Action) -> Bool { action.runner == "device" && action.status == "queued" && action.action != nil }
+
+    /// `local_action_report` (§11.3). Its answer is `{action: view}`; the host formats the card.
+    @MainActor static func report(_ report: DeviceReport, service: any HostService, timeout: Double = intentTimeout) async throws -> JSON {
+        try await call(service, "local_action_report", report.arguments, seconds: timeout)
+    }
 
     /// Replaces the result's actions with the same ids from a later read; others stay as they were.
     static func merging(_ result: VoiceIntentResult, with fresh: [VoiceIntentResult.Action]) -> VoiceIntentResult {
@@ -203,13 +231,17 @@ enum RingIntent {
     /// Lock-screen text for a result. Content is built and shown on this iPhone only (never via APNs).
     static func notificationText(_ result: VoiceIntentResult) -> (title: String, body: String) {
         let summaries = result.actions.prefix(5).map { $0.summary.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }.map { String($0.prefix(300)) }
-        let failed = result.actions.contains { $0.status == "failed" }
+        let failed = result.actions.contains { $0.status == "failed" || $0.status == "blocked" }
         let pending = !failed && isPending(result)
         switch result.route {
-        case "local" where !summaries.isEmpty:
+        case "local" where !summaries.isEmpty, "device" where !summaries.isEmpty:
             return (failed ? "Ring memo needs attention" : pending ? "Working on it…" : "Ring memo", summaries.joined(separator: "\n"))
         case "local" where pending:
             return ("Working on it…", "Your Mac is finishing the action.")
+        case "device" where pending:
+            return ("Working on it…", "Your iPhone is finishing the action.")
+        case "device":
+            return (failed ? "Ring memo needs attention" : "Ring memo", "Done on this iPhone")
         case "delegate":
             let name = result.delegatedTo?.name.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             return (pending ? "Working on it…" : "Ring memo", name.isEmpty ? "Sent to your bot" : "Sent to \(name.prefix(80))")
@@ -220,14 +252,34 @@ enum RingIntent {
 
     static func notificationIdentifier(_ result: VoiceIntentResult) -> String { "ring-intent-" + result.memoID.lowercased() }
 
+    /// Lock-screen Undo for a device action (§11.4): a background action, so undo runs without opening the app.
+    static let actionCategory = "RING_ACTION", undoAction = "RING_UNDO"
+    static var category: UNNotificationCategory {
+        UNNotificationCategory(identifier: actionCategory, actions: [UNNotificationAction(identifier: undoAction, title: "Undo", options: [])],
+                               intentIdentifiers: [], options: [])
+    }
+    /// The action id and handle carried by a RING_ACTION notification.
+    static func undoRequest(_ userInfo: [AnyHashable: Any]) -> (id: String, handle: String)? {
+        guard let id = userInfo["action_id"] as? String, let handle = userInfo["handle"] as? String,
+              !id.isEmpty, id.count <= 64, !handle.isEmpty, handle.count <= 1024 else { return nil }
+        return (id, handle)
+    }
+
     /// Posts (or, with the same identifier, replaces) the result notification. The follow-up after a poll is silent.
-    static func notify(_ result: VoiceIntentResult, sound: Bool = true) {
+    /// `undo` adds the RING_ACTION Undo button for one finished device action.
+    static func notify(_ result: VoiceIntentResult, sound: Bool = true, undo: (id: String, handle: String)? = nil) {
         let text = notificationText(result)
         let content = UNMutableNotificationContent()
         content.title = text.title
         content.body = text.body
         content.threadIdentifier = "ring-memo"
         if sound { content.sound = .default }
+        if let undo {
+            content.categoryIdentifier = actionCategory
+            content.userInfo = ["action_id": undo.id, "handle": undo.handle]
+        } else if result.actions.contains(where: { $0.status == "blocked" }) {
+            content.userInfo = [DevicePermissions.openKey: DevicePermissions.openValue]
+        }
         let request = UNNotificationRequest(identifier: notificationIdentifier(result), content: content, trigger: nil)
         UNUserNotificationCenter.current().add(request)
     }

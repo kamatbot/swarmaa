@@ -117,6 +117,7 @@ import AVFoundation
     /// Foreground catch-up: anything recorded or saved while Swarmaa couldn't finish in the background.
     private func becameActive() {
         if connected { checkNow() } else { connect() }
+        drainDevice()
         guard let generation = WatchBridge.shared.memoGeneration else { return }
         let waiting = deferred
         deferred = []
@@ -473,20 +474,32 @@ import AVFoundation
         if let spoken {
             let captured = live?.captured ?? (try? item.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? Date()
             answered = await sendIntent(memo: memo, transcript: spoken, captured: captured, live: live)
-            if let answered {
+            if let current = answered {
                 live?.mark("intent_ack")
-                RingIntent.notify(answered.result)
-                status = RingIntent.notificationText(answered.result).body
+                var result = current.result
+                // §11.2: rows handed to this iPhone run here (EventKit/AlarmKit), then the notification, then the reports.
+                if result.actions.contains(where: RingIntent.runsHere) {
+                    result = await DeviceActions.shared.perform(result)
+                    live?.mark("device_done")
+                    answered = (result, current.thread)
+                }
+                // A memo whose only rows wait for a permission already got the per-capability "Allow …" notification.
+                let onlyBlocked = !result.actions.isEmpty && result.actions.allSatisfy { $0.status == "blocked" }
+                if !onlyBlocked { RingIntent.notify(result, undo: DeviceActions.shared.undoTarget(result)) }
+                status = RingIntent.notificationText(result).body
             }
         }
+        // Reports for device rows (and any other rows waiting for this iPhone) trail, before the audio upload.
+        let drained = answered == nil ? nil : drainDevice()
         // An action still queued/running on the Mac: one follow-up read replaces the same notification.
         var latest = answered?.result
         var poll: Task<VoiceIntentResult?, Never>?
-        if let answered, RingIntent.isPending(answered.result) {
+        if let answered, RingIntent.isPendingOnMac(answered.result) {
             poll = Task { await self.followUp(answered.result, thread: answered.thread) }
         }
         await upload(generation: generation, assign: item)
         if let poll, let updated = await poll.value { latest = updated }
+        await drained?.value
         let delivery = PhoneMemos.shared.items.first(where: { $0.id.lowercased() == memo })?.delivery
         // Assigned: the delivery manifest retries from here, and voice_intent has answered or been skipped.
         if delivery != nil { undelivered = RingPolicy.removing(item.path, from: undelivered) }
@@ -513,7 +526,7 @@ import AVFoundation
         defer { releaseRelay() }
         do {
             let listed = try await RingIntent.call(service, "local_action_list", ["thread_id": .string(thread), "limit": .number(20)], seconds: 3)
-            let merged = RingIntent.merging(result, with: RingIntent.listedActions(listed))
+            let merged = RingIntent.merging(result, with: RingIntent.listedActions(listed).filter { $0.runner != "device" })
             guard merged != result else { return nil }
             RingIntent.notify(merged, sound: false)
             return merged
@@ -529,9 +542,12 @@ import AVFoundation
         guard let connection = try? ConnectionKeychain().load(), intentUnsupportedHost != connection.hostID else { return nil }
         let service = acquireRelay(connection)
         defer { releaseRelay() }
+        let deviceID = DeviceActions.shared.deviceID
+        let deviceActions = await DevicePermissions.capabilities()
         func request(_ thread: String) -> VoiceIntentRequest {
             VoiceIntentRequest(memoID: memo, threadID: thread, transcript: transcript, capturedAt: captured, spokenAt: live?.spokenAt ?? captured,
-                               durationSeconds: live?.duration, source: "ring", timings: live?.timings.marks)
+                               durationSeconds: live?.duration, source: "ring", timings: live?.timings.marks,
+                               deviceID: deviceID, deviceActions: deviceActions)
         }
         do {
             guard let target = try await ringTarget(service, connection: connection) else { return nil }
@@ -667,13 +683,36 @@ import AVFoundation
                 catch { self.note("Relay warm-up couldn't connect (\(safeError(error)))"); return }
             }
             guard probe else { return }
-            do { _ = try await RingIntent.call(service, "voice_warm", [:], seconds: 1.5) }
+            do {
+                let warm = try await RingIntent.call(service, "voice_warm", [:], seconds: 1.5)
+                if warm["device_pending"].int > 0 { self.drainDevice() }
+            }
             catch AppFailure.service(404) { self.warmUnsupportedHost = connection.hostID }
             catch { self.note("Relay warm-up failed (\(safeError(error))); the next call reconnects") }
         }
     }
     private static func same(_ a: HostConnection, _ b: HostConnection) -> Bool {
         a.hostID == b.hostID && a.relay == b.relay && a.token == b.token
+    }
+
+    // MARK: Device actions (§11.4)
+
+    /// Reports finished device actions and runs/undoes the rows this iPhone has claimed. Cheap when nothing waits.
+    @discardableResult func drainDevice() -> Task<Void, Never>? {
+        guard let connection = try? ConnectionKeychain().load() else { return nil }
+        let service = acquireRelay(connection)
+        return Task {
+            await DeviceActions.shared.drain(service: service)
+            self.releaseRelay()
+        }
+    }
+    /// The notification's background Undo: remove the item at once, then report it.
+    func undoDevice(actionID: String, handle: String) async {
+        hold()
+        defer { release() }
+        let outcome = await DeviceActions.shared.undo(id: actionID, handle: handle)
+        note("Undo on this iPhone: \(outcome.reportStatus ?? "waiting")")
+        await drainDevice()?.value
     }
 
     // Background time while a transfer, save, delivery or upload is in flight.
@@ -866,6 +905,7 @@ struct RingView: View {
                     Button(candidate.name) { ring.pair(candidate); MemoTranscriber.requestAccess() }.buttonStyle(Pill())
                 }
             }
+            ThisIPhoneSection()
             if !ring.log.isEmpty {
                 Eyebrow("Recent ring activity")
                 ScrollView {

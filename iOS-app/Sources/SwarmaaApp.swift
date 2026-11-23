@@ -51,6 +51,7 @@ struct SwarmaaShortcuts: AppShortcutsProvider {
 @MainActor final class PushDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         UNUserNotificationCenter.current().delegate = self
+        UNUserNotificationCenter.current().setNotificationCategories([RingIntent.category])
         if !ProcessInfo.processInfo.arguments.contains("-demo") {
             Runtime.model.onConnectionChanged = {
                 WatchBridge.shared.changed()
@@ -89,10 +90,23 @@ struct SwarmaaShortcuts: AppShortcutsProvider {
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
                                             withCompletionHandler completionHandler: @escaping () -> Void) {
         let tapped = response.actionIdentifier == UNNotificationDefaultActionIdentifier
-        let id = PushNotification.botID(response.notification.request.content.userInfo)
+        let userInfo = response.notification.request.content.userInfo
+        let id = PushNotification.botID(userInfo)
+        // RING_ACTION's background Undo (§11.4) and the "Allow … on this iPhone" notifications.
+        let undo = response.actionIdentifier == RingIntent.undoAction ? RingIntent.undoRequest(userInfo) : nil
+        let openThisIPhone = tapped && DevicePermissions.opens(userInfo)
         nonisolated(unsafe) let done = completionHandler
         DispatchQueue.main.async {
             MainActor.assumeIsolated {
+                if let undo {
+                    // The completion handler ends the background time iOS gave the action: call it after the report.
+                    Task { @MainActor in
+                        await RingLink.shared.undoDevice(actionID: undo.id, handle: undo.handle)
+                        done()
+                    }
+                    return
+                }
+                if openThisIPhone { ThisIPhoneRoute.shared.requested = true }
                 if tapped, let id { Runtime.model.receivePushTap(["bot_id": id]) }
                 done()
             }
@@ -431,6 +445,12 @@ struct RootView: View {
         }
         .onChange(of: model.connected) { _, connected in if !connected && !model.isDemo { drafts = [:]; photos = []; composer = ""; dictation.stop() } }
         .onChange(of: model.pendingPushBotID) { _, _ in openPushBot() }
+        // "Allow Reminders on this iPhone": the Ring sheet holds the This iPhone section.
+        .onChange(of: ThisIPhoneRoute.shared.requested, initial: true) { _, open in
+            guard open else { return }
+            ThisIPhoneRoute.shared.requested = false
+            if !model.isDemo { sheet = .ring }
+        }
         .onChange(of: model.didLoadBots) { _, _ in openPushBot() }
         .onChange(of: model.bots) { _, _ in openPushBot() }
         .onChange(of: screen) { _, value in if value != .home { searchFocused = false }; if value != .thread { dictation.stop(); dictationToken = UUID(); dictationStarting = false }; updateVisibleThread() }
