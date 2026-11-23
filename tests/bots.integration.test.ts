@@ -956,6 +956,14 @@ describe('bots core service (Brief B1)', { skip: !connectionString, concurrency:
     assert.equal(getBot3.badges.needs_you, 1);
     assert.equal(getBot3.badges.latest?.kind, 'task');
 
+    // Newer activity takes over the row's line and time; the unresolved failure still counts as needs-you.
+    await new Promise(r => setTimeout(r, 5));
+    await call(user, 'thread_post', { thread_id: bot3.thread_id, body: 'Newer message in bot 3', idempotency_key: 'b3-msg-2' });
+    const getBot3Later = (await call(user, 'bot_get', { bot_id: bot3.id })).bot;
+    assert.equal(getBot3Later.badges.needs_you, 1);
+    assert.equal(getBot3Later.badges.latest?.line, 'Newer message in bot 3');
+    assert.ok(Date.parse(getBot3Later.badges.latest.at) > Date.parse(getBot3.badges.latest.at));
+
     // Calling thread_mark_read clears unread
     await call(user, 'thread_mark_read', { thread_id: bot2.thread_id, seq: 10 });
     const getBot2AfterRead = (await call(user, 'bot_get', { bot_id: bot2.id })).bot;

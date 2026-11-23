@@ -583,25 +583,15 @@ export class BotService {
       const tCount = t ? t.count : 0;
       const needsYou = qCount + tCount;
 
-      let latest: { kind: string; line: string; at: string } | null = null;
-      if (needsYou > 0) {
-        if (q && t) {
-          if (q.at.getTime() >= t.at.getTime()) {
-            latest = { kind: 'question', line: q.prompt, at: q.at.toISOString() };
-          } else {
-            latest = { kind: 'task', line: formatTaskBadgeLine(t.objective, t.status, t.result), at: t.at.toISOString() };
-          }
-        } else if (q) {
-          latest = { kind: 'question', line: q.prompt, at: q.at.toISOString() };
-        } else if (t) {
-          latest = { kind: 'task', line: formatTaskBadgeLine(t.objective, t.status, t.result), at: t.at.toISOString() };
-        }
-      } else {
-        const msg = messagesMap.get(b.thread_id);
-        if (msg) {
-          latest = { kind: msg.kind, line: clipUtf8(redactSecrets(msg.body ?? ''), 300), at: msg.at.toISOString() };
-        }
-      }
+      // The row shows the newest thing that happened; needs_you stays a separate count, so an old
+      // unresolved item never freezes the row's line and time while the bot keeps working.
+      const msg = messagesMap.get(b.thread_id);
+      const candidates: { kind: string; line: string; at: Date }[] = [];
+      if (q) candidates.push({ kind: 'question', line: q.prompt, at: q.at });
+      if (t) candidates.push({ kind: 'task', line: formatTaskBadgeLine(t.objective, t.status, t.result), at: t.at });
+      if (msg) candidates.push({ kind: msg.kind, line: clipUtf8(redactSecrets(msg.body ?? ''), 300), at: msg.at });
+      const newest = candidates.reduce<typeof candidates[number] | null>((a, c) => (!a || c.at.getTime() > a.at.getTime() ? c : a), null);
+      const latest = newest ? { kind: newest.kind, line: newest.line, at: newest.at.toISOString() } : null;
 
       badgesMap.set(b.id, { unread, needs_you: needsYou, latest });
     }
