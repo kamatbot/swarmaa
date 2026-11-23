@@ -254,3 +254,95 @@ Idempotent on `(tenant, thread_id, memo_id)`; a repeat with a different transcri
 2. Whether on-device recognition runs in the background decides how often memos defer; the timings log will show it.
 3. Reminders/calendar use the app's default list and calendar unless `SWARMAA_REMINDERS_LIST` / `SWARMAA_CALENDAR_NAME` are set.
 4. BLE download time is unmeasured and may dominate.
+
+## 11. Device actions: Reminders, Calendar and Alarms on the iPhone (2026-11-23)
+
+Owner requirement: ask permissions in the iOS app (the ring is connected to the phone), and **keep the Mac path and its permissions as a fallback**. `reminder.create`, `event.create` and `timer.start` run on the iPhone when it has access (EventKit / AlarmKit); iCloud syncs them to the Mac. `note.append`, delegate and Assistant routes are unchanged. The parser stays in TS on the Mac; the phone still makes one `voice_intent` round trip. Design by Fable (two revisions folded together).
+
+### 11.1 Runner choice
+
+For `reminder.create`, `event.create`, `timer.start` (notes are always Mac). First match wins.
+
+| Origin | Rule |
+|---|---|
+| memo from a phone | 1. Capability advertised in the request's `device_actions` → `runner='device'`. `timer.start` matches on `alarms` **or** `reminders`; the phone picks the mechanism. 2. Otherwise → `mac`, as today. 3. If the Mac run ends `permission_denied`, `action_disabled` or `unavailable` **and** the request carried a `device_actions` field → the row flips to `runner='device'`, `queued`, response route `device`; the phone asks for permission (§11.5) and runs it once granted (24 h expiry). 4. Old client (no field) → today's behaviour. |
+| turn, tool, Watch, other | `mac`, as today. |
+
+- Mac JXA defaults (`SWARMAA_LOCAL_ACTIONS`) are unchanged.
+- Undo of a device row from a thread card: row → `undoing`; the phone picks it up on next contact (app active, `voice_warm` answering `device_pending > 0`, or after any `voice_intent`). The phone notification's Undo action is immediate. No push.
+- Multiple devices (iPad runs the same app): a row is claimed by `device_id` so only one device executes it.
+- The server formats all card text (`successSummary`, phone zone); the phone never sends free text.
+
+### 11.2 Protocol
+
+```
+phone  voice_intent{…, device_id, device_actions:['reminders','calendar','alarms']}  ─►  parse, validate, INSERT runner=device, card "waiting for your iPhone"
+       ◄─ {route:'device', actions:[{id,type,status:'queued',summary,undoable:false,runner:'device',action}]}
+       EventKit/AlarmKit save (marker swarmaa:<id>) → ledger → local notification   ← critical path ends (~30 ms)
+       local_action_report{action_id,status:'done',handle,exec_ms}  ─►  row done, card "Reminder set: …"   (trails, before audio upload)
+```
+
+`voice_intents.route` stays `'local'` in storage; the response says `'device'` when any memo row has `runner='device'`. A replay returns the same shape with current status. Mac `execute`, `runWithWait`, `runOriginActions` and the sweep only touch `runner='mac'`. The sweep fails device rows still `queued` after 24 h (`timeout`, "your iPhone didn't pick it up") and returns `undoing` rows older than 24 h to `done`.
+
+### 11.3 Contract (additive)
+
+```ts
+// src/voice/types.ts
+export type DeviceCapability = 'reminders' | 'calendar' | 'alarms';      // open: 'contacts' | 'location' | 'home' later
+export type LocalActionRunnerKind = 'mac' | 'device';
+export type LocalActionStatus = 'queued' | 'running' | 'done' | 'failed' | 'undoing' | 'undone';
+// timer.start gains: kind?: 'timer' | 'alarm'   (absent = 'timer'; "wake me at / alarm at" → 'alarm')
+export interface DeviceActionView { id: string; type: LocalActionType; status: LocalActionStatus; summary: string; undoable: boolean;
+  runner: LocalActionRunnerKind; action?: LocalAction; op?: 'run' | 'undo'; handle?: string }   // action/op/handle only for device rows
+```
+
+| Tool | Request | Response / rules |
+|---|---|---|
+| `voice_intent` | adds `device_id?: uuid`, `device_actions?: string(≤32)[]` (≤8, unique; requires `device_id`; unknown names ignored) | `route` adds `'device'`; each action adds `runner`, and `action` for device rows |
+| `local_action_report` | `{action_id, status:'done'\|'failed'\|'undone', handle?: string(≤1024), code?: LocalActionCode, exec_ms?: int}` | `{action: view}`. `queued→done\|failed`; `done\|undoing→undone`; `failed` while `undoing` → back to `done`; `done` over `failed/timeout` wins; repeat = no-op; else `409 action_conflict` |
+| `local_action_pending` | `{device_id, limit?: 1..20}` | `{actions: DeviceActionView[]}` — device rows `queued` (`op:'run'`) or `undoing` (`op:'undo'`, with `handle`), unclaimed or claimed by this device; the call claims them |
+| `local_action_undo` | unchanged | device row `done → undoing`, card "Undoing on your iPhone…" |
+| `voice_warm` | unchanged | adds `device_pending: number` |
+| `local_action_list` | unchanged | rows add `runner` |
+
+All `thread:write` (pending/list read as usual), worker role refused, closed schemas. Audit `local_action.run|fail|undo` with `runner:'device'`.
+
+Migration `045_device_actions.sql`: `local_actions` adds `runner text NOT NULL DEFAULT 'mac' CHECK (runner IN ('mac','device'))`, `device_id uuid`; status CHECK adds `undoing`; pending index restricted to `runner='mac'`; new index on device rows `queued|undoing`; `voice_intents` adds `device_capable boolean NOT NULL DEFAULT false`.
+
+Swift (`iOS-app/Sources/DeviceActions.swift`, `DevicePermissions.swift`): `DeviceAction` (Codable, snake_case keys), `DeviceOutcome`, `DeviceStore` protocol (fakeable), `@MainActor DeviceActions.shared` with `deviceID` (random UUID in `ring.deviceID`), `capabilities()`, `run(id:action:)`, `undo(id:handle:)`, `drain(service:)`. `VoiceIntentResult.Action` gains `runner` (default `"mac"`) and `action`; `VoiceIntentRequest` gains `deviceID`, `deviceActions`.
+
+### 11.4 iPhone executor
+
+- **Ledger** `ring.deviceActions` (UserDefaults): `action_id → {state: started|saved|blocked|reported, identifier?, action, at}`; `started` before save, `saved` after; prune > 24 h, `reported` > 1 h.
+- **Idempotency**: a `saved` entry returns its identifier; a `started` entry without identifier scans for the marker (incomplete reminders in the target list; events ±1 day of `start_at`); a fresh id skips the scan. Marker `swarmaa:<action_id>` is the last line of `notes`.
+- **Reminder**: `EKReminder`, `dueDateComponents` + one absolute `EKAlarm` when `due_at` is set; handle `calendarItemIdentifier`.
+- **Event**: `EKEvent`, no attendees, `isAllDay`; handle `eventIdentifier` (none if calendar access is write-only → not undoable).
+- **Timer/alarm**: (1) iOS 26 + AlarmKit authorized → `AlarmManager` schedule with id = action id (`kind:'timer'` countdown of `fire_at − now`, `kind:'alarm'` fixed date); handle `alarm:<id>`, undo = cancel. (2) else Reminders allowed → `⏱ <label>` reminder due at `fire_at`. Past `fire_at` → `failed/timeout`.
+- **Lists/calendars**: picked only in the app (`ring.remindersList`, `ring.todoList`, `ring.calendar`); default list/calendar otherwise. A transcript never picks one.
+- **Permission missing at run time**: entry `blocked`, no report, row stays `queued`; notification "Allow Reminders to finish: Call mom · Today 17:00" opens the This iPhone section; granting drains blocked entries.
+- **Notification**: category `RING_ACTION` with a background "Undo" action (`userInfo`: action_id, handle).
+- **Report**: fire-and-forget on the warm relay after the notification, before the audio upload; unreported entries are retried by `drain` (app active, `device_pending > 0`, after every `voice_intent`).
+
+### 11.5 "This iPhone" permissions
+
+A connectors-style list (embedded in the Ring sheet / Settings): one row per capability with icon, title, subtitle and an **Allow** button that triggers the iOS prompt and then shows **Allowed**; denied → **Open Settings**; Calendar add-only → "Allowed · undo unavailable". If never tapped, the app asks the first time a memo needs it (foreground: prompt at once; background: one local notification per capability).
+
+| Row | Subtitle | Grants |
+|---|---|---|
+| Reminders | Set and check reminders | `requestFullAccessToReminders` |
+| Calendar | See your day and add events | `requestFullAccessToEvents` |
+| Alarms | Set alarms and timers | AlarmKit authorization (iOS 26; otherwise "Needs iOS 26 — timers use Reminders") |
+| Speech recognition | Transcribe ring memos on this iPhone | status row; denied loses the fast path |
+| Notifications | Confirm what your ring did | status row |
+| Bluetooth | Stay connected to your ring | status row |
+
+Row model: `protocol DevicePermission { capability, icon, title, subtitle, state() async, request() async }`; `DevicePermissions.all` lists them, so Contacts/Location/Home are one new type each. `device_actions` = capabilities of rows that are allowed/limited (status-only rows have no capability).
+
+Info.plist + `project.yml` keys: `NSRemindersFullAccessUsageDescription`, `NSCalendarsFullAccessUsageDescription`, `NSCalendarsWriteOnlyAccessUsageDescription`, `NSAlarmKitUsageDescription`; reword `NSSpeechRecognitionUsageDescription` to cover ring memos.
+
+### 11.6 Privacy delta
+
+- The Mac path and its Automation grant remain as the fallback (§5.7).
+- The phone reads only the configured list (marker scan) or one item by identifier; nothing read leaves the phone — reports carry id, status, handle, code only.
+- Actions come from the closed set, validated and redacted on the Mac; the phone re-checks type, lengths and dates and ignores unknown types.
+- `device_id` is a random per-install UUID.
