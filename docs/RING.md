@@ -46,3 +46,9 @@ Design and frozen contract: [RING-AGENT.md](RING-AGENT.md). Service side
   `rules.local_actions: true` may emit `{type:'local_action', action}` (≤ 5
   per turn). Rows left queued/running are rerun by a server sweep (30 s, 3
   attempts).
+- Device actions (migration `045_device_actions`, RING-AGENT.md §11): when the
+  phone sends `device_id` + `device_actions`, reminders, events and
+  timers/alarms run on the iPhone (`route: 'device'`), which reports with
+  `local_action_report` and drains undo/retries with `local_action_pending`.
+  The Mac stays the fallback. Permissions per side: [LOCAL-ACTIONS.md](LOCAL-ACTIONS.md);
+  tools: [API.md](API.md#voice-memos-and-local-actions-migrations-044045).

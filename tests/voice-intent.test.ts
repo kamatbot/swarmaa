@@ -25,7 +25,7 @@ const rem = (title: string, due_at?: string, extra: Record<string, unknown> = {}
 const todo = (title: string, due_at?: string) => rem(title, due_at, { list: 'todo' });
 const ev = (title: string, start_at: string, end_at: string): Intent => ({ route: 'local', action: { type: 'event.create', title, start_at, end_at } });
 const note = (text: string): Intent => ({ route: 'local', action: { type: 'note.append', text, notebook: 'inbox' } });
-const timer = (label: string, fire_at: string): Intent => ({ route: 'local', action: { type: 'timer.start', label, fire_at } });
+const timer = (label: string, fire_at: string, kind: 'timer' | 'alarm' = 'timer'): Intent => ({ route: 'local', action: { type: 'timer.start', label, fire_at, kind } });
 const del = (bot_id: string, body: string): Intent => ({ route: 'delegate', bot_id, body });
 
 const rows: Row[] = [
@@ -85,10 +85,12 @@ const rows: Row[] = [
   { t: 'set a timer for 10 minutes', want: timer('Timer', '2026-11-20T15:10:00.000Z') },
   { t: 'timer 5 minutes for eggs', want: timer('Eggs', '2026-11-20T15:05:00.000Z') },
   { t: 'set a 15 minute timer for the pasta', want: timer('The pasta', '2026-11-20T15:15:00.000Z') },
-  { t: 'alarm at 7', want: timer('Alarm', '2026-11-21T00:00:00.000Z') },
-  { t: 'set an alarm for 6 am', want: timer('Alarm', '2026-11-21T11:00:00.000Z') },
-  { t: 'wake me up at 6:30', want: timer('Wake up', '2026-11-21T11:30:00.000Z') },
-  { t: 'wake me at 7 tomorrow', want: timer('Wake up', '2026-11-21T12:00:00.000Z') },
+  { t: 'alarm at 7', want: timer('Alarm', '2026-11-21T00:00:00.000Z', 'alarm') },
+  { t: 'set an alarm for 6 am', want: timer('Alarm', '2026-11-21T11:00:00.000Z', 'alarm') },
+  { t: 'wake me up at 6:30', want: timer('Wake up', '2026-11-21T11:30:00.000Z', 'alarm') },
+  { t: 'wake me at 7 tomorrow', want: timer('Wake up', '2026-11-21T12:00:00.000Z', 'alarm') },
+  { t: 'wake me at 7', want: timer('Wake up', '2026-11-21T12:00:00.000Z', 'alarm') }, // wake prefers the morning
+  { t: 'timer for 5 minutes', want: timer('Timer', '2026-11-20T15:05:00.000Z') },
   { t: 'set a timer', want: A('unparsed_time') },
   { t: 'set a timer for 10', want: A('unparsed_time') },
   // delegate
@@ -131,7 +133,7 @@ const rows: Row[] = [
   // DST boundary (fall-back 2026-11-01, America/New_York)
   { t: 'remind me tomorrow at 9 am to change the clocks', ref: SAT_BEFORE_FALLBACK, want: rem('Change the clocks', '2026-11-01T14:00:00.000Z') },
   { t: 'remind me in 24 hours to check', ref: SAT_BEFORE_FALLBACK, want: rem('Check', '2026-11-01T20:00:00.000Z') },
-  { t: 'wake me up tomorrow at 1:30 am', ref: SAT_BEFORE_FALLBACK, want: timer('Wake up', '2026-11-01T05:30:00.000Z') },
+  { t: 'wake me up tomorrow at 1:30 am', ref: SAT_BEFORE_FALLBACK, want: timer('Wake up', '2026-11-01T05:30:00.000Z', 'alarm') },
   { t: 'schedule brunch tomorrow at 11 am', ref: SAT_BEFORE_FALLBACK, want: ev('Brunch', '2026-11-01T16:00:00.000Z', '2026-11-01T16:30:00.000Z') },
   // Asia/Bangkok
   { t: 'remind me to call mom at 5', ref: BKK_10, tz: BKK, want: rem('Call mom', '2026-11-20T10:00:00.000Z') },
@@ -193,6 +195,8 @@ describe('validateLocalAction', () => {
       { type: 'event.create', title: 'Lunch', start_at: T0, end_at: T1, all_day: false, location: 'Cafe' }],
     ['note', { type: 'note.append', text: 'x', notebook: 'meetings', title: 'Standup' }, { type: 'note.append', text: 'x', notebook: 'meetings', title: 'Standup' }],
     ['timer', { type: 'timer.start', label: 'Eggs', fire_at: T0 }, { type: 'timer.start', label: 'Eggs', fire_at: T0 }],
+    ['alarm kind', { type: 'timer.start', label: 'Wake up', fire_at: T0, kind: 'alarm' }, { type: 'timer.start', label: 'Wake up', fire_at: T0, kind: 'alarm' }],
+    ['timer kind', { type: 'timer.start', label: 'Eggs', fire_at: T0, kind: 'timer' }, { type: 'timer.start', label: 'Eggs', fire_at: T0, kind: 'timer' }],
     ['undefined optional ignored', { type: 'reminder.create', title: 'x', due_at: undefined }, { type: 'reminder.create', title: 'x' }],
   ];
   for (const [name, input, want] of ok) it(`accepts: ${name}`, () => assert.deepEqual(validateLocalAction(input), want));
@@ -225,6 +229,8 @@ describe('validateLocalAction', () => {
     ['note text too long', { type: 'note.append', text: 'x'.repeat(16385) }, 'text_too_long'],
     ['bad notebook', { type: 'note.append', text: 'x', notebook: '../etc' }, 'notebook_invalid'],
     ['empty label', { type: 'timer.start', label: '', fire_at: T0 }, 'label_empty'],
+    ['bad timer kind', { type: 'timer.start', label: 'x', fire_at: T0, kind: 'stopwatch' }, 'kind_invalid'],
+    ['kind on a reminder', { type: 'reminder.create', title: 'x', kind: 'alarm' }, 'unknown_key:kind'],
   ];
   for (const [name, input, want] of bad) it(`refuses: ${name}`, () => assert.equal(validateLocalAction(input), want));
 });

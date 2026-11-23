@@ -165,7 +165,8 @@ export function parseIntent(input: IntentInput): Intent {
       if (!dt.at) return assistant('unparsed_time');
       const label = title || (kind === 'wake' ? 'Wake up' : kind === 'alarm' ? 'Alarm' : 'Timer');
       if (label.length > LIMITS.title) return assistant('freeform');
-      action = { type: 'timer.start', label, fire_at: dt.at.toISOString() };
+      // "wake me (up) at" / "alarm at|for" → a fixed-time alarm; timers count down (docs/RING-AGENT.md §11.3).
+      action = { type: 'timer.start', label, fire_at: dt.at.toISOString(), kind: kind === 'timer' ? 'timer' : 'alarm' };
     }
   }
   const checked = validateLocalAction(action);
@@ -182,7 +183,7 @@ const KEYS: Record<LocalAction['type'], { required: string[]; optional: string[]
   'reminder.create': { required: ['title'], optional: ['due_at', 'notes', 'list'] },
   'event.create': { required: ['title', 'start_at', 'end_at'], optional: ['all_day', 'location', 'notes'] },
   'note.append': { required: ['text'], optional: ['notebook', 'title'] },
-  'timer.start': { required: ['label', 'fire_at'], optional: [] },
+  'timer.start': { required: ['label', 'fire_at'], optional: ['kind'] },
 };
 
 type Field = { ok: true; value: unknown } | { ok: false; reason: string };
@@ -251,7 +252,8 @@ export function validateLocalAction(value: unknown): LocalAction | string {
         ?? (has('title') ? take('title', str(o, 'title', LIMITS.title)) : undefined);
       break;
     case 'timer.start':
-      err = take('label', str(o, 'label', LIMITS.title)) ?? take('fire_at', time(o, 'fire_at'));
+      err = take('label', str(o, 'label', LIMITS.title)) ?? take('fire_at', time(o, 'fire_at'))
+        ?? (has('kind') ? take('kind', oneOf(o, 'kind', ['timer', 'alarm'])) : undefined);
       break;
   }
   return err ?? (out as unknown as LocalAction);

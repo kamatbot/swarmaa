@@ -191,8 +191,14 @@ export function normalizeAction(value: unknown): LocalAction {
       return a;
     }
     case 'timer.start':
-      keys(v, ['type', 'label', 'fire_at']);
-      return { type: 'timer.start', label: text(v.label, LIMITS.title, true, true)!, fire_at: iso(v.fire_at) };
+    {
+      // kind (timer|alarm) only matters on the iPhone; JXA always makes a reminder due at fire_at.
+      keys(v, ['type', 'label', 'fire_at', 'kind']);
+      if (v.kind !== undefined && v.kind !== 'timer' && v.kind !== 'alarm') throw new Error('invalid kind');
+      const a: LocalAction = { type: 'timer.start', label: text(v.label, LIMITS.title, true, true)!, fire_at: iso(v.fire_at) };
+      if (v.kind) a.kind = v.kind as 'timer' | 'alarm';
+      return a;
+    }
     default: throw new Error('invalid type');
   }
 }
@@ -240,7 +246,7 @@ export function successSummary(a: LocalAction, now: Date, tz?: string): string {
     case 'reminder.create': return `${a.list === 'todo' ? 'To-do added' : 'Reminder set'}: ${clip(a.title)}${a.due_at ? ' · ' + at(new Date(a.due_at), now, tz) : ''}`;
     case 'timer.start': {
       const f = new Date(a.fire_at);
-      return `Timer set: ${clip(a.label)} · ${ymd(f, tz) === ymd(now, tz) ? hm(f, tz) : at(f, now, tz)}`;
+      return `${a.kind === 'alarm' ? 'Alarm' : 'Timer'} set: ${clip(a.label)} · ${ymd(f, tz) === ymd(now, tz) ? hm(f, tz) : at(f, now, tz)}`;
     }
     case 'event.create': {
       const s = new Date(a.start_at), e = new Date(a.end_at);
@@ -257,7 +263,7 @@ export function successSummary(a: LocalAction, now: Date, tz?: string): string {
 export function undoSummary(a: LocalAction): string {
   switch (a.type) {
     case 'reminder.create': return `${a.list === 'todo' ? 'To-do removed' : 'Reminder removed'}: ${clip(a.title)}`;
-    case 'timer.start': return `Timer cancelled: ${clip(a.label)}`;
+    case 'timer.start': return `${a.kind === 'alarm' ? 'Alarm' : 'Timer'} cancelled: ${clip(a.label)}`;
     case 'event.create': return `Event removed: ${clip(a.title)}`;
     case 'note.append': return `Note removed from ${capital(a.notebook ?? 'inbox')}: ${clip(a.title || a.text.replace(/\s+/g, ' ').trim())}`;
   }

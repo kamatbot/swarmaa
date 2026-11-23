@@ -4,7 +4,7 @@ export type LocalAction =
   | { type: 'reminder.create'; title: string; due_at?: string; notes?: string; list?: 'default' | 'todo' }
   | { type: 'event.create'; title: string; start_at: string; end_at: string; all_day?: boolean; location?: string; notes?: string }
   | { type: 'note.append'; text: string; notebook?: 'daily' | 'inbox' | 'meetings'; title?: string }
-  | { type: 'timer.start'; label: string; fire_at: string }; // all times ISO 8601 UTC
+  | { type: 'timer.start'; label: string; fire_at: string; kind?: 'timer' | 'alarm' }; // all times ISO 8601 UTC; kind absent = 'timer'
 
 export type LocalActionType = LocalAction['type'];
 export type AssistantHint = 'freeform' | 'multi' | 'unparsed_time' | 'meeting' | 'no_transcript';
@@ -22,7 +22,7 @@ export interface IntentInput {
   bots: { id: string; name: string }[];
 }
 
-export type LocalActionStatus = 'queued' | 'running' | 'done' | 'failed' | 'undone';
+export type LocalActionStatus = 'queued' | 'running' | 'done' | 'failed' | 'undoing' | 'undone';
 export type LocalActionCode = 'permission_denied' | 'action_disabled' | 'timeout' | 'unavailable' | 'failed';
 
 export interface LocalActionResult { ok: boolean; code?: LocalActionCode; handle?: string; summary: string }
@@ -54,3 +54,18 @@ export interface LocalActionRunnerOptions {
 
 /** Bounds for transcript-derived text (docs/RING-AGENT.md §7). */
 export const LIMITS = { title: 200, notes: 4000, text: 16384 } as const;
+
+// ---- device actions (docs/RING-AGENT.md §11, additive)
+
+/** What a phone advertises in voice_intent.device_actions; unknown names are ignored. */
+export type DeviceCapability = 'reminders' | 'calendar' | 'alarms';
+export const DEVICE_CAPABILITIES: readonly DeviceCapability[] = ['reminders', 'calendar', 'alarms'];
+/** Where a local action row runs: the Mac (JXA/notebook) or the iPhone (EventKit/AlarmKit). */
+export type LocalActionRunnerKind = 'mac' | 'device';
+
+export interface DeviceActionView {
+  id: string; type: LocalActionType; status: LocalActionStatus; summary: string; undoable: boolean;
+  runner: LocalActionRunnerKind;
+  /** Only for device rows. */
+  action?: LocalAction; op?: 'run' | 'undo'; handle?: string;
+}

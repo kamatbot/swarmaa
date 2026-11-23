@@ -1,8 +1,34 @@
 # Local actions (Reminders, Calendar, timers, notes)
 
-A ring or Watch memo such as "remind me to call mom at 5" becomes a real item on the Mac with no LLM in the path. The service picks from a closed set of four actions and runs them on the Mac that hosts it. Design: [RING-AGENT.md](RING-AGENT.md) §5 and §7. Code: `src/local/actions.ts` (runner), `src/local/jxa.ts` (the one fixed JXA script) and `src/local/notebook.ts` (markdown notebook).
+A ring or Watch memo such as "remind me to call mom at 5" becomes a real item with no LLM in the path. The service picks from a closed set of four actions and runs them on the iPhone (when allowed there) or on the Mac that hosts it. Design: [RING-AGENT.md](RING-AGENT.md) §5 and §7. Code: `src/local/actions.ts` (runner), `src/local/jxa.ts` (the one fixed JXA script) and `src/local/notebook.ts` (markdown notebook).
 
-## What each action does
+## Phone first, Mac fallback (RING-AGENT.md §11)
+
+Reminders, events and timers/alarms from a ring memo run **on the iPhone** when the app has been allowed to (Swarmaa › This iPhone); iCloud then syncs them to the Mac. The Mac path below stays as the fallback and is unchanged.
+
+| Action | Runs on the iPhone when the phone sends | Otherwise |
+|---|---|---|
+| `reminder.create` | `reminders` | Mac (JXA) |
+| `event.create` | `calendar` | Mac (JXA) |
+| `timer.start` | `alarms` (AlarmKit, iOS 26) **or** `reminders` (a `⏱` reminder); the phone picks | Mac (JXA reminder) |
+| `note.append` | never | Mac notebook |
+
+- The phone lists its allowed capabilities in `voice_intent.device_actions` (with its `device_id`). A matching action is stored with `runner='device'`, the card says "… · waiting for your iPhone", and the response (`route: 'device'`) carries the action for the phone to save. The phone reports the outcome with `local_action_report`; the card then reads "Reminder set: …".
+- If the Mac is asked first (capability not advertised) and ends `permission_denied`, `action_disabled` or `unavailable`, and the request carried `device_actions` at all, the action moves to the phone (queued, 24 h) instead of going to the Assistant. The phone asks for the permission and runs it once granted.
+- Older phone apps (no `device_actions`), Assistant turns, `local_action_run` and the Watch always use the Mac, as before.
+- Undo from a thread card puts a device action in `undoing`; the phone deletes it on its next contact (`local_action_pending`, `voice_warm` answering `device_pending > 0`, or after any memo) and reports `undone`. The notification's Undo on the phone is immediate.
+- The service sweep never runs a device action. One still queued after 24 h fails with "your iPhone didn't pick it up" (a later `done` report still wins); an undo left for 24 h returns to `done`.
+
+Which permission is asked where:
+
+| Where | Permission | Used for |
+|---|---|---|
+| iPhone (Swarmaa › This iPhone) | Reminders full access, Calendar full access (add-only works but cannot undo), Alarms (AlarmKit) | device actions |
+| Mac (System Settings › Privacy & Security › Automation) | Swarmaa → Reminders, Calendar | fallback, Assistant turns, tools |
+
+A device permission failure reads, for example, `Couldn't set the reminder: allow Reminders in Swarmaa › This iPhone on your iPhone`. All card text is written by the service from the action and the code; the phone never sends free text.
+
+## What each action does on the Mac
 
 | Action | Effect | Card | Undo |
 |---|---|---|---|

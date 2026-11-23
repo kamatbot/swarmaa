@@ -455,3 +455,17 @@ test('warm pre-spawns the helper without touching an app', async () => {
   await r.run(ID, reminder);
   assert.equal(h.spawned.length, 1, 'the first run reuses the warmed helper');
 });
+
+test('timer kind (docs/RING-AGENT.md §11.3): accepted and kept, JXA still makes a reminder, alarm wording', async () => {
+  const alarm: LocalAction = { type: 'timer.start', label: 'Wake up', fire_at: '2026-11-23T07:00:00Z', kind: 'alarm' };
+  assert.deepEqual(normalizeAction(alarm), { ...alarm, fire_at: '2026-11-23T07:00:00.000Z' });
+  assert.deepEqual(normalizeAction({ ...alarm, kind: 'timer' }), { ...alarm, kind: 'timer', fire_at: '2026-11-23T07:00:00.000Z' });
+  assert.throws(() => normalizeAction({ ...alarm, kind: 'stopwatch' }));
+  const apps = fakeApps();
+  const r = runner({ exec: apps.exec });
+  const out = await r.run('alarm-1', alarm);
+  assert.equal(out.ok, true);
+  assert.equal(out.summary, 'Alarm set: Wake up · Tomorrow 07:00');
+  assert.equal(apps.reminders[0].name, '⏱ Wake up');
+  assert.equal((await r.undo('alarm-1', alarm, out.handle!)).summary, 'Alarm cancelled: Wake up');
+});

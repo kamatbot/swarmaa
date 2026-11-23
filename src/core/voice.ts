@@ -1,4 +1,5 @@
-// Ring voice agent service (docs/RING-AGENT.md §5.3–5.6, §8.2): transcript in, local action, delegation or Assistant turn out.
+// Ring voice agent service (docs/RING-AGENT.md §5.3–5.6, §8.2, §11): transcript in, local action (on the Mac or the
+// iPhone), delegation or Assistant turn out.
 import type { Pool } from 'pg';
 import { transaction } from '../db.js';
 import { AppError, requireCondition } from '../errors.js';
@@ -7,8 +8,9 @@ import { redactSecrets } from '../safety/redact.js';
 import type { Principal } from '../types.js';
 import { integer, object, string, uuid } from '../validation.js';
 import { parseIntent, validateLocalAction } from '../voice/intent.js';
-import { createLocalActionRunner } from '../local/actions.js';
-import type { AssistantHint, LocalAction, LocalActionResult, LocalActionRunner, LocalActionStatus } from '../voice/types.js';
+import { createLocalActionRunner, successSummary } from '../local/actions.js';
+import { DEVICE_CAPABILITIES, type AssistantHint, type DeviceActionView, type DeviceCapability, type LocalAction, type LocalActionCode,
+  type LocalActionResult, type LocalActionRunner, type LocalActionRunnerKind, type LocalActionStatus } from '../voice/types.js';
 import { audit, canonicalJson, event, newId, noExtraKeys, sha256, teamsLock, type Db } from './shared.js';
 import { dispatchToBot } from './swarms.js';
 import { assignThreadSeq, clipUtf8, enqueueAgentTurn, type AgentRow, type ThreadRow } from './teams.js';
@@ -22,7 +24,7 @@ export function warmLocalActions(): void {
   try { const r = localRunner(); if (r.warm) void r.warm().catch(() => {}); } catch { /* best effort */ }
 }
 
-const WAIT_MS = 4000, STALE_SECONDS = 30, MAX_ATTEMPTS = 3;
+const WAIT_MS = 4000, STALE_SECONDS = 30, MAX_ATTEMPTS = 3, DEVICE_EXPIRY_HOURS = 24;
 let waitMs = WAIT_MS;
 /** Test hook: how long voice_intent / local_action_run wait for the action before returning `running`. */
 export function setLocalActionWait(ms: number): void { waitMs = ms; }
@@ -39,15 +41,62 @@ interface ActionRow {
   id: string; tenant_id: string; scope: string; thread_id: string; origin_kind: 'memo' | 'turn' | 'tool'; origin_id: string; ordinal: number;
   type: LocalAction['type']; action: LocalAction; status: LocalActionStatus; attempts: number; code: string | null; handle: string | null;
   summary: string; message_id: string | null; created_by: string; created_at: Date; updated_at: Date;
+  runner: LocalActionRunnerKind; device_id: string | null;
   /** Only on a claimed row: the memo's phone zone (voice_intents.time_zone), null for turn/tool origins. */
   time_zone?: string | null;
 }
 
-const actionView = (r: ActionRow) => ({ id: r.id, type: r.type, status: r.status, summary: r.summary || pendingSummary(r.action),
-  undoable: r.status === 'done' && !!r.handle, ...(r.code ? { code: r.code } : {}) });
+type ActionView = DeviceActionView & { code?: string };
+const actionView = (r: ActionRow): ActionView => ({ id: r.id, type: r.type, status: r.status, summary: r.summary || pendingSummary(r.action),
+  undoable: r.status === 'done' && !!r.handle, runner: r.runner ?? 'mac', ...(r.code ? { code: r.code } : {}),
+  ...(r.runner === 'device' ? { action: r.action } : {}) });
+/** local_action_pending: what the phone runs (op run) or undoes (op undo, with the handle it reported). */
+const pendingView = (r: ActionRow): ActionView => ({ ...actionView(r), action: r.action, op: r.status === 'undoing' ? 'undo' : 'run',
+  ...(r.status === 'undoing' && r.handle ? { handle: r.handle } : {}) });
 const actionTitle = (a: LocalAction): string =>
   a.type === 'timer.start' ? a.label : a.type === 'note.append' ? (a.title ?? a.text.split('\n')[0] ?? '') : a.title;
 const pendingSummary = (a: LocalAction): string => clipUtf8(`${{ 'reminder.create': 'Reminder', 'event.create': 'Event', 'note.append': 'Note', 'timer.start': 'Timer' }[a.type]}: ${actionTitle(a)}`, 200);
+
+// ---- device actions (docs/RING-AGENT.md §11). All card text is written here; the phone sends only id, status, handle, code.
+/** §11.1 rule 1: the advertised capability that lets this action run on the phone. Notes never do. */
+function deviceRunnable(a: LocalAction, caps: ReadonlySet<DeviceCapability>): boolean {
+  switch (a.type) {
+    case 'reminder.create': return caps.has('reminders');
+    case 'event.create': return caps.has('calendar');
+    case 'timer.start': return caps.has('alarms') || caps.has('reminders'); // the phone picks AlarmKit or a reminder
+    default: return false;
+  }
+}
+/** §11.1 rule 3: Mac outcomes that send a device-capable memo's action to the phone instead of the Assistant. */
+const FLIP_CODES = new Set<string>(['permission_denied', 'action_disabled', 'unavailable']);
+const isAlarm = (a: LocalAction) => a.type === 'timer.start' && a.kind === 'alarm';
+const DEVICE_APP: Record<LocalAction['type'], string> = { 'reminder.create': 'Reminders', 'event.create': 'Calendar', 'timer.start': 'Alarms or Reminders', 'note.append': 'Notes' };
+const deviceVerb = (a: LocalAction, undo: boolean): string => a.type === 'reminder.create' ? (undo ? 'remove the reminder' : 'set the reminder')
+  : a.type === 'event.create' ? (undo ? 'remove the event' : 'add the event')
+  : a.type === 'timer.start' ? `${undo ? 'cancel' : 'set'} the ${isAlarm(a) ? 'alarm' : 'timer'}` : (undo ? 'remove the note' : 'save the note');
+function deviceFailure(a: LocalAction, code: LocalActionCode | 'expired'): string {
+  const app = DEVICE_APP[a.type];
+  const why = code === 'permission_denied' ? `allow ${app} in Swarmaa › This iPhone on your iPhone`
+    : code === 'action_disabled' ? `${app} is turned off on your iPhone`
+    : code === 'timeout' ? 'its time had already passed'
+    : code === 'expired' ? "your iPhone didn't pick it up"
+    : code === 'unavailable' ? `${app} isn't available on your iPhone`
+    : `${app} reported an error on your iPhone`;
+  return clipUtf8(`Couldn't ${deviceVerb(a, false)}: ${why}`, 2000);
+}
+function deviceSuccess(a: LocalAction, timeZone?: string | null): string {
+  try { return clipUtf8(redactSecrets(successSummary(a, new Date(), timeZone ?? undefined)), 2000); } catch { return pendingSummary(a); }
+}
+/** Card text while the phone has not run it yet: "Reminder: Call mom · Today 17:00 · waiting for your iPhone". */
+function waitingText(r: ActionRow): string {
+  const noun = r.action.type === 'reminder.create' ? (r.action.list === 'todo' ? 'To-do' : 'Reminder') : r.action.type === 'event.create' ? 'Event' : isAlarm(r.action) ? 'Alarm' : 'Timer';
+  const at = r.summary.indexOf(': ');
+  return `${noun}: ${at >= 0 ? r.summary.slice(at + 2) : actionTitle(r.action)} · waiting for your iPhone`;
+}
+const cardBody = (r: ActionRow): string => r.status === 'undone' ? `Undone: ${r.summary}`
+  : r.runner === 'device' && r.status === 'queued' ? waitingText(r)
+  : r.runner === 'device' && r.status === 'undoing' ? `Undoing on your iPhone… (${actionTitle(r.action)})`
+  : r.summary;
 
 /** Redacts every free-text field after the closed-shape check (docs/RING-AGENT.md §7). */
 function redactAction(a: LocalAction): LocalAction {
@@ -62,14 +111,16 @@ function checkedAction(value: unknown): LocalAction {
 }
 
 /** Inserts a queued local action (caller's transaction); runs after commit. Returns the row id (existing on replay). */
-export async function queueLocalAction(db: Db, p: Principal, o: { scope: string; threadId: string; originKind: 'memo' | 'turn' | 'tool'; originId: string; ordinal?: number; action: LocalAction }): Promise<string> {
+export async function queueLocalAction(db: Db, p: Principal, o: { scope: string; threadId: string; originKind: 'memo' | 'turn' | 'tool'; originId: string; ordinal?: number; action: LocalAction;
+  runner?: LocalActionRunnerKind; deviceId?: string; summary?: string }): Promise<string> {
+  const runner = o.runner ?? 'mac';
   const action = redactAction(o.action), hash = sha256(canonicalJson(action));
   const ordinal = o.ordinal ?? Number((await db.query('SELECT count(*)::int AS n FROM local_actions WHERE tenant_id=$1 AND origin_kind=$2 AND origin_id=$3', [p.tenantId, o.originKind, o.originId])).rows[0].n);
   const id = newId();
-  const inserted = (await db.query(`INSERT INTO local_actions (id,tenant_id,scope,thread_id,origin_kind,origin_id,ordinal,type,action,action_sha256,created_by)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11) ON CONFLICT (tenant_id,origin_kind,origin_id,ordinal) DO NOTHING RETURNING id`,
-  [id, p.tenantId, o.scope, o.threadId, o.originKind, o.originId, ordinal, action.type, JSON.stringify(action), hash, p.id])).rows[0];
-  if (inserted) { await audit(db, p, o.scope, 'local_action.create', id, { type: action.type, origin_kind: o.originKind }); return id; }
+  const inserted = (await db.query(`INSERT INTO local_actions (id,tenant_id,scope,thread_id,origin_kind,origin_id,ordinal,type,action,action_sha256,created_by,runner,device_id,summary)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11,$12,$13,$14) ON CONFLICT (tenant_id,origin_kind,origin_id,ordinal) DO NOTHING RETURNING id`,
+  [id, p.tenantId, o.scope, o.threadId, o.originKind, o.originId, ordinal, action.type, JSON.stringify(action), hash, p.id, runner, o.deviceId ?? null, o.summary ?? ''])).rows[0];
+  if (inserted) { await audit(db, p, o.scope, 'local_action.create', id, { type: action.type, origin_kind: o.originKind, ...(runner === 'device' ? { runner } : {}) }); return id; }
   const existing = (await db.query('SELECT id,thread_id,action_sha256 FROM local_actions WHERE tenant_id=$1 AND origin_kind=$2 AND origin_id=$3 AND ordinal=$4', [p.tenantId, o.originKind, o.originId, ordinal])).rows[0];
   requireCondition(existing.thread_id === o.threadId && existing.action_sha256 === hash, 409, 'idempotency_conflict', 'Idempotency key reused with a different action.');
   return existing.id;
@@ -77,13 +128,15 @@ export async function queueLocalAction(db: Db, p: Principal, o: { scope: string;
 
 const actor = (r: ActionRow): Principal => ({ id: r.created_by, tenantId: r.tenant_id, name: 'service', role: 'frontend', scopes: [r.scope], permissions: [] });
 const appOf = (t: LocalAction['type']) => t === 'event.create' ? 'calendar' : t === 'note.append' ? 'notes' : 'reminders';
-/** A memo whose action was turned off or impossible went to the Assistant (finalize switches the route in the same transaction). */
-const memoRoute = (route: string, rows: ActionRow[]) => rows.some(r => r.status === 'failed' && (r.code === 'action_disabled' || r.code === 'unavailable')) ? 'assistant' : route;
+/** A memo with a row on the iPhone answers route 'device' (storage keeps 'local'); one whose action was turned off or
+ * impossible went to the Assistant (finalize switches the route in the same transaction). */
+const memoRoute = (route: string, rows: ActionRow[]) => rows.some(r => r.runner === 'device') ? 'device'
+  : rows.some(r => r.status === 'failed' && (r.code === 'action_disabled' || r.code === 'unavailable')) ? 'assistant' : route;
 
 /** Claims a queued (or stale running) row, runs it outside any transaction, then records the result. Returns the final row. */
 async function execute(pool: Pool, id: string): Promise<ActionRow | undefined> {
   const claimed = (await pool.query<ActionRow>(`UPDATE local_actions la SET status='running', attempts=attempts+1, updated_at=clock_timestamp()
-    WHERE id=$1 AND attempts<$2 AND (status='queued' OR (status='running' AND updated_at < clock_timestamp() - $3 * interval '1 second'))
+    WHERE id=$1 AND runner='mac' AND attempts<$2 AND (status='queued' OR (status='running' AND updated_at < clock_timestamp() - $3 * interval '1 second'))
     RETURNING la.*, (SELECT v.time_zone FROM voice_intents v WHERE la.origin_kind='memo' AND v.tenant_id=la.tenant_id AND v.thread_id=la.thread_id AND v.memo_id::text=la.origin_id) AS time_zone`,
   [id, MAX_ATTEMPTS, STALE_SECONDS])).rows[0];
   if (!claimed) return undefined;
@@ -113,6 +166,19 @@ async function finalize(pool: Pool, row: ActionRow, result: LocalActionResult, e
     const code = result.ok ? null : (result.code ?? 'failed');
     const summary = clipUtf8(redactSecrets(String(result.summary ?? '')), 2000) || pendingSummary(row.action);
     const handle = result.ok && typeof result.handle === 'string' && result.handle.length > 0 ? clipUtf8(result.handle, 1024) : null;
+    // §11.1 rule 3: the Mac cannot do it, but the memo came from a current iPhone client → the phone runs it once allowed.
+    if (row.origin_kind === 'memo' && row.runner === 'mac' && code && FLIP_CODES.has(code) && row.type !== 'note.append') {
+      const memo = (await db.query<{ device_capable: boolean; time_zone: string }>('SELECT device_capable, time_zone FROM voice_intents WHERE tenant_id=$1 AND thread_id=$2 AND memo_id::text=$3',
+        [row.tenant_id, row.thread_id, row.origin_id])).rows[0];
+      if (memo?.device_capable) {
+        const flipped = (await db.query<ActionRow>(`UPDATE local_actions SET runner='device', status='queued', code=NULL, handle=NULL, summary=$3, exec_ms=$4, updated_at=clock_timestamp()
+          WHERE id=$1 AND status='running' AND attempts=$2 AND runner='mac' RETURNING *`, [row.id, row.attempts, deviceSuccess(row.action, memo.time_zone), execMs])).rows[0];
+        if (!flipped) return undefined;
+        await audit(db, p, row.scope, 'local_action.fail', row.id, { type: row.type, origin_kind: row.origin_kind, code, exec_ms: execMs, runner: 'mac', next_runner: 'device' });
+        await postCard(db, p, flipped);
+        return flipped;
+      }
+    }
     // Fenced on the claimed attempt: a stale rerun that lost the race does not overwrite a newer result.
     // The memo's exec_ms is recorded in the same statement.
     const updated = (await db.query<ActionRow>(`WITH u AS (UPDATE local_actions SET status=$3, code=$4, handle=$5, summary=$6, exec_ms=$7, updated_at=clock_timestamp()
@@ -137,8 +203,9 @@ async function finalize(pool: Pool, row: ActionRow, result: LocalActionResult, e
 
 /** Posts or refreshes the result card: a notice with ref.local_action (docs/RING-AGENT.md §5.6). Caller holds teamsLock. */
 async function postCard(db: Db, p: Principal, r: ActionRow): Promise<void> {
-  const card = { id: r.id, type: r.type, status: r.status, title: clipUtf8(actionTitle(r.action), 200), detail: clipUtf8(r.summary, 2000), undoable: r.status === 'done' && !!r.handle };
-  const body = clipUtf8(r.status === 'undone' ? `Undone: ${r.summary}` : r.summary, 16384) || '(local action)';
+  const body = clipUtf8(cardBody(r), 16384) || '(local action)';
+  const card = { id: r.id, type: r.type, status: r.status, title: clipUtf8(actionTitle(r.action), 200), detail: clipUtf8(r.status === 'undone' ? r.summary : body, 2000),
+    undoable: r.status === 'done' && !!r.handle, ...(r.runner === 'device' ? { runner: 'device' } : {}) };
   const author = { kind: 'system', id: 'service' };
   if (r.message_id) {
     const m = (await db.query<{ seq: string }>('UPDATE messages SET body=$3, ref=$4::jsonb, edited_at=clock_timestamp() WHERE id=$1 AND tenant_id=$2 RETURNING seq', [r.message_id, r.tenant_id, body, JSON.stringify({ local_action: card })])).rows[0];
@@ -179,24 +246,45 @@ async function runWithWait(pool: Pool, ids: string[]): Promise<Map<string, Actio
 /** After a turn commits: run its queued local_action rows in the background, apps in parallel, each app in order. */
 export function runOriginActions(pool: Pool, tenantId: string, originKind: 'turn', originId: string): void {
   void (async () => {
-    const rows = (await pool.query<{ id: string; type: LocalAction['type'] }>("SELECT id,type FROM local_actions WHERE tenant_id=$1 AND origin_kind=$2 AND origin_id=$3 AND status='queued' ORDER BY ordinal", [tenantId, originKind, originId])).rows;
+    const rows = (await pool.query<{ id: string; type: LocalAction['type'] }>("SELECT id,type FROM local_actions WHERE tenant_id=$1 AND origin_kind=$2 AND origin_id=$3 AND status='queued' AND runner='mac' ORDER BY ordinal", [tenantId, originKind, originId])).rows;
     const byApp = new Map<string, string[]>();
     for (const r of rows) byApp.set(appOf(r.type), [...(byApp.get(appOf(r.type)) ?? []), r.id]);
     await Promise.all([...byApp.values()].map(async ids => { for (const id of ids) await track(pool, id).catch(() => undefined); }));
   })().catch(() => { /* the sweep retries */ });
 }
 
-/** Server timer: reruns queued/running rows older than 30 s (max 3 attempts) and fails rows that ran out of attempts. */
+/** Server timer: reruns Mac queued/running rows older than 30 s (max 3 attempts), fails rows that ran out of attempts,
+ * and expires device rows the phone left for 24 h (never runs them). */
 export async function sweepLocalActions(pool: Pool): Promise<number> {
-  const stale = (await pool.query<ActionRow>(`SELECT * FROM local_actions WHERE status IN ('queued','running')
+  const stale = (await pool.query<ActionRow>(`SELECT * FROM local_actions WHERE status IN ('queued','running') AND runner='mac'
     AND updated_at < clock_timestamp() - $1 * interval '1 second' ORDER BY updated_at LIMIT 20`, [STALE_SECONDS])).rows;
   for (const row of stale) {
     if (inflight.has(row.id)) continue; // still running in this process: not a crash leftover
     if (row.attempts < MAX_ATTEMPTS) { await track(pool, row.id); continue; }
     if (row.status === 'running') await finalize(pool, row, { ok: false, code: 'timeout', summary: `${pendingSummary(row.action)} (timed out)` }, 0);
-    else await pool.query("UPDATE local_actions SET status='failed', code='failed', updated_at=clock_timestamp() WHERE id=$1 AND status='queued'", [row.id]);
+    else await pool.query("UPDATE local_actions SET status='failed', code='failed', updated_at=clock_timestamp() WHERE id=$1 AND status='queued' AND runner='mac'", [row.id]);
   }
-  return stale.length;
+  return stale.length + await expireDeviceActions(pool);
+}
+
+/** Device rows still queued after 24 h fail (timeout, "your iPhone didn't pick it up"); undoing rows return to done. */
+async function expireDeviceActions(pool: Pool): Promise<number> {
+  const old = (await pool.query<ActionRow>(`SELECT * FROM local_actions WHERE runner='device' AND status IN ('queued','undoing')
+    AND updated_at < clock_timestamp() - $1 * interval '1 hour' ORDER BY updated_at LIMIT 20`, [DEVICE_EXPIRY_HOURS])).rows;
+  for (const row of old) {
+    await transaction(pool, async db => {
+      await teamsLock(db, row.tenant_id);
+      const p = actor(row);
+      const updated = (await db.query<ActionRow>(`UPDATE local_actions SET status=CASE status WHEN 'queued' THEN 'failed' ELSE 'done' END,
+          code=CASE status WHEN 'queued' THEN 'timeout' ELSE code END, summary=CASE status WHEN 'queued' THEN $2 ELSE summary END, updated_at=clock_timestamp()
+        WHERE id=$1 AND runner='device' AND status=$3 AND updated_at < clock_timestamp() - $4 * interval '1 hour' RETURNING *`,
+      [row.id, deviceFailure(row.action, 'expired'), row.status, DEVICE_EXPIRY_HOURS])).rows[0];
+      if (!updated) return;
+      await audit(db, p, row.scope, 'local_action.fail', row.id, { type: row.type, origin_kind: row.origin_kind, code: 'timeout', runner: 'device', op: row.status === 'undoing' ? 'undo' : 'run' });
+      await postCard(db, p, updated);
+    });
+  }
+  return old.length;
 }
 
 // ---- input checks
@@ -231,11 +319,34 @@ async function authorizeThread(db: Db, p: Principal, threadId: string, write: bo
   return thread;
 }
 
+const CODES: LocalActionCode[] = ['permission_denied', 'action_disabled', 'timeout', 'unavailable', 'failed'];
+const allScopes = (p: Principal) => p.role === 'admin' && p.scopes.includes('*');
+
+/** voice_intent device fields (§11.3): device_actions ≤ 8 unique names ≤ 32 chars, unknown ignored; needs device_id. */
+function deviceInput(input: Record<string, unknown>): { deviceId?: string; caps?: ReadonlySet<DeviceCapability> } {
+  const deviceId = input.device_id === undefined ? undefined : uuid(input.device_id, 'device_id').toLowerCase();
+  if (input.device_actions === undefined) return deviceId ? { deviceId } : {};
+  const names = input.device_actions;
+  requireCondition(Array.isArray(names) && names.length <= 8 && names.every(n => typeof n === 'string' && n.length >= 1 && n.length <= 32), 400, 'invalid_arguments', 'device_actions must be at most 8 names of at most 32 characters.');
+  requireCondition(new Set(names).size === names.length, 400, 'invalid_arguments', 'device_actions must be unique.');
+  requireCondition(deviceId, 400, 'invalid_arguments', 'device_id is required with device_actions.');
+  return { deviceId, caps: new Set((names as string[]).filter((n): n is DeviceCapability => (DEVICE_CAPABILITIES as readonly string[]).includes(n))) };
+}
+
+/** local_action_report transitions (§11.3): queued→done|failed; done|undoing→undone; failed while undoing → done;
+ * done over failed/timeout wins; a repeat is a no-op; anything else conflicts. */
+function reportStep(r: ActionRow, status: 'done' | 'failed' | 'undone'): 'done' | 'failed' | 'undo_failed' | 'undone' | 'noop' | 'conflict' {
+  const s = r.status;
+  if (status === 'done') return s === 'queued' || (s === 'failed' && r.code === 'timeout') ? 'done' : s === 'done' || s === 'undoing' || s === 'undone' ? 'noop' : 'conflict';
+  if (status === 'failed') return s === 'queued' ? 'failed' : s === 'undoing' ? 'undo_failed' : s === 'failed' ? 'noop' : 'conflict';
+  return s === 'done' || s === 'undoing' ? 'undone' : s === 'undone' ? 'noop' : 'conflict';
+}
+
 export class VoiceService {
   constructor(private readonly pool: Pool) {}
 
   async voiceIntent(p: Principal, input: Record<string, unknown>): Promise<unknown> {
-    noExtraKeys(input, ['memo_id', 'thread_id', 'transcript', 'captured_at', 'spoken_at', 'time_zone', 'duration_seconds', 'source', 'timings']);
+    noExtraKeys(input, ['memo_id', 'thread_id', 'transcript', 'captured_at', 'spoken_at', 'time_zone', 'duration_seconds', 'source', 'timings', 'device_id', 'device_actions']);
     requireCondition(p.role !== 'worker', 403, 'forbidden', 'Workers cannot use voice or local actions.');
     const memo = uuid(input.memo_id, 'memo_id').toLowerCase(), threadId = uuid(input.thread_id, 'thread_id').toLowerCase();
     requireCondition(typeof input.transcript === 'string' && Buffer.byteLength(input.transcript, 'utf8') <= 16384 && !input.transcript.includes('\u0000'), 400, 'invalid_arguments', 'transcript must be a string of at most 16 KB.');
@@ -245,6 +356,7 @@ export class VoiceService {
     requireCondition(duration === undefined || (typeof duration === 'number' && Number.isFinite(duration) && duration >= 0 && duration <= 86400), 400, 'invalid_arguments', 'duration_seconds must be between 0 and 86400.');
     requireCondition(['ring', 'watch', 'phone'].includes(input.source as string), 400, 'invalid_arguments', 'source must be ring, watch or phone.');
     const source = input.source as string, clientTimings = timings(input.timings), hash = sha256(transcript);
+    const { deviceId, caps } = deviceInput(input);
 
     type Planned = { route: string; seq: number; delegated?: { bot_id: string; name: string }; ids: string[]; rows?: ActionRow[] };
     const planned = await transaction(this.pool, async (db): Promise<Planned> => {
@@ -261,13 +373,13 @@ export class VoiceService {
         // A retry runs an action that never started (crash after commit) and waits for one still running, so the
         // phone's resend gets the result instead of `running`; execute() claims each row at most once.
         return { route: prior.route, seq: Number(prior.message_seq), ...(prior.route === 'delegate' && prior.delegated_bot_id ? { delegated: { bot_id: prior.delegated_bot_id, name: prior.delegated_name } } : {}),
-          ids: rows.filter(r => r.status === 'queued' || r.status === 'running').map(r => r.id), rows };
+          ids: rows.filter(r => r.runner === 'mac' && (r.status === 'queued' || r.status === 'running')).map(r => r.id), rows };
       }
       const record = async (route: string, hint: string | null, msg: { id: string; seq: number }, extra: { parse_ms?: number; bot?: { id: string; name: string } } = {}) =>
-        db.query(`INSERT INTO voice_intents (tenant_id,scope,thread_id,memo_id,principal_id,transcript_sha256,source,route,hint,message_id,message_seq,delegated_bot_id,delegated_name,captured_at,spoken_at,time_zone,duration_seconds,timings,parse_ms)
-          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18::jsonb,$19)`,
+        db.query(`INSERT INTO voice_intents (tenant_id,scope,thread_id,memo_id,principal_id,transcript_sha256,source,route,hint,message_id,message_seq,delegated_bot_id,delegated_name,captured_at,spoken_at,time_zone,duration_seconds,timings,parse_ms,device_capable)
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18::jsonb,$19,$20)`,
         [p.tenantId, thread.scope, threadId, memo, p.id, hash, source, route, hint, msg.id, msg.seq, extra.bot?.id ?? null, extra.bot?.name ?? null,
-          captured, spoken, zone, duration ?? null, JSON.stringify({ ...clientTimings, ...(extra.parse_ms !== undefined ? { parse_ms: extra.parse_ms } : {}) }), extra.parse_ms ?? null]);
+          captured, spoken, zone, duration ?? null, JSON.stringify({ ...clientTimings, ...(extra.parse_ms !== undefined ? { parse_ms: extra.parse_ms } : {}) }), extra.parse_ms ?? null, caps !== undefined]);
       // The audio arrived first and announce already queued a turn: record the memo and add nothing.
       if (prior.announced_id) {
         await record('assistant', 'freeform', { id: prior.announced_id, seq: Number(prior.announced_seq) });
@@ -298,7 +410,14 @@ export class VoiceService {
 
       if (intent.route === 'local') {
         await record('local', null, { id: msgId, seq }, { parse_ms: parseMs });
-        return { route: 'local', seq, ids: [await queueLocalAction(db, p, { scope: thread.scope, threadId, originKind: 'memo', originId: memo, ordinal: 0, action: action! })] };
+        // §11.1: an advertised capability runs it on the phone; device_id is kept on Mac rows too, for a rule-3 flip.
+        const onDevice = caps !== undefined && deviceRunnable(action!, caps);
+        const id = await queueLocalAction(db, p, { scope: thread.scope, threadId, originKind: 'memo', originId: memo, ordinal: 0, action: action!,
+          ...(deviceId ? { deviceId } : {}), ...(onDevice ? { runner: 'device' as const, summary: deviceSuccess(action!, zone) } : {}) });
+        if (!onDevice) return { route: 'local', seq, ids: [id] };
+        const row = (await db.query<ActionRow>('SELECT * FROM local_actions WHERE id=$1', [id])).rows[0]!;
+        await postCard(db, p, row);
+        return { route: 'local', seq, ids: [], rows: [row] };
       }
       if (intent.route === 'delegate') {
         const target = bots.find(b => b.id === intent.bot_id);
@@ -329,7 +448,7 @@ export class VoiceService {
   private async intentResponse(p: Principal, threadId: string, memo: string): Promise<unknown> {
     const row = (await this.pool.query('SELECT * FROM voice_intents WHERE tenant_id=$1 AND thread_id=$2 AND memo_id=$3', [p.tenantId, threadId, memo])).rows[0];
     const actions = (await this.pool.query<ActionRow>("SELECT * FROM local_actions WHERE tenant_id=$1 AND origin_kind='memo' AND origin_id=$2 AND thread_id=$3 ORDER BY ordinal", [p.tenantId, memo, threadId])).rows;
-    return { memo_id: memo, route: row.route, message_seq: Number(row.message_seq), actions: actions.map(actionView),
+    return { memo_id: memo, route: memoRoute(row.route, actions), message_seq: Number(row.message_seq), actions: actions.map(actionView),
       ...(row.route === 'delegate' && row.delegated_bot_id ? { delegated_to: { bot_id: row.delegated_bot_id, name: row.delegated_name } } : {}) };
   }
 
@@ -350,9 +469,11 @@ export class VoiceService {
     noExtraKeys(input, []);
     requireCondition(p.role !== 'worker', 403, 'forbidden', 'Workers cannot use voice or local actions.');
     requirePermission(p, 'thread:write');
-    await this.pool.query('SELECT 1');
+    // The DB round trip doubles as the device backlog count, so the phone knows to drain (docs/RING-AGENT.md §11.1).
+    const pending = (await this.pool.query<{ n: number }>(`SELECT count(*)::int AS n FROM local_actions WHERE tenant_id=$1 AND runner='device'
+      AND status IN ('queued','undoing') AND (scope = ANY($2::text[]) OR $3)`, [p.tenantId, p.scopes, allScopes(p)])).rows[0]!.n;
     warmLocalActions();
-    return { ok: true };
+    return { ok: true, device_pending: pending };
   }
 
   async undo(p: Principal, input: Record<string, unknown>): Promise<unknown> {
@@ -364,8 +485,17 @@ export class VoiceService {
       await authorizeThread(db, p, r.thread_id, true);
       return r;
     });
-    if (row.status === 'undone') return { action: actionView(row) };
+    if (row.status === 'undone' || row.status === 'undoing') return { action: actionView(row) };
     requireCondition(row.status === 'done' && row.handle, 409, 'not_undoable', 'Only a finished action can be undone.');
+    if (row.runner === 'device') {
+      // The phone deletes it on next contact (local_action_pending op undo) and reports undone.
+      await transaction(this.pool, async db => {
+        await teamsLock(db, p.tenantId);
+        const updated = (await db.query<ActionRow>("UPDATE local_actions SET status='undoing', updated_at=clock_timestamp() WHERE id=$1 AND status='done' AND runner='device' RETURNING *", [id])).rows[0];
+        if (updated) await postCard(db, p, updated);
+      });
+      return { action: actionView(await this.row(id)) };
+    }
     let result: LocalActionResult;
     try { result = await localRunner().undo(row.id, row.action, row.handle!); }
     catch { result = { ok: false, code: 'failed', summary: 'Undo failed.' }; }
@@ -375,6 +505,54 @@ export class VoiceService {
       const updated = (await db.query<ActionRow>("UPDATE local_actions SET status='undone', updated_at=clock_timestamp() WHERE id=$1 AND status='done' RETURNING *", [id])).rows[0];
       if (!updated) return;
       await audit(db, p, row.scope, 'local_action.undo', id, { type: row.type, origin_kind: row.origin_kind });
+      await postCard(db, p, updated);
+    });
+    return { action: actionView(await this.row(id)) };
+  }
+
+  /** local_action_pending: the phone fetches device rows to run or undo and claims them for its device_id. */
+  async pending(p: Principal, input: Record<string, unknown>): Promise<unknown> {
+    noExtraKeys(input, ['device_id', 'limit']);
+    requireCondition(p.role !== 'worker', 403, 'forbidden', 'Workers cannot use voice or local actions.');
+    requirePermission(p, 'thread:read'); requirePermission(p, 'thread:write');
+    const device = uuid(input.device_id, 'device_id').toLowerCase(), limit = input.limit === undefined ? 20 : integer(input.limit, 'limit', 1, 20);
+    const rows = (await this.pool.query<ActionRow>(`WITH c AS (SELECT id FROM local_actions WHERE tenant_id=$1 AND runner='device' AND status IN ('queued','undoing')
+        AND (device_id IS NULL OR device_id=$2) AND (scope = ANY($3::text[]) OR $4) ORDER BY created_at, ordinal LIMIT $5 FOR UPDATE SKIP LOCKED)
+      UPDATE local_actions la SET device_id=$2 FROM c WHERE la.id=c.id RETURNING la.*`, [p.tenantId, device, p.scopes, allScopes(p), limit])).rows;
+    rows.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime() || a.ordinal - b.ordinal);
+    return { actions: rows.map(pendingView) };
+  }
+
+  /** local_action_report: the phone's outcome for a device row. Card text comes from the action and code, never the phone. */
+  async report(p: Principal, input: Record<string, unknown>): Promise<unknown> {
+    noExtraKeys(input, ['action_id', 'status', 'handle', 'code', 'exec_ms']);
+    requireCondition(p.role !== 'worker', 403, 'forbidden', 'Workers cannot use voice or local actions.');
+    const id = uuid(input.action_id, 'action_id').toLowerCase();
+    requireCondition(['done', 'failed', 'undone'].includes(input.status as string), 400, 'invalid_arguments', 'status must be done, failed or undone.');
+    const status = input.status as 'done' | 'failed' | 'undone';
+    const handle = input.handle === undefined ? undefined : string(input.handle, 'handle', 1024);
+    requireCondition(input.code === undefined || (status === 'failed' && CODES.includes(input.code as LocalActionCode)), 400, 'invalid_arguments', 'code is one of the local action codes and only goes with status failed.');
+    const code = (input.code as LocalActionCode | undefined) ?? 'failed';
+    const execMs = input.exec_ms === undefined ? null : integer(input.exec_ms, 'exec_ms', 0, 86_400_000);
+    await transaction(this.pool, async db => {
+      await teamsLock(db, p.tenantId);
+      const r = (await db.query<ActionRow>(`SELECT la.*, (SELECT v.time_zone FROM voice_intents v WHERE la.origin_kind='memo' AND v.tenant_id=la.tenant_id AND v.thread_id=la.thread_id AND v.memo_id::text=la.origin_id) AS time_zone
+        FROM local_actions la WHERE la.id=$1 AND la.tenant_id=$2 FOR UPDATE`, [id, p.tenantId])).rows[0];
+      requireCondition(r, 404, 'not_found', 'Local action not found.');
+      await authorizeThread(db, p, r.thread_id, true);
+      requireCondition(r.runner === 'device', 409, 'action_conflict', 'This action does not run on a device.');
+      const step = reportStep(r, status);
+      if (step === 'noop') return;
+      requireCondition(step !== 'conflict', 409, 'action_conflict', `Cannot report ${status} for an action that is ${r.status}.`);
+      const set = step === 'done' ? { status: 'done', code: null, handle: handle ?? null, summary: deviceSuccess(r.action, r.time_zone) }
+        : step === 'failed' ? { status: 'failed', code, handle: null, summary: deviceFailure(r.action, code) }
+        : step === 'undo_failed' ? { status: 'done', code: r.code, handle: r.handle, summary: r.summary }
+        : { status: 'undone', code: r.code, handle: r.handle, summary: r.summary };
+      const updated = (await db.query<ActionRow>(`UPDATE local_actions SET status=$2, code=$3, handle=$4, summary=$5, exec_ms=COALESCE($6, exec_ms), updated_at=clock_timestamp()
+        WHERE id=$1 RETURNING *`, [id, set.status, set.code, set.handle, set.summary, execMs])).rows[0]!;
+      const op = step === 'undone' || step === 'undo_failed' ? 'local_action.undo' : step === 'done' ? 'local_action.run' : 'local_action.fail';
+      await audit(db, p, r.scope, step === 'undo_failed' ? 'local_action.fail' : op, id, { type: r.type, origin_kind: r.origin_kind, runner: 'device',
+        ...(step === 'failed' ? { code } : {}), ...(step === 'undo_failed' ? { op: 'undo' } : {}), ...(execMs !== null ? { exec_ms: execMs } : {}) });
       await postCard(db, p, updated);
     });
     return { action: actionView(await this.row(id)) };
