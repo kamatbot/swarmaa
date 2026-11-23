@@ -93,3 +93,41 @@ test('launchctl dictionary PID parsing does not confuse status or missing PIDs',
   assert.equal(launchPid('{ "PID" = 123; "LastExitStatus" = 9; }'),123);
   for (const text of ['', '{ "LastExitStatus" = 123; }', '{ "PID" = 0; }']) assert.equal(launchPid(text),undefined);
 });
+
+test('relay restart waits for the old relay to unload before bootstrapping, then confirms a PID', async () => {
+  const calls: string[] = [], lines: string[] = [];
+  let unloadPolls = 0, loaded = true, relayPid: number | undefined;
+  const io: DeployIO = {
+    uid: 501, port: '8787', installRelay: () => '/tmp/com.swarma.relay.plist',
+    command: (command, args) => {
+      calls.push(`${command} ${args.join(' ')}`);
+      if (args[0] === 'list' && args.length === 1) return '';
+      if (args[0] === 'print') { if (loaded && ++unloadPolls < 3) return 'loaded'; loaded = false; throw new Error('gone'); }
+      if (args[0] === 'bootstrap') { if (loaded) throw new Error('busy'); loaded = true; }
+      if (args[0] === 'kickstart') relayPid = 777;
+      if (args[0] === 'list') { if (!relayPid) throw new Error('none'); return `{\n "PID" = ${relayPid};\n}`; }
+      return '';
+    },
+    signal: () => {}, sleep: async () => {}, status: async () => [], healthy: async () => true,
+    log: line => { lines.push(line); },
+  };
+  await deployLocal(['--relay', '--no-service'], io);
+  const lastPrint = calls.lastIndexOf('launchctl print gui/501/com.swarma.relay');
+  const boot = calls.indexOf('launchctl bootstrap gui/501 /tmp/com.swarma.relay.plist');
+  assert.ok(lastPrint >= 0 && boot > lastPrint);
+  assert.equal(calls.filter(c => c.startsWith('launchctl bootstrap')).length, 1);
+  assert.ok(lines.some(l => l.includes('PID 777')));
+});
+
+test('relay restart fails loudly when the relay does not stay up', async () => {
+  const io: DeployIO = {
+    uid: 501, port: '8787', installRelay: () => '/tmp/r.plist',
+    command: (_c, args) => {
+      if (args[0] === 'list' && args.length === 1) return '';
+      if (args[0] === 'print' || args[0] === 'list') throw new Error('none');
+      return '';
+    },
+    signal: () => {}, sleep: async () => {}, status: async () => [], healthy: async () => true, log: () => {},
+  };
+  await assert.rejects(deployLocal(['--relay', '--no-service'], io), /Relay did not start/);
+});

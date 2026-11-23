@@ -133,10 +133,27 @@ export async function deployLocal(args = process.argv.slice(2), io = localIO()):
     if (!relay) return;
     if (!io.installRelay) throw new Error('Relay plist installation unavailable');
     const file = io.installRelay(), relayTarget = `gui/${io.uid}/com.swarma.relay`;
+    const loaded = (): boolean => { try { launch('print', relayTarget); return true; } catch { return false; } };
     try { launch('bootout', relayTarget); } catch { /* first install */ }
-    try { launch('bootstrap', `gui/${io.uid}`, file); }
-    catch { await io.sleep(1000); launch('bootstrap', `gui/${io.uid}`, file); }
+    // bootout returns before the old relay exits; bootstrapping while it is still loaded fails, and the late unload
+    // then leaves no relay at all (the phone loses the Mac). Wait for the label to disappear first.
+    for (let i = 0; i < 30 && loaded(); i++) await io.sleep(500);
+    for (let attempt = 1; ; attempt++) {
+      try { launch('bootstrap', `gui/${io.uid}`, file); break; }
+      catch (error) { if (attempt >= 5) throw error; await io.sleep(1000); }
+    }
     launch('kickstart', '-k', relayTarget);
+    let pid: number | undefined;
+    for (let i = 0; i < 20 && !pid; i++) {
+      await io.sleep(500);
+      try { pid = launchPid(launch('list', 'com.swarma.relay')); } catch { /* not loaded yet */ }
+    }
+    if (!pid) throw new Error('Relay did not start under launchd; check .local/logs/relay.err.log');
+    await io.sleep(3000);
+    let still: number | undefined;
+    try { still = launchPid(launch('list', 'com.swarma.relay')); } catch { /* unloaded */ }
+    if (!still) throw new Error(`Relay PID ${pid} exited right after start; check .local/logs/relay.err.log`);
+    io.log(`Relay running under launchd (PID ${still})`);
     io.log('Relay installed and restarted; check its log for host_id and connection status');
   };
   if (!service) { await restartRelay(); return; }
