@@ -4,7 +4,12 @@ import AVFoundation
 @MainActor @Observable final class PhoneMemos {
     static let shared = PhoneMemos()
     struct Item: Identifiable { let id: String; let url: URL; let date: Date; var delivery: Delivery? }
-    struct Delivery: Codable { let id, generation, threadID, hash, capturedAt: String; let bytes: Int; var state: String }
+    struct Delivery: Codable {
+        let id, generation, threadID, hash, capturedAt: String; let bytes: Int; var state: String
+        /// False until the first chunk is sent, so a brand-new memo skips `watch_memo_status` (it would only 404).
+        var attempted = false
+        enum CodingKeys: String, CodingKey { case id, generation, threadID, hash, capturedAt, bytes, state, attempted }
+    }
     private var deliveries: [Delivery] = []
     private let manifest = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("phone-memo-uploads.json")
     private init() { if let data = try? Data(contentsOf: manifest), let saved = try? JSONDecoder().decode([Delivery].self, from: data) { deliveries = saved } }
@@ -16,10 +21,14 @@ import AVFoundation
     var error: String?
     private var player: AVAudioPlayer?
     private var transcribing = Set<String>()
+    /// Lowercased ids of ring memos that `RingLink` is transcribing itself (live stream or its own file pass);
+    /// it writes their .txt, so a second whole-file recognition here would only compete for the recognizer.
+    @ObservationIgnored var liveTranscribing = Set<String>()
     private func transcriptURL(_ audio: URL) -> URL { audio.deletingPathExtension().appendingPathExtension("txt") }
     /// Writes <id>.txt next to each memo once on-device recognition finishes (empty on failure) and then re-triggers delivery.
     private func ensureTranscripts(_ urls: [URL]) {
-        for url in urls where !FileManager.default.fileExists(atPath: transcriptURL(url).path) && transcribing.insert(url.path).inserted {
+        for url in urls where !FileManager.default.fileExists(atPath: transcriptURL(url).path)
+            && !liveTranscribing.contains(url.deletingPathExtension().lastPathComponent.lowercased()) && transcribing.insert(url.path).inserted {
             Task {
                 let text = await MemoTranscriber.transcribe(url)
                 try? text.write(to: transcriptURL(url), atomically: true, encoding: .utf8)
@@ -34,7 +43,7 @@ import AVFoundation
         let age = Date().timeIntervalSince((try? url.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? .distantPast)
         return age > 180
     }
-    static var root: URL { FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("Watch Memos", isDirectory: true) }
+    nonisolated static var root: URL { FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("Watch Memos", isDirectory: true) }
     func refresh(generation: String?) {
         guard let generation, UUID(uuidString: generation) != nil else { items = []; return }
         let folder = Self.root.appendingPathComponent(generation, isDirectory: true)
@@ -97,12 +106,15 @@ import AVFoundation
             if latest.state == "mac" { acknowledged(latest); continue }
             let url = Self.root.appendingPathComponent(generation).appendingPathComponent(entry.id + ".m4a")
             do {
-                let hash = try await Task.detached { try MemoLimits.hash(url) }.value
-                guard valid(), hash == entry.hash, deliveryIndex(entry) != nil else { continue }
+                // A never-attempted delivery was hashed by assign/retain moments ago; the host verifies sha256 anyway.
+                if latest.attempted {
+                    let hash = try await Task.detached { try MemoLimits.hash(url) }.value
+                    guard valid(), hash == entry.hash, deliveryIndex(entry) != nil else { continue }
+                }
                 guard transcriptReady(url) else { continue }
                 let transcript = (try? String(contentsOf: transcriptURL(url), encoding: .utf8)) ?? ""
                 var received = Set<Int>()
-                do {
+                if latest.attempted { do {
                     let status = try await service.call("watch_memo_status", ["memo_id": .string(entry.id), "thread_id": .string(entry.threadID)])
                     guard valid() else { return false }
                     guard deliveryIndex(entry) != nil else { continue }
@@ -113,7 +125,12 @@ import AVFoundation
                     }
                     guard status["status"].string == "uploading", status["memo_id"].string.lowercased() == entry.id.lowercased(), status["sha256"].string == entry.hash, status["byte_length"].int == entry.bytes else { throw MemoFailure.invalid }
                     received = Set(status["received_indices"].array.map(\.int))
-                } catch AppFailure.service(404) { /* New memo: no chunks have been uploaded yet. */ }
+                } catch AppFailure.service(404) { /* New memo: no chunks have been uploaded yet. */ } }
+                else if let index = deliveryIndex(entry) {
+                    // Never attempted: nothing can be on the host yet. Record the attempt before the first chunk.
+                    deliveries[index].attempted = true
+                    if !save() { deliveries[index].attempted = false }
+                }
                 let total = (entry.bytes + 131_071) / 131_072
                 let missing = (0..<total).filter { !received.contains($0) }
                 let handle = try FileHandle(forReadingFrom: url)
@@ -149,6 +166,21 @@ import AVFoundation
         catch { self.error = "Could not delete the iPhone copy." }
     }
     enum MemoFailure: Error { case invalid, full }
+}
+
+extension PhoneMemos.Delivery {
+    /// Manifests written before `attempted` existed may describe partial uploads, so they decode as attempted.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        generation = try c.decode(String.self, forKey: .generation)
+        threadID = try c.decode(String.self, forKey: .threadID)
+        hash = try c.decode(String.self, forKey: .hash)
+        capturedAt = try c.decode(String.self, forKey: .capturedAt)
+        bytes = try c.decode(Int.self, forKey: .bytes)
+        state = try c.decode(String.self, forKey: .state)
+        attempted = try c.decodeIfPresent(Bool.self, forKey: .attempted) ?? true
+    }
 }
 struct PhoneMemosView: View {
     let close: () -> Void

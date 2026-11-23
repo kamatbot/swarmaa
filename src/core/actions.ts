@@ -5,6 +5,8 @@ import { checkProblem, patchStepProblem, validateStepGraph } from './swarms.js';
 import { clipUtf8 } from './teams.js';
 import type { Db } from './shared.js';
 import type { AgentRow, ThreadRow } from './teams.js';
+import type { LocalAction } from '../voice/types.js';
+import { validateLocalAction } from '../voice/intent.js';
 
 export interface TurnActionHandoff {
   type: 'handoff';
@@ -103,7 +105,17 @@ export interface TurnActionBotAppearance {
   color?: string | null;
 }
 
+/** A closed local action on the owner's Mac (docs/RING-AGENT.md §5.4); only bots with rules.local_actions. */
+export interface TurnActionLocalAction {
+  type: 'local_action';
+  action: LocalAction;
+}
+
+/** At most this many local_action entries per turn. */
+export const MAX_TURN_LOCAL_ACTIONS = 5;
+
 export type TurnAction =
+  | TurnActionLocalAction
   | TurnActionBotAppearance
   | TurnActionHandoff
   | TurnActionSwarmStart
@@ -426,6 +438,15 @@ export function extractActionsBlock(text: string): ExtractedActions {
         return { cleanText, rawBlock, error: 'project_dispatch requires body', rejectedAction: item };
       }
       actions.push({ type: 'project_dispatch', bot: act.bot.trim(), body: clipUtf8(redactSecrets(act.body.trim()), 16384) });
+    } else if (type === 'local_action') {
+      const extra = Object.keys(act).find(k => !['type', 'action'].includes(k));
+      if (extra) return { cleanText, rawBlock, error: `unknown field '${extra}' in local_action action`, rejectedAction: item };
+      if (actions.filter(a => a.type === 'local_action').length >= MAX_TURN_LOCAL_ACTIONS) {
+        return { cleanText, rawBlock, error: `too many local_action actions: at most ${MAX_TURN_LOCAL_ACTIONS} per turn`, rejectedAction: item };
+      }
+      const action = validateLocalAction(act.action);
+      if (typeof action === 'string') return { cleanText, rawBlock, error: `local_action: ${action}`, rejectedAction: item };
+      actions.push({ type: 'local_action', action });
     } else {
       return { cleanText, rawBlock, error: `unknown action type '${String(type)}'`, rejectedAction: item };
     }
@@ -447,9 +468,11 @@ export interface TurnGrantContext {
   hopDepth?: number;
   botId?: string | null;
   leadMode?: 'router' | 'default';
+  /** The turn task whose answer these actions came from (origin of its local_action rows). */
+  taskId?: string;
 }
 
-const ROUTER_ACTIONS = new Set(['swarm_start', 'handoff', 'question_ask', 'bot_appearance', 'project_dispatch']);
+const ROUTER_ACTIONS = new Set(['swarm_start', 'handoff', 'question_ask', 'bot_appearance', 'project_dispatch', 'local_action']);
 
 /**
  * Validates parsed actions against the turn grant in the database.
@@ -700,6 +723,14 @@ export async function validateTurnGrant(
         return { valid: false, reason: target.length ? `bot name '${act.bot}' is ambiguous; use its id` : `bot '${act.bot}' not found`, action: act };
       }
       act.bot = target[0]!.id;
+    } else if (act.type === 'local_action') {
+      // Only a bot the owner allowed may act on the owner's Mac.
+      const own = ctx.botId ? (await db.query<{ rules: Record<string, unknown> }>(
+        'SELECT rules FROM bots WHERE id=$1 AND tenant_id=$2 AND scope=$3 AND NOT archived', [ctx.botId, ctx.tenantId, ctx.scope]
+      )).rows[0] : undefined;
+      if (own?.rules?.local_actions !== true) {
+        return { valid: false, reason: 'this bot may not run local actions (rules.local_actions is off)', action: act };
+      }
     } else if (act.type === 'channel_post') {
       if (!isUuid(act.channel_id)) {
         return {

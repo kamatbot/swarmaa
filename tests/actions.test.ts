@@ -255,3 +255,31 @@ test('bot routing pinned wins; with Auto routing a pinned crew member keeps its 
   assert.equal(leadTurnProfile(autoBot, { id: 'b', edits: true, runner: { provider: 'antigravity' } }).capability, 'antigravity.patch');
   assert.equal(leadTurnProfile(autoBot, { id: 'b', edits: true, runner: { mode: 'auto' } }).capability, 'auto.patch');
 });
+
+test('local_action: parses closed actions, rejects unknown shapes, and caps at 5 per turn', () => {
+  const block = (items: unknown[]) => `Done.\n\n\`\`\`swarmaa-actions\n${JSON.stringify(items)}\n\`\`\``;
+  const reminder = { type: 'local_action', action: { type: 'reminder.create', title: 'Call mom', due_at: '2026-11-22T10:00:00.000Z' } };
+  const ok = extractActionsBlock(block([reminder]));
+  assert.equal(ok.error, undefined);
+  assert.deepEqual(ok.actions![0], { type: 'local_action', action: { type: 'reminder.create', title: 'Call mom', due_at: '2026-11-22T10:00:00.000Z' } });
+  assert.match(extractActionsBlock(block([{ ...reminder, extra: 1 }])).error ?? '', /unknown field 'extra' in local_action/);
+  assert.match(extractActionsBlock(block([{ type: 'local_action', action: { type: 'shell.run', cmd: 'rm -rf /' } }])).error ?? '', /^local_action: /);
+  assert.match(extractActionsBlock(block([{ type: 'local_action' }])).error ?? '', /^local_action: /);
+  assert.equal(extractActionsBlock(block(Array(5).fill(reminder))).actions?.length, 5);
+  assert.match(extractActionsBlock(block(Array(6).fill(reminder))).error ?? '', /at most 5 per turn/);
+});
+
+test('local_action: allowed only for bots with rules.local_actions, including router leads', async () => {
+  const ctx = (rules: Record<string, unknown> | undefined, leadMode?: 'router'): TurnGrantContext => ({
+    agent: { id: 'a0000000-0000-0000-0000-000000000001' } as any, thread: { id: 't' } as any,
+    tenantId: 'ten', scope: 'project:a', botId: rules ? 'b0000000-0000-0000-0000-000000000001' : null, leadMode, taskId: 'x'
+  });
+  const db = (rules: Record<string, unknown>) => ({ query: async (sql: string) => ({ rows: /FROM bots/.test(sql) ? [{ rules }] : [] }) }) as any;
+  const act: TurnAction = { type: 'local_action', action: { type: 'note.append', text: 'Buy milk' } };
+  assert.equal((await validateTurnGrant(db({ local_actions: true }), ctx({ local_actions: true }), [act])).valid, true);
+  assert.equal((await validateTurnGrant(db({ local_actions: true }), ctx({ local_actions: true }, 'router'), [act])).valid, true);
+  const off = await validateTurnGrant(db({}), ctx({}), [act]);
+  assert.equal(off.valid, false);
+  if (!off.valid) assert.match(off.reason, /rules\.local_actions/);
+  assert.equal((await validateTurnGrant(db({ local_actions: true }), ctx(undefined), [act])).valid, false);
+});

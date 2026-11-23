@@ -1,4 +1,5 @@
 import { WatchServices, watchTransaction } from './watch-services.js';
+import { sweepLocalActions, VoiceService, warmLocalActions } from './voice.js';
 import { pushDevice } from '../push.js';
 import { botRoutingPreview } from './bot-routing.js';
 import type { Pool } from 'pg';
@@ -37,12 +38,14 @@ const responseReadPermissions:Partial<Record<string,Permission>> = {
   channel_create:'agent:read',channel_update:'agent:read',section_set:'thread:read',task_resolve:'task:read',
   attention_list:'thread:read',source_update:'task:read',
   watch_memo_put:'thread:read',watch_memo_delete:'thread:read',watch_memo_status:'thread:write',watch_transaction_preview:'thread:read',watch_transaction_confirm:'thread:read',watch_transaction_get:'thread:write',
+  voice_intent:'thread:read',voice_warm:'thread:read',local_action_run:'thread:read',local_action_undo:'thread:read',local_action_report:'thread:read',local_action_pending:'thread:read',
   task_subscribe:'task:read',task_unsubscribe:'task:read',task_subscriptions:'task:read',
 };
 
 /** Transport-independent authorization and one implementation shared by MCP, REST and stdio proxy. */
 export class CoreService implements ToolBackend {
   private readonly watch:WatchServices;
+  private readonly voice:VoiceService;
   private readonly memories:MemoryService;
   private readonly tasks:TaskService;
   private readonly swarm:SwarmService;
@@ -57,6 +60,7 @@ export class CoreService implements ToolBackend {
 
   constructor(private readonly pool:Pool) {
     this.watch = new WatchServices(pool);
+    this.voice = new VoiceService(pool);
     this.memories = new MemoryService(pool);
     this.swarms = new SwarmsService(pool);
     this.tasks = new TaskService(pool, this.swarms);
@@ -72,6 +76,12 @@ export class CoreService implements ToolBackend {
 
   /** Server-timer sweep of expired task leases; returns the number of (tenant, scope) pairs swept. */
   sweepExpiredLeases():Promise<number> { return this.tasks.sweepLeases(); }
+
+  /** Server-timer rerun of local actions left queued or running (crash after commit); see voice.ts. */
+  sweepLocalActions():Promise<number> { return sweepLocalActions(this.pool); }
+
+  /** Server start: spawn the local action helper ahead of the first memo (fire-and-forget; see voice.ts). */
+  warmLocalActions():void { warmLocalActions(); }
 
   listTools(principal:Principal):ToolDefinition[] {
     return TOOLS.filter(tool => hasPermission(principal,TOOL_PERMISSIONS[tool.name]!)
@@ -96,6 +106,14 @@ export class CoreService implements ToolBackend {
       case 'watch_transaction_preview': return watchTransaction(this.pool,principal,'preview',input);
       case 'watch_transaction_confirm': return watchTransaction(this.pool,principal,'confirm',input);
       case 'watch_transaction_get': return watchTransaction(this.pool,principal,'get',input);
+      case 'voice_intent': return this.voice.voiceIntent(principal,input);
+      case 'voice_warm': return this.voice.warm(principal,input);
+      case 'local_action_run': return this.voice.run(principal,input);
+      case 'local_action_undo': return this.voice.undo(principal,input);
+      case 'local_action_report': return this.voice.report(principal,input);
+      case 'local_action_pending': return this.voice.pending(principal,input);
+      case 'local_action_list': return this.voice.list(principal,input);
+      case 'local_action_check': return this.voice.check(principal,input);
       case 'push_register': return pushDevice(this.pool,principal,input,true);
       case 'push_unregister': return pushDevice(this.pool,principal,input,false);
       case 'flow_list': return this.flows.list(principal,input);

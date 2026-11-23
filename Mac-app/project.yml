@@ -109,6 +109,12 @@ targets:
         NSLocalNetworkUsageDescription: "Swarmaa answers your phone on this network so it can show your usage."
         NSMicrophoneUsageDescription: "Swarmaa uses the microphone to transcribe your message."
         NSSpeechRecognitionUsageDescription: "Swarmaa transcribes speech into your editable message."
+        # Ring/Watch voice actions (docs/LOCAL-ACTIONS.md): the bundled service runs a fixed
+        # JXA script through /usr/bin/osascript to add Reminders and Calendar events.
+        # Pairs with com.apple.security.automation.apple-events in Swarmaa.entitlements
+        # (hardened runtime). Reminders/Calendar are driven by Apple Events, not
+        # EventKit, so NSRemindersUsageDescription/NSCalendarsUsageDescription are not needed.
+        NSAppleEventsUsageDescription: "Swarmaa adds the reminders, timers and calendar events you ask for by voice."
         # --- Sparkle -------------------------------------------------------
         # Served by the swarmaa.com Cloudflare worker from site/public/appcast.xml,
         # which `make appcast` writes. The downloads it lists are GitHub release

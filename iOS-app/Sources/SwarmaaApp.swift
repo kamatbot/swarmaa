@@ -51,6 +51,7 @@ struct SwarmaaShortcuts: AppShortcutsProvider {
 @MainActor final class PushDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         UNUserNotificationCenter.current().delegate = self
+        UNUserNotificationCenter.current().setNotificationCategories([RingIntent.category])
         if !ProcessInfo.processInfo.arguments.contains("-demo") {
             Runtime.model.onConnectionChanged = {
                 WatchBridge.shared.changed()
@@ -59,6 +60,7 @@ struct SwarmaaShortcuts: AppShortcutsProvider {
                 }
             }
             WatchBridge.shared.changed()
+            RingLink.shared.start()
         }
         Runtime.model.onFirstBotList = {
             let center = UNUserNotificationCenter.current()
@@ -88,10 +90,23 @@ struct SwarmaaShortcuts: AppShortcutsProvider {
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
                                             withCompletionHandler completionHandler: @escaping () -> Void) {
         let tapped = response.actionIdentifier == UNNotificationDefaultActionIdentifier
-        let id = PushNotification.botID(response.notification.request.content.userInfo)
+        let userInfo = response.notification.request.content.userInfo
+        let id = PushNotification.botID(userInfo)
+        // RING_ACTION's background Undo (§11.4) and the "Allow … on this iPhone" notifications.
+        let undo = response.actionIdentifier == RingIntent.undoAction ? RingIntent.undoRequest(userInfo) : nil
+        let openThisIPhone = tapped && DevicePermissions.opens(userInfo)
         nonisolated(unsafe) let done = completionHandler
         DispatchQueue.main.async {
             MainActor.assumeIsolated {
+                if let undo {
+                    // The completion handler ends the background time iOS gave the action: call it after the report.
+                    Task { @MainActor in
+                        await RingLink.shared.undoDevice(actionID: undo.id, handle: undo.handle)
+                        done()
+                    }
+                    return
+                }
+                if openThisIPhone { ThisIPhoneRoute.shared.requested = true }
                 if tapped, let id { Runtime.model.receivePushTap(["bot_id": id]) }
                 done()
             }
@@ -313,9 +328,9 @@ struct ContentSheet<Content: View>: View {
 
 enum Screen: String { case home, thread, tasks, usage, connect, settings }
 enum Sheet: Identifiable {
-    case you, question(JSON), newBot, changes(String), memos, transactions
+    case you, question(JSON), newBot, changes(String), memos, transactions, ring
     var id: String {
-        switch self { case .you: "you"; case .question(let q): "question-" + q["id"].string; case .newBot: "newBot"; case .changes: "changes"; case .memos: "memos"; case .transactions: "transactions" }
+        switch self { case .you: "you"; case .question(let q): "question-" + q["id"].string; case .newBot: "newBot"; case .changes: "changes"; case .memos: "memos"; case .transactions: "transactions"; case .ring: "ring" }
     }
 }
 
@@ -398,6 +413,7 @@ struct RootView: View {
                 switch item {
                 case .you: you
                 case .memos: PhoneMemosView { sheet = nil }
+                case .ring: RingView { sheet = nil }
                 case .transactions: PhoneTransactionReviewsView { sheet = nil }
                 case .question(let question): AnswerView(model: model, question: question) { sheet = nil }
                 case .newBot: NewBotView(model: model) { sheet = nil }
@@ -429,6 +445,12 @@ struct RootView: View {
         }
         .onChange(of: model.connected) { _, connected in if !connected && !model.isDemo { drafts = [:]; photos = []; composer = ""; dictation.stop() } }
         .onChange(of: model.pendingPushBotID) { _, _ in openPushBot() }
+        // "Allow Reminders on this iPhone": the Ring sheet holds the This iPhone section.
+        .onChange(of: ThisIPhoneRoute.shared.requested, initial: true) { _, open in
+            guard open else { return }
+            ThisIPhoneRoute.shared.requested = false
+            if !model.isDemo { sheet = .ring }
+        }
         .onChange(of: model.didLoadBots) { _, _ in openPushBot() }
         .onChange(of: model.bots) { _, _ in openPushBot() }
         .onChange(of: screen) { _, value in if value != .home { searchFocused = false }; if value != .thread { dictation.stop(); dictationToken = UUID(); dictationStarting = false }; updateVisibleThread() }
@@ -1028,6 +1050,7 @@ struct RootView: View {
             } label: { menuRow("Bot settings", "Crew, chat replies and your starred shortcut", icon: "slider.horizontal.3") }.buttonStyle(Pill(fill: KS.surface))
             Button { sheet = .transactions } label: { menuRow("Watch transactions", "Review transaction previews", icon: "list.bullet.rectangle") }.buttonStyle(Pill(fill: KS.surface)).disabled(model.isDemo)
             Button { sheet = .memos } label: { menuRow("Watch memos", "Play and share recordings saved on this iPhone", icon: "waveform") }.buttonStyle(Pill(fill: KS.surface)).disabled(model.isDemo)
+            Button { sheet = .ring } label: { menuRow("Ring", "Talk to a bot from your SR116 ring", icon: "circle.circle") }.buttonStyle(Pill(fill: KS.surface)).disabled(model.isDemo)
             Button("Sign out of this host") { perform { try await model.signOut(); sheet = nil; screen = .connect } }.font(KS.body(.semibold)).foregroundStyle(KS.failedText).frame(maxWidth: .infinity, minHeight: 44).disabled(model.isDemo)
         }
     }

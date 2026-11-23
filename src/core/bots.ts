@@ -67,6 +67,8 @@ export interface BotRules {
   lead_mode?: 'default' | 'router';
   /** A coordinator (e.g. Assistant) may send requests to every other project's bot with project_dispatch. */
   dispatch_all_projects?: boolean;
+  /** The owner lets this bot run closed local actions on the Mac (reminders, events, notes) with local_action. */
+  local_actions?: boolean;
 }
 
 /** Chat-reply models, the provider that runs each, and whether it is a quick reply that may hand off. */
@@ -172,9 +174,10 @@ export function validateRules(raw: unknown, existing?: Record<string, unknown>):
 
   if (typeof existing?.schedule_paused === 'boolean') base.schedule_paused = existing.schedule_paused;
   if (typeof existing?.dispatch_all_projects === 'boolean') base.dispatch_all_projects = existing.dispatch_all_projects;
+  if (typeof existing?.local_actions === 'boolean') base.local_actions = existing.local_actions;
   if (raw === undefined || raw === null) return base;
   const obj = object(raw);
-  noExtraKeys(obj, ['quota_floor_pct', 'approve_public', 'review_edits', 'require_tests', 'quiet_schedule', 'first_reply', 'schedule_paused', 'lead_mode', 'dispatch_all_projects']);
+  noExtraKeys(obj, ['quota_floor_pct', 'approve_public', 'review_edits', 'require_tests', 'quiet_schedule', 'first_reply', 'schedule_paused', 'lead_mode', 'dispatch_all_projects', 'local_actions']);
 
   if (obj.quota_floor_pct !== undefined) {
     base.quota_floor_pct = integer(obj.quota_floor_pct, 'quota_floor_pct', 0, 50);
@@ -193,6 +196,7 @@ export function validateRules(raw: unknown, existing?: Record<string, unknown>):
   }
   if (obj.schedule_paused !== undefined) base.schedule_paused = booleanOption(obj.schedule_paused, 'schedule_paused');
   if (obj.dispatch_all_projects !== undefined) base.dispatch_all_projects = booleanOption(obj.dispatch_all_projects, 'dispatch_all_projects');
+  if (obj.local_actions !== undefined) base.local_actions = booleanOption(obj.local_actions, 'local_actions');
   if (obj.first_reply !== undefined) {
     const v = string(obj.first_reply, 'first_reply', 60);
     requireCondition(v === 'off' || v in FIRST_REPLY_MODELS, 400, 'invalid_arguments',

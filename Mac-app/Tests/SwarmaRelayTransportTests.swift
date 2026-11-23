@@ -120,6 +120,62 @@ final class FakeWebSocket: SwarmaRelayTransport.SwarmaWebSocket, @unchecked Send
     }
 }
 
+/// Test sleep: each call parks until the test releases sleeps of that duration.
+final class ManualSleeper: @unchecked Sendable {
+    private let lock = NSLock()
+    private var parked: [(TimeInterval, CheckedContinuation<Void, Never>)] = []
+
+    var function: SwarmaRelayTransport.SleepFunction {
+        { [self] seconds in
+            await withCheckedContinuation { c in
+                lock.lock(); parked.append((seconds, c)); lock.unlock()
+            }
+        }
+    }
+
+    func pending(_ seconds: TimeInterval) -> Int {
+        lock.lock(); defer { lock.unlock() }
+        return parked.filter { $0.0 == seconds }.count
+    }
+
+    func waitForPending(_ seconds: TimeInterval, count: Int = 1, timeout: TimeInterval = 2.0) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if pending(seconds) >= count { return }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        throw SwarmaRelayTransport.Failure.other("waitForPending(\(seconds)) timeout")
+    }
+
+    /// Resumes every parked sleep of `seconds`.
+    func release(_ seconds: TimeInterval) {
+        lock.lock()
+        let ready = parked.filter { $0.0 == seconds }.map { $0.1 }
+        parked.removeAll { $0.0 == seconds }
+        lock.unlock()
+        for c in ready { c.resume() }
+    }
+}
+
+/// Factory handing out a fresh FakeWebSocket per connect, recording each.
+final class FakeSocketFactory: @unchecked Sendable {
+    private let lock = NSLock()
+    private var made: [FakeWebSocket] = []
+
+    var function: SwarmaRelayTransport.WebSocketFactory {
+        { [self] _ in
+            let socket = FakeWebSocket()
+            lock.lock(); made.append(socket); lock.unlock()
+            return socket
+        }
+    }
+
+    var sockets: [FakeWebSocket] {
+        lock.lock(); defer { lock.unlock() }
+        return made
+    }
+}
+
 // MARK: - Tests
 
 final class SwarmaRelayTransportTests: XCTestCase {
@@ -806,4 +862,153 @@ final class SwarmaRelayTransportTests: XCTestCase {
         XCTAssertFalse(req.description.contains(secretToken))
         XCTAssertFalse(req.description.contains(secretCode))
     }
+
+    // MARK: 13. Half-open socket: no pong within the deadline drops the socket
+
+    func testMissingPongDropsSocketAndFailsPendingSends() async throws {
+        let sleeper = ManualSleeper()
+        let factory = FakeSocketFactory()
+        let transport = SwarmaRelayTransport(
+            hostID: "host123",
+            autoReconnect: false,
+            sleep: sleeper.function,
+            webSocketFactory: factory.function
+        )
+        try await transport.connect()
+        let fake = try XCTUnwrap(factory.sockets.first)
+
+        let req = URLRequest(url: URL(string: "https://relay.swarmaa.com/api/tools/run")!)
+        let sendTask = Task { try await transport.send(req) }
+        _ = try await fake.waitForSentFrame { if case .req = $0 { return true }; return false }
+
+        // Ping goes out; the relay never answers.
+        try await sleeper.waitForPending(SwarmaRelayTransport.pingInterval)
+        sleeper.release(SwarmaRelayTransport.pingInterval)
+        _ = try await fake.waitForSentFrame { $0 == .ping }
+        try await sleeper.waitForPending(SwarmaRelayTransport.pongTimeout)
+        sleeper.release(SwarmaRelayTransport.pongTimeout)
+
+        do {
+            _ = try await sendTask.value
+            XCTFail("Expected send to fail with .closed")
+        } catch let failure as SwarmaRelayTransport.Failure {
+            XCTAssertEqual(failure, .closed)
+        }
+
+        // The next call opens a fresh socket.
+        let nextSend = Task { try await transport.send(req) }
+        let deadline = Date().addingTimeInterval(2)
+        while factory.sockets.count < 2 && Date() < deadline { try await Task.sleep(nanoseconds: 10_000_000) }
+        XCTAssertEqual(factory.sockets.count, 2)
+        let second = factory.sockets[1]
+        let reqFrame = try await second.waitForSentFrame { if case .req = $0 { return true }; return false }
+        guard case .req(let sid, _, _, _, _) = reqFrame else { return XCTFail("Expected req frame") }
+        try second.simulateFrame(.end(sid: sid, error: nil))
+        let (_, response) = try await nextSend.value
+        XCTAssertEqual(response.statusCode, 200)
+    }
+
+    func testPongWithinDeadlineKeepsSocket() async throws {
+        let sleeper = ManualSleeper()
+        let factory = FakeSocketFactory()
+        let transport = SwarmaRelayTransport(
+            hostID: "host123",
+            autoReconnect: false,
+            sleep: sleeper.function,
+            webSocketFactory: factory.function
+        )
+        try await transport.connect()
+        let fake = try XCTUnwrap(factory.sockets.first)
+
+        try await sleeper.waitForPending(SwarmaRelayTransport.pingInterval)
+        sleeper.release(SwarmaRelayTransport.pingInterval)
+        _ = try await fake.waitForSentFrame { $0 == .ping }
+        try fake.simulateFrame(.pong)
+        try await sleeper.waitForPending(SwarmaRelayTransport.pongTimeout)
+        // Let the receive task record the pong before the deadline fires.
+        try await Task.sleep(nanoseconds: 50_000_000)
+        sleeper.release(SwarmaRelayTransport.pongTimeout)
+
+        // The loop goes back to waiting for the next ping instead of dropping.
+        try await sleeper.waitForPending(SwarmaRelayTransport.pingInterval)
+        let req = URLRequest(url: URL(string: "https://relay.swarmaa.com/api/tools/run")!)
+        let sendTask = Task { try await transport.send(req) }
+        let reqFrame = try await fake.waitForSentFrame { if case .req = $0 { return true }; return false }
+        guard case .req(let sid, _, _, _, _) = reqFrame else { return XCTFail("Expected req frame") }
+        try fake.simulateFrame(.end(sid: sid, error: nil))
+        _ = try await sendTask.value
+        XCTAssertEqual(factory.sockets.count, 1)
+    }
+
+    // MARK: 14. Stale socket after background suspension is replaced on next use
+
+    func testStaleSocketReplacedOnNextRequest() async throws {
+        let clock = RelayTestClock()
+        let factory = FakeSocketFactory()
+        let transport = SwarmaRelayTransport(
+            hostID: "host123",
+            autoReconnect: false,
+            sleep: ManualSleeper().function,
+            webSocketFactory: factory.function,
+            now: { clock.now }
+        )
+        try await transport.connect()
+        XCTAssertEqual(factory.sockets.count, 1)
+
+        clock.advance(SwarmaRelayTransport.staleAfter + 1)
+        try await transport.connect()
+        XCTAssertEqual(factory.sockets.count, 2)
+        // The stale socket was closed, not leaked.
+        do { try await factory.sockets[0].send("x"); XCTFail("Expected stale socket closed") }
+        catch let failure as SwarmaRelayTransport.Failure { XCTAssertEqual(failure, .closed) }
+    }
+
+    // MARK: 15. Reconnect after a manual connect keeps the caller's socket
+
+    func testScheduledReconnectDoesNotReplaceCallerSocket() async throws {
+        let sleeper = ManualSleeper()
+        let factory = FakeSocketFactory()
+        let transport = SwarmaRelayTransport(
+            hostID: "host123",
+            autoReconnect: true,
+            sleep: sleeper.function,
+            webSocketFactory: factory.function
+        )
+        try await transport.connect()
+        let first = try XCTUnwrap(factory.sockets.first)
+
+        // Drop schedules a reconnect after the 1 s backoff, which stays parked.
+        first.simulateDrop()
+        try await sleeper.waitForPending(1.0)
+
+        // A caller connects first and starts a request on its socket.
+        let req = URLRequest(url: URL(string: "https://relay.swarmaa.com/api/tools/run")!)
+        let sendTask = Task { try await transport.send(req) }
+        let deadline = Date().addingTimeInterval(2)
+        while factory.sockets.count < 2 && Date() < deadline { try await Task.sleep(nanoseconds: 10_000_000) }
+        let callerSocket = factory.sockets[1]
+        let reqFrame = try await callerSocket.waitForSentFrame { if case .req = $0 { return true }; return false }
+        guard case .req(let sid, _, _, _, _) = reqFrame else { return XCTFail("Expected req frame") }
+
+        // The reconnect fires: it must find the socket up and open nothing.
+        sleeper.release(1.0)
+        try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(factory.sockets.count, 2, "reconnect opened a second socket over the caller's")
+
+        // The in-flight request still completes on the caller's socket.
+        try callerSocket.simulateFrame(.res(sid: sid, status: 201, headers: [:]))
+        try callerSocket.simulateFrame(.chunk(sid: sid, data: "ok"))
+        try callerSocket.simulateFrame(.end(sid: sid, error: nil))
+        let (data, response) = try await sendTask.value
+        XCTAssertEqual(response.statusCode, 201)
+        XCTAssertEqual(String(decoding: data, as: UTF8.self), "ok")
+        await transport.disconnect()
+    }
+}
+
+final class RelayTestClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var current = Date(timeIntervalSince1970: 1_800_000_000)
+    var now: Date { lock.lock(); defer { lock.unlock() }; return current }
+    func advance(_ seconds: TimeInterval) { lock.lock(); current += seconds; lock.unlock() }
 }

@@ -12,6 +12,7 @@ import { integer, object, string, uuid } from '../validation.js';
 import { audit, event, newId, noExtraKeys, teamsLock } from './shared.js';
 import { redactSecrets } from '../safety/redact.js';
 import { assignThreadSeq, clipUtf8, enqueueAgentTurn, type AgentRow } from './teams.js';
+import { memoObjective } from './voice.js';
 
 const CHUNK = 131072, MAX = 20 * 1024 * 1024;
 const digest = (v: Buffer | string) => createHash('sha256').update(v).digest('hex');
@@ -88,8 +89,10 @@ export class WatchServices {
       const scope = await authorize(db,p,thread,true);
       let row = (await db.query('SELECT * FROM watch_memos WHERE tenant_id=$1 AND thread_id=$2 AND memo_id=$3 FOR UPDATE',[p.tenantId,thread,memo])).rows[0];
       if (!row && parsed) {
-        const count = Number((await db.query('SELECT count(*) AS n FROM watch_memos WHERE tenant_id=$1 AND thread_id=$2',[p.tenantId,thread])).rows[0].n);
-        requireCondition(count < 20,409,'memo_limit','Thread memo limit reached.');
+        // Bounds in-flight uploads only. Stored memos live as files on the Mac (their chunks are dropped below),
+        // so a ring or Watch used every day never fills the thread.
+        const count = Number((await db.query("SELECT count(*) AS n FROM watch_memos WHERE tenant_id=$1 AND thread_id=$2 AND status<>'stored'",[p.tenantId,thread])).rows[0].n);
+        requireCondition(count < 20,409,'memo_limit','Too many memo uploads in progress for this thread.');
         row = (await db.query('INSERT INTO watch_memos (tenant_id,scope,thread_id,memo_id,sha256,byte_length,captured_at) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *',[p.tenantId,scope,thread,memo,parsed.sha,parsed.length,parsed.captured])).rows[0];
       }
       requireCondition(row,404,'memo_not_found','Memo not found.');
@@ -103,22 +106,28 @@ export class WatchServices {
         const old = (await db.query('SELECT data FROM watch_memo_chunks WHERE tenant_id=$1 AND thread_id=$2 AND memo_id=$3 AND chunk_index=$4',[p.tenantId,thread,memo,parsed.index])).rows[0];
         requireCondition(!old || old.data.equals(parsed.data),409,'memo_conflict','Memo chunk conflicts.');
         if (parsed.transcript && !row.transcript) { await db.query('UPDATE watch_memos SET transcript=$4 WHERE tenant_id=$1 AND thread_id=$2 AND memo_id=$3',[p.tenantId,thread,memo,parsed.transcript]); row.transcript = parsed.transcript; }
-        if (!old) await db.query('INSERT INTO watch_memo_chunks VALUES ($1,$2,$3,$4,$5)',[p.tenantId,thread,memo,parsed.index,parsed.data]);
+        if (!old && row.status !== 'stored') await db.query('INSERT INTO watch_memo_chunks VALUES ($1,$2,$3,$4,$5)',[p.tenantId,thread,memo,parsed.index,parsed.data]);
       }
       if (action === 'status' && row.status === 'stored' && !await storedFileValid(filename,row.byte_length,row.sha256)) {
         await db.query("UPDATE watch_memos SET status='uploading' WHERE tenant_id=$1 AND thread_id=$2 AND memo_id=$3",[p.tenantId,thread,memo]);
         row.status = 'uploading';
         return response(row,[]);
       }
-      const chunks = (await db.query('SELECT chunk_index,data FROM watch_memo_chunks WHERE tenant_id=$1 AND thread_id=$2 AND memo_id=$3 ORDER BY chunk_index',[p.tenantId,thread,memo])).rows;
-      if (parsed && chunks.length === Math.ceil(row.byte_length/CHUNK)) {
+      // No chunk data until the last chunk is in: a put only counts, status lists indices (was O(n²) bytes per upload).
+      const total = Math.ceil(row.byte_length/CHUNK);
+      const indices:number[] = parsed ? [] : (await db.query('SELECT chunk_index FROM watch_memo_chunks WHERE tenant_id=$1 AND thread_id=$2 AND memo_id=$3 ORDER BY chunk_index',[p.tenantId,thread,memo])).rows.map(c => c.chunk_index);
+      const received = parsed ? Number((await db.query('SELECT count(*)::int AS n FROM watch_memo_chunks WHERE tenant_id=$1 AND thread_id=$2 AND memo_id=$3',[p.tenantId,thread,memo])).rows[0].n) : indices.length;
+      if (parsed && received === total) {
+        const chunks = (await db.query('SELECT data FROM watch_memo_chunks WHERE tenant_id=$1 AND thread_id=$2 AND memo_id=$3 ORDER BY chunk_index',[p.tenantId,thread,memo])).rows;
         const data = Buffer.concat(chunks.map(c => c.data));
         requireCondition(data.length === row.byte_length && digest(data) === row.sha256 && data.length >= 12 && data.toString('ascii',4,8) === 'ftyp' && /^(M4A |M4B |isom|mp4[12])$/.test(data.toString('ascii',8,12)),400,'memo_invalid','Memo failed integrity or M4A validation.');
         await durableSave(filename,data);
         await durableSave(filename.replace(/\.m4a$/,'.txt'),Buffer.from(row.transcript,'utf8')).catch(() => {}); // best effort; the DB keeps the transcript
         await db.query("UPDATE watch_memos SET status='stored' WHERE tenant_id=$1 AND thread_id=$2 AND memo_id=$3",[p.tenantId,thread,memo]); row.status = 'stored';
+        // The durable file is the copy now; a later invalid file resets the row to 'uploading' and the client re-sends.
+        await db.query('DELETE FROM watch_memo_chunks WHERE tenant_id=$1 AND thread_id=$2 AND memo_id=$3',[p.tenantId,thread,memo]);
       }
-      return response(row,action === 'status' ? (row.status === 'uploading' && chunks.length === Math.ceil(row.byte_length / CHUNK) ? [] : chunks.map(c => c.chunk_index)) : undefined);
+      return response(row,action === 'status' ? (row.status === 'uploading' && received === total ? [] : indices) : undefined);
     });
     if ((result as any).status === 'stored' && action !== 'delete') await this.announce(p,thread,memo);
     return result;
@@ -132,8 +141,15 @@ export class WatchServices {
       const row = (await db.query('UPDATE watch_memos SET announced=true WHERE tenant_id=$1 AND thread_id=$2 AND memo_id=$3 AND status=\'stored\' AND NOT announced RETURNING transcript,byte_length,captured_at',[p.tenantId,threadId,memo])).rows[0];
       if (!row) return;
       const transcript = String(row.transcript).trim();
-      const body = clipUtf8(redactSecrets(`🎙 Voice memo\n\n${transcript || '(no transcript)'}`),16384);
       const ref = {voice_memo:{memo_id:memo,byte_length:row.byte_length,captured_at:new Date(row.captured_at).toISOString()}};
+      // voice_intent already posted the memo and acted on it: attach the audio to that message and queue nothing.
+      const intent = (await db.query('SELECT message_id FROM voice_intents WHERE tenant_id=$1 AND thread_id=$2 AND memo_id=$3',[p.tenantId,threadId,memo])).rows[0];
+      if (intent) {
+        const updated = (await db.query(`UPDATE messages SET ref=COALESCE(ref,'{}'::jsonb) || $3::jsonb WHERE id=$1 AND tenant_id=$2 RETURNING seq`,[intent.message_id,p.tenantId,JSON.stringify(ref)])).rows[0];
+        if (updated) await event(db,p,thread.scope,'message.updated',intent.message_id,{thread_id:threadId,message_id:intent.message_id,seq:Number(updated.seq),kind:'text'});
+        return;
+      }
+      const body = clipUtf8(redactSecrets(`🎙 Voice memo\n\n${transcript || '(no transcript)'}`),16384);
       const seq = await assignThreadSeq(db,p.tenantId,threadId), msgId = newId(), author = {kind:'human',id:p.id};
       await db.query(`INSERT INTO messages (id,tenant_id,scope,thread_id,seq,author,kind,body,ref,idempotency_key) VALUES ($1,$2,$3,$4,$5,$6::jsonb,'text',$7,$8::jsonb,$9)`,[msgId,p.tenantId,thread.scope,threadId,seq,JSON.stringify(author),body,JSON.stringify(ref),`voice-memo:${memo}`]);
       await db.query('UPDATE threads SET updated_at=clock_timestamp() WHERE id=$1',[threadId]);
@@ -141,11 +157,10 @@ export class WatchServices {
       await event(db,p,thread.scope,'message.created',msgId,{thread_id:threadId,message_id:msgId,seq:Number(seq),kind:'text',author});
       const bot = thread.kind === 'bot' ? (await db.query('SELECT id,routing,rules,lead_agent_id FROM bots WHERE thread_id=$1 AND tenant_id=$2 AND NOT archived',[threadId,p.tenantId])).rows[0] : undefined;
       const agent = bot && (await db.query<AgentRow>('SELECT * FROM agents WHERE id=$1 FOR UPDATE',[bot.lead_agent_id])).rows[0];
-      if (bot && agent) await enqueueAgentTurn(db,p,{thread,agent,bot,seq,initiatorKind:'person',objective:MEMO_OBJECTIVE});
+      if (bot && agent) await enqueueAgentTurn(db,p,{thread,agent,bot,seq,initiatorKind:'person',objective:memoObjective(transcript ? 'freeform' : 'no_transcript')});
     });
   }
 }
-const MEMO_OBJECTIVE = 'The user just sent a voice memo (see the latest "Voice memo" message). If it directly asks for work in a project and you can send work with project_dispatch, send it now and say so. Otherwise summarize it, list the action items, then ask the user with a structured question (question_ask) with options "Do it now", "Remind me later", "Done" so it shows as Needs you.';
 
 function transactionConfig(p:Principal): {origin:string,user:string,cookieFile:string} {
   const allowed = (process.env.SWARMAA_RETIREODDS_PRINCIPALS || '').split(',').map(x => x.trim().toLowerCase()).filter(Boolean);

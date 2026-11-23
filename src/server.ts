@@ -53,6 +53,18 @@ const leaseTimer = setInterval(() => {
 },30000);
 leaseTimer.unref();
 
+// Local actions left queued or running by a crash after commit: rerun on start and every 15 s (docs/RING-AGENT.md §5.3).
+let localSweep:Promise<void>|undefined;
+const sweepLocal = () => {
+  if (!localSweep) localSweep = core.sweepLocalActions().then(() => undefined,() => {
+    process.stderr.write('Local action sweep failed. Check database health.\n');
+  }).finally(() => { localSweep = undefined; });
+};
+sweepLocal();
+core.warmLocalActions(); // pre-spawn the osascript helper (latency review F5/F6)
+const localTimer = setInterval(sweepLocal,15000);
+localTimer.unref();
+
 let sourceSweep: Promise<void> | undefined;
 let sourceTimer: NodeJS.Timeout | undefined;
 if (config.sourcesEnabled) {
@@ -83,6 +95,7 @@ async function shutdown(code: number): Promise<void> {
   closing = true;
   clearInterval(scheduleTimer);
   clearInterval(leaseTimer);
+  clearInterval(localTimer);
   if (sourceTimer) clearInterval(sourceTimer);
   if (retentionTimer) clearInterval(retentionTimer);
   const deadline = setTimeout(() => { server.closeAllConnections(); process.exit(1); }, 20000);
@@ -94,6 +107,7 @@ async function shutdown(code: number): Promise<void> {
     push.stop(),
     scheduleSweep ?? Promise.resolve(),
     leaseSweep ?? Promise.resolve(),
+    localSweep ?? Promise.resolve(),
     sourceSweep ?? Promise.resolve(),
     retentionSweep ?? Promise.resolve(),
   ]);

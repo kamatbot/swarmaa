@@ -252,12 +252,28 @@ public final class SwarmaRelayTransport: @unchecked Sendable {
     private let webSocketFactory: WebSocketFactory
     private let sleep: SleepFunction
     private let autoReconnect: Bool
+    private let now: @Sendable () -> Date
+
+    /// Seconds between client pings (the relay answers each with `pong`).
+    static let pingInterval: TimeInterval = 25
+    /// A socket that receives nothing within this long after a ping is half-open and is dropped.
+    static let pongTimeout: TimeInterval = 5
+    /// A socket silent for longer than this (ping cadence plus margin) was suspended in the background:
+    /// the next request replaces it instead of writing into a dead socket.
+    static let staleAfter: TimeInterval = 45
 
     private let lock = NSLock()
     private var socket: (any SwarmaWebSocket)?
     private var isConnected: Bool = false
     private var isClosedManually: Bool = false
     private var currentBackoff: TimeInterval = 1.0
+    /// Incremented per opened socket; drops from an older socket's tasks are ignored.
+    private var socketGeneration: UInt64 = 0
+    /// Frames received on the current socket, and when the last one arrived.
+    private var inboundCount: UInt64 = 0
+    private var lastInbound: Date = .distantPast
+    /// Identifies the pending reconnect; a newer schedule or an intentional close replaces it.
+    private var reconnectToken: UUID?
 
     private var currentPresence: Presence = Presence(online: false)
     private var presenceContinuations: [UUID: AsyncStream<Presence>.Continuation] = [:]
@@ -313,12 +329,14 @@ public final class SwarmaRelayTransport: @unchecked Sendable {
         autoReconnect: Bool = true,
         session: URLSession = .shared,
         sleep: SleepFunction? = nil,
-        webSocketFactory: WebSocketFactory? = nil
+        webSocketFactory: WebSocketFactory? = nil,
+        now: (@Sendable () -> Date)? = nil
     ) {
         self.relay = relay
         self.hostID = hostID
         self.version = version
         self.autoReconnect = autoReconnect
+        self.now = now ?? { Date() }
         self.url = Self.makeRelayURL(relay: relay, hostID: hostID) ?? URL(string: "wss://\(relay)/h/\(hostID)")!
         self.sleep = sleep ?? { seconds in
             try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
@@ -421,51 +439,68 @@ public final class SwarmaRelayTransport: @unchecked Sendable {
 
     private enum ConnectionAction {
         case alreadyConnected
+        case stale(UInt64)
         case awaitExisting(Task<Void, Error>)
         case awaitNew(Task<Void, Error>)
     }
 
+    /// Returns once a socket is open, coalescing concurrent callers (and the reconnect task)
+    /// onto one in-flight connect. A socket that has been silent past `staleAfter` (the app was
+    /// suspended, so pings stopped) is dropped and replaced rather than trusted.
     private func ensureConnected() async throws {
-        let action = withLock { () -> ConnectionAction in
-            if isConnected && socket != nil {
-                return .alreadyConnected
+        while true {
+            let action = withLock { () -> ConnectionAction in
+                if isConnected && socket != nil {
+                    if now().timeIntervalSince(lastInbound) > Self.staleAfter {
+                        return .stale(socketGeneration)
+                    }
+                    return .alreadyConnected
+                }
+                if let existing = connectionTask {
+                    return .awaitExisting(existing)
+                }
+                let task = Task<Void, Error> {
+                    try await self.connectSocket()
+                }
+                connectionTask = task
+                return .awaitNew(task)
             }
-            if let existing = connectionTask {
-                return .awaitExisting(existing)
-            }
-            let task = Task<Void, Error> {
-                try await self.connectSocket()
-            }
-            connectionTask = task
-            return .awaitNew(task)
-        }
 
-        switch action {
-        case .alreadyConnected:
-            return
-        case .awaitExisting(let task):
-            try await task.value
-        case .awaitNew(let task):
-            do {
+            switch action {
+            case .alreadyConnected:
+                return
+            case .stale(let generation):
+                await closeSocket(intentional: false, generation: generation)
+                continue
+            case .awaitExisting(let task):
                 try await task.value
-                withLock { connectionTask = nil }
-            } catch {
-                withLock { connectionTask = nil }
-                throw error
+                return
+            case .awaitNew(let task):
+                do {
+                    try await task.value
+                    withLock { if connectionTask == task { connectionTask = nil } }
+                } catch {
+                    withLock { if connectionTask == task { connectionTask = nil } }
+                    throw error
+                }
+                return
             }
         }
     }
 
     private func connectSocket() async throws {
         let ws = webSocketFactory(url)
-        withLock {
-            self.socket = ws
-            self.isConnected = true
-            self.isClosedManually = false
+        let generation = withLock { () -> UInt64 in
+            socketGeneration &+= 1
+            socket = ws
+            isConnected = true
+            isClosedManually = false
+            lastInbound = now()
+            return socketGeneration
         }
 
-        startReceiveTask(for: ws)
-        startPingTask()
+        startReceiveTask(for: ws, generation: generation)
+        startPingTask(for: ws, generation: generation)
 
         // Send client hello
         let hello = RelayFrame.hello(role: "client", version: version)
@@ -473,48 +508,80 @@ public final class SwarmaRelayTransport: @unchecked Sendable {
         do {
             try await ws.send(json)
         } catch {
-            await handleSocketDrop(error: error)
+            await closeSocket(intentional: false, generation: generation)
             throw error
         }
     }
 
-    private func startReceiveTask(for ws: any SwarmaWebSocket) {
-        receiveTask?.cancel()
-        receiveTask = Task { [weak self] in
+    private func startReceiveTask(for ws: any SwarmaWebSocket, generation: UInt64) {
+        let task = Task { [weak self] in
             while !Task.isCancelled {
                 do {
                     let text = try await ws.receive()
                     guard let self else { return }
+                    self.noteInbound(generation: generation)
                     await self.handleIncomingMessage(text)
                 } catch {
                     guard let self else { return }
-                    await self.handleSocketDrop(error: error)
+                    await self.closeSocket(intentional: false, generation: generation)
                     break
                 }
             }
+        }
+        let old = withLock { () -> Task<Void, Never>? in
+            let old = receiveTask
+            receiveTask = task
+            return old
+        }
+        old?.cancel()
+    }
+
+    private func noteInbound(generation: UInt64) {
+        withLock {
+            guard socketGeneration == generation else { return }
+            inboundCount &+= 1
+            lastInbound = now()
         }
     }
 
-    private func startPingTask() {
-        pingTask?.cancel()
-        pingTask = Task { [weak self] in
+    /// Pings every `pingInterval`; a socket that receives nothing (pong or any other frame)
+    /// within `pongTimeout` of a ping is half-open, so it is dropped: pending requests fail
+    /// `.closed` at once and the next call reconnects.
+    private func startPingTask(for ws: any SwarmaWebSocket, generation: UInt64) {
+        let sleep = self.sleep
+        let task = Task { [weak self] in
             while !Task.isCancelled {
+                await sleep(Self.pingInterval)
+                if Task.isCancelled { return }
                 guard let self else { return }
-                await self.sleep(25)
-                if Task.isCancelled { break }
-                let active = self.withLock { self.isConnected && self.socket != nil }
-                guard active else { break }
+                let seen = self.withLock { () -> UInt64? in
+                    guard self.socketGeneration == generation, self.isConnected, self.socket != nil else { return nil }
+                    return self.inboundCount
+                }
+                guard let seen else { return }
 
                 do {
-                    let ping = RelayFrame.ping
-                    let json = try ping.encode()
-                    try await self.sendRaw(json)
+                    try await ws.send(RelayFrame.ping.encode())
                 } catch {
-                    await self.handleSocketDrop(error: error)
-                    break
+                    await self.closeSocket(intentional: false, generation: generation)
+                    return
+                }
+
+                await sleep(Self.pongTimeout)
+                if Task.isCancelled { return }
+                let answered = self.withLock { self.inboundCount != seen }
+                if !answered {
+                    await self.closeSocket(intentional: false, generation: generation)
+                    return
                 }
             }
         }
+        let old = withLock { () -> Task<Void, Never>? in
+            let old = pingTask
+            pingTask = task
+            return old
+        }
+        old?.cancel()
     }
 
     private func sendRaw(_ text: String) async throws {
@@ -632,14 +699,28 @@ public final class SwarmaRelayTransport: @unchecked Sendable {
         }
     }
 
-    private func handleSocketDrop(error: Error) async {
-        await closeSocket(intentional: false)
+    private struct DropSnapshot {
+        let socket: (any SwarmaWebSocket)?
+        let sends: [String: SendState]
+        let streams: [String: AsyncThrowingStream<Data, Error>.Continuation]
+        let liveStreams: [String: LiveStreamState]
+        let pairs: [String: CheckedContinuation<String, Error>]
+        let reconnectDelay: TimeInterval?
     }
 
-    private func closeSocket(intentional: Bool) async {
-        let (ws, sends, streams, liveStreams, pairs, shouldReconnect, delay) = withLock { () -> ((any SwarmaWebSocket)?, [String: SendState], [String: AsyncThrowingStream<Data, Error>.Continuation], [String: LiveStreamState], [String: CheckedContinuation<String, Error>], Bool, TimeInterval) in
+    /// Closes the current socket and fails everything pending on it with `.closed`.
+    /// With `generation`, only that socket is closed: a late drop from a replaced socket's
+    /// receive or ping task is ignored instead of tearing down the socket that replaced it.
+    private func closeSocket(intentional: Bool, generation: UInt64? = nil) async {
+        let snapshot = withLock { () -> DropSnapshot? in
+            if let generation, generation != socketGeneration || socket == nil {
+                return nil
+            }
             if intentional {
                 isClosedManually = true
+                reconnectTask?.cancel()
+                reconnectTask = nil
+                reconnectToken = nil
             }
             let ws = self.socket
             self.socket = nil
@@ -660,52 +741,82 @@ public final class SwarmaRelayTransport: @unchecked Sendable {
             let pairs = inFlightPair
             inFlightPair.removeAll()
 
-            let shouldReconnect = !isClosedManually && autoReconnect
-            let delay = currentBackoff
-            if shouldReconnect {
+            var delay: TimeInterval? = nil
+            if !isClosedManually && autoReconnect {
+                delay = currentBackoff
                 currentBackoff = min(currentBackoff * 2, 30.0)
             }
-            return (ws, sends, streams, liveStreams, pairs, shouldReconnect, delay)
+            return DropSnapshot(socket: ws, sends: sends, streams: streams, liveStreams: liveStreams,
+                                pairs: pairs, reconnectDelay: delay)
         }
+        guard let snapshot else { return }
 
-        await ws?.close()
+        await snapshot.socket?.close()
 
-        for (_, send) in sends {
+        for (_, send) in snapshot.sends {
             send.continuation.resume(throwing: Failure.closed)
         }
-        for (_, stream) in streams {
+        for (_, stream) in snapshot.streams {
             stream.finish(throwing: Failure.closed)
         }
-        for (_, live) in liveStreams {
+        for (_, live) in snapshot.liveStreams {
             live.headersContinuation?.resume(throwing: Failure.closed)
             live.streamContinuation.finish(throwing: Failure.closed)
         }
-        for (_, pair) in pairs {
+        for (_, pair) in snapshot.pairs {
             pair.resume(throwing: Failure.closed)
         }
 
         updatePresence(Presence(online: false, lastSeen: presence.lastSeen, version: presence.version))
 
-        if shouldReconnect {
+        if let delay = snapshot.reconnectDelay {
             scheduleReconnect(after: delay)
         }
     }
 
+    /// Reconnects after `delay` through `ensureConnected`, so a socket a caller opened in the
+    /// meantime is kept (never replaced) and a connect already in flight is joined, not doubled.
     private func scheduleReconnect(after delay: TimeInterval) {
-        reconnectTask?.cancel()
-        reconnectTask = Task { [weak self] in
-            guard let self else { return }
-            await self.sleep(delay)
+        let token = UUID()
+        let old = withLock { () -> Task<Void, Never>? in
+            reconnectToken = token
+            let old = reconnectTask
+            reconnectTask = nil
+            return old
+        }
+        old?.cancel()
+
+        let sleep = self.sleep
+        let task = Task { [weak self] in
+            await sleep(delay)
             if Task.isCancelled { return }
-            let closed = self.withLock { self.isClosedManually }
-            if closed { return }
+            guard let self else { return }
+            let current = self.withLock { self.reconnectToken == token && !self.isClosedManually }
+            guard current else { return }
 
             do {
-                try await self.connectSocket()
-                self.withLock { self.currentBackoff = 1.0 }
+                try await self.ensureConnected()
+                self.withLock {
+                    if self.reconnectToken == token {
+                        self.reconnectToken = nil
+                        self.reconnectTask = nil
+                    }
+                    self.currentBackoff = 1.0
+                }
             } catch {
-                await self.handleSocketDrop(error: error)
+                // A connect that failed after opening a socket already scheduled the next try
+                // (new token); only a failure that scheduled nothing retries from here.
+                let next = self.withLock { () -> TimeInterval? in
+                    guard self.reconnectToken == token, !self.isClosedManually, self.autoReconnect else { return nil }
+                    let delay = self.currentBackoff
+                    self.currentBackoff = min(self.currentBackoff * 2, 30.0)
+                    return delay
+                }
+                if let next { self.scheduleReconnect(after: next) }
             }
+        }
+        withLock {
+            if reconnectToken == token { reconnectTask = task } else { task.cancel() }
         }
     }
 

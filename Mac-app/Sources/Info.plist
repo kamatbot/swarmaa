@@ -38,6 +38,8 @@
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>15.0</string>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Swarmaa adds the reminders, timers and calendar events you ask for by voice.</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSExceptionDomains</key>
