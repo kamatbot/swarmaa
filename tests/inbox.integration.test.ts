@@ -93,6 +93,20 @@ describe('durable inbox', {skip:!connectionString,concurrency:false},() => {
     assert.equal((await call(f.b,'inbox_get',{session:'codex:b1'})).items.length,1);
   });
 
+  it('a peer review reaches only the chat that asked for it, with the reviewer\'s verdict and severities',async () => {
+    const f=await fixture();
+    const task=(await call(f.a,'task_submit',{scope:'project:a',kind:'review',objective:'Review this diff',required_capability:'claude.read',
+      idempotency_key:randomUUID(),resource_key:'peer-review:codex:chat-9'})).task;
+    await call(f.a,'task_watch',{task_id:task.id,session:'codex:chat-9'});
+    const c=await claim(f.worker);
+    await finish(f.worker,c,'completed',{provider:'claude',answer:'VERDICT: fix\n- [Small detail] a.ts:2: typo\n- [Important] a.ts:9: off by one'});
+    const rows=(await pool.query('SELECT recipient_session,body FROM inbox WHERE task_id=$1',[task.id])).rows;
+    assert.deepEqual(rows.map(r => r.recipient_session),['codex:chat-9'],'no principal-wide copy for every other chat');
+    assert.match(rows[0].body,/^Peer review of your last turn by Claude Code: 2 things to fix \(1 Important, 1 Small detail\)\.\n- \[Important\] a\.ts:9/);
+    assert.match(rows[0].body,/Change nothing unless they ask you to fix the findings/);
+    assert.equal((await call(f.a,'inbox_get',{session:'codex:other'})).items.length,0);
+  });
+
   it('late and racing watches catch the terminal version, continuation creates a new update',async () => {
     const f=await fixture(),task=await submit(f.a),c=await claim(f.worker);
     await Promise.all([finish(f.worker,c),call(f.b,'task_watch',{task_id:task.id,session:'codex:race'})]);

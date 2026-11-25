@@ -19,4 +19,8 @@ Parse ARGS (the text after the command name):
    - Review/research/read-only wording: `required_capability: auto.read`. Edit/fix/implement wording: `auto.patch` (kind patch). If it is ambiguous whether the user wants read-only or edits, ask first.
    - Use a fresh idempotency key, then print the task id and tell the user to run `/swarm <id>` later.
 
+5. `review on [agent]`, `review off`, `review again`, `review status`, `handoff [edit|read] [instruction]`, `handoff status`: Swarmaa's turn hook answers these before they reach you, without a model call. If you are reading one of them, that hook is not installed or did not run. Tell the user to run `npx tsx scripts/hooks-install.ts` in the Swarmaa folder (Codex: then trust the hooks once with `/hooks`) and do nothing else.
+
+Peer reviews arrive later as Swarmaa updates starting "Peer review of your last turn". Show the review to the user as written and stop. Change code only when the user asks you to fix the findings, and then fix only those.
+
 Keep output terse. If a tool is missing or errors, say which and stop.

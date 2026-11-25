@@ -262,6 +262,7 @@ export async function removeJournalHooks(harness: Harness, opts: { root: string;
 // ---- Inbox hooks, independent of optional chat journaling ----
 const INBOX_MARKER = 'clients/hooks/swarmaa-inbox.mjs';
 const MEMORY_MARKER = 'clients/hooks/swarmaa-memory.mjs';
+const TURN_MARKER = 'clients/hooks/swarmaa-turn.mjs';
 /** A Homebrew Cellar path dies on every `brew upgrade node`; use the stable bin/opt symlink that resolves to the same binary. */
 export function stableNode(exec = process.execPath): string {
   if (!exec.includes('/Cellar/')) return exec;
@@ -308,7 +309,7 @@ async function inboxHooks(harness: Harness, install: boolean, o: Opts): Promise<
   const current = await readJsonObject(path);
   if ('skipped' in current) return {harness,changed:[],skipped:current.skipped};
   const existingHooks = current.data.hooks;
-  if (existingHooks !== undefined && (!isObj(existingHooks) || events.some(([ev]) => existingHooks[ev] !== undefined && !Array.isArray(existingHooks[ev])))) {
+  if (existingHooks !== undefined && (!isObj(existingHooks) || [...events.map(([ev]) => ev),'StopFailure'].some(ev => existingHooks[ev] !== undefined && !Array.isArray(existingHooks[ev])))) {
     return {harness,changed:[],skipped:`${path}: invalid hook groups; left untouched`};
   }
   for (const [event,matcher] of events) {
@@ -321,6 +322,17 @@ async function inboxHooks(harness: Harness, install: boolean, o: Opts): Promise<
   const mem = await settingsHooks(harness,path,['SessionStart'],{type:'command',command:memCmd('SessionStart'),timeout:5},install,o,false,c => typeof c === 'string' && c.includes(MEMORY_MARKER));
   if (mem.skipped) return {...mem,changed:[...changed]};
   mem.changed.forEach(p => changed.add(p));
+  // Per-turn hooks: /swarm review (a second agent reviews each turn's diff) and /swarm handoff (continue with another agent when out of usage).
+  // Inert until the user types one of those commands; StopFailure (Claude Code only) just notes a usage-limit error for the next prompt.
+  const turnCmd = (event: string) => `${shellQuote(o.node ?? stableNode())} ${shellQuote(join(o.root,TURN_MARKER))} ${harness} ${event}`;
+  const ownsTurn = (c: unknown) => typeof c === 'string' && c.includes(TURN_MARKER);
+  const turnEvents: [string, number, string?][] = [['UserPromptSubmit',10],['Stop',10]];
+  if (harness==='claude') turnEvents.push(['StopFailure',5,'rate_limit|billing_error']);
+  for (const [event,timeout,matcher] of turnEvents) {
+    const r = await settingsHooks(harness,path,[event],{type:'command',command:turnCmd(event),timeout},install,o,false,ownsTurn,matcher);
+    if (r.skipped) return {...r,changed:[...changed]};
+    r.changed.forEach(p => changed.add(p));
+  }
   if (install && harness==='codex') o.log('Codex: review and trust the Swarmaa inbox hooks once with /hooks.');
   return {harness,changed:[...changed]};
 }
@@ -331,10 +343,10 @@ export const removeInboxHooks = (harness: Harness, opts: Opts) => inboxHooks(har
 // Claude Code: ~/.claude/commands/swarm.md. Codex 0.160 and Antigravity use skills (custom prompts / workflows are deprecated):
 // ~/.codex/skills/swarm/SKILL.md (`$swarm`), ~/.gemini/config/skills/swarm/SKILL.md (Antigravity global config, `/swarm`).
 const COMMAND_MARKER = '<!-- swarma:swarm-command -->';
-const DESC = 'Show Swarmaa swarm runs (status, details, continue, run) via the swarma MCP tools';
+const DESC = 'Show Swarmaa swarm runs (status, details, continue, run), turn on peer review, or hand off to another agent';
 const skillHead = `---\nname: swarm\ndescription: ${DESC}. Use when the user types /swarm or $swarm or asks to see swarm runs.\n---\n`;
 const commandFiles = (home: string, body: string): [Harness, string, string][] => [
-  ['claude', join(home, '.claude', 'commands', 'swarm.md'), `---\ndescription: ${DESC}\nargument-hint: [task id | continue <id> <instruction> | run <instruction>]\n---\n${COMMAND_MARKER}\nARGS: $ARGUMENTS\n\n${body}`],
+  ['claude', join(home, '.claude', 'commands', 'swarm.md'), `---\ndescription: ${DESC}\nargument-hint: [task id | continue <id> <instruction> | run <instruction> | review on|off|again | handoff [edit|read]]\n---\n${COMMAND_MARKER}\nARGS: $ARGUMENTS\n\n${body}`],
   ['codex', join(home, '.codex', 'skills', 'swarm', 'SKILL.md'), `${skillHead}${COMMAND_MARKER}\nARGS: the text the user typed after $swarm (may be empty).\n\n${body}`],
   ['agy', join(home, '.gemini', 'config', 'skills', 'swarm', 'SKILL.md'), `${skillHead}${COMMAND_MARKER}\nARGS: the text the user typed after /swarm (may be empty).\n\n${body}`],
 ];

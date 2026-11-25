@@ -113,6 +113,37 @@ Installed by `npx tsx scripts/hooks-install.ts` (`--dry-run`, `--remove`): `~/.c
 `~/.codex/skills/swarm/SKILL.md` (type `$swarm`), `~/.gemini/config/skills/swarm/SKILL.md`. Files without the
 `swarma:swarm-command` marker are never overwritten. Source: `clients/commands/swarm.md`.
 
+### Peer review and handoff (Claude Code and Codex)
+
+Two commands work inside the harness you already use. Swarmaa's turn hook (`clients/hooks/swarmaa-turn.mjs`, installed with the
+inbox hooks) answers them before the prompt reaches the model, so they cost no tokens and work even when the agent is out of usage.
+Codex spells them `$swarm ...`.
+
+| Input | Does |
+|---|---|
+| `/swarm review on [claude\|codex\|agy]` | Turns on peer review for this chat (off by default). After each turn that changed files, another agent (or the one named) reviews just that turn's diff |
+| `/swarm review off` / `status` / `again` | Stops it, shows it, or reviews the last reviewed turn again (for example after `Review did not finish`) |
+| `/swarm handoff [edit\|read] [instruction]` | Hands this conversation and your last message to another agent as a task. `edit` (the default when another worker may edit) works on a local branch; `read` answers only |
+| `/swarm handoff status` | Where the handoff is; when it finished, its answer, branch and the command to keep going in that agent |
+
+**Peer review.** Before each prompt the hook snapshots the working tree into a private git index (your index and files are never touched);
+after the turn it diffs the two snapshots, so only that turn's changes are reviewed, commits included. A turn with no file changes is not
+reviewed, and the same unchanged diff at most twice. The review is a `review` task with `auto.read` and `exclude_providers: [<this agent>]`
+(or `<agent>.read` when you named one), holding your request, your three earlier requests, the agent's answer and the diff (cut short past
+10,000 characters, and the reviewer is told so). The reviewer is asked not to run commands, open files or edit, and to answer with
+`VERDICT: complete | fix | decision`, findings tagged `[Important]`, `[Worth fixing]` or `[Small detail]`, and a `QUESTION` for a decision.
+The result comes back to that chat only, through the inbox, as one of: **Review complete**, **N things to fix**, **Your decision needed**,
+**Review needs a closer look** (the reply was not a verdict) or **Review did not finish**. The agent is told to show it and wait: nothing is
+fixed until you ask (for example "fix the review findings"). Each review uses the reviewer's quota.
+
+**Handoff when out of usage.** When Claude Code ends a turn on a usage limit (`StopFailure` with `rate_limit` or `billing_error`), your next
+prompt shows one line instead of a dead end, for example: "Claude Code is out of usage until 2:20 PM. Keep going with another agent: type
+/swarm handoff and Codex (62% of its 5-hour window left) continues this conversation from your last message. Nothing is sent until you do."
+It is shown once per limit and never hands off on its own. Codex has no usage-limit hook event, so there you type `$swarm handoff` yourself.
+The handoff is an `auto.patch` (or `auto.read`) task excluding this agent, with the conversation (first request plus as many recent turns
+as fit), your last message and `git status`. Its result reaches this chat when it finishes, and `/swarm handoff status` shows it without a
+model call, including `codex resume <id>` or `claude --resume <id>` to keep going in that agent.
+
 **Resume from the CLI.** Claude patch runs and all Codex runs keep a native transcript, so a swarm run can be continued in
 the CLI: the result's `native_session` is `{harness, id, resume}` and the swarm chat ends with `Resume: <command>`
 (`cd <project root> && claude --resume <id>` or `codex resume <id>`). The bridge copies the transcript into
