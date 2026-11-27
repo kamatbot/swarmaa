@@ -331,6 +331,8 @@ final class WelcomeActionsTests: XCTestCase {
         XCTAssertEqual(model.choice, .setUpHere)
         XCTAssertEqual(model.welcomeActions, [.skip])          // no runtime, no service: only Skip
         model.choice = .connectRemote
+        XCTAssertEqual(model.welcomeActions, [.skip])          // empty address: Continue disabled
+        model.remoteAddress = "https://swarmaa.example.com"
         XCTAssertEqual(model.welcomeActions, [.skip, .continue])
         model.remoteAddress = "http://evil.example.com"
         XCTAssertEqual(model.welcomeActions, [.skip])

@@ -94,7 +94,7 @@ export class SwarmService {
       assertKnownScope(p, scope);
       [all, scopes] = [false, [scope]];
     }
-    const [workers, usage, counts, recent, sessions, lessonsPending, policy, inbox] = await Promise.all([
+    const [workers, usage, openCounts, recentCounts, recent, sessions, lessonsPending, policy, inbox] = await Promise.all([
       this.pool.query(`SELECT w.name,w.last_seen_at,coalesce(w.last_seen_at>clock_timestamp()-interval '60 seconds',false) AS live,coalesce(w.worker_slots,1) AS slots,
           (SELECT coalesce(json_agg(json_build_object('task_id',t.id,'scope',t.scope,'kind',t.kind,'objective',left(t.objective,140),'required_capability',t.required_capability,'started_at',coalesce((SELECT r.started_at FROM task_runs r WHERE r.task_id=t.id AND r.generation=t.lease_generation),t.updated_at))),'[]') FROM tasks t
             WHERE t.lease_owner=w.id AND t.status='running' AND ($2::boolean OR t.scope=ANY($3::text[]))) AS running,
@@ -102,12 +102,19 @@ export class SwarmService {
         FROM principals w WHERE w.tenant_id=$1 AND w.role='worker' AND NOT w.disabled AND ($2::boolean OR w.scopes && $3::text[])
         ORDER BY w.name`, [p.tenantId, all, scopes]),
       this.pool.query(`SELECT provider,ok,headroom::float AS headroom,windows,fetched_at FROM provider_usage WHERE tenant_id=$1 ORDER BY headroom DESC,provider`, [p.tenantId]),
-      this.pool.query(`SELECT scope,
-          count(*) FILTER (WHERE status='queued')::int AS queued, count(*) FILTER (WHERE status='running')::int AS running,
-          count(*) FILTER (WHERE status='blocked')::int AS blocked,
-          count(*) FILTER (WHERE status='completed' AND updated_at>now()-interval '24 hours')::int AS completed_24h,
-          count(*) FILTER (WHERE status='failed' AND updated_at>now()-interval '24 hours')::int AS failed_24h
-        FROM tasks WHERE tenant_id=$1 AND ($2::boolean OR scope=ANY($3::text[])) GROUP BY scope ORDER BY scope`, [p.tenantId, all, scopes]),
+      this.pool.query<{ scope: string; queued: number; running: number; blocked: number }>(`SELECT scope,
+          count(*) FILTER (WHERE status='queued')::int AS queued,
+          count(*) FILTER (WHERE status='running')::int AS running,
+          count(*) FILTER (WHERE status='blocked')::int AS blocked
+        FROM tasks
+        WHERE tenant_id=$1 AND status IN ('queued','running','blocked') AND ($2::boolean OR scope=ANY($3::text[]))
+        GROUP BY scope`, [p.tenantId, all, scopes]),
+      this.pool.query<{ scope: string; completed_24h: number; failed_24h: number }>(`SELECT scope,
+          count(*) FILTER (WHERE status='completed')::int AS completed_24h,
+          count(*) FILTER (WHERE status='failed')::int AS failed_24h
+        FROM tasks
+        WHERE tenant_id=$1 AND updated_at>now()-interval '24 hours' AND status IN ('completed','failed') AND ($2::boolean OR scope=ANY($3::text[]))
+        GROUP BY scope`, [p.tenantId, all, scopes]),
       this.pool.query(`SELECT t.id,t.scope,t.kind,t.status,t.version,left(t.objective,140) AS objective,t.required_capability,t.updated_at,w.name AS worker,
           t.result->>'provider' AS provider,t.result->>'branch' AS branch,(CASE WHEN jsonb_typeof(t.result->'changed_files')='number' THEN (t.result->>'changed_files')::int END) AS changed_files,
           t.result->'failure' AS failure,t.result->'served' AS served
@@ -122,7 +129,16 @@ export class SwarmService {
     const live = new Set<string>(workers.rows.filter(w => w.live && w.slots > 0).flatMap(w => w.providers as string[]));
     // List every permitted project, not just those with tasks, so a client can see what it can work in.
     const zero = { queued: 0, running: 0, blocked: 0, completed_24h: 0, failed_24h: 0 };
-    const byScope = new Map<string, Record<string, unknown>>(counts.rows.map(r => [r.scope as string, r]));
+    const byScope = new Map<string, Record<string, unknown>>();
+    for (const r of openCounts.rows) {
+      byScope.set(r.scope, { ...zero, scope: r.scope, queued: r.queued, running: r.running, blocked: r.blocked });
+    }
+    for (const r of recentCounts.rows) {
+      const existing = byScope.get(r.scope) ?? { ...zero, scope: r.scope };
+      existing.completed_24h = r.completed_24h;
+      existing.failed_24h = r.failed_24h;
+      byScope.set(r.scope, existing);
+    }
     if (!all) for (const scope of scopes) if (!byScope.has(scope)) byScope.set(scope, { scope, ...zero });
     return {
       workers: workers.rows.map(w => ({ ...w, free_slots: w.live ? Math.max(0, w.slots - (w.running as unknown[]).length) : 0 })), usage: usageView, routing: routing(usageView, live, policy.policy, policy.is_default), sessions,

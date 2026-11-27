@@ -49,8 +49,9 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
-        // Closing without finishing counts as skipping: the app still starts,
-        // and "Run Setup…" is the way back.
+        // Closing without finishing cancels any in-flight setup/detection process
+        // and counts as skipping: the app still starts, and "Run Setup…" is the way back.
+        model?.cancel()
         if !finished { model?.markComplete() }
         window = nil
         model = nil

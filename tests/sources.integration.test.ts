@@ -87,7 +87,11 @@ describe('sources and github intake integration tests (§8.2)', { skip: !connect
       name,
       role,
       scopes,
-      permissions: role === 'worker' ? [...ROLE_PERMISSIONS[role], 'task:patch'] : [...ROLE_PERMISSIONS[role]]
+      permissions: role === 'worker'
+        ? [...ROLE_PERMISSIONS[role], 'task:patch']
+        : role === 'frontend'
+          ? [...ROLE_PERMISSIONS.frontend, 'agent:read', 'agent:manage', 'thread:read', 'thread:write']
+          : [...ROLE_PERMISSIONS[role]]
     };
     const token = newToken();
     await pool.query(

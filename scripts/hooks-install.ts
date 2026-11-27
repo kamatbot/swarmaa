@@ -1,7 +1,7 @@
 // Installs/removes the chat-journal hook (clients/hooks/swarmaa-journal.mjs) for Claude Code, Codex, Antigravity, Kiro, Windsurf and Qwen Code.
 // Idempotent, never clobbers foreign config, writes nothing when dry. Detection is by the script's path suffix.
 import { copyFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { realpathSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -250,18 +250,47 @@ async function windsurf(install: boolean, o: Opts, home: string): Promise<HookRe
 const impl = { claude, codex, agy, kiro, windsurf, qwen } as const;
 
 /** Installs (idempotently) the hook that records this harness's chats into Swarmaa. */
-export async function installJournalHooks(harness: Harness, opts: { root: string; dry: boolean; log: (line: string) => void; home?: string }): Promise<HookResult> {
+export async function installJournalHooks(harness: Harness, opts: { root: string; dry: boolean; log: (line: string) => void; home?: string; node?: string }): Promise<HookResult> {
   return impl[harness](true, opts, opts.home ?? homedir());
 }
 
 /** Removes the hook installJournalHooks added, leaving every other hook untouched. */
-export async function removeJournalHooks(harness: Harness, opts: { root: string; dry: boolean; log: (line: string) => void; home?: string }): Promise<HookResult> {
+export async function removeJournalHooks(harness: Harness, opts: { root: string; dry: boolean; log: (line: string) => void; home?: string; node?: string }): Promise<HookResult> {
   return impl[harness](false, opts, opts.home ?? homedir());
 }
 
 // ---- Inbox hooks, independent of optional chat journaling ----
 const INBOX_MARKER = 'clients/hooks/swarmaa-inbox.mjs';
 const MEMORY_MARKER = 'clients/hooks/swarmaa-memory.mjs';
+const IDENTITY_FILES: Partial<Record<Harness, string>> = { claude: 'claude.json', codex: 'codex.json', agy: 'antigravity.json' };
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function readPrincipalId(root: string, harness: Harness): string | undefined {
+  const file = IDENTITY_FILES[harness];
+  if (!file) return undefined;
+  try {
+    const id = (JSON.parse(readFileSync(join(root, '.local', file), 'utf8')) as { id?: unknown })?.id;
+    return typeof id === 'string' && UUID_RE.test(id) ? id : undefined;
+  } catch { return undefined; }
+}
+
+/**
+ * Wraps PostToolUse inbox checks in a zero-fork POSIX shell dirty-flag guard:
+ * when ~/.swarmaa/inbox-dirty/.active exists, exits 0 in <1 ms if this principal has no dirty flag
+ * and no pending local acceptance/codex-pending journal. Falls back cleanly to running node otherwise.
+ */
+export function guardedPostToolUseCommand(harness: Harness, root: string, baseCmd: string): string {
+  const pendingCheck = 'p=0; for f in "$HOME/.swarma/inbox"/*/accepted.json "$HOME/.swarma/inbox"/*/pending.json; do [ -e "$f" ] && p=1 && break; done; [ "$p" = 0 ] && exit 0';
+  const principalId = readPrincipalId(root, harness);
+  if (principalId) {
+    return `if [ -f "$HOME/.swarmaa/inbox-dirty/.active" ] && [ ! -f "$HOME/.swarmaa/inbox-dirty/${principalId}.flag" ]; then ${pendingCheck}; fi; exec ${baseCmd}`;
+  }
+  const tokenFile = IDENTITY_FILES[harness];
+  if (!tokenFile) return baseCmd;
+  const tokenPath = shellQuote(join(root, '.local', tokenFile));
+  return `if [ -f "$HOME/.swarmaa/inbox-dirty/.active" ] && [ -r ${tokenPath} ]; then id=''; while IFS= read -r l; do case "$l" in *'"id"'*) id=\${l#*'"id"'}; id=\${id#*'"'}; id=\${id%%'"'*}; break ;; esac; done < ${tokenPath}; if [ -n "$id" ] && [ ! -f "$HOME/.swarmaa/inbox-dirty/$id.flag" ]; then ${pendingCheck}; fi; fi; exec ${baseCmd}`;
+}
+
 /** A Homebrew Cellar path dies on every `brew upgrade node`; use the stable bin/opt symlink that resolves to the same binary. */
 export function stableNode(exec = process.execPath): string {
   if (!exec.includes('/Cellar/')) return exec;
@@ -301,8 +330,8 @@ async function inboxHooks(harness: Harness, install: boolean, o: Opts): Promise<
     return {harness,changed:[path]};
   }
   const path = join(home,harness==='claude' ? '.claude' : '.codex',harness==='claude' ? 'settings.json' : 'hooks.json');
-  const events: [string,string?][] = [['SessionStart'],['UserPromptSubmit'],['PostToolUse'],['Stop']];
-  if (harness==='claude') events.splice(2,1,['PostToolUse','^(?!mcp__swarma__task_submit$).*'],['PostToolUse','^mcp__swarma__task_submit$']);
+  const events: [string,string?,boolean?][] = [['SessionStart'],['UserPromptSubmit'],['PostToolUse',undefined,true],['Stop']];
+  if (harness==='claude') events.splice(2,1,['PostToolUse','^(?!mcp__swarma__task_submit$).*',true],['PostToolUse','^mcp__swarma__task_submit$',false]);
   const changed = new Set<string>();
   // Preflight every affected event before any write, preserving malformed foreign configuration.
   const current = await readJsonObject(path);
@@ -311,9 +340,10 @@ async function inboxHooks(harness: Harness, install: boolean, o: Opts): Promise<
   if (existingHooks !== undefined && (!isObj(existingHooks) || events.some(([ev]) => existingHooks[ev] !== undefined && !Array.isArray(existingHooks[ev])))) {
     return {harness,changed:[],skipped:`${path}: invalid hook groups; left untouched`};
   }
-  for (const [event,matcher] of events) {
+  for (const [event,matcher,guard] of events) {
     const wake = harness==='claude' && event==='Stop';
-    const result = await settingsHooks(harness,path,[event],{type:'command',command:cmd(event),timeout:wake ? 1830 : 5,
+    const commandStr = guard ? guardedPostToolUseCommand(harness, o.root, cmd(event)) : cmd(event);
+    const result = await settingsHooks(harness,path,[event],{type:'command',command:commandStr,timeout:wake ? 1830 : 5,
       ...(wake ? {async:true,asyncRewake:true} : {})},install,o,false,ours,matcher);
     if (result.skipped) return {...result,changed:[...changed]};
     result.changed.forEach(p => changed.add(p));
@@ -341,7 +371,9 @@ const commandFiles = (home: string, body: string): [Harness, string, string][] =
 
 /** Installs (or removes) the /swarm command for Claude Code, Codex and Antigravity. A swarm file without our marker is left alone. */
 export async function installSwarmCommand(install: boolean, opts: { root: string; dry: boolean; log: (line: string) => void; home?: string }): Promise<HookResult[]> {
-  const body = await readFile(join(opts.root, 'clients', 'commands', 'swarm.md'), 'utf8');
+  const ownPath = join(opts.root, 'clients', 'commands', 'swarm.md');
+  const sourcePath = existsSync(ownPath) ? ownPath : join(packageRoot(dirname(fileURLToPath(import.meta.url))), 'clients', 'commands', 'swarm.md');
+  const body = await readFile(sourcePath, 'utf8');
   const out: HookResult[] = [];
   for (const [harness, path, text] of commandFiles(opts.home ?? homedir(), body)) {
     const cur = await readText(path);
@@ -358,8 +390,9 @@ export async function installSwarmCommand(install: boolean, opts: { root: string
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const flags = process.argv.slice(2);
   const root = packageRoot(dirname(fileURLToPath(import.meta.url)));
+  const node = stableNode();
   for (const harness of ['claude','codex','agy'] as Harness[]) {
-    const opts = {root,dry:flags.includes('--dry-run'),log:console.log}; // hook commands use `node` from PATH, like the journal hooks, so they survive Node upgrades
+    const opts = {root,dry:flags.includes('--dry-run'),node,log:console.log};
     // --inbox-only adds or removes just the inbox hooks, leaving journal hooks and Codex notify exactly as they are.
     const only = flags.includes('--inbox-only');
     for (const r of [...(only ? [] : [await impl[harness](!flags.includes('--remove'),opts,homedir())]),await inboxHooks(harness,!flags.includes('--remove'),opts)]) if (r.skipped) console.log(`${r.harness}: ${r.skipped}`);

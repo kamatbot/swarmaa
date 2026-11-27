@@ -27,7 +27,8 @@ final class GeminiAPIActivityMonitor: AgentActivityMonitor {
     /// How recently a source must have been touched to count as live. Generous,
     /// because a model can think for a while between two lines.
     private let staleAfter: TimeInterval
-    private var timer: Timer?
+    private let scanQueue = DispatchQueue(label: "app.swarmaa.mac.gemini-activity", qos: .utility)
+    private var timer: DispatchSourceTimer?
 
     init(geminiRoot: URL = GeminiCLIUsage.sessionsRoot,
          opencodeDatabase: URL = OpenCodeGeminiActivity.database,
@@ -43,31 +44,36 @@ final class GeminiAPIActivityMonitor: AgentActivityMonitor {
 
     func start() {
         stop()
-        poll()
-        let timer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
-            self?.poll()
+        let geminiRoot = geminiRoot
+        let opencodeDatabase = opencodeDatabase
+        let hermesDatabase = hermesDatabase
+        let staleAfter = staleAfter
+        let timer = DispatchSource.makeTimerSource(queue: scanQueue)
+        timer.schedule(deadline: .now(), repeating: interval, leeway: .milliseconds(250))
+        timer.setEventHandler { [weak self] in
+            let found = Self.read(
+                geminiRoot: geminiRoot,
+                opencodeDatabase: opencodeDatabase,
+                hermesDatabase: hermesDatabase,
+                staleAfter: staleAfter
+            )
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let self, self.timer != nil, found != self.sessions else { return }
+                    self.sessions = found
+                }
+            }
         }
-        RunLoop.main.add(timer, forMode: .common)
         self.timer = timer
+        timer.resume()
     }
 
     func stop() {
-        timer?.invalidate()
+        timer?.cancel()
         timer = nil
     }
 
-    private func poll() {
-        let found = Self.read(
-            geminiRoot: geminiRoot,
-            opencodeDatabase: opencodeDatabase,
-            hermesDatabase: hermesDatabase,
-            staleAfter: staleAfter
-        )
-        guard found != sessions else { return }
-        sessions = found
-    }
-
-    static func read(
+    nonisolated static func read(
         geminiRoot: URL,
         opencodeDatabase: URL,
         hermesDatabase: URL,

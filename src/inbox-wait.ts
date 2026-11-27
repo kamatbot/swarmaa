@@ -1,36 +1,53 @@
-import type { Pool, PoolClient, Notification } from 'pg';
+import pg, { type Pool, type Notification } from 'pg';
 import { inboxSession } from './core/inbox.js';
 import { AppError } from './errors.js';
 import type { Principal, ToolBackend } from './types.js';
 
 interface Listener { principal:string; wake:(failed?:boolean)=>void }
-interface Hub { listeners:Set<Listener>; ready:Promise<PoolClient> }
+interface Hub { listeners:Set<Listener>; ready:Promise<pg.Client> }
 const hubs = new WeakMap<Pool,Hub>();
 
 async function subscribe(pool:Pool,listener:Listener):Promise<()=>void> {
   let hub = hubs.get(pool);
   if (!hub) {
     const listeners = new Set<Listener>();
-    const ready = pool.connect().then(async client => {
-      client.on('notification',(n:Notification) => {
-        if (n.channel==='swarmaa_inbox') for (const l of listeners) if (l.principal===n.payload) l.wake();
-      });
-      client.on('error',() => { for (const l of listeners) l.wake(true); });
-      try { await client.query('LISTEN swarmaa_inbox'); return client; }
-      catch (error) { client.release(true); throw error; }
+    const client = new pg.Client({ ...pool.options, connectionTimeoutMillis: 5000 });
+    let closed = false;
+    const evict = (failed: boolean) => {
+      if (closed) return;
+      closed = true;
+      if (hubs.get(pool) === hub) hubs.delete(pool);
+      void client.end().catch(() => {});
+      if (failed) for (const l of listeners) l.wake(true);
+    };
+    client.on('notification',(n:Notification) => {
+      if (n.channel==='swarmaa_inbox') for (const l of listeners) if (l.principal===n.payload) l.wake();
     });
+    client.on('error',() => evict(true));
+    client.on('end',() => evict(true));
+    const ready = (async () => {
+      try {
+        await client.connect();
+        await client.query('LISTEN swarmaa_inbox');
+        return client;
+      } catch (error) {
+        evict(false);
+        throw error;
+      }
+    })();
     hub = {listeners,ready};
     hubs.set(pool,hub);
   }
   hub.listeners.add(listener);
+  const currentHub = hub;
   const release = () => {
-    hub.listeners.delete(listener);
-    if (!hub.listeners.size && hubs.get(pool)===hub) {
+    currentHub.listeners.delete(listener);
+    if (!currentHub.listeners.size && hubs.get(pool)===currentHub) {
       hubs.delete(pool);
-      void hub.ready.then(client => client.release(true),() => {});
+      void currentHub.ready.then(client => client.end().catch(() => {}),() => {});
     }
   };
-  try { await hub.ready; return release; } catch (error) { release(); throw error; }
+  try { await currentHub.ready; return release; } catch (error) { release(); throw error; }
 }
 
 /** One LISTEN connection per active pool, never a connection/transaction held per waiting request. */

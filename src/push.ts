@@ -1,12 +1,21 @@
 import { createPrivateKey, sign } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { connect, type ClientHttp2Session } from 'node:http2';
-import type { Pool, PoolClient } from 'pg';
+import pg, { type Pool } from 'pg';
 import { noExtraKeys, type Db } from './core/shared.js';
 import { requireCondition } from './errors.js';
 import { enumValue, string, uuid } from './validation.js';
 import type { Principal } from './types.js';
 import { requireScope } from './policy.js';
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const ELIGIBLE_DEVICES_SQL = `SELECT d.token,d.tenant_id,d.principal_id,d.environment,d.updated_at::text,d.activity_start_token
+  FROM push_devices d
+  JOIN principals p ON p.id=d.principal_id AND p.tenant_id=d.tenant_id
+  WHERE d.tenant_id=$1
+    AND NOT p.disabled
+    AND ('admin'=ANY(p.permissions) OR 'agent:read'=ANY(p.permissions))
+    AND ($2=ANY(p.scopes) OR (p.role='admin' AND '*'=ANY(p.scopes)))`;
 
 export async function pushDevice(db:Db,p:Principal,input:Record<string,unknown>,register:boolean):Promise<{ok:true}> {
   noExtraKeys(input,register ? ['token','environment','activity_start_token','activity_token','activity_bot_id'] : ['token']);
@@ -34,14 +43,18 @@ export async function pushDevice(db:Db,p:Principal,input:Record<string,unknown>,
       : undefined;
 
     if (activityStartToken !== undefined) {
-      await db.query(`INSERT INTO push_devices (token,tenant_id,principal_id,environment,activity_start_token) VALUES ($1,$2,$3,$4,$5)
-        ON CONFLICT (token) DO UPDATE SET tenant_id=EXCLUDED.tenant_id,principal_id=EXCLUDED.principal_id,
-        environment=EXCLUDED.environment,updated_at=clock_timestamp(),activity_start_token=EXCLUDED.activity_start_token`,
+      const upserted = await db.query<{ token: string }>(`INSERT INTO push_devices (token,tenant_id,principal_id,environment,activity_start_token) VALUES ($1,$2,$3,$4,$5)
+        ON CONFLICT (token) DO UPDATE SET principal_id=EXCLUDED.principal_id,
+        environment=EXCLUDED.environment,updated_at=clock_timestamp(),activity_start_token=EXCLUDED.activity_start_token
+        WHERE push_devices.tenant_id=EXCLUDED.tenant_id RETURNING token`,
         [token,p.tenantId,p.id,environment,activityStartToken]);
+      requireCondition(upserted.rows.length > 0,403,'forbidden','Device token is registered to another tenant.');
     } else {
-      await db.query(`INSERT INTO push_devices (token,tenant_id,principal_id,environment) VALUES ($1,$2,$3,$4)
-        ON CONFLICT (token) DO UPDATE SET tenant_id=EXCLUDED.tenant_id,principal_id=EXCLUDED.principal_id,
-        environment=EXCLUDED.environment,updated_at=clock_timestamp()`,[token,p.tenantId,p.id,environment]);
+      const upserted = await db.query<{ token: string }>(`INSERT INTO push_devices (token,tenant_id,principal_id,environment) VALUES ($1,$2,$3,$4)
+        ON CONFLICT (token) DO UPDATE SET principal_id=EXCLUDED.principal_id,
+        environment=EXCLUDED.environment,updated_at=clock_timestamp()
+        WHERE push_devices.tenant_id=EXCLUDED.tenant_id RETURNING token`,[token,p.tenantId,p.id,environment]);
+      requireCondition(upserted.rows.length > 0,403,'forbidden','Device token is registered to another tenant.');
     }
 
     if (activityToken && activityBotId) {
@@ -222,8 +235,9 @@ export async function eventPayload(db:Db,e:PushEvent):Promise<PushPayload|null> 
   let bot:{id:string;name:string;avatar:string|null;color:string|null}|undefined;
   if (e.name === 'task.updated') {
     if (e.payload.action !== 'finished' || !['completed','failed'].includes(String(e.payload.status))) return null;
+    if (!UUID_RE.test(e.subject_id)) return null;
     bot = (await db.query<{id:string;name:string;avatar:string|null;color:string|null}>(`SELECT b.id,b.name,b.avatar,b.color FROM tasks t JOIN bots b ON b.id=t.bot_id AND b.tenant_id=t.tenant_id
-      WHERE t.id::text=$1 AND t.tenant_id=$2 AND t.scope=$3 AND b.scope=t.scope AND NOT b.archived
+      WHERE t.id=$1::uuid AND t.tenant_id=$2 AND t.scope=$3 AND b.scope=t.scope AND NOT b.archived
       AND ($4='failed' OR (t.result->>'head_commit' IS NOT NULL))`,[e.subject_id,e.tenant_id,e.scope,e.payload.status])).rows[0];
     body = e.payload.status === 'failed' ? 'Task failed' : 'Ready for review';
   } else {
@@ -231,9 +245,9 @@ export async function eventPayload(db:Db,e:PushEvent):Promise<PushPayload|null> 
     else if (e.name === 'message.created' && ['text','notice','answer'].includes(String(e.payload.kind)) &&
       (e.payload.author as {kind?:string}|undefined)?.kind === 'agent') body = 'Replied';
     else return null;
-    if (typeof e.payload.thread_id !== 'string') return null;
+    if (typeof e.payload.thread_id !== 'string' || !UUID_RE.test(e.payload.thread_id)) return null;
     bot = (await db.query<{id:string;name:string;avatar:string|null;color:string|null}>(`SELECT id,name,avatar,color FROM bots
-      WHERE thread_id::text=$1 AND tenant_id=$2 AND scope=$3 AND NOT archived`,[e.payload.thread_id,e.tenant_id,e.scope])).rows[0];
+      WHERE thread_id=$1::uuid AND tenant_id=$2 AND scope=$3 AND NOT archived`,[e.payload.thread_id,e.tenant_id,e.scope])).rows[0];
   }
   return bot ? {
     aps:{alert:{title:bot.name,body},sound:'default','thread-id':bot.id,'mutable-content':1},
@@ -369,9 +383,13 @@ export function createAPNsSender(config:APNsConfig,openSession:typeof connect=co
   };
 }
 
+type OutboundPush =
+  | { kind: 'alert'; device: Device; payload: PushPayload }
+  | { kind: 'liveactivity'; device: Device; botId: string; payload: LiveActivityPayload; targetToken: string; isStartToken: boolean };
+
 export class PushWorker {
   private timer:NodeJS.Timeout|undefined;
-  private listener:PoolClient|undefined;
+  private listener:pg.Client|undefined;
   private active:Promise<void>|undefined;
   private sender:PushSender|undefined;
   private started = false;
@@ -403,25 +421,37 @@ export class PushWorker {
   private wake = ():void => {};
   private async tick():Promise<void> {
     if (!this.listener) {
-      const client = await this.pool.connect();
+      const client = new pg.Client({ ...this.pool.options, connectionTimeoutMillis: 5000 });
       this.listener = client;
       const lost = () => {
-        if (this.listener === client) { this.listener = undefined; client.release(true); }
+        if (this.listener === client) {
+          this.listener = undefined;
+          void client.end().catch(() => {});
+        }
       };
       client.on('error',lost);
       client.on('end',lost);
       client.on('notification',msg => { if (msg.channel === 'swarmaa_events') this.wake(); });
-      try { await client.query('LISTEN swarmaa_events'); } catch { lost(); throw new Error('Push listener failed.'); }
+      try {
+        await client.connect();
+        await client.query('LISTEN swarmaa_events');
+      } catch {
+        lost();
+        throw new Error('Push listener failed.');
+      }
     }
+    const outbound: OutboundPush[] = [];
+    let fetchedCount = 0;
     const db = await this.pool.connect();
     try {
       await db.query('BEGIN');
-      // One worker owns cursor and coalescing through delivery, including across server processes.
+      // One worker owns cursor and coalescing; APNs HTTP/2 sends happen strictly after COMMIT.
       const cursor = (await db.query<{last_xid:string;last_seq:string}>('SELECT last_xid,last_seq FROM push_cursor WHERE id=1 FOR UPDATE')).rows[0]!;
       const rows = (await db.query<PushEvent & {xid:string;seq:string;fresh:boolean}>(`SELECT name,subject_id,tenant_id,scope,payload,xid::text,seq::text,
         created_at >= clock_timestamp()-interval '10 minutes' AS fresh FROM events
         WHERE (xid,seq)>($1::xid8,$2::bigint) AND xid<pg_snapshot_xmin(pg_current_snapshot())
         ORDER BY xid,seq LIMIT 100`,[cursor.last_xid,cursor.last_seq])).rows;
+      fetchedCount = rows.length;
       for (const e of rows) {
         const payload = e.fresh ? await eventPayload(db,e) : null;
         if (payload) {
@@ -429,22 +459,35 @@ export class PushWorker {
             ON CONFLICT (bot_id) DO UPDATE SET sent_at=EXCLUDED.sent_at
             WHERE push_cooldowns.sent_at <= clock_timestamp()-interval '20 seconds' RETURNING bot_id`,[payload.bot_id]);
           if (allowed.rows.length) {
-            const devices = (await db.query<Device>('SELECT token,tenant_id,principal_id,environment,updated_at::text FROM push_devices WHERE tenant_id=$1',[e.tenant_id])).rows;
-            for (const device of devices) await deliverPush(db,this.sender!,device,payload);
+            const devices = (await db.query<Device>(ELIGIBLE_DEVICES_SQL,[e.tenant_id,e.scope])).rows;
+            for (const device of devices) outbound.push({ kind: 'alert', device, payload });
           }
         }
         if (e.fresh) {
-          await this.sweepLiveActivity(db, e);
+          await this.sweepLiveActivity(db, e, outbound);
         }
         await db.query('UPDATE push_cursor SET last_xid=$1::xid8,last_seq=$2 WHERE id=1',[e.xid,e.seq]);
       }
       await db.query('COMMIT');
-      if (rows.length === 100) setImmediate(this.wake);
     } catch (error) { await db.query('ROLLBACK'); throw error; }
     finally { db.release(); }
+
+    // Deliver all APNs HTTP/2 pushes outside the DB transaction so network latency never holds DB locks.
+    for (const job of outbound) {
+      try {
+        if (job.kind === 'alert') {
+          await deliverPush(this.pool, this.sender!, job.device, job.payload);
+        } else {
+          await deliverLiveActivity(this.pool, this.sender!, job.device, job.botId, job.payload, job.targetToken, job.isStartToken);
+        }
+      } catch {
+        // Best-effort delivery per device; do not abort remaining notifications.
+      }
+    }
+    if (fetchedCount === 100) setImmediate(this.wake);
   }
 
-  private async sweepLiveActivity(db:Db,e:PushEvent):Promise<void> {
+  private async sweepLiveActivity(db:Db,e:PushEvent,outbound:OutboundPush[]):Promise<void> {
     if (!this.sender) return;
     if (e.name === 'task.updated') {
       const status = String(e.payload.status ?? '');
@@ -456,6 +499,7 @@ export class PushWorker {
       const isFinished = action === 'finished' && ['completed','failed','blocked','cancelled'].includes(status)
         || action === 'cancelled';
       if (!isRunning && !isFinished) return;
+      if (!UUID_RE.test(e.subject_id)) return;
 
       const taskRow = (await db.query<{
         id:string;status:string;checkpoint:unknown;created_at:string;updated_at:string;completed_at?:string;
@@ -463,7 +507,7 @@ export class PushWorker {
       }>(`SELECT t.id,t.status,t.checkpoint,t.created_at::text,t.updated_at::text,t.completed_at::text,
         b.id AS bot_id,b.name AS bot_name,b.avatar AS bot_avatar,b.color AS bot_color
         FROM tasks t JOIN bots b ON b.id=t.bot_id AND b.tenant_id=t.tenant_id
-        WHERE t.id::text=$1 AND t.tenant_id=$2 AND t.scope=$3 AND b.scope=t.scope AND NOT b.archived`,
+        WHERE t.id=$1::uuid AND t.tenant_id=$2 AND t.scope=$3 AND b.scope=t.scope AND NOT b.archived`,
         [e.subject_id,e.tenant_id,e.scope])).rows[0];
       if (!taskRow) return;
 
@@ -472,7 +516,7 @@ export class PushWorker {
       const startedAt = Math.floor(new Date(taskRow.created_at).getTime() / 1000);
       const now = Math.floor(Date.now() / 1000);
 
-      const devices = (await db.query<Device>('SELECT token,tenant_id,principal_id,environment,updated_at::text,activity_start_token FROM push_devices WHERE tenant_id=$1',[e.tenant_id])).rows;
+      const devices = (await db.query<Device>(ELIGIBLE_DEVICES_SQL,[e.tenant_id,e.scope])).rows;
       if (!devices.length) return;
 
       const activityTokens = (await db.query<{device_id:string;token:string}>('SELECT device_id,token FROM bot_activity_tokens WHERE tenant_id=$1 AND bot_id=$2',[e.tenant_id,bot.id])).rows;
@@ -485,7 +529,7 @@ export class PushWorker {
         for (const device of devices) {
           const actToken = tokenMap.get(device.token);
           if (actToken) {
-            await deliverLiveActivity(db,this.sender,device,bot.id,payload,actToken,false);
+            outbound.push({ kind: 'liveactivity', device, botId: bot.id, payload, targetToken: actToken, isStartToken: false });
           }
         }
         // That activity is over: the next turn starts a fresh one with the push-to-start token.
@@ -501,7 +545,7 @@ export class PushWorker {
             for (const device of devices) {
               const actToken = tokenMap.get(device.token);
               if (actToken) {
-                await deliverLiveActivity(db,this.sender,device,bot.id,payload,actToken,false);
+                outbound.push({ kind: 'liveactivity', device, botId: bot.id, payload, targetToken: actToken, isStartToken: false });
               }
             }
           }
@@ -509,14 +553,14 @@ export class PushWorker {
         for (const device of devices) {
           if (isStart && !tokenMap.has(device.token) && device.activity_start_token) {
             const payload = buildLiveActivityPayload({event:'start',status:'running',step,startedAt,bot,now});
-            await deliverLiveActivity(db,this.sender,device,bot.id,payload,device.activity_start_token,true);
+            outbound.push({ kind: 'liveactivity', device, botId: bot.id, payload, targetToken: device.activity_start_token, isStartToken: true });
           }
         }
       }
     } else if (e.name === 'question.created') {
-      if (typeof e.payload.thread_id !== 'string') return;
+      if (typeof e.payload.thread_id !== 'string' || !UUID_RE.test(e.payload.thread_id)) return;
       const bot = (await db.query<{id:string;name:string;avatar?:string|null;color?:string|null}>(`SELECT id,name,avatar,color FROM bots
-        WHERE thread_id::text=$1 AND tenant_id=$2 AND scope=$3 AND NOT archived`,[e.payload.thread_id,e.tenant_id,e.scope])).rows[0];
+        WHERE thread_id=$1::uuid AND tenant_id=$2 AND scope=$3 AND NOT archived`,[e.payload.thread_id,e.tenant_id,e.scope])).rows[0];
       if (!bot) return;
 
       const task = (await db.query<{checkpoint:unknown;created_at:string}>(`SELECT checkpoint,created_at::text FROM tasks
@@ -525,7 +569,7 @@ export class PushWorker {
       const now = Math.floor(Date.now() / 1000);
       const startedAt = task?.created_at ? Math.floor(new Date(task.created_at).getTime() / 1000) : now;
 
-      const devices = (await db.query<Device>('SELECT token,tenant_id,principal_id,environment,updated_at::text,activity_start_token FROM push_devices WHERE tenant_id=$1',[e.tenant_id])).rows;
+      const devices = (await db.query<Device>(ELIGIBLE_DEVICES_SQL,[e.tenant_id,e.scope])).rows;
       if (!devices.length) return;
 
       const activityTokens = (await db.query<{device_id:string;token:string}>('SELECT device_id,token FROM bot_activity_tokens WHERE tenant_id=$1 AND bot_id=$2',[e.tenant_id,bot.id])).rows;
@@ -536,7 +580,7 @@ export class PushWorker {
       for (const device of devices) {
         const actToken = tokenMap.get(device.token);
         if (actToken) {
-          await deliverLiveActivity(db,this.sender,device,bot.id,payload,actToken,false);
+          outbound.push({ kind: 'liveactivity', device, botId: bot.id, payload, targetToken: actToken, isStartToken: false });
         }
       }
     }
@@ -549,7 +593,7 @@ export class PushWorker {
     if (this.listener) {
       const client = this.listener;
       this.listener = undefined;
-      client.release(true);
+      await client.end().catch(() => {});
     }
     this.sender?.close();
   }

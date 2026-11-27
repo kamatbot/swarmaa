@@ -52,14 +52,20 @@ describe('voice service', { skip: !connectionString, concurrency: false }, () =>
   const rejects = (promise: Promise<unknown>, status: number, code: string) =>
     assert.rejects(promise, (e: any) => { assert.equal(e.code, code); assert.equal(e.status, status); return true; });
   async function principal(tenantId: string, role: Principal['role'] = 'frontend') {
-    const p: Principal = { id: randomUUID(), tenantId, name: `p-${randomUUID()}`, role, scopes: ['project:a'], permissions: [...ROLE_PERMISSIONS[role]] };
+    const permissions = role === 'frontend'
+      ? [...ROLE_PERMISSIONS.frontend, 'agent:read' as const, 'agent:manage' as const, 'thread:read' as const, 'thread:write' as const, 'app:device' as const]
+      : [...ROLE_PERMISSIONS[role]];
+    const p: Principal = { id: randomUUID(), tenantId, name: `p-${randomUUID()}`, role, scopes: ['project:a'], permissions };
     await pool.query(`INSERT INTO principals(id, tenant_id, name, role, scopes, permissions, token_hash, last_seen_at)
       VALUES($1,$2,$3,$4,$5,$6,$7,clock_timestamp())`, [p.id, tenantId, p.name, p.role, p.scopes, p.permissions, randomUUID()]);
     return p;
   }
   async function bot(user: Principal, name: string, rules: Record<string, unknown> = {}) {
-    const lead = (await call(user, 'agent_create', { name: `${name}Lead`, role: 'Lead', instructions: 'Help', scope: 'project:a', runner: { provider: 'codex' } })).agent;
-    return await call(user, 'bot_create', { name, job: 'Help', scope: 'project:a', lead_agent_id: lead.id, member_agent_ids: [], rules: { first_reply: 'off', ...rules } });
+    const actor = (rules.dispatch_all_projects !== undefined || rules.local_actions !== undefined) && user.role !== 'admin'
+      ? await principal(user.tenantId, 'admin')
+      : user;
+    const lead = (await call(actor, 'agent_create', { name: `${name}Lead`, role: 'Lead', instructions: 'Help', scope: 'project:a', runner: { provider: 'codex' } })).agent;
+    return await call(actor, 'bot_create', { name, job: 'Help', scope: 'project:a', lead_agent_id: lead.id, member_agent_ids: [], rules: { first_reply: 'off', ...rules } });
   }
   async function setup() {
     const tenant = randomUUID(), user = await principal(tenant);

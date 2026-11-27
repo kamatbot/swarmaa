@@ -173,7 +173,7 @@ struct IPadWorkspace<ThreadBody: View, TasksBody: View, UsageBody: View>: View {
                 HStack(spacing: -7) {
                     ForEach(workerProviders, id: \.self) { Avatar(name: $0, size: 28, provider: $0).overlay(Circle().strokeBorder(KS.topBar, lineWidth: 2)) }
                 }.fixedSize().accessibilityElement(children: .ignore)
-                    .accessibilityLabel("Agents online: " + workerProviders.map(vendorName).joined(separator: ", "))
+                    .accessibilityLabel("Workers online: " + workerProviders.map(vendorName).joined(separator: ", "))
             }
             barButton("point.3.connected.trianglepath.dotted", showMap ? "Hide swarm map" : "Show swarm map", on: showMap) {
                 withAnimation(reduceMotion ? nil : KS.glide) { showMap.toggle() }
@@ -328,7 +328,7 @@ struct IPadWorkspace<ThreadBody: View, TasksBody: View, UsageBody: View>: View {
         let workers = model.status["workers"].array
         let live = Set(workers.filter { $0["live"].bool }.flatMap { $0["providers"].array.map(\.string) })
         return VStack(alignment: .leading, spacing: 4) {
-            Eyebrow("Agents").padding(.leading, 6).padding(.bottom, 4)
+            Eyebrow("Workers").padding(.leading, 6).padding(.bottom, 4)
             if workerProviders.isEmpty { Text("No workers connected").font(KS.secondary()).foregroundStyle(KS.muted).padding(.horizontal, 6) }
             ForEach(workerProviders, id: \.self) { p in
                 let n = workers.filter { $0["providers"].array.first?.string == p }.reduce(0) { $0 + $1["running"].array.count }
@@ -661,8 +661,36 @@ private struct IPadInspector: View {
         .background(KS.grouped)
         .task(id: finished.map(\.id)) {
             counting = true
+            let jobs = Array(finished.prefix(40))
+            let appModel = model
             var sum: [String: Int] = [:]
-            for job in finished.prefix(40) { if let n = await TaskTokens.lookup(model, id: job.id, card: job.card) { sum[job.provider, default: 0] += n } }
+            await withTaskGroup(of: (String, Int?).self) { group in
+                var index = 0
+                let limit = min(6, jobs.count)
+                while index < limit {
+                    let id = jobs[index].id
+                    let provider = jobs[index].provider
+                    let card = jobs[index].card
+                    index += 1
+                    group.addTask {
+                        let n = await TaskTokens.lookup(appModel, id: id, card: card)
+                        return (provider, n)
+                    }
+                }
+                for await (provider, n) in group {
+                    if let n { sum[provider, default: 0] += n }
+                    if index < jobs.count {
+                        let id = jobs[index].id
+                        let nextProvider = jobs[index].provider
+                        let card = jobs[index].card
+                        index += 1
+                        group.addTask {
+                            let n = await TaskTokens.lookup(appModel, id: id, card: card)
+                            return (nextProvider, n)
+                        }
+                    }
+                }
+            }
             tokens = sum; counting = false
         }
     }

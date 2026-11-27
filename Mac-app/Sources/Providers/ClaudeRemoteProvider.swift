@@ -96,7 +96,7 @@ actor ClaudeRemoteProvider: UsageProvider {
     }
 
     private func fetch(retryingOnUnauthorized: Bool) async throws -> ProviderSnapshot {
-        let token = try currentToken()
+        let token = try await currentToken()
 
         var request = URLRequest(url: endpoint)
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -154,18 +154,23 @@ actor ClaudeRemoteProvider: UsageProvider {
         )
     }
 
-    private func currentToken() throws -> String {
+    private func currentToken() async throws -> String {
         if let credentials, !credentials.isExpired {
             return credentials.accessToken
         }
-        var fresh = try loadCredentials()
+        let loader = loadCredentials
+        var fresh = try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                continuation.resume(with: Result { try loader() })
+            }
+        }
         Log.usage.debug("\(self.id, privacy: .public): read remote token, expires \(fresh.expiresAt, privacy: .public)")
         // Expired is not signed out. The far side rotates this token whenever
         // Claude Code runs there — and when it has not run in a while, this
         // runs it once remotely rather than waiting for the user to. What
         // comes back is still judged, never trusted.
         if fresh.isExpired {
-            fresh = try renew(fresh)
+            fresh = try await renew(fresh)
         }
         credentials = fresh
         return fresh.accessToken
@@ -174,13 +179,18 @@ actor ClaudeRemoteProvider: UsageProvider {
     /// Renews a rotted token through the server's own Claude Code, then
     /// re-reads. Judged on the outcome, never on the run: refusing an empty
     /// prompt is a *non-zero* exit and a successful renewal at the same time.
-    private func renew(_ stale: ClaudeCredentials) throws -> ClaudeCredentials {
+    private func renew(_ stale: ClaudeCredentials) async throws -> ClaudeCredentials {
         guard stale.expiresAt != renewalAttemptedFor else {
             throw UsageProviderError.credentialExpired
         }
         renewalAttemptedFor = stale.expiresAt
         do {
-            let result = try runRenewal()
+            let runner = runRenewal
+            let result = try await withCheckedThrowingContinuation { continuation in
+                DispatchQueue.global(qos: .utility).async {
+                    continuation.resume(with: Result { try runner() })
+                }
+            }
             if RemoteSSH.isTransportFailure(result) {
                 throw RemoteSSH.transportError(destination: host.destination, result: result)
             }
@@ -191,7 +201,12 @@ actor ClaudeRemoteProvider: UsageProvider {
         } catch is RemoteSSH.TimeoutError {
             throw UsageProviderError.apiError(L10n.t("ssh to \(host.destination) timed out"))
         }
-        let reread = try loadCredentials()
+        let loader = loadCredentials
+        let reread = try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                continuation.resume(with: Result { try loader() })
+            }
+        }
         guard reread.expiresAt > stale.expiresAt else {
             Log.usage.error("ssh \(self.host.destination, privacy: .public): renewal ran but the token expiry did not move")
             throw UsageProviderError.credentialExpired

@@ -241,7 +241,7 @@ struct WorkspaceTopBar: View {
                 }
                 .accessibilityElement(children: .ignore)
                 .fixedSize()
-                .accessibilityLabel(L10n.t("Agents online") + ": " + model.workerProviders.map(SwarmaCells.vendorName).joined(separator: ", "))
+                .accessibilityLabel(L10n.t("Workers online") + ": " + model.workerProviders.map(SwarmaCells.vendorName).joined(separator: ", "))
             }
             iconButton("point.3.connected.trianglepath.dotted", L10n.t("Swarm map"), on: model.showSwarmMap) { model.showSwarmMap.toggle() }
                 .keyboardShortcut("m", modifiers: [.command, .shift]).fixedSize()
@@ -260,7 +260,7 @@ struct WorkspaceTopBar: View {
                     .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(KS.signal))
                     .contentShape(Rectangle())
             }
-            .buttonStyle(.plain).fixedSize()
+            .buttonStyle(.plain).fixedSize().keyboardShortcut("n", modifiers: .command)
             .accessibilityLabel(L10n.t("New bot"))
         }
         // The traffic lights sit at the bar's leading edge (16–64 pt).
@@ -360,7 +360,7 @@ struct BotWorkspace: View {
 
     private var tabs: some View {
         HStack(spacing: 4) {
-            ForEach(TeamsModel.BotTab.allCases, id: \.self) { tab in
+            ForEach(Array(TeamsModel.BotTab.allCases.enumerated()), id: \.element) { index, tab in
                 let on = model.botTab == tab
                 Button { model.botTab = tab } label: {
                     Text(verbatim: Self.title(tab)).font(KS.section())
@@ -370,6 +370,7 @@ struct BotWorkspace: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .keyboardShortcut(KeyEquivalent(Character("\(index + 1)")), modifiers: .command)
                 .accessibilityAddTraits(on ? [.isSelected, .isButton] : .isButton)
             }
             Spacer()
@@ -564,29 +565,31 @@ struct BotSideColumn: View {
     @State private var sending = false
 
     var body: some View {
+        let cards = model.botTaskCards(bot)
+        let finishedJobs = Self.finishedJobs(from: cards)
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                needsYou
-                madeBy
+                needsYou(cards: cards)
+                madeBy(cards: cards)
                 tokenCard
             }
             .padding(16)
         }
         .background(KS.paperDeep)
         .overlay(alignment: .leading) { Rectangle().fill(KS.hairline).frame(width: 1) }
-        .task(id: finishedIDs) { await countTokens() }
+        .task(id: finishedJobs.map(\.id)) { await countTokens(jobs: finishedJobs) }
     }
 
     // Needs you
 
     /// Tasks that wait on you: ready for review, or failed and not yet resolved.
-    private var waitingTasks: [TeamsTaskCard] {
-        model.botTaskCards(bot).map(\.card).filter { !$0.resolved && ($0.readyForReview || $0.isFailed) }.reversed()
+    private func waitingTasks(from cards: [(card: TeamsTaskCard, at: Date?)]) -> [TeamsTaskCard] {
+        cards.map(\.card).filter { !$0.resolved && ($0.readyForReview || $0.isFailed) }.reversed()
     }
 
-    @ViewBuilder private var needsYou: some View {
+    @ViewBuilder private func needsYou(cards: [(card: TeamsTaskCard, at: Date?)]) -> some View {
         let questions = model.botQuestions(bot)
-        let tasks = waitingTasks
+        let tasks = waitingTasks(from: cards)
         let count = questions.count + tasks.count
         VStack(alignment: .leading, spacing: 0) {
             KSLabel(L10n.t("Needs you") + (count == 0 ? "" : " · \(count)")).padding(.bottom, 12)
@@ -667,9 +670,12 @@ struct BotSideColumn: View {
                 Button { Task { await model.resolve(t.id, true) } } label: { Text(verbatim: L10n.t("Mark resolved")).frame(maxWidth: .infinity) }.buttonStyle(.ks(.paper))
             } else if let branch = t.branch {
                 Button {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString("git log -p \(branch)", forType: .string)
-                } label: { Text(verbatim: L10n.t("Copy review command")).frame(maxWidth: .infinity) }.buttonStyle(.ks(.primary))
+                    model.review(taskID: t.id, branch: branch)
+                } label: {
+                    Text(verbatim: model.reviewed.contains(t.id) ? L10n.t("Copied") : L10n.t("Copy review command"))
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.ks(.primary))
                 Button { Task { await model.resolve(t.id, true) } } label: { Text(verbatim: L10n.t("Mark resolved")).frame(maxWidth: .infinity) }.buttonStyle(.ks(.paper))
             }
         }
@@ -691,9 +697,9 @@ struct BotSideColumn: View {
 
     // Made by this bot
 
-    private var madeBy: some View {
+    private func madeBy(cards: [(card: TeamsTaskCard, at: Date?)]) -> some View {
         var seen = Set<String>()
-        let landed = model.botTaskCards(bot).reversed().filter { $0.card.branch != nil && seen.insert($0.card.branch!).inserted }
+        let landed = cards.reversed().filter { $0.card.branch != nil && seen.insert($0.card.branch!).inserted }
         return card(L10n.t("Made by this bot")) {
             if landed.isEmpty {
                 Text(verbatim: L10n.t("Files appear as tasks land")).font(KS.text()).foregroundStyle(KS.textMuted)
@@ -722,19 +728,30 @@ struct BotSideColumn: View {
 
     // Tokens
 
-    private var finished: [(id: String, provider: String)] {
-        model.botTaskCards(bot).compactMap { c in
+    private static func finishedJobs(from cards: [(card: TeamsTaskCard, at: Date?)]) -> [(id: String, provider: String)] {
+        cards.compactMap { c in
             guard ["completed", "failed", "done"].contains(c.card.status ?? "") else { return nil }
             return (c.card.id, c.card.served?.provider ?? "other")
         }
     }
-    private var finishedIDs: [String] { finished.map(\.id) }
 
-    private func countTokens() async {
-        let jobs = finished
+    private func countTokens(jobs: [(id: String, provider: String)]) async {
         counting = true
-        for job in jobs.prefix(40) where TaskTokenCache.tokens[job.id] == nil && !TaskTokenCache.missing.contains(job.id) {
-            if let n = await model.taskTokens(id: job.id) { TaskTokenCache.tokens[job.id] = n } else { TaskTokenCache.missing.insert(job.id) }
+        let uncached = Array(jobs.prefix(40)).filter {
+            TaskTokenCache.tokens[$0.id] == nil && !TaskTokenCache.missing.contains($0.id)
+        }
+        await withTaskGroup(of: (String, Int?).self) { group in
+            var pending = uncached[...]
+            func add(_ job: (id: String, provider: String)) {
+                group.addTask { @MainActor in
+                    (job.id, await model.taskTokens(id: job.id))
+                }
+            }
+            for _ in 0..<6 { if let job = pending.popFirst() { add(job) } }
+            for await (id, n) in group {
+                if let job = pending.popFirst() { add(job) }
+                if let n { TaskTokenCache.tokens[id] = n } else { TaskTokenCache.missing.insert(id) }
+            }
         }
         var sum: [String: Int] = [:]
         for job in jobs { if let n = TaskTokenCache.tokens[job.id] { sum[job.provider, default: 0] += n } }
@@ -793,7 +810,7 @@ struct SidebarAgents: View {
         let providers = model.workerProviders
         let live = Set((model.status?.workers ?? []).filter(\.live).flatMap(\.providers))
         VStack(alignment: .leading, spacing: 2) {
-            KSSectionLabel(text: L10n.t("Agents")).padding(.leading, 6).padding(.bottom, 6)
+            KSSectionLabel(text: L10n.t("Workers")).padding(.leading, 6).padding(.bottom, 6)
             if providers.isEmpty {
                 Text(verbatim: L10n.t("No workers connected")).font(KS.text()).foregroundStyle(KS.textMuted).padding(.horizontal, 12)
             }

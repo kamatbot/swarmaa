@@ -45,7 +45,20 @@ test('Claude receives image blocks through stream JSON stdin', async () => {
   });
 });
 
-test('invalid, oversized, excessive and unsupported photo payloads fail closed', async () => {
+test('Antigravity receives validated base64 JPEG images via ACP prompt blocks', { skip: process.platform !== 'darwin' }, async () => {
+  const agy = config('antigravity');
+  const t = { ...task, required_capability: 'antigravity.read' };
+  await withTurnImages(agy.agents[0]!, t, {}, async images => {
+    assert.equal(images.length, 1);
+    const req = buildInvocation(agy.agents[0]!, agy.projects[0]!, t, {}, agy, new AbortController().signal, { HOME: '/h' }, undefined, undefined, images);
+    assert.ok(req.acp, 'interactive Antigravity photo turn uses ACP');
+    assert.equal(req.acp!.images?.length, 1);
+    assert.equal(req.acp!.images![0]!.data, photo.data_base64);
+    assert.ok(!req.args.join(' ').includes(photo.data_base64));
+  });
+});
+
+test('invalid, oversized, and excessive photo payloads fail closed', async () => {
   const cfg = config('codex');
   for (const altered of [{...photo,sha256:'bad'}, {...photo,data_base64:'A'.repeat(220000)}, {...photo,byte_length:999}]) {
     const t = {...task,thread_messages:[{seq:1,attachments:[altered]}]};
@@ -53,8 +66,6 @@ test('invalid, oversized, excessive and unsupported photo payloads fail closed',
   }
   const t = {...task,thread_messages:[{seq:1,attachments:[photo,photo,photo]}]};
   await assert.rejects(withTurnImages(cfg.agents[0]!,t,{},async () => {}), /Too many/);
-  const agy = config('antigravity');
-  await assert.rejects(withTurnImages(agy.agents[0]!,task,{},async () => {}), /not supported/);
 });
 
 test('worker stores photo turn answer and removes image on completion and abort', async () => {

@@ -136,6 +136,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var onboarding: OnboardingWindowController?
     private var started = false
+    private var completedOnboardingThisLaunch = false
 
     /// "Run Setup…", and the first-launch gate. The app starts when the
     /// window closes, if it has not already.
@@ -144,6 +145,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let controller = OnboardingWindowController(preferences: preferences) { [weak self] in
             guard let self else { return }
             self.onboarding = nil
+            self.completedOnboardingThisLaunch = true
             if !self.started { self.start() }
             self.openTeams()
         }
@@ -523,24 +525,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.settings = settings
 
             // What changed, once per version — including on a fresh install,
-            // where it is the introduction.
+            // where it is the introduction. Suppressed when onboarding just
+            // completed in the same launch so the user lands cleanly in the
+            // main window without modal pile-up.
             let whatsNew = WhatsNewWindowController(
                 preferences: preferences, version: updater.currentVersion
             )
             self.whatsNew = whatsNew
 
-            // Once, on the very first run, it opens the one place that
-            // explains what to connect.
-            //
-            // Sequenced behind What's New rather than beside it: two windows
-            // arriving together is one to dismiss before you can read either.
-            let introduce = { [weak settings] in
-                guard preferences.isFirstLaunch else { return }
-                AppDelegate.shared?.openSettings()
-            }
-            whatsNew.onDismiss = introduce
-            if !whatsNew.showIfNeeded() {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.6, execute: introduce)
+            if completedOnboardingThisLaunch {
+                preferences.lastSeenVersion = updater.currentVersion
+            } else {
+                // Once, on the very first run, it opens the one place that
+                // explains what to connect.
+                //
+                // Sequenced behind What's New rather than beside it: two windows
+                // arriving together is one to dismiss before you can read either.
+                let introduce = { [weak self] in
+                    guard preferences.isFirstLaunch else { return }
+                    self?.openSettings()
+                }
+                whatsNew.onDismiss = introduce
+                if !whatsNew.showIfNeeded() {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.6, execute: introduce)
+                }
             }
 
             let statusItem = StatusItemController { AppDelegate.shared?.openSettings() }
@@ -1189,6 +1197,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @MainActor func openSettings() {
         openTeams()
         teams?.model.pane = .settings
+    }
+
+    /// Deep-link directly to Settings → Swarmaa → Routing.
+    @MainActor func openRoutingSettings() {
+        SettingsNavigator.shared.openRouting()
+        openSettings()
     }
 
     /// The settings view for the main window's pane.

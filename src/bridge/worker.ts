@@ -5,6 +5,7 @@ import { AUTO_PATCH, AUTO_READ, buildInvocation, withTurnImages, capability, ant
 import { collectUsage, headroom } from '../usage/index.js';
 import { windowsForModel } from '../usage/antigravity.js';
 import type { UsageProviderId, UsageSnapshot } from '../usage/types.js';
+import { runAcpSession } from './acp.js';
 import { runBoundedProcess } from './process.js';
 import { sameModel, type ServedStamp } from '../core/failures.js';
 import { reasonNotify } from './reason.js';
@@ -15,9 +16,12 @@ import type { AgentConfig, BridgeConfig, BridgeLogger, Claim, Lease, ProcessResu
 import { redactSecrets } from '../safety/redact.js';
 import { botSecrets, scrubSecrets } from './bot-secrets.js';
 
-function cleanText(value: string, maxBytes: number): string {
-  // PostgreSQL text cannot contain NUL. Clip by UTF-8 bytes, not character count.
-  return Buffer.from(value.replaceAll('\0', '\uFFFD'), 'utf8').subarray(0, maxBytes).toString('utf8');
+export function cleanText(value: string, maxBytes: number): string {
+  // PostgreSQL text cannot contain NUL. Clip by UTF-8 bytes without splitting multi-byte characters.
+  const buf = Buffer.from(value.replaceAll('\0', '\uFFFD'), 'utf8');
+  let end = Math.min(buf.length, maxBytes);
+  while (end > 0 && end < buf.length && (buf[end]! & 0xc0) === 0x80) end--;
+  return buf.subarray(0, end).toString('utf8');
 }
 /**
  * Provider output on its way into the service (answers, transcripts, diffs, checkpoints, chats) loses credential-shaped
@@ -56,6 +60,7 @@ function withStartedTask(context: unknown, started: unknown): unknown {
   return { ...ctx, task: { ...ctx.task, ...next } };
 }
 const BLOCKED_SUMMARY: Record<string, string> = {
+  antigravity_unattended_oauth_disallowed: 'Unattended Antigravity execution cannot run on consumer OAuth. Run interactively via `agy acp` or configure GEMINI_API_KEY / GOOGLE_API_KEY / GOOGLE_APPLICATION_CREDENTIALS / agent.auth_mode.',
   photo_provider_unsupported: 'This provider does not support photo input; retry with Claude or Codex.',
   not_a_git_repo: 'The project folder is not a git repository, so edit work has no worktree to run in. Run `git init` and commit once in the project folder, then retry.',
   bad_base_ref: 'The branch this task starts from (base_ref) does not exist in the project checkout. Fetch or create it, or retry without base_ref.',
@@ -207,6 +212,7 @@ export class BridgeWorker {
         }
 
         const reader = response.body.getReader();
+        const MAX_SSE_BUFFER_BYTES = 1024 * 1024; // 1 MiB cap; reconnect on overflow
         let buffer = '';
         const decoder = new TextDecoder('utf8');
 
@@ -215,6 +221,9 @@ export class BridgeWorker {
             const { done, value } = await reader.read();
             if (done) break;
             buffer += typeof value === 'string' ? value : decoder.decode(value, { stream: true });
+            if (Buffer.byteLength(buffer, 'utf8') > MAX_SSE_BUFFER_BYTES) {
+              throw new Error('SSE buffer exceeded 1 MiB limit');
+            }
 
             let boundary: number;
             while ((boundary = buffer.search(/\r?\n\r?\n/)) !== -1) {
@@ -314,11 +323,19 @@ export class BridgeWorker {
           while (!signal.aborted && !this.draining && !(once && claimedOnce) && inflight < this.config.max_concurrent) {
             let claimed!: () => void;
             const started = new Promise<boolean>(r => { claimed = () => r(true); });
+            let slotReleased = false;
+            const releaseSlot = (): void => {
+              if (slotReleased) return;
+              slotReleased = true;
+              inflight--;
+              if (!this.draining && !once) this.pollWait?.abort();
+            };
             inflight++;
-            const task = this.claimAndRun(projects, signal, claimed)
+            const task = this.claimAndRun(projects, signal, claimed, releaseSlot)
               .catch(error => { this.logger('bridge_poll_failed', { scope: projects[0]!.scope, code: errorCode(error), message: String((error as Error)?.message ?? error).slice(0, 200) }); return false; })
               .finally(() => {
-                inflight--; running.delete(task);
+                releaseSlot();
+                running.delete(task);
                 if (!running.size) {
                   if (this.drainTimer) clearTimeout(this.drainTimer);
                   if (this.draining || once) this.pollWait?.abort();
@@ -354,7 +371,7 @@ export class BridgeWorker {
     }
   }
 
-  async claimAndRun(projects: ProjectConfig[], signal: AbortSignal, onClaimed?: () => void): Promise<boolean> {
+  async claimAndRun(projects: ProjectConfig[], signal: AbortSignal, onClaimed?: () => void, onSlotRelease?: () => void): Promise<boolean> {
     if (this.draining || signal.aborted) return false;
     const claimStarted = performance.now();
     const claim = await this.client.call<Claim>('task_claim', {
@@ -384,11 +401,11 @@ export class BridgeWorker {
     }
     if (!valid) return false;
     onClaimed?.();
-    await this.execute(valid.task, valid.lease, valid.agent, project, signal, claimStarted);
+    await this.execute(valid.task, valid.lease, valid.agent, project, signal, claimStarted, onSlotRelease);
     return true;
   }
 
-  private async execute(task: Task, lease: Lease, agent: AgentConfig, project: ProjectConfig, shutdown: AbortSignal, claimStarted: number): Promise<void> {
+  private async execute(task: Task, lease: Lease, agent: AgentConfig, project: ProjectConfig, shutdown: AbortSignal, claimStarted: number, onSlotRelease?: () => void): Promise<void> {
     const execution = new AbortController();
     const heartbeatStop = new AbortController();
     let leaseLost = false;
@@ -504,15 +521,13 @@ export class BridgeWorker {
       if (lastFailure) base.last_failure = lastFailure;
       if (steerable && !stdinClosed && stdinCtl) base.steer_after_seq = steerWritten;
       if (steerAcked) base.steered_seq = steerAcked;
-      if (task.kind === 'turn' && agent.provider !== 'antigravity') {
+      if (task.kind === 'turn') {
         base.partial_text = untrusted(currentPartialText, 8192);
       }
-      if (agent.provider !== 'antigravity') {
-        // The tail holds only the latest output: keep what earlier checkpoints saw (updated in place, newest 20).
-        for (const item of extractActivity(agent.provider, progress.stdout_tail)) activityLog.set(item.id, item);
-        while (activityLog.size > 20) activityLog.delete(activityLog.keys().next().value!);
-        if (activityLog.size) base.activity = [...activityLog.values()];
-      }
+      // The tail holds only the latest output: keep what earlier checkpoints saw (updated in place, newest 20).
+      for (const item of extractActivity(agent.provider, progress.stdout_tail)) activityLog.set(item.id, item);
+      while (activityLog.size > 20) activityLog.delete(activityLog.keys().next().value!);
+      if (activityLog.size) base.activity = [...activityLog.values()];
       return base;
     };
     const sendPartialCheckpoint = async (): Promise<void> => {
@@ -550,22 +565,22 @@ export class BridgeWorker {
         }, 3000 - elapsed);
       }
     };
-    const updatePartialText = (stdoutTail: string, outputBytes: number): void => {
-      if (task.kind !== 'turn' || agent.provider === 'antigravity') return;
+    const updatePartialText = (stdoutTail: string, stdoutBytes: number): void => {
+      if (task.kind !== 'turn') return;
 
       const tailBuf = Buffer.from(stdoutTail, 'utf8');
-      const tailStartOffset = outputBytes - tailBuf.length;
+      const tailStartOffset = Math.max(0, stdoutBytes - tailBuf.length);
       const newBytesStart = Math.max(0, streamParserState.totalProcessedBytes - tailStartOffset);
       const newBuf = tailBuf.subarray(newBytesStart);
       const lastLf = newBuf.lastIndexOf(10); // '\n'
 
       if (lastLf >= 0) {
         const completeLinesBuf = newBuf.subarray(0, lastLf + 1);
-        streamParserState.totalProcessedBytes += completeLinesBuf.length;
+        streamParserState.totalProcessedBytes = tailStartOffset + newBytesStart + completeLinesBuf.length;
         const chunkText = completeLinesBuf.toString('utf8');
         const extracted = extractPartialText(agent.provider, chunkText);
         if (extracted) {
-          if (agent.provider === 'claude') {
+          if (agent.provider === 'claude' || agent.provider === 'antigravity') {
             currentPartialText += extracted;
           } else if (agent.provider === 'codex') {
             currentPartialText = extracted;
@@ -643,7 +658,7 @@ export class BridgeWorker {
         } else {
           result = await withTurnImages(agent, task, context, async images => {
           // Secrets the owner added for this project in the Mac app (a bot asked with question_ask credential).
-          const secrets = task.kind === 'turn' ? botSecrets(task.scope) : {};
+          const secrets = task.kind === 'turn' ? await botSecrets(task.scope) : {};
           const scrub = (s: string) => scrubSecrets(images.length ? s.replace(/[A-Za-z0-9+/]{128,}={0,2}/gu, "[photo removed]") : s, secrets);
           const go = async (id?: string): Promise<ProcessResult> => {
             const request = buildInvocation(agent, project, task, context, this.config, execution.signal, process.env, worktree, nativePlan, images, id || lastFailure ? { id, note: lastFailure } : undefined);
@@ -658,9 +673,20 @@ export class BridgeWorker {
             Object.assign(request.env, secrets);
             request.on_progress = value => {
               progress = images.length ? { ...value, stdout_tail: "" } : { ...value, stdout_tail: scrubSecrets(value.stdout_tail, secrets) };
-              updatePartialText(progress.stdout_tail, value.output_bytes);
+              updatePartialText(progress.stdout_tail, value.stdout_bytes ?? value.output_bytes);
             };
-            const output = await this.runner(request);
+            const output = request.acp && this.runner === runBoundedProcess
+              ? await runAcpSession(request, {
+                  onPartialText: text => {
+                    currentPartialText = scrub(text);
+                    if (currentPartialText !== lastSentPartialText) schedulePartialCheckpoint();
+                  },
+                  onActivity: item => {
+                    activityLog.set(item.id, { ...item, label: scrubSecrets(item.label, secrets) });
+                    while (activityLog.size > 20) activityLog.delete(activityLog.keys().next().value!);
+                  },
+                })
+              : await this.runner(request);
             closeStdin();
             return { ...output, stdout: scrub(output.stdout), stderr: scrub(output.stderr) };
           };
@@ -788,6 +814,8 @@ export class BridgeWorker {
       }
       finished = true;
       this.logger('task_finished', { task_id: task.id, outcome });
+      // Release the concurrency slot before best-effort session recording and notifications so the next claim is not blocked.
+      onSlotRelease?.();
       const branchLine = [patchResult ? `Branch: ${patchResult.branch} @ ${patchResult.head_commit?.slice(0, 7) ?? 'none'} (${patchResult.changed_files} files)` : finalizeFailure?.recovery, nativeSession ? `Resume: ${nativeSession.resume}` : undefined].filter(Boolean).join('\n') || undefined;
       if (task.kind!=='check') await this.recordSession(task, agent, project, context, completion.result.answer, branchLine);
       try { await this.notifyReason(task.id, outcome); }

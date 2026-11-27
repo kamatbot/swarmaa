@@ -6,7 +6,7 @@ import { redactSecrets } from '../safety/redact.js';
 import type { Principal } from '../types.js';
 import { integer, object, scopeName, string, uuid } from '../validation.js';
 import { booleanOption } from './memory.js';
-import { assertKnownScope, audit, canonicalJson, event, newId, noExtraKeys, requireFound, scopeSql, teamsLock, type Db } from './shared.js';
+import { assertKnownScope, audit, canonicalJson, event, newId, noExtraKeys, requireFound, scopeLock, scopeSql, teamsLock, type Db } from './shared.js';
 import { agentView, assignThreadSeq, clipUtf8, threadView, type AgentRow, type ThreadRow } from './teams.js';
 import { cancelTask, type TaskRow } from './tasks.js';
 import { AUTO_PATCH, AUTO_READ } from './swarm.js';
@@ -485,7 +485,8 @@ export class BotService {
   async computeBadgesForBots(
     pool: Db,
     p: Principal,
-    bots: BotRow[]
+    bots: BotRow[],
+    precomputedUnread?: Map<string, number>
   ): Promise<Map<string, BotBadges>> {
     const badgesMap = new Map<string, BotBadges>();
     if (!bots.length) return badgesMap;
@@ -493,74 +494,83 @@ export class BotService {
     const botIds = bots.map(b => b.id);
     const threadIds = bots.map(b => b.thread_id);
 
-    // 1. Unread counts
-    const unreadRes = await pool.query<{ bot_id: string; unread_count: number }>(
-      `SELECT b.id AS bot_id,
-         COALESCE((
-           SELECT count(*)::int FROM messages m
-           WHERE m.thread_id = b.thread_id
-             AND m.seq > COALESCE((
-               SELECT r.last_read_seq FROM thread_reads r
-               WHERE r.tenant_id = b.tenant_id AND r.principal_id = $1 AND r.thread_id = b.thread_id
-             ), 0)
-         ), 0) AS unread_count
-       FROM bots b
-       WHERE b.id = ANY($2::uuid[])`,
-      [p.id, botIds]
-    );
-    const unreadMap = new Map(unreadRes.rows.map(r => [r.bot_id, Number(r.unread_count)]));
-
-    // 2. Open questions per thread
-    const questionsRes = await pool.query<{
+    const runUnread = () => precomputedUnread
+      ? Promise.resolve(precomputedUnread)
+      : pool.query<{ bot_id: string; unread_count: number }>(
+          `SELECT b.id AS bot_id,
+             COALESCE((
+               SELECT count(*)::int FROM messages m
+               WHERE m.thread_id = b.thread_id
+                 AND m.seq > COALESCE((
+                   SELECT r.last_read_seq FROM thread_reads r
+                   WHERE r.tenant_id = b.tenant_id AND r.principal_id = $1 AND r.thread_id = b.thread_id
+                 ), 0)
+             ), 0) AS unread_count
+           FROM bots b
+           WHERE b.id = ANY($2::uuid[])`,
+          [p.id, botIds]
+        ).then(res => new Map(res.rows.map(r => [r.bot_id, Number(r.unread_count)])));
+    const runQuestions = () => pool.query<{
       thread_id: string;
       q_count: number;
       latest_prompt: string;
       latest_created_at: Date;
     }>(
-      `SELECT thread_id, count(*)::int AS q_count,
-         (array_agg(prompt ORDER BY created_at DESC))[1] AS latest_prompt,
-         max(created_at) AS latest_created_at
-       FROM questions
-       WHERE thread_id = ANY($1::uuid[]) AND tenant_id = $2 AND status = 'open'
-       GROUP BY thread_id`,
+      `WITH open_q AS (
+         SELECT thread_id, left(prompt, 300) AS prompt, created_at
+         FROM questions
+         WHERE thread_id = ANY($1::uuid[]) AND tenant_id = $2 AND status = 'open'
+       ),
+       counts AS (
+         SELECT thread_id, count(*)::int AS q_count FROM open_q GROUP BY thread_id
+       ),
+       latest AS (
+         SELECT DISTINCT ON (thread_id) thread_id, prompt AS latest_prompt, created_at AS latest_created_at
+         FROM open_q
+         ORDER BY thread_id, created_at DESC
+       )
+       SELECT c.thread_id, c.q_count, l.latest_prompt, l.latest_created_at
+       FROM counts c JOIN latest l ON l.thread_id = c.thread_id`,
       [threadIds, p.tenantId]
     );
-    const questionsMap = new Map(questionsRes.rows.map(r => [r.thread_id, {
-      count: Number(r.q_count),
-      prompt: r.latest_prompt,
-      at: new Date(r.latest_created_at)
-    }]));
-
-    // 3. Needs-you tasks per bot
-    const tasksRes = await pool.query<{
+    const runTasks = () => pool.query<{
       bot_id: string;
       t_count: number;
       latest_objective: string;
       latest_status: string;
-      latest_result: Record<string, unknown> | null;
+      failure_code: string | null;
+      served_provider: string | null;
+      provider: string | null;
+      branch: string | null;
+      changed_files: number | null;
       latest_updated_at: Date;
     }>(
-      `SELECT bot_id, count(*)::int AS t_count,
-         (array_agg(objective ORDER BY updated_at DESC))[1] AS latest_objective,
-         (array_agg(status ORDER BY updated_at DESC))[1] AS latest_status,
-         (array_agg(result ORDER BY updated_at DESC))[1] AS latest_result,
-         max(updated_at) AS latest_updated_at
-       FROM tasks
-       WHERE bot_id = ANY($1::uuid[]) AND tenant_id = $2 AND resolved_at IS NULL
-         AND (status = 'failed' OR (status = 'completed' AND result->>'head_commit' IS NOT NULL))
-       GROUP BY bot_id`,
+      `WITH matching AS (
+         SELECT bot_id, left(objective, 300) AS objective, status, updated_at,
+           result->'failure'->>'code' AS failure_code,
+           result->'served'->>'provider' AS served_provider,
+           result->>'provider' AS provider,
+           result->>'branch' AS branch,
+           CASE WHEN jsonb_typeof(result->'changed_files') = 'number' THEN (result->>'changed_files')::int END AS changed_files
+         FROM tasks
+         WHERE bot_id = ANY($1::uuid[]) AND tenant_id = $2 AND resolved_at IS NULL
+           AND (status = 'failed' OR (status = 'completed' AND result->>'head_commit' IS NOT NULL))
+       ),
+       counts AS (
+         SELECT bot_id, count(*)::int AS t_count FROM matching GROUP BY bot_id
+       ),
+       latest AS (
+         SELECT DISTINCT ON (bot_id) bot_id, objective AS latest_objective, status AS latest_status,
+           failure_code, served_provider, provider, branch, changed_files, updated_at AS latest_updated_at
+         FROM matching
+         ORDER BY bot_id, updated_at DESC
+       )
+       SELECT c.bot_id, c.t_count, l.latest_objective, l.latest_status,
+         l.failure_code, l.served_provider, l.provider, l.branch, l.changed_files, l.latest_updated_at
+       FROM counts c JOIN latest l ON l.bot_id = c.bot_id`,
       [botIds, p.tenantId]
     );
-    const tasksMap = new Map(tasksRes.rows.map(r => [r.bot_id, {
-      count: Number(r.t_count),
-      objective: r.latest_objective,
-      status: r.latest_status,
-      result: r.latest_result,
-      at: new Date(r.latest_updated_at)
-    }]));
-
-    // 4. Latest messages for threads
-    const messagesRes = await pool.query<{
+    const runMessages = () => pool.query<{
       thread_id: string;
       latest_kind: string;
       latest_body: string;
@@ -573,6 +583,33 @@ export class BotService {
        ORDER BY thread_id, seq DESC`,
       [threadIds]
     );
+
+    // Parallelize across connections when given a Pool; serialize on a single PoolClient to avoid pg@9 warnings.
+    const isClient = 'release' in pool;
+    const [unreadMap, questionsRes, tasksRes, messagesRes] = isClient
+      ? [await runUnread(), await runQuestions(), await runTasks(), await runMessages()] as const
+      : await Promise.all([runUnread(), runQuestions(), runTasks(), runMessages()]);
+
+    const questionsMap = new Map(questionsRes.rows.map(r => [r.thread_id, {
+      count: Number(r.q_count),
+      prompt: r.latest_prompt,
+      at: new Date(r.latest_created_at)
+    }]));
+
+    const tasksMap = new Map(tasksRes.rows.map(r => [r.bot_id, {
+      count: Number(r.t_count),
+      objective: r.latest_objective,
+      status: r.latest_status,
+      result: {
+        ...(r.failure_code ? { failure: { code: r.failure_code } } : {}),
+        ...(r.served_provider ? { served: { provider: r.served_provider } } : {}),
+        ...(r.provider ? { provider: r.provider } : {}),
+        ...(r.branch ? { branch: r.branch } : {}),
+        ...(r.changed_files !== null && r.changed_files !== undefined ? { changed_files: r.changed_files } : {}),
+      } as Record<string, unknown>,
+      at: new Date(r.latest_updated_at)
+    }]));
+
     const messagesMap = new Map(messagesRes.rows.map(r => [r.thread_id, {
       kind: r.latest_kind,
       body: r.latest_body,
@@ -622,6 +659,9 @@ export class BotService {
     const memberAgentIds = input.member_agent_ids.map(m => uuid(m, 'member_agent_ids'));
     const routing = validateRouting(input.routing);
     const rules = validateRules(input.rules);
+    if (rules.dispatch_all_projects !== undefined || rules.local_actions !== undefined) {
+      requireCondition(p.role === 'admin', 403, 'owner_required', 'Only an admin may set dispatch_all_projects or local_actions.');
+    }
     if (rules.lead_mode === 'router') {
       const otherCrew = [...new Set(memberAgentIds)].filter(id => id !== leadAgentId);
       requireCondition(otherCrew.length > 0, 400, 'router_needs_crew', 'A router bot requires at least one crew member besides the lead.');
@@ -798,6 +838,12 @@ export class BotService {
       const routingChanged = input.routing !== undefined && canonicalJson(nextRouting) !== canonicalJson(existing.routing);
 
       const nextRules = input.rules !== undefined ? validateRules(input.rules, existing.rules) : existing.rules;
+      if (
+        Boolean(nextRules.dispatch_all_projects) !== Boolean(existing.rules.dispatch_all_projects)
+        || Boolean(nextRules.local_actions) !== Boolean(existing.rules.local_actions)
+      ) {
+        requireCondition(p.role === 'admin', 403, 'owner_required', 'Only an admin may change dispatch_all_projects or local_actions.');
+      }
       if (nextRules.lead_mode === 'router') {
         requireCondition(nextMemberIds.length > 0, 400, 'router_needs_crew', 'A router bot requires at least one crew member besides the lead.');
       }
@@ -986,7 +1032,8 @@ export class BotService {
     const hasMore = rows.length > limit;
     const paged = rows.slice(0, limit);
 
-    const badges = await this.computeBadgesForBots(this.pool, p, paged);
+    const precomputedUnread = new Map(paged.map(r => [r.id, Number(r.unread_count)]));
+    const badges = await this.computeBadgesForBots(this.pool, p, paged, precomputedUnread);
 
     const bots = paged.map(r => {
       const b = badges.get(r.id) ?? { unread: Number(r.unread_count), needs_you: Number(r.needs_you_count), latest: null };
@@ -1056,6 +1103,10 @@ export class BotService {
     const botId = uuid(input.bot_id, 'bot_id');
 
     return transaction(this.pool, async db => {
+      const visible = (await db.query<{ scope: string }>('SELECT scope FROM bots WHERE id=$1 AND tenant_id=$2', [botId, p.tenantId])).rows[0];
+      requireFound(visible, 'Bot');
+      requireScope(p, visible.scope);
+      await scopeLock(db, 'tasks', p, visible.scope);
       await teamsLock(db, p.tenantId);
 
       const existing = (await db.query<BotRow>('SELECT * FROM bots WHERE id=$1 AND tenant_id=$2 FOR UPDATE', [botId, p.tenantId])).rows[0];

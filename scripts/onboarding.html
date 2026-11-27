@@ -7,9 +7,6 @@
 <meta name="theme-color" content="#06060a" />
 <meta name="referrer" content="no-referrer" />
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='32' y2='32' gradientUnits='userSpaceOnUse'%3E%3Cstop stop-color='%239be15d'/%3E%3Cstop offset='.5' stop-color='%234cc4e8'/%3E%3Cstop offset='1' stop-color='%23a78bfa'/%3E%3C/linearGradient%3E%3C/defs%3E%3Cpath d='M16 2 30 16 16 30 2 16Z' fill='url(%23g)'/%3E%3Cpath d='M16 9 23 16 16 23 9 16Z' fill='%2306060a'/%3E%3C/svg%3E" />
-<link rel="preconnect" href="https://fonts.googleapis.com" />
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
 <style>
 :root {
   --bg: #06060a; --surface: rgba(255,255,255,.035); --surface-2: rgba(255,255,255,.07);
@@ -20,7 +17,7 @@
   --ease: cubic-bezier(.2,.8,.2,1);
 }
 * { margin: 0; padding: 0; box-sizing: border-box; }
-body { background: var(--bg); color: var(--text); font: 400 1rem/1.5 "Outfit", system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+body { background: var(--bg); color: var(--text); font: 400 1rem/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
 body::before { content: ""; position: fixed; inset: 0; z-index: -1; pointer-events: none;
   background: radial-gradient(ellipse 60% 40% at 15% 0%, rgba(59,63,174,.28), transparent 70%), radial-gradient(ellipse 50% 35% at 90% 0%, rgba(30,143,120,.2), transparent 70%); }
 code, .mono { font: 400 .88em ui-monospace, SFMono-Regular, Menlo, monospace; }
@@ -33,10 +30,12 @@ h1 { font-size: 1.9rem; font-weight: 600; letter-spacing: -.03em; }
 .lede { color: var(--muted); margin: 0 0 28px 50px; max-width: 56ch; }
 h2 { font-size: .8rem; font-weight: 600; text-transform: uppercase; letter-spacing: .1em; color: var(--muted); margin: 34px 0 12px; }
 .banner { border: 1px solid var(--warn); color: var(--warn); border-radius: 12px; padding: 10px 14px; margin-bottom: 16px; font-size: .92rem; }
+.banner.bad { border-color: var(--bad); color: var(--bad); }
 .card { border: 1px solid var(--line); background: var(--surface); border-radius: 18px; padding: 16px 18px; margin-bottom: 10px; transition: border-color .25s var(--ease), background .25s; }
 .card.on { border-color: var(--line-2); background: var(--surface-2); }
 .card.off .name { color: var(--muted); }
 .row { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+.card > .row + .row { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); }
 .name { font-weight: 600; font-size: 1.05rem; letter-spacing: -.01em; }
 .pill { display: inline-block; margin-left: 10px; font-size: .74rem; font-weight: 500; padding: 2px 9px; border-radius: 999px; border: 1px solid var(--line-2); color: var(--muted); vertical-align: 2px; }
 .pill.ok { color: var(--ok); border-color: rgba(155,225,93,.4); }
@@ -61,7 +60,7 @@ label.t { cursor: pointer; }
 .field { display: flex; gap: 8px; margin-top: 12px; }
 input[type=text] { flex: 1; min-width: 0; background: rgba(255,255,255,.05); border: 1px solid var(--line-2); color: var(--text); border-radius: 12px; padding: 11px 14px; font: inherit; }
 input[type=text]::placeholder { color: #8a8a9c; }
-button { font: 500 .95rem "Outfit", sans-serif; cursor: pointer; border-radius: 999px; padding: 11px 22px; border: 1px solid var(--line-2); background: transparent; color: var(--text); transition: transform .25s var(--ease), background .25s; }
+button { font: 500 .95rem -apple-system, BlinkMacSystemFont, system-ui, sans-serif; cursor: pointer; border-radius: 999px; padding: 11px 22px; border: 1px solid var(--line-2); background: transparent; color: var(--text); transition: transform .25s var(--ease), background .25s; }
 button:hover:not(:disabled) { background: var(--surface-2); transform: translateY(-1px); }
 button:disabled { opacity: .5; cursor: not-allowed; }
 button.link { border: 0; padding: 4px 8px; color: var(--muted); background: none; }
@@ -101,6 +100,7 @@ ul.plain { list-style: none; display: grid; gap: 6px; }
   </header>
   <p class="lede">Swarmaa gives your agents one shared memory and task queue, kept on this Mac. Pick what to connect; you can re-run this any time.</p>
   <div id="banner" class="banner hidden" role="status">Dry run: nothing will be changed. You will only see what would happen.</div>
+  <div id="pgBanner" class="banner bad hidden" role="alert">PostgreSQL was not found on this Mac. Install it with <code>brew install postgresql@17</code>, then reload or re-run setup.</div>
 
   <div id="form">
     <h2 id="h-services">Services</h2>
@@ -112,11 +112,11 @@ ul.plain { list-style: none; display: grid; gap: 6px; }
     </section>
 
     <h2 id="h-projects">Projects</h2>
-    <p class="hint">Folders the swarm may read. Each becomes a scope named <code>project:&lt;folder&gt;</code>. <code>project:demo</code> (a scratch sandbox) always exists, and your interactive agents also get <code>project:general</code>, a scope with no folder.</p>
+    <p class="hint">Folders the swarm may read. Each becomes a scope named <code>project:&lt;folder&gt;</code> (or use <code>name=/path</code>). <code>project:demo</code> (a scratch sandbox) always exists, and every agent also gets <code>project:general</code>, a read-only scope with no project codebase.</p>
     <div id="projects" role="list" aria-labelledby="h-projects"></div>
     <div class="field">
       <label for="newfolder" class="sr">Folder path</label>
-      <input type="text" id="newfolder" placeholder="/Users/you/Projects/my-app" autocomplete="off" spellcheck="false" />
+      <input type="text" id="newfolder" placeholder="~/Projects/my-app or name=/Users/you/Projects/my-app" autocomplete="off" spellcheck="false" />
       <button type="button" id="addfolder">Add folder</button>
     </div>
     <div class="err" id="folderErr" role="alert"></div>
@@ -182,8 +182,9 @@ const SERVICES = [
 ];
 let det, folders = [];
 const sv = {}; // key -> { card, connect, worker, share }
+const appCards = []; // { card, input }
 
-function subRow(id, title, desc, checked, key) {
+function subRow(id, title, desc, checked) {
   const input = h('input', { type: 'checkbox', id, checked, onchange: sync });
   return { input, row: h('div', { class: 'row' }, h('label', { class: 't', for: id }, title, h('small', {}, desc)), h('span', { class: 'switch' }, input)) };
 }
@@ -204,8 +205,16 @@ function buildServices() {
       h('span', { class: 'switch' }, connect)));
     const rec = { card, connect, s };
     const sub = h('div', { class: 'sub' });
-    if (s.worker) { const r = subRow(`w-${s.key}`, 'Run background worker', 'Read-only: picks up review and research tasks. It cannot change your files.', !!(st.workers || []).includes(s.key)); rec.worker = r.input; sub.append(r.row);
-      const e = subRow(`e-${s.key}`, 'Allow edits (off = read-only)', 'Opt in: edits files and runs commands in sandboxed git worktrees, commits to local swarmaa/' + s.key + '/<id> branches, never pushes.', !!(st.edits || []).includes(s.key)); rec.edit = e.input; sub.append(e.row); }
+    if (s.worker) {
+      const workerDesc = s.key === 'agy'
+        ? 'Read-only: picks up review tasks (sandboxed; review and in-project edits only, no research).'
+        : 'Read-only: picks up review and research tasks. It cannot change your files.';
+      const editDesc = s.key === 'agy'
+        ? 'Opt in: review and in-project edits in sandboxed git worktrees, commits to local swarmaa/agy/<id> branches, never pushes.'
+        : 'Opt in: edits files and runs commands in sandboxed git worktrees, commits to local swarmaa/' + s.key + '/<id> branches, never pushes.';
+      const r = subRow(`w-${s.key}`, 'Run background worker', workerDesc, !!(st.workers || []).includes(s.key)); rec.worker = r.input; sub.append(r.row);
+      const e = subRow(`e-${s.key}`, 'Allow edits (off = read-only)', editDesc, !!(st.edits || []).includes(s.key)); rec.edit = e.input; sub.append(e.row);
+    }
     if (s.share) { const r = subRow(`s-${s.key}`, 'Share chats across harnesses', 'Records this tool’s chats so your other agents can recall them.', st.sharing ? st.sharing.includes(s.key) : true); rec.share = r.input; sub.append(r.row); }
     if (sub.children.length) { card.append(sub); rec.sub = sub; }
     sv[s.key] = rec; $('services').append(card);
@@ -219,13 +228,15 @@ function buildApps() {
   const cap = det.captureSources || [], hooks = det.hookApps || [];
   if (!cap.length && !hooks.length) return;
   $('apps').classList.remove('hidden');
-  const card = (id, name, desc, checked) => {
-    const input = h('input', { type: 'checkbox', id, checked });
-    $('appcards').append(h('section', { class: 'card on', 'aria-label': name }, h('div', { class: 'row' },
-      h('label', { class: 't', for: id }, h('span', { class: 'name' }, name), h('div', { class: 'hint' }, desc)), h('span', { class: 'switch' }, input))));
+  const addCard = (id, name, desc, checked) => {
+    const input = h('input', { type: 'checkbox', id, checked, onchange: sync });
+    const card = h('section', { class: 'card on', 'aria-label': name }, h('div', { class: 'row' },
+      h('label', { class: 't', for: id }, h('span', { class: 'name' }, name), h('div', { class: 'hint' }, desc)), h('span', { class: 'switch' }, input)));
+    appCards.push({ card, input });
+    $('appcards').append(card);
   };
-  if (cap.length) card('cap-on', 'Capture chats from other apps (Cursor, OpenCode, …)', `Reads the local chat history of ${cap.map(k => CAPTURE_LABELS[k] || k).join(', ')} every couple of minutes so your agents can recall it. Nothing runs in the background between scans.`, st.capture ?? true);
-  for (const k of hooks) card(`ha-${k}`, HOOK_APPS[k] || k, 'Share chats across harnesses: adds a small hook that records this app’s chats.', st.hookApps ? st.hookApps.includes(k) : true);
+  if (cap.length) addCard('cap-on', 'Capture chats from other apps (Cursor, OpenCode, …)', `Reads the local chat history of ${cap.map(k => CAPTURE_LABELS[k] || k).join(', ')} every couple of minutes so your agents can recall it. Nothing runs in the background between scans.`, st.capture ?? true);
+  for (const k of hooks) addCard(`ha-${k}`, HOOK_APPS[k] || k, 'Share chats across harnesses: adds a small hook that records this app’s chats.', st.hookApps ? st.hookApps.includes(k) : true);
 }
 
 function sync() {
@@ -234,6 +245,10 @@ function sync() {
     r.card.classList.toggle('on', on); r.card.classList.toggle('off', !on);
     for (const x of [r.worker, r.share]) if (x) { x.disabled = !on; }
     if (r.edit) { r.edit.disabled = !on || !r.worker.checked; if (r.edit.disabled) r.edit.checked = false; }
+  }
+  for (const a of appCards) {
+    a.card.classList.toggle('on', a.input.checked);
+    a.card.classList.toggle('off', !a.input.checked);
   }
   const hosted = sv.grok.connect.checked || sv.dot.connect.checked;
   $('remote').classList.toggle('hidden', !hosted);
@@ -249,8 +264,12 @@ function renderFolders() {
 function addFolder() {
   const v = $('newfolder').value.trim(); const e = $('folderErr'); e.textContent = '';
   if (!v) return;
-  if (!v.startsWith('/')) { e.textContent = 'Use an absolute path that starts with /.'; return; }
-  const p = v.length > 1 ? v.replace(/\/+$/, '') : v;
+  const m = /^(?:([a-z][a-z0-9-]{0,40})=)?((?:\/|~\/).*)$/.exec(v);
+  if (!m) { e.textContent = 'Use an absolute path (/…), ~/…, or name=/abs/path.'; return; }
+  const name = m[1];
+  const rawPath = m[2];
+  const cleanPath = rawPath.length > 1 && rawPath !== '~/' ? rawPath.replace(/\/+$/, '') : rawPath;
+  const p = name ? `${name}=${cleanPath}` : cleanPath;
   if (!folders.includes(p)) folders.push(p);
   $('newfolder').value = ''; renderFolders();
 }
@@ -262,6 +281,15 @@ function plan() {
   const hookApps = {};
   for (const k of det.hookApps || []) if ($(`ha-${k}`)?.checked) hookApps[k] = { share: true };
   return { harnesses, capture: { enabled: !!$('cap-on')?.checked }, hookApps, folders, wrapAliases: $('wrap-aliases').checked, autostart: $('autostart').checked, ...(hosted && $('remoteOn').checked ? { remote: { hostname: $('hostname').value.trim() } } : {}) };
+}
+
+function backToForm() {
+  if (polling) { clearTimeout(polling); polling = null; }
+  $('progress').classList.add('hidden');
+  $('form').classList.remove('hidden');
+  $('bar').classList.remove('hidden');
+  $('preview').disabled = $('connect').disabled = false;
+  window.scrollTo(0, 0);
 }
 
 let polling;
@@ -284,7 +312,19 @@ async function start(dry) {
       if (j.lines.length) { const log = $('log'); log.textContent += j.lines.join('\n') + '\n'; log.scrollTop = log.scrollHeight; }
       after = j.next; renderSteps(j.steps, j.dry);
       if (!j.running && j.summary) { renderSummary(j.summary); return; }
-    } catch (e) { $('log').textContent += `\n(lost contact with setup: ${e.message})\n`; return; }
+    } catch (e) {
+      $('log').textContent += `\n(lost contact with setup: ${e.message})\n`;
+      const box = $('summary');
+      box.replaceChildren(
+        h('h2', {}, 'Connection lost'),
+        h('p', { class: 'err' }, `Could not reach setup status (${e.message}).`),
+        h('div', { class: 'field', style: 'justify-content:flex-end;margin-top:16px' },
+          h('button', { type: 'button', onclick: backToForm }, 'Back to settings'),
+          h('button', { type: 'button', class: 'primary', onclick: () => { box.classList.add('hidden'); box.replaceChildren(); tick(); } }, 'Retry')),
+      );
+      box.classList.remove('hidden');
+      return;
+    }
     polling = setTimeout(tick, 600);
   };
   tick();
@@ -298,7 +338,7 @@ function renderSteps(steps, dry) {
 const LABEL = Object.fromEntries(SERVICES.map(s => [s.key, s.label]));
 const names = a => a.length ? a.map(k => LABEL[k] || k).join(', ') : 'none';
 function renderSummary(s) {
-  const box = $('summary'); box.classList.remove('hidden');
+  const box = $('summary'); box.classList.remove('hidden'); box.replaceChildren();
   const dl = h('dl', { class: 'sum' });
   const add = (t, d) => { dl.append(h('dt', {}, t), h('dd', {}, d)); };
   add('Connected', names(s.agents));
@@ -307,7 +347,7 @@ function renderSummary(s) {
   add('Chat sharing', names(s.sharing));
   if ((s.captured || []).length) add('Captured apps', s.captured.map(k => CAPTURE_LABELS[k] || k).join(', '));
   if ((s.hookApps || []).length) add('Hook apps', s.hookApps.map(k => HOOK_APPS[k] || k).join(', '));
-  add('Scopes', h('ul', { class: 'plain' }, s.projects.map(p => h('li', {}, h('span', { class: 'mono' }, p.scope), ' → ', h('span', { class: 'mono' }, p.root))), h('li', {}, h('span', { class: 'mono' }, 'project:general'), ' → no folder (interactive agents only)')));
+  add('Scopes', h('ul', { class: 'plain' }, s.projects.map(p => h('li', {}, h('span', { class: 'mono' }, p.scope), ' → ', h('span', { class: 'mono' }, p.root))), h('li', {}, h('span', { class: 'mono' }, 'project:general'), ' → .local/general (read-only, no codebase)')));
   add('Service', h('span', { class: 'mono' }, s.serviceUrl));
   if (s.mcpUrl) {
     const copy = h('button', { type: 'button', onclick: async () => { try { await navigator.clipboard.writeText(s.mcpUrl); copy.textContent = 'Copied'; } catch { copy.textContent = 'Select and copy'; } } }, 'Copy');
@@ -319,7 +359,7 @@ function renderSummary(s) {
   if (s.warnings.length) box.append(h('h2', {}, 'Needs attention'), h('ul', { class: 'plain warn-t' }, s.warnings.map(w => h('li', {}, w))));
   if (s.nextSteps.length) box.append(h('h2', {}, 'Next steps'), h('ul', { class: 'plain' }, s.nextSteps.map(n => h('li', {}, n))));
   const act = h('div', { class: 'field', style: 'justify-content:flex-end;margin-top:22px' });
-  act.append(h('button', { type: 'button', onclick: () => { $('progress').classList.add('hidden'); $('form').classList.remove('hidden'); $('bar').classList.remove('hidden'); $('preview').disabled = $('connect').disabled = false; window.scrollTo(0, 0); } }, s.dry ? 'Back to settings' : 'Change settings'));
+  act.append(h('button', { type: 'button', onclick: backToForm }, s.dry ? 'Back to settings' : 'Change settings'));
   act.append(h('button', { type: 'button', class: 'primary', onclick: async e => { e.target.disabled = true; try { await api('/api/close', {}); } catch { /* already closed */ } box.append(h('p', { class: 'hint', role: 'status' }, 'Setup server stopped. You can close this tab.')); } }, 'Finish and close'));
   box.append(act);
   box.scrollIntoView({ block: 'start', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
@@ -337,6 +377,7 @@ async function init() {
   $('hostname').value = (st.remote && st.remote.hostname) || det.defaultHostname;
   $('autostart').checked = st.autostart ?? true;
   if (det.dry) $('banner').classList.remove('hidden');
+  if (det.postgres && !det.postgres.found) $('pgBanner').classList.remove('hidden');
   buildServices(); buildApps(); renderFolders(); sync();
 }
 init();

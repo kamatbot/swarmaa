@@ -61,7 +61,11 @@ It is set once, at insert, and never changed.
 | `review_edits` | true | When a bot `patch` task finishes with a commit, the service queues a `review` task of that branch, routed by `routing.review` (default `different_from_author`). Its verdict posts as a `task` card, and the edit's card shows *Ready for review* only after the review passes. |
 | `require_tests` | false | When a bot `patch` task finishes with a commit, the service queues a `check` task with `initiator_kind = 'bot_check'`. It runs the project's tests on that branch, reusing the flows `tests_pass` check. A failing check posts a `task` card with **Send back**, which queues a follow-up turn for the author with the failure. |
 | `schedule` | null | A 5-field cron in the owner's time zone (`CRON_TZ=…` prefix allowed). The service's tick posts a notice "Scheduled run" into the bot thread and queues the lead's turn with `initiator_kind = 'schedule'`, then sets `next_run_at`. It skips a run while the lead already has a queued or running turn. |
-| `lead_mode` | 'default' | `'default'` or `'router'`. In router mode, the bot lead's turns are always read-only, run on `routing.summary`, and may only emit dispatch actions (`swarm_start`, `handoff`, `question_ask`, `bot_appearance`). Self-delegation via `DELEGATE:` is suppressed. Note that `swarm_update` is excluded from router mode for v1. |
+| `schedule_paused` | false | Pauses the bot's cron schedule without clearing `schedule`. |
+| `quiet_schedule` | false | Suppresses idle "Scheduled run" notices when a scheduled check finds nothing to report. |
+| `first_reply` | provider default / `'off'` | Selects a fast model for initial chat replies that may delegate heavier work (`DELEGATE:`), or `'off'`. |
+| `lead_mode` | `'default'` | `'default'` or `'router'`. In router mode, the bot lead's turns are always read-only, run on `routing.summary`, and may only emit dispatch actions (`swarm_start`, `handoff`, `question_ask`, `bot_appearance`). Self-delegation via `DELEGATE:` is suppressed. Note that `swarm_update` is excluded from router mode for v1. |
+| `local_actions` | false | Allows the bot lead to emit closed Mac/iPhone `local_action` actions (reminders, calendar events, notes, timers). |
 
 A bot's `starred` boolean is returned by create, update, get and list. At most one live bot per tenant can be starred, across all scopes (migration 028). Setting `starred: true` on create or update atomically clears the previous star and emits `bot.updated` for both bots; clearing the previous star also increments its version. The caller must have access to both scopes or the entire write fails. Setting `starred: false` clears the star; archiving also clears it. Create retries with the same idempotency key do not move the star again.
 
@@ -72,10 +76,12 @@ All follow the Teams conventions: closed schemas, `idempotency_key` on writes, `
 | Tool | Permission | Input → output |
 |---|---|---|
 | `bot_create` | `agent:manage` | `name, job, scope, lead_agent_id, member_agent_ids[], routing?, rules?, schedule?, avatar?, starred?, idempotency_key` → `{bot, thread}`. Creates the `bot` thread with lead and members. |
-| `bot_update` | `agent:manage` | `bot_id, expected_version`, plus any of `name, job, avatar, lead_agent_id, member_agent_ids, routing, rules, schedule, starred` → `{bot}`. A routing or crew change posts a `notice` such as "Edits now run on Claude Opus 5.5 · High". |
+| `bot_update` | `agent:manage` | `bot_id, expected_version`, plus any of `name, job, avatar, color, lead_agent_id, member_agent_ids, routing, rules, schedule, starred` → `{bot}`. A routing or crew change posts a `notice` such as "Edits now run on Claude Opus 5.5 · High". |
 | `bot_get` | `agent:read` | `bot_id` → `{bot}` with `crew` (agents, lead first), `routing_now` and `badges`. |
 | `bot_list` | `agent:read` | `scope?, include_archived?, after?, limit?` → `{bots, has_more, next_cursor}`. Ordered with **updates first**: bots with `badges.needs_you > 0`, then `starred = true`, then `badges.unread > 0`, then by last activity. |
 | `bot_archive` | `agent:manage` | `bot_id` → `{bot}`. Clears its star. Its thread stays readable, and its queued tasks are cancelled. |
+| `bot_unarchive` | `agent:manage` | `bot_id` → `{bot}`. Unhides an archived bot without restoring its star or cancelled tasks; resumes its schedule unless `schedule_paused`. |
+| `bot_delete` | `agent:manage` | `bot_id, confirm_name` → `{deleted: true, bot_id}`. Permanently deletes an archived bot and its thread (requires exact `confirm_name`); tasks and agents are retained. |
 | `bot_routing_preview` | `agent:read` | `bot_id` → `routing_now`. |
 
 **`routing_now`:** for each kind, `{runner, provider_now, reason}`, where `provider_now` is the provider the router would choose right now under current quota and the bot's rules. It feeds the header line "Auto · Antigravity researches, Claude edits".
@@ -105,13 +111,11 @@ All follow the Teams conventions: closed schemas, `idempotency_key` on writes, `
 - The global routing policy (`routing_set`) stays the default for work outside a bot.
 - Workers keep their own configuration and environment. `src/bridge/sandbox.ts` and `providerEnvironment` are unchanged.
 
-## 6. Build plan
+## 6. Implementation map
 
-| Part | Owner | Scope |
+| Part | Location | Scope |
 |---|---|---|
-| Architecture and migration 027 | coordinator | This file and `db/migrations/027_bots.sql`. |
-| **B1: bots core** | Antigravity | `src/core/bots.ts`: the tools, the crew, bot thread routing, `bot_id` propagation, task cards and their `thread_read` embed, badges and ordering, and `bot.updated`. |
-| **B2: bot routing and rules** | Codex (GPT-6.1 Sol) | `src/core/bot-routing.ts`: runner resolution per kind, the quota floor, `different_from_author`, `routing_now` / `bot_routing_preview`, `require_tests` checks, and the schedule tick. |
-| **Mac app** | coordinator | The design's Bots home, bot thread with task cards, Bot settings, rail usage hover cards, Tasks and Usage, in `Mac-app/`. |
-
-B1 and B2 touch different files, apart from small hooks in `src/core/tasks.ts` and `src/core/tools.ts`. The coordinator merges them.
+| Schema migrations | `db/migrations/027_bots.sql`, `028_bot_star.sql`, `030_bot_quiet_runs.sql`, `031_bot_schedule_cards.sql`, `032_bot_color.sql` | Bots table, starring, quiet runs, schedule cards, and bot colors. |
+| Bots core | `src/core/bots.ts` | Tools (`bot_create`, `bot_update`, `bot_get`, `bot_list`, `bot_archive`, `bot_unarchive`, `bot_delete`), crew/thread routing, `bot_id` propagation, task cards, badges, and `bot.updated`. |
+| Bot routing and rules | `src/core/bot-routing.ts` | Runner resolution per kind, quota floor, `different_from_author`, `routing_now` / `bot_routing_preview`, `require_tests` checks, and schedule tick. |
+| Native apps | `Mac-app/`, `iOS-app/`, `Shared/` | Bots home, bot thread with task cards, Bot settings, rail usage cards, Tasks, and Usage views. |

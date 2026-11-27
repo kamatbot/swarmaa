@@ -75,8 +75,9 @@ try {
     requireCondition(/^[a-z][a-z0-9_.-]+$/.test(name), 400, 'invalid_name', 'Use a stable lowercase connection name, such as claude-worker.');
     const role: Role = enumValue(values.role, 'role', ['admin', 'frontend', 'worker']);
     const scopes = parseScopes(role);
-    const extra = (values.grant ?? []).map(v => enumValue<Permission>(v, 'grant', ['task:patch', 'task:submit', 'task:cancel']));
+    const extra = (values.grant ?? []).map(v => enumValue<Permission>(v, 'grant', [...GRANTABLE_PERMISSIONS, 'task:patch', 'task:submit', 'task:cancel']));
     requireCondition(!extra.includes('task:patch') || role === 'worker', 400, 'invalid_grant', 'task:patch is a worker execution grant.');
+    for (const p of extra) if ((GRANTABLE_PERMISSIONS as readonly string[]).includes(p)) requireCondition(role === 'frontend', 400, 'invalid_grant', `${p} can only be granted to frontend identities.`);
     const permissions = [...new Set([...ROLE_PERMISSIONS[role], ...extra])];
     await emit(await provisionConnection(pool, { tenant, name, role, scopes, permissions }), true);
   } else if (command === 'list') {

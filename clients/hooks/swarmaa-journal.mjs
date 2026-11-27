@@ -4,7 +4,7 @@
 // Never breaks or slows the harness: swallows every error, exits 0, prints nothing (except `{}` for agy, whose hook contract wants JSON).
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { appendFileSync, mkdirSync, readFileSync, realpathSync, writeFileSync, chmodSync } from 'node:fs';
+import { appendFileSync, chmodSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { open } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -269,13 +269,56 @@ async function readParts(path) {
   } finally { await fh.close(); }
 }
 
+const MAX_LOG_BYTES = 512 * 1024;
+const PRUNE_INTERVAL_MS = 24 * 60 * 60 * 1000;
+const JOURNAL_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+
 function readJsonFile(path) { try { return JSON.parse(readFileSync(path, 'utf8')); } catch { return null; } }
+
+/** Merges project roots from .local/setup.json and every .local/bridge-*.json (ignoring project:general). */
+export function loadProjectRoots(root) {
+  const projects = [...(readJsonFile(join(root, '.local', 'setup.json'))?.projects ?? [])];
+  try {
+    for (const n of readdirSync(join(root, '.local'))) {
+      if (/^bridge-[a-z0-9-]+\.json$/.test(n)) {
+        projects.push(...(readJsonFile(join(root, '.local', n))?.projects ?? []).filter(p => p?.scope !== 'project:general'));
+      }
+    }
+  } catch { /* none */ }
+  return projects;
+}
+
+/** Opportunistically prunes stale journal cache files older than maxAgeMs (bounded, gated once per day). */
+export function pruneJournalCache(dir, maxAgeMs = JOURNAL_MAX_AGE_MS, { force = false, maxEntries = 64 } = {}) {
+  let removed = 0;
+  try {
+    const marker = join(dirname(dir), '.journal-last-prune');
+    const now = Date.now();
+    if (!force) {
+      try { if (now - statSync(marker).mtimeMs < PRUNE_INTERVAL_MS) return 0; } catch { /* first sweep */ }
+    }
+    const entries = readdirSync(dir);
+    let scanned = 0;
+    for (const name of entries) {
+      if (!name.endsWith('.json')) continue;
+      if (++scanned > maxEntries) break;
+      const p = join(dir, name);
+      try {
+        if (now - statSync(p).mtimeMs > maxAgeMs) { unlinkSync(p); removed++; }
+      } catch { /* ignore */ }
+    }
+    try { writeFileSync(marker, '', { mode: 0o600 }); } catch { /* ignore */ }
+  } catch { /* ignore */ }
+  return removed;
+}
 
 function log(root, harness, msg) {
   try {
     const dir = join(root, '.local', 'logs');
     mkdirSync(dir, { recursive: true, mode: 0o700 });
-    appendFileSync(join(dir, 'journal.log'), `${new Date().toISOString()} ${harness} ${msg}\n`, { mode: 0o600 });
+    const file = join(dir, 'journal.log');
+    try { if (statSync(file).size > MAX_LOG_BYTES) renameSync(file, `${file}.1`); } catch { /* missing */ }
+    appendFileSync(file, `${new Date().toISOString()} ${harness || 'unknown'} ${msg}\n`, { mode: 0o600 });
   } catch { /* ignore */ }
 }
 
@@ -338,9 +381,9 @@ export async function run(harness, argvPayload, stdinText, root) {
   if (typeof token !== 'string' || !token) return 'no-token';
   let port = 8787;
   try { port = readPort(readFileSync(join(root, '.env'), 'utf8')); } catch { /* default */ }
-  const setup = readJsonFile(join(root, '.local', 'setup.json'));
-  const scope = resolveScope(cwd, setup?.projects);
+  const scope = resolveScope(cwd, loadProjectRoots(root));
   const body = buildBody({ harness, session_id, scope, title, cwd, turns, ended });
+  pruneJournalCache(join(root, '.local', 'journal'));
 
   const res = await fetch(`http://127.0.0.1:${port}/api/tools/session_record`, {
     method: 'POST',
@@ -354,7 +397,15 @@ export async function run(harness, argvPayload, stdinText, root) {
 async function main() {
   const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
   const [harness, ...rest] = process.argv.slice(2);
-  setTimeout(() => process.exit(0), 2500).unref(); // hard budget
+  let agyWrote = false;
+  const finish = () => {
+    if (harness === 'agy' && !agyWrote) {
+      agyWrote = true;
+      try { process.stdout.write('{}\n'); } catch { /* ignore */ }
+    }
+    process.exit(0);
+  };
+  setTimeout(() => { log(root, harness, 'timeout'); finish(); }, 2500).unref(); // hard budget
   let status = 'error';
   try {
     const then = rest.indexOf('--then');
@@ -368,9 +419,11 @@ async function main() {
     status = `error ${err?.name ?? 'Error'}`; // name only: never message text, which could carry chat content or URLs
   }
   if (status !== 'ok') log(root, harness, status);
-  if (harness === 'agy') process.stdout.write('{}\n'); // Antigravity hooks expect a JSON object on stdout
-  process.exit(0);
+  finish();
 }
 
 const isMain = (() => { try { return Boolean(process.argv[1]) && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); } catch { return false; } })();
-if (isMain) main().catch(() => process.exit(0));
+if (isMain) main().catch(() => {
+  if (process.argv[2] === 'agy') try { process.stdout.write('{}\n'); } catch { /* ignore */ }
+  process.exit(0);
+});

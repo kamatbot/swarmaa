@@ -150,7 +150,7 @@ test('copilot: events.jsonl turns, workspace.yaml meta, no advance past a partia
   assert.equal(u.title, 'Retry work');
   assert.deepEqual(texts(u), ['user:Add a retry to fetchUser', 'assistant:Added exponential backoff.']);
   const full = statSync(file).size;
-  assert.deepEqual([r.sigs[file]!.offset, r.sigs[file]!.last_line, r.sigs[file]!.size], [full, 6, full]);
+  assert.deepEqual([r.sigs[file]!.offset, r.sigs[file]!.last_line, r.sigs[file]!.size], [full, 0, full]);
 
   appendFileSync(file, '{"id":"7","type":"user.message","data":{"content":"half a lin');
   const partial = scan('copilot', home, { sessions: r.sigs });
@@ -160,7 +160,8 @@ test('copilot: events.jsonl turns, workspace.yaml meta, no advance past a partia
   appendFileSync(file, 'e"}}\n');
   const done = scan('copilot', home, { sessions: partial.sigs });
   assert.equal(done.updates[0]!.turns.at(-1)!.text, 'half a line');
-  assert.equal(done.sigs[file]!.last_line, 7);
+  assert.equal(done.sigs[file]!.last_line, 0);
+  assert.ok(Number(done.sigs[file]!.offset) > full);
   assert.equal(scan('copilot', home, { sessions: done.sigs }).updates.length, 0);
   rmSync(home, { recursive: true });
 });
@@ -524,7 +525,7 @@ test('kiro hook: prompt then reply accumulate in the rolling cache, cwd sticks, 
     const b = hits[2]!.body;
     assert.deepEqual([b.harness, b.session_id, b.scope, b.title, b.cwd], ['kiro', 'k1', 'project:app', 'Hello kiro', '/w/app']);
     assert.deepEqual(b.turns.map((t: any) => `${t.role}:${t.text}`), ['user:Hello kiro', 'assistant:Hi there']);
-    const cache = readdirSync(join(root, '.local', 'journal'));
+    const cache = readdirSync(join(root, '.local', 'journal')).filter(f => f.endsWith('.json'));
     assert.equal(cache.length, 1);
     assert.equal(statSync(join(root, '.local', 'journal', cache[0]!)).mode & 0o777, 0o600);
   });

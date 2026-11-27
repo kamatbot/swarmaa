@@ -1,6 +1,8 @@
 // Pure helpers for scripts/setup.ts. No side effects at import.
 import { existsSync, statSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
+import { codingCliToolNames } from '../src/core/tools.js';
 
 /** Package root: the nearest ancestor of `from` that has a package.json (works from scripts/ in a checkout and dist/scripts/ in a compiled runtime). */
 export function packageRoot(from: string): string {
@@ -25,7 +27,18 @@ export function scriptCommand(root: string, name: string, o: { envFile?: boolean
 
 export interface ScopeRoot { scope: string; root: string }
 
-export const AGY_TOOLS = ['inbox_get', 'message_send', 'task_watch', 'artifact_get', 'context_get', 'events_poll', 'lesson_list', 'lesson_propose', 'lesson_search', 'memory_get', 'memory_propose', 'memory_search', 'session_get', 'session_list', 'swarm_status', 'task_cancel', 'task_continue', 'task_get', 'task_list', 'task_submit'];
+export const AGY_TOOLS: string[] = codingCliToolNames();
+
+/** Elevated permissions granted to native Mac/iOS app identities (swarmaa-mac and paired devices). */
+export const NATIVE_APP_PERMISSIONS = [
+  'agent:read',
+  'agent:manage',
+  'thread:read',
+  'thread:write',
+  'app:device',
+  'answer_questions',
+  'routing:manage',
+] as const;
 
 export function parseEnv(text: string): Record<string, string> {
   const out: Record<string, string> = {};
@@ -237,7 +250,8 @@ export function validatePlan(input: unknown): SetupPlan {
   if (!Array.isArray(input.folders) || input.folders.length + 2 > 512) errors.push('folders must be a list of at most 510 paths (512 scopes including demo and general)');
   else for (const entry of input.folders) {
     if (typeof entry !== 'string' || !entry || entry.length > 4096 || entry.includes('\0')) { errors.push('folder must be a path string'); continue; }
-    const { name, path: f } = splitFolder(entry);
+    const expanded = entry.replace(/^([a-z][a-z0-9-]{0,40}=)?~(?=\/|$)/, (_m, n: string | undefined) => `${n ?? ''}${homedir()}`);
+    const { name, path: f } = splitFolder(expanded);
     if (!isAbsolute(f)) { errors.push(`folder is not an absolute path: ${f}`); continue; }
     try { if (!statSync(f).isDirectory()) throw new Error('not a directory'); } catch { errors.push(`folder is not an existing directory: ${f}`); continue; }
     const r = name ? `${name}=${resolve(f)}` : resolve(f);

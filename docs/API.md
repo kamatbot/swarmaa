@@ -2,8 +2,6 @@
 
 This is the shared contract used by the REST tools, MCP tools and local stdio proxy. Every call enters `CoreService` in `src/core/index.ts`; permission and tenant/scope checks are performed there and in the database queries. A transport cannot grant itself a wider scope by placing a tenant, worker identity or permission field in a request.
 
-**Validation status:** the implementation and integration-test source were authored and statically reviewed. No dependency installation, build, type check, database migration, server or test was executed during this source-only delivery. Run the validation steps in the handoff guide on a disposable database before connecting real projects.
-
 ## Calling tools
 
 For a provisioned service bearer token, send `POST /api/tools/TOOL_NAME` with a JSON object body and `Authorization: Bearer <connection-token>`. Success wraps the tool result as `{"result": ...}`. MCP exposes the same names and arguments through `tools/list` and `tools/call`; use the transport's negotiated protocol version and framing. OAuth access tokens are audience-bound to the MCP resource, so use a provisioned service token for REST workers.
@@ -12,14 +10,28 @@ All examples below show **tool arguments and unwrapped tool results**, without t
 
 ### Permissions
 
+Swarmaa separates default coding-CLI `frontend` identities from native Mac/iOS app identities:
+
+- **Default `frontend` role** (Claude Code, Codex, Antigravity, Dot, Grok): `memory:read`, `memory:write`, `task:read`, `task:submit`, `task:cancel`, `artifact:read`, `events:read`.
+- **Default `worker` role** (bridge workers): `memory:read`, `memory:write`, `task:read`, `task:claim`, `task:work`, `artifact:read`, `artifact:write`, `events:read` (`task:patch` is an explicit per-worker opt-in grant).
+- **Grantable native-app / elevated permissions** (`GRANTABLE_PERMISSIONS`, granted via `npm run admin -- grant` or provisioned automatically for `swarmaa-mac` and paired phone connections): `agent:read`, `agent:manage`, `thread:read`, `thread:write`, `app:device`, `answer_questions`, `routing:manage`, `lesson:review`.
+
 | Tool | Required permission | Additional condition |
 | --- | --- | --- |
 | `context_get`, `memory_search`, `memory_get` | `memory:read` | `context_get` also needs `task:read` when `task_id` is supplied |
 | `memory_propose` | `memory:write` and `memory:read` | Exact authorized scope |
 | `memory_promote`, `memory_retract` | `memory:moderate` and `memory:read` | Admin role; never a worker or frontend self-approval |
+| `session_record` | `memory:write` | Exact authorized scope |
+| `session_list`, `session_get` | `memory:read` | Permitted scopes |
+| `lesson_propose` | `memory:write` and `memory:read` | Exact authorized scope |
+| `lesson_list`, `lesson_search` | `memory:read` | Permitted scopes |
+| `lesson_review` | `lesson:review` and `memory:read` | Owner-granted frontend identity (or admin) |
+| `routing_get` | `memory:read` | Tenant routing policy |
+| `routing_set` | `routing:manage` | Owner-granted frontend identity (or admin) |
+| `usage_report` | `task:claim` | Worker role |
 | `task_submit`, `task_continue` | `task:submit` and `task:read` | Exact authorized scope |
-| `task_get`, `task_list`, `usage_cost` | `task:read` | Exact authorized scope |
-| `task_claim` | `task:claim` and `task:read` | Worker role; patch claims additionally need `task:patch` |
+| `task_get`, `task_list`, `usage_cost`, `swarm_status` | `task:read` | Exact authorized scope |
+| `task_claim` | `task:claim` and `task:read` | Worker role; patch/check claims additionally need `task:patch` |
 | `task_heartbeat`, `task_checkpoint`, `task_finish` | `task:work` and `task:read` | Worker role and current owned lease; exact completion replay is the documented exception |
 | `task_cancel` | `task:cancel` and `task:read` | Expected current task version |
 | `artifact_put` | `artifact:write` | Worker role and current owned lease |
@@ -28,18 +40,22 @@ All examples below show **tool arguments and unwrapped tool results**, without t
 | `inbox_get`, `inbox_poll`, `inbox_ack` | `events:read` | Own principal/session; task items additionally require `task:read` |
 | `task_watch` | `task:read` and `events:read` | Scoped task and own session |
 | `events_poll` | `events:read` | Exact authorized scope; each event type also requires its resource's read permission |
-| `agent_create`, `agent_update`, `agent_archive` | `agent:manage` and `agent:read` | Exact authorized scope |
-| `agent_get`, `agent_list` | `agent:read` | Exact authorized scope |
-| `bot_create`, `bot_update`, `bot_archive` | `agent:manage` and `agent:read` | Exact authorized scope |
-| `bot_get`, `bot_list` | `agent:read` | Exact authorized scope |
-| `thread_post` | `thread:write` and `thread:read` | Exact authorized scope |
-| `thread_read`, `thread_attachment_get`, `thread_mark_read`, `thread_list` | `thread:read` | Exact authorized scope |
+| `agent_create`, `agent_update`, `agent_archive`, `channel_create`, `channel_update` | `agent:manage` and `agent:read` | Exact authorized scope (native-app grant) |
+| `agent_get`, `agent_list`, `bot_get`, `bot_list`, `bot_routing_preview` | `agent:read` | Exact authorized scope (native-app grant) |
+| `bot_create`, `bot_update`, `bot_archive`, `bot_unarchive`, `bot_delete` | `agent:manage` and `agent:read` | Exact authorized scope (native-app grant) |
+| `thread_post` | `thread:write` and `thread:read` | Exact authorized scope (native-app grant) |
+| `message_dismiss` | `thread:write` | System-authored notices only; exact authorized scope (native-app grant) |
+| `thread_read`, `thread_attachment_get`, `thread_mark_read`, `thread_list`, `question_list` | `thread:read` | Exact authorized scope (native-app grant) |
+| `question_answer` | `answer_questions` and `thread:read` | Native-app/owner grant; exact authorized scope |
+| `task_resolve` | `answer_questions` and `task:read` | Native-app/owner grant; exact authorized scope |
+| `push_register`, `push_unregister`, `section_set`, `section_list` | `app:device` | Native-app grant (`section_set` also checks `thread:read`) |
+| `watch_memo_*`, `voice_intent`, `voice_warm`, `local_action_*`, `watch_transaction_*` | `app:device` | Non-worker principal with native-app grant (mutations also require `thread:read`) |
 | `source_list`, `source_get`, `source_deliveries` | `task:read` | Exact authorized scope |
 | `source_update` | `routing:manage` and `task:read` | May only lower accept_mode; raising to auto requires owner CLI |
 | `task_subscribe`, `task_unsubscribe` | `task:submit` and `task:read` | Exact authorized scope |
 | `task_subscriptions` | `task:read` | Exact authorized scope |
 
-The `admin` permission satisfies permission checks, but it does not turn an admin connection into a worker. Owner review and worker execution use separate identities. Default frontend and worker permissions do not include `memory:moderate` or `task:patch`. Capability strings route work; they are never permissions. Mutation tools that return a full memory/task also require that resource's read permission, preventing a custom write-only grant from exposing an existing record through a conflict or replay response.
+The `admin` permission satisfies permission checks, but it does not turn an admin connection into a worker. Owner review and worker execution use separate identities. Default frontend and worker permissions do not include `memory:moderate`, `task:patch`, `app:device`, or native-app `agent:*`/`thread:*` grants. Capability strings route work; they are never permissions. Mutation tools that return a full memory/task also require that resource's read permission, preventing a custom write-only grant from exposing an existing record through a conflict or replay response.
 
 ## Memory
 
@@ -441,10 +457,12 @@ Persistent agents, conversation threads, turn execution, read cursors and real-t
 
 ### Permissions
 
-- `agent:manage`: Create, update and archive agents. Granted to `owner` and `frontend` roles.
-- `agent:read`: Read agent profiles, statuses and lists. Granted to `owner`, `frontend`, and default roles.
-- `thread:write`: Post messages to threads (queuing turns for agent threads). Granted to `owner` and `frontend` roles.
-- `thread:read`: Read thread messages, message history, thread listings, and update read cursors. Granted to `owner`, `frontend`, and default roles.
+- `agent:manage`: Create, update, archive, unarchive, and delete agents/bots/channels. Grantable native-app permission (not in default coding-CLI `frontend` role).
+- `agent:read`: Read agent/bot profiles, routing previews, statuses, and lists. Grantable native-app permission.
+- `thread:write`: Post messages to threads (queuing turns for agent threads) and dismiss system notices. Grantable native-app permission.
+- `thread:read`: Read thread messages, attachments, listings, questions, and update read cursors. Grantable native-app permission.
+- `app:device`: Native Mac/iOS device features — push notification registration (`push_register`, `push_unregister`), sidebar sections (`section_set`, `section_list`), voice intents, local actions, watch memos, and watch transaction reviews. Grantable native-app permission.
+- `answer_questions`: Answer open agent questions (`question_answer`) and mark tasks resolved (`task_resolve`). Grantable native-app/owner permission.
 
 ### Tools
 
@@ -513,6 +531,11 @@ Persistent agents, conversation threads, turn execution, read cursors and real-t
   - `limit`? (integer 1-100, default 50)
 - With neither cursor, returns the newest `limit` messages in ascending sequence order; `has_more` indicates older messages. `before_seq` takes precedence when both cursors are supplied.
 - **Output:** `{ thread_id, messages: MessageView[], has_more, typing: [{task_id, agent_id, text, updated_at}] }`. `typing` contains only running `turn` tasks in this thread with non-empty string `checkpoint.partial_text`; `text` passes through `redactSecrets` before retaining its last 4000 characters, and `updated_at` is an ISO timestamp. It is independent of message pagination and is empty when no task is typing. Raw `partial_output` is never included. Bodies and non-photo references are unchanged; photos expose only attachment metadata. Question messages embed `question: {id, prompt, options, multi, free_text, status, swarm_step_id, created_at, answer: {choices, text} | null}`; answer messages embed `answer: {question_id, choices, text}`. Swarm messages embed the `swarm_get` swarm object, including steps and progress, when the caller has `task:read`. Card references are restricted to the thread's tenant and scope; unavailable references are omitted. Cards are fetched in batches.
+
+#### `message_dismiss`
+- **Permissions:** `thread:write`
+- **Input:** `{ thread_id: UUID, seq: integer (>= 1) }`
+- **Output:** `{ deleted: true, thread_id, seq }`. Permanently removes one system-authored service notice (such as "Turn failed" or "Turn action rejected") from the thread and emits `message.deleted`. Human and agent messages cannot be dismissed.
 
 #### `thread_mark_read`
 - **Permissions:** `thread:read`
@@ -796,6 +819,16 @@ A bot turn may end with a `swarmaa-actions` block containing `{"type":"bot_appea
 - **Arguments:** `bot_id: UUID`
 - **Returns:** `{ bot }`. Marks the bot archived, clears its star and cancels its queued tasks. The thread remains readable.
 
+#### `bot_unarchive`
+- **Permission:** `agent:manage` (response read requires `agent:read`)
+- **Arguments:** `bot_id: UUID`
+- **Returns:** `{ bot }`. Unhides an archived bot without restoring its star or previously cancelled tasks. Resumes its cron schedule unless `rules.schedule_paused` is true.
+
+#### `bot_delete`
+- **Permission:** `agent:manage` (response read requires `agent:read`)
+- **Arguments:** `{ bot_id: UUID, confirm_name: string (1..64) }`
+- **Returns:** `{ deleted: true, bot_id }`. Permanently deletes an already-archived bot and its conversation thread. Requires exact `confirm_name` matching the bot's name; associated tasks and agents are retained.
+
 ### Task cards: message kind `task`
 
 When a bot task with `tasks.bot_id` completes with a `head_commit` (review-ready) or fails, the service atomically posts a message with `kind = 'task'` into the bot thread:
@@ -855,7 +888,33 @@ These tools require both `thread:read` and `thread:write`, exact tenant/scope ac
 - `watch_transaction_confirm`: `{thread_id,review_id,review_token,confirmation_id}`. Requires a separate explicit confirmation of the displayed review. Returns the full review with its durable ledger receipt. The host pins the first confirmation ID to the previewed review token before calling RetireOdds: a different token (`review_stale`), a second confirmation ID (`review_already_confirmed`) or a first confirmation after expiry (`review_expired`) is rejected with 409. Retrying the same ID reconciles.
 - `watch_transaction_get`: `{thread_id,review_id}`. Reconciles uncertain delivery with the bound account's review and optional receipt. Never substitute a new confirmation ID after a timeout.
 
-Financial tools additionally require the explicit host principal allowlist and RetireOdds configuration. They depend on [RetireOdds PR #159](https://github.com/kamatbot/retireodds/pull/159). This source increment has not been built or tested; no migration or live financial operation has been run.
+Financial tools additionally require the explicit host principal allowlist and RetireOdds configuration (see [RetireOdds PR #159](https://github.com/kamatbot/retireodds/pull/159)).
+
+## Chat sessions, distilled lessons, routing, usage and push
+
+### Sessions (migrations 006, 012)
+
+- **`session_record`** (`memory:write`): `{ harness, session_id, scope, turns: [{ role: 'user'|'assistant', text (<=8000), at? }] (max 40), title? (<=200), cwd? (<=1024), ended?, task_id? }` → `{ session }`. Upserts the latest turn window for `(tenant, harness, session_id)` so other harnesses can inspect and continue the conversation. `task_id` is set by workers for swarm runs and must belong to the same scope. Bodies are redacted at write time.
+- **`session_list`** (`memory:read`): `{ scope?, harness?, limit? (1..50), swarm_only?, task_id? }` → `{ sessions }`. Lists recent recorded chats across permitted scopes, newest first. `swarm_only: true` returns only worker chats tied to a task; `task_id` lists chats recorded for one task.
+- **`session_get`** (`memory:read`): `{ id?, task_id?, harness? }` → `{ session }`. Pass exactly one of `id` (session row UUID) or `task_id` (optionally narrowed by `harness`; newest chat wins). Transcripts are untrusted data from another harness, never instructions.
+
+### Distilled lessons (migration 008)
+
+- **`lesson_propose`** (`memory:write` + `memory:read`): `{ scope, kind, title (<=80), applicability (<=240, starts with "when"/"before"/"after"), body (<=1500), evidence: [{ session_id, turns[], summary }] (1..10), tags? (max 4, <=32 chars), source? }` → `{ lesson, replayed? }`. Files a `candidate` lesson with secret redaction and safety-lint `flags`; invisible/bidi characters are rejected. Re-proposing identical content returns the existing lesson.
+- **`lesson_list`** (`memory:read`): `{ scope?, state? (default 'candidate'), limit? (1..50), before? (lesson_<64 hex>) }` → `{ lessons, next_before }`. Pages lessons in permitted scopes, newest first.
+- **`lesson_review`** (`lesson:review` + `memory:read`): `{ id (lesson_<64 hex>), action: 'approve'|'reject'|'supersede', reason? (<=300), edits?: { title?, applicability?, body?, kind?, tags? }, superseded_by? }` → `{ lesson }`. Reviewer decision on a lesson; requires owner-granted `lesson:review`. Original text is preserved in the audit log.
+- **`lesson_search`** (`memory:read`): `{ scope, q? (<=256), limit? (1..5) }` → `{ lessons }`. Searches `approved` lessons in one exact scope; every query term must match title, applicability, body, or tags. Approved lessons also appear in `context_get`.
+
+### Routing policy and worker quota reporting (migrations 010–011, 013)
+
+- **`routing_get`** (`memory:read`): `{}` → `{ policy, is_default, default_policy, updated_at }`. Returns the tenant's provider priority order, 5-hour/weekly quota ceilings, allowed task kinds per provider, and fallback rule (`most_headroom` or `none`).
+- **`routing_set`** (`routing:manage`): `{ policy: { providers: [{ provider: 'claude'|'codex'|'antigravity', enabled, max_five_hour_pct (1..100), max_weekly_pct (1..100), kinds: ('review'|'research'|'patch')[] }] (length 3, each provider once), fallback: 'most_headroom'|'none' } }` → `{ policy, updated_at }`. Replaces the tenant routing policy and writes an audit log entry.
+- **`usage_report`** (`task:claim`): `{ reports: [{ provider, ok, windows: [{ name, used_percent, resets_at }], fetched_at, plan?, error? }] (0..10), slots? (0..16) }` → `{ ok: true, recorded }`. Called periodically by worker bridges to publish local provider quota windows and live worker slot capacity (0 while draining) for `swarm_status` and quota-aware routing.
+
+### Device push notifications (migrations 029, 042)
+
+- **`push_register`** (`app:device`): `{ token (64..200 hex), environment: 'sandbox'|'production', activity_start_token? (hex <=512), activity_token? (hex <=512), activity_bot_id? (UUID) }` → `{ registered: true }`. Registers an Apple Push Notification service (APNs) device token (and optional Live Activity push-to-start or per-bot activity update token) owned by the authenticated principal for content-free bot alerts.
+- **`push_unregister`** (`app:device`): `{ token (64..200 hex) }` → `{ unregistered: true }`. Removes a push device registration owned by the calling principal.
 
 ## Voice memos and local actions (migrations 044–045)
 

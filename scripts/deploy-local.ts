@@ -55,7 +55,7 @@ function localIO(): DeployIO {
     sleep: ms => delay(ms),
     status: async () => {
       // Optional caller-supplied dashboard token; never discover credentials or print them.
-      const token = process.env.COLLECTIVE_TOKEN;
+      const token = process.env.SWARMAA_TOKEN || process.env.COLLECTIVE_TOKEN;
       if (!token) return [];
       const result = await new HttpToolClient(`http://127.0.0.1:${port}`, token, 1500).call<{ workers: WorkerStatus[] }>('swarm_status', {});
       return result.workers;
@@ -70,13 +70,19 @@ function localIO(): DeployIO {
 }
 
 export async function deployLocal(args = process.argv.slice(2), io = localIO()): Promise<void> {
-  let dry = false, service = true, relay = false, only: string | undefined;
+  let dry = false, service = true, relay = false, only: string | undefined, drainTimeoutSeconds = 300;
+  const usage = 'Usage: npm run deploy:local -- [--dry-run] [--only claude|codex|agy] [--no-service] [--relay] [--drain-timeout <seconds>]';
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--relay') relay = true;
     else if (args[i] === '--dry-run') dry = true;
     else if (args[i] === '--no-service') service = false;
     else if (args[i] === '--only' && ['claude', 'codex', 'agy'].includes(args[i + 1] ?? '')) only = args[++i];
-    else throw new Error('Usage: npm run deploy:local -- [--dry-run] [--only claude|codex|agy] [--no-service] [--relay]');
+    else if (args[i] === '--drain-timeout') {
+      const raw = args[++i] ?? '';
+      if (!/^\d+$/u.test(raw) || Number(raw) < 1 || Number(raw) > 86400) throw new Error(usage);
+      drainTimeoutSeconds = Number(raw);
+    }
+    else throw new Error(usage);
   }
   if (!/^\d+$/u.test(io.port) || Number(io.port) < 1 || Number(io.port) > 65535 || io.uid < 0) throw new Error('A valid PORT and a launchd user session are required');
   const launch = (...a: string[]): string => io.command('launchctl', a, 10000);
@@ -101,8 +107,15 @@ export async function deployLocal(args = process.argv.slice(2), io = localIO()):
     io.signal(b.pid);
   }
   const pending = new Map(bridges.map(b => [b.label, b.pid]));
+  const drainLimitMs = drainTimeoutSeconds * 1000;
+  const drainDeadline = Date.now() + drainLimitMs;
+  let drainedWaitMs = 0;
   while (pending.size) {
+    if (drainedWaitMs >= drainLimitMs || Date.now() >= drainDeadline) {
+      throw new Error(`Drain timed out after ${drainTimeoutSeconds}s waiting for: ${[...pending.keys()].join(', ')}`);
+    }
     await io.sleep(2000);
+    drainedWaitMs += 2000;
     let workers: WorkerStatus[] = [];
     try { workers = await io.status(); } catch { /* PID state is enough when status is unavailable. */ }
     for (const [label, oldPid] of pending) {

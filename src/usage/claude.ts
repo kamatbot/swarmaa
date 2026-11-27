@@ -76,6 +76,16 @@ const RENEW_MARGIN_MS = 4 * 60_000;
 let renewAttemptedFor: number | undefined;
 export const _resetRenewal = (): void => { renewAttemptedFor = undefined; };
 
+/** Strip Swarmaa service tokens and DATABASE_URL before spawning claude. */
+export function sanitizedClaudeEnv(parent: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(parent)) {
+    if (key === 'DATABASE_URL' || /^(?:COLLECTIVE|SWARMAA)_/u.test(key)) continue;
+    env[key] = value;
+  }
+  return env;
+}
+
 /**
  * Let Claude Code renew its own token: `claude -p` with empty stdin runs start-up (which renews a token
  * within 5 minutes of expiry) and exits for want of a prompt, so no conversation is ever created.
@@ -85,7 +95,7 @@ export async function renewClaudeToken(binary: string): Promise<void> {
   const cwd = process.platform === 'darwin' ? `${homedir()}/Library/Application Support/Swarmaa/usage-scratch` : homedir();
   await mkdir(cwd, { recursive: true }).catch(() => undefined);
   await new Promise<void>((resolve) => {
-    const child = spawn(binary, ['-p', '--no-session-persistence', '--strict-mcp-config'], { cwd, stdio: ['ignore', 'ignore', 'ignore'], timeout: 30_000, killSignal: 'SIGKILL' });
+    const child = spawn(binary, ['-p', '--no-session-persistence', '--strict-mcp-config'], { cwd, env: sanitizedClaudeEnv(), stdio: ['ignore', 'ignore', 'ignore'], timeout: 30_000, killSignal: 'SIGKILL' });
     child.on('error', () => resolve());
     child.on('exit', () => resolve());
   });

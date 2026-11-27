@@ -62,11 +62,11 @@ final class OnboardingModel: ObservableObject {
 
     // Welcome
     @Published var choice: WelcomeChoice
-    @Published var remoteAddress = "https://api.swarmaa.com"
+    @Published var remoteAddress = ""
     @Published private(set) var installing = false
     @Published private(set) var welcomeError: String?
     @Published private(set) var connecting = false
-    @Published var serviceRoot: String { didSet { if oldValue != serviceRoot { rootChanged() } } }
+    @Published var serviceRoot: String { didSet { if oldValue != serviceRoot { scheduleRootDetection() } } }
     @Published private(set) var detection: SetupDetection?
     @Published private(set) var detectionError: String?
     @Published private(set) var detecting = false
@@ -76,7 +76,7 @@ final class OnboardingModel: ObservableObject {
 
     // Projects, remote, login
     @Published var projects: [OnboardingProject] = []
-    @Published var hostname = "api.swarmaa.com"
+    @Published var hostname = ""
     @Published var setUpRemoteNow = false
     @Published var autostart = true
 
@@ -91,6 +91,8 @@ final class OnboardingModel: ObservableObject {
     private let defaults: UserDefaults
     private let engine: SetupEngine
     private let runOffMain: (@escaping () -> Void) -> Void
+    private let detectDebounce: TimeInterval
+    private var detectWorkItem: DispatchWorkItem?
     private var detectToken = 0
     /// The runtime inside the app, nil in a build that doesn't embed one.
     let bundledRuntime: URL?
@@ -105,6 +107,7 @@ final class OnboardingModel: ObservableObject {
          installDirectory: URL = RuntimeInstaller.defaultInstallDirectory,
          installer: RuntimeInstaller = RuntimeInstaller(),
          makeFlow: @escaping () -> SwarmaOAuthFlow = { SwarmaOAuthFlow(open: { NSWorkspace.shared.open($0) }) },
+         detectDebounce: TimeInterval = 0.4,
          runOffMain: @escaping (@escaping () -> Void) -> Void = { DispatchQueue.global(qos: .userInitiated).async(execute: $0) }) {
         self.defaults = defaults
         self.engine = engine
@@ -112,6 +115,7 @@ final class OnboardingModel: ObservableObject {
         self.installDirectory = installDirectory
         self.installer = installer
         self.makeFlow = makeFlow
+        self.detectDebounce = detectDebounce
         self.runOffMain = runOffMain
         let stored = defaults.string(forKey: Preferences.serviceRootKey) ?? Preferences.defaultSwarmaaServiceRoot
         self.serviceRoot = stored
@@ -154,10 +158,35 @@ final class OnboardingModel: ObservableObject {
     /// Leaves onboarding with usage rings only: nothing is installed or connected.
     func skip() { markComplete() }
 
-    private func rootChanged() {
+    private func scheduleRootDetection() {
+        detectWorkItem?.cancel()
         detection = nil
         detectionError = nil
-        guard rootIsValid else { return }
+        guard rootIsValid else {
+            detecting = false
+            return
+        }
+        detecting = true
+        if detectDebounce <= 0 {
+            rootChanged()
+            return
+        }
+        let work = DispatchWorkItem { [weak self] in
+            self?.rootChanged()
+        }
+        detectWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + detectDebounce, execute: work)
+    }
+
+    private func rootChanged() {
+        detectWorkItem?.cancel()
+        detectWorkItem = nil
+        detection = nil
+        detectionError = nil
+        guard rootIsValid else {
+            detecting = false
+            return
+        }
         detecting = true
         detectToken += 1
         let token = detectToken, root = rootURL, engine = engine
@@ -174,7 +203,19 @@ final class OnboardingModel: ObservableObject {
         }
     }
 
-    func retryDetection() { let r = serviceRoot; serviceRoot = ""; serviceRoot = r }
+    func retryDetection() { rootChanged() }
+
+    /// Terminates any in-flight setup/detection process when the window closes mid-run.
+    func cancel() {
+        detectWorkItem?.cancel()
+        detectWorkItem = nil
+        detectToken += 1
+        detecting = false
+        busy = false
+        activeFlow?.cancel()
+        activeFlow = nil
+        engine.cancel()
+    }
 
     func apply(detection d: SetupDetection) {
         detection = d
@@ -263,9 +304,27 @@ final class OnboardingModel: ObservableObject {
 
     // MARK: Navigation
 
+    /// Current step position ("Step X of Y") for the active onboarding flow.
+    var stepProgress: (current: Int, total: Int) {
+        let sequence: [OnboardingPage]
+        switch page {
+        case .connect, .connected:
+            sequence = [.welcome, .connect, .connected]
+        case .welcome where choice == .connectRemote:
+            sequence = [.welcome, .connect, .connected]
+        default:
+            sequence = needsRemote
+                ? [.welcome, .services, .projects, .remote, .review, .progress, .summary]
+                : [.welcome, .services, .projects, .review, .progress, .summary]
+        }
+        let index = sequence.firstIndex(of: page) ?? 0
+        return (current: index + 1, total: sequence.count)
+    }
+
     var canContinue: Bool {
         switch page {
         case .welcome: return welcomeActions.contains(.continue)
+        case .services: return !detecting && detection != nil
         case .connect: return false
         case .projects: return projectsProblem == nil
         case .remote: return !setUpRemoteNow || !hostname.trimmingCharacters(in: .whitespaces).isEmpty
@@ -330,7 +389,8 @@ final class OnboardingModel: ObservableObject {
                 self.installing = false
                 switch result {
                 case .success:
-                    self.serviceRoot = dest.path   // re-detects against the installed runtime
+                    self.serviceRoot = dest.path
+                    self.rootChanged() // detect immediately against the installed runtime (no 400 ms typing debounce)
                     self.defaults.set(dest.path, forKey: Preferences.serviceRootKey)
                     self.defaults.set("token", forKey: Preferences.authModeKey)
                     self.page = .services

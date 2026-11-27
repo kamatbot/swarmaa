@@ -142,19 +142,24 @@ test('event delivery is concurrent with per-host limits so a slow sink does not 
   );
 
   service.start();
-  const deadline = Date.now() + 5000;
-  while (Date.now() < deadline && (fastCompleted.length < 2 || slowInFlight < 2)) {
-    await new Promise(resolve => setTimeout(resolve, 25));
+  try {
+    const deadline = Date.now() + 5000;
+    while (Date.now() < deadline && (fastCompleted.length < 2 || slowInFlight < 2)) {
+      await new Promise(resolve => setTimeout(resolve, 25));
+    }
+    assert.ok(discoverySql.includes('(e.xid, e.seq) > (s.last_xid, s.last_seq)'), 'event discovery uses (xid, seq) tuple cursor');
+    assert.ok(discoverySql.includes('pg_snapshot_xmin(pg_current_snapshot())'), 'event discovery fences uncommitted transactions with snapshot xmin');
+    assert.equal(maxSlowInFlight, 2, 'slow host is capped at maxPerHost (2) even with 3 pending deliveries');
+    assert.equal(fastCompleted.length, 2, 'fast host completes all deliveries while slow host is still blocked');
+    releaseSlow();
+    while (Date.now() < deadline && queue.some(q => q.state !== 'delivered')) {
+      await new Promise(resolve => setTimeout(resolve, 25));
+    }
+    assert.ok(queue.every(q => q.state === 'delivered'));
+    assert.equal(maxSlowInFlight, 2);
+  } finally {
+    releaseSlow();
+    await service.stop();
   }
-  assert.ok(discoverySql.includes('e.seq > s.last_seq'), 'event discovery uses per-subscription sequence cursor');
-  assert.equal(maxSlowInFlight, 2, 'slow host is capped at maxPerHost (2) even with 3 pending deliveries');
-  assert.equal(fastCompleted.length, 2, 'fast host completes all deliveries while slow host is still blocked');
-  releaseSlow();
-  while (Date.now() < deadline && queue.some(q => q.state !== 'delivered')) {
-    await new Promise(resolve => setTimeout(resolve, 25));
-  }
-  await service.stop();
-  assert.ok(queue.every(q => q.state === 'delivered'));
-  assert.equal(maxSlowInFlight, 2);
 });
 

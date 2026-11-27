@@ -31,6 +31,7 @@ test('token usage preserves zero and optional cache counters, and omits unsuppor
   assert.deepEqual(extractUsage('codex', '{"type":"turn.completed","usage":{"input_tokens":0,"output_tokens":0}}'), { input_tokens: 0, output_tokens: 0 });
   assert.deepEqual(extractUsage('claude', '{"type":"result","usage":{"input_tokens":2,"output_tokens":3,"cache_read_input_tokens":0}}'), { input_tokens: 2, cached_input_tokens: 0, output_tokens: 3 });
   assert.equal(extractUsage('antigravity', codex), undefined);
+  assert.deepEqual(extractUsage('antigravity', '{"status":"SUCCESS","response":"Done","usage":{"input_tokens":10,"output_tokens":5}}'), { input_tokens: 10, output_tokens: 5 });
   assert.equal(extractUsage('claude', '{"type":"result"}'), undefined);
   assert.equal(extractUsage('codex', ''), undefined);
 });
@@ -49,10 +50,10 @@ test('malformed usage drops the total, including valid events followed by bad co
 for (const [provider, stdout, expected] of [
   ['codex', codex, expectedCodex], ['claude', claude, expectedClaude],
   ['claude', '{"type":"result","subtype":"success","usage":{"input_tokens":"bad","output_tokens":2}}', undefined],
-  ['antigravity', '{"status":"SUCCESS","response":"Done","model":"test-model","usage":{"input_tokens":1,"output_tokens":2}}', undefined]
+  ['antigravity', '{"status":"SUCCESS","response":"Done","model":"test-model","usage":{"input_tokens":1,"output_tokens":2}}', { input_tokens: 1, output_tokens: 2 }]
 ] as const) {
   test(`worker finishes ${provider} with ${expected ? 'usage' : 'usage omitted'}`, async () => {
-    const cfg = parseBridgeConfig({ service_url: 'http://localhost:8080', agents: [{ id: provider, provider, binary: '/bin/test-provider', sandbox: provider === 'antigravity' }], projects: [{ scope: 'project:demo', root: '/projects/demo', agents: [provider] }] });
+    const cfg = parseBridgeConfig({ service_url: 'http://localhost:8080', agents: [{ id: provider, provider, binary: '/bin/test-provider', sandbox: provider === 'antigravity', ...(provider === 'antigravity' ? { auth_mode: 'api_key' } : {}) }], projects: [{ scope: 'project:demo', root: '/projects/demo', agents: [provider] }] });
     const task: Task = { id: '11111111-1111-4111-8111-111111111111', scope: 'project:demo', kind: 'review', objective: 'Review', constraints: [], acceptance_criteria: [], resource_key: null, required_capability: `${provider}.read`, checkpoint: null, context_refs: [], version: 1 };
     let finish: Record<string, unknown> | undefined;
     const client: ToolClient = { async call<T>(name: string, args: Record<string, unknown>): Promise<T> {

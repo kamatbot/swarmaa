@@ -32,8 +32,16 @@ export default {
     // A phone types the 6-digit code; this says which host it belongs to.
     if (pathname === "/pair/resolve") {
       if (request.method !== "POST") return new Response("Not Found", { status: 404 });
+      const len = request.headers.get("content-length");
+      if (len !== null && (!/^\d+$/.test(len) || Number(len) > 4096)) {
+        return Response.json({ error: "payload_too_large" }, { status: 413 });
+      }
+      const bodyText = await request.text();
+      if (new TextEncoder().encode(bodyText).byteLength > 4096) {
+        return Response.json({ error: "payload_too_large" }, { status: 413 });
+      }
       return env.PAIR_INDEX.get(env.PAIR_INDEX.idFromName("global")).fetch("https://index/resolve", {
-        method: "POST", body: await request.text(),
+        method: "POST", body: bodyText,
         headers: { "cf-connecting-ip": request.headers.get("cf-connecting-ip") ?? "unknown" }
       });
     }

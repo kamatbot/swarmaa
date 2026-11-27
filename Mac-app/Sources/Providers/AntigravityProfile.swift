@@ -28,22 +28,14 @@ struct AntigravityProfile: Equatable, Hashable {
         return AntigravityProfile(slug: nil, configDirectory: dir)
     }
 
-    /// The default profile followed by every `~/.gemini/antigravity-<slug>` that contains
-    /// profile markers and valid credentials, slugs in alphabetical order.
+    /// Returns only the single default Antigravity profile, in compliance with
+    /// Google's single-user policy (multi-account consumer profile discovery is disabled).
     static func discover(home: URL = homeDirectory,
                          fileManager: FileManager = .default,
                          hasCredential: (AntigravityProfile) -> Bool = AntigravityCredentials.hasCredential) -> [AntigravityProfile] {
-        let geminiDir = home.appendingPathComponent(".gemini")
-        let names = (try? fileManager.contentsOfDirectory(atPath: geminiDir.path)) ?? []
-        let extras = names.compactMap { name -> AntigravityProfile? in
-            guard let slug = slug(fromDirectoryName: name) else { return nil }
-            let directory = geminiDir.appendingPathComponent(name)
-            guard isProfileDirectory(directory, fileManager: fileManager) else { return nil }
-            let candidate = AntigravityProfile(slug: slug, configDirectory: directory)
-            guard hasCredential(candidate) else { return nil }
-            return candidate
-        }
-        return [.default(home: home)] + extras.sorted { $0.slug! < $1.slug! }
+        _ = fileManager
+        _ = hasCredential
+        return [.default(home: home)]
     }
 
     /// `antigravity-work` -> `work`; anything else -> nil. The bare `antigravity` is

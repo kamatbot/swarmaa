@@ -62,7 +62,9 @@ describe('teams service performance fixes', { skip: !connectionString, concurren
       name,
       role,
       scopes,
-      permissions: [...ROLE_PERMISSIONS[role]]
+      permissions: role === 'frontend'
+        ? [...ROLE_PERMISSIONS.frontend, 'agent:read', 'agent:manage', 'thread:read', 'thread:write', 'app:device']
+        : [...ROLE_PERMISSIONS[role]]
     };
     const token = newToken();
     await pool.query(

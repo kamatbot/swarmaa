@@ -12,6 +12,38 @@ export function rpcError(id: RpcId, code: number, message: string): RpcMessage {
   return { jsonrpc: '2.0', id, error: { code, message } };
 }
 
+/** Read a bearer token from either a raw token file or a JSON identity file ({ "token": "..." }). */
+export function readTokenFile(filePath: string): string {
+  try {
+    const raw = readFileSync(filePath, 'utf8').trim();
+    if (!raw) return '';
+    if (raw.startsWith('{')) {
+      const parsed = JSON.parse(raw) as { token?: unknown };
+      return typeof parsed?.token === 'string' ? parsed.token.trim() : '';
+    }
+    return raw;
+  } catch {
+    return '';
+  }
+}
+
+export function classifyProxyError(error: unknown): string {
+  if (error instanceof SyntaxError) return 'Swarmaa MCP service returned invalid JSON';
+  const err = error as { name?: string; code?: string; cause?: { code?: string; name?: string } } | undefined;
+  const code = err?.code ?? err?.cause?.code ?? '';
+  const name = err?.name ?? err?.cause?.name ?? '';
+  if (name === 'TimeoutError' || name === 'AbortError' || code === 'UND_ERR_HEADERS_TIMEOUT' || code === 'UND_ERR_BODY_TIMEOUT' || code === 'ETIMEDOUT') {
+    return 'Swarmaa MCP request timed out';
+  }
+  if (code === 'ECONNREFUSED') {
+    return 'Swarmaa MCP service refused connection (ECONNREFUSED)';
+  }
+  if (/^(?:ERR_TLS_|DEPTH_ZERO_SELF_SIGNED_CERT|SELF_SIGNED_CERT_IN_CHAIN|UNABLE_TO_VERIFY_LEAF_SIGNATURE|CERT_|HOSTNAME_MISMATCH)/u.test(code)) {
+    return `Swarmaa MCP TLS verification failed (${code})`;
+  }
+  return 'Swarmaa MCP service unavailable, timed out, or returned an invalid response';
+}
+
 export function encodeMcpName(value: string): string {
   if (/^[\x20-\x7e\t]*$/u.test(value) && value.trim() === value && !value.startsWith('=?base64?')) return value;
   return `=?base64?${Buffer.from(value, 'utf8').toString('base64')}?=`;
@@ -51,7 +83,7 @@ export class StdioHttpProxy {
         body: JSON.stringify(message)
       });
       if (!hasId) { await response.body?.cancel(); return undefined; }
-      if (!response.ok) { await response.body?.cancel(); return rpcError(message.id ?? null, -32000, `Collective MCP request failed (HTTP ${response.status})`); }
+      if (!response.ok) { await response.body?.cancel(); return rpcError(message.id ?? null, -32000, `Swarmaa MCP request failed (HTTP ${response.status})`); }
       if (!(response.headers.get('content-type') ?? '').toLowerCase().includes('application/json')) { await response.body?.cancel(); return rpcError(message.id ?? null, -32603, 'Expected JSON MCP response; this proxy does not handle SSE'); }
       const result = JSON.parse(await boundedResponse(response, MAX_HTTP_RESPONSE_BYTES)) as RpcMessage;
       if (result.jsonrpc !== '2.0' || result.id !== message.id || (!Object.hasOwn(result, 'result') && !Object.hasOwn(result, 'error'))) return rpcError(message.id ?? null, -32603, 'Invalid MCP response envelope');
@@ -60,7 +92,7 @@ export class StdioHttpProxy {
         if (typeof version === 'string' && /^\d{4}-\d{2}-\d{2}$/u.test(version)) this.protocolVersion = version;
       }
       return result;
-    } catch { return hasId ? rpcError(message.id ?? null, -32603, 'MCP service unavailable, timed out, or returned an invalid response') : undefined; }
+    } catch (error) { return hasId ? rpcError(message.id ?? null, -32603, classifyProxyError(error)) : undefined; }
   }
 }
 
@@ -73,14 +105,14 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
     if (flag === '--url') origin = args[++i];
     else if (flag === '--token-env') tokenEnv = args[++i] ?? '';
     else if (flag === '--token-file') tokenFile = args[++i];
-    else throw new Error('Usage: stdio-proxy --url https://network.example (--token-env COLLECTIVE_CLAUDE_TOKEN | --token-file <path>)');
+    else throw new Error('Usage: stdio-proxy --url https://network.example (--token-env SWARMAA_CLAUDE_TOKEN | --token-file <path>)');
   }
   if (tokenFile !== undefined && !tokenFile) throw new Error('--token-file needs a path');
   if (!origin || !/^(?:COLLECTIVE|SWARMAA)_[A-Z0-9_]+$/u.test(tokenEnv)) throw new Error('A service origin and COLLECTIVE_ or SWARMAA_ token variable name are required');
   const fallbackEnv = tokenEnv.startsWith('COLLECTIVE_') ? tokenEnv.replace(/^COLLECTIVE_/u, 'SWARMAA_') : tokenEnv.replace(/^SWARMAA_/u, 'COLLECTIVE_');
   // A token file is re-read per request (a missing file sends no credential, so revocation is immediate).
   const proxy = new StdioHttpProxy(origin, tokenFile
-    ? () => { try { return readFileSync(tokenFile, 'utf8').trim(); } catch { return ''; } }
+    ? () => readTokenFile(tokenFile)
     : process.env[tokenEnv] ?? process.env[fallbackEnv] ?? '');
   // Iterating with backpressure prevents an unbounded promise queue from a noisy client.
   let pending = Buffer.alloc(0);
@@ -109,7 +141,7 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   main().catch(() => {
     // stdout must contain JSON-RPC only. Avoid echoing secret-bearing arguments or URLs.
-    process.stderr.write('Collective MCP proxy stopped. Check URL, token environment and client configuration.\n');
+    process.stderr.write('Swarmaa MCP proxy stopped. Check URL, token environment and client configuration.\n');
     process.exitCode = 1;
   });
 }

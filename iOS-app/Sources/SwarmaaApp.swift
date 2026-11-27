@@ -3,6 +3,7 @@ import PhotosUI
 import UIKit
 import AppIntents
 import UserNotifications
+import AVFoundation
 
 @MainActor enum Runtime {
     static let model = AppModel()
@@ -122,10 +123,16 @@ struct SwarmaaShortcuts: AppShortcutsProvider {
                 .preferredColorScheme(.dark)
                 .tint(KS.signal)
                 .onOpenURL { url in
-                    // A Live Activity tap: swarmaa://bot/<id> opens that bot.
-                    guard url.scheme == "swarmaa", url.host == "bot" else { return }
-                    let botId = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-                    if !botId.isEmpty { Runtime.model.receivePushTap(["bot_id": botId]) }
+                    if url.scheme == "swarmaa", url.host == "bot" {
+                        // A Live Activity tap: swarmaa://bot/<id> opens that bot.
+                        let botId = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+                        if !botId.isEmpty { Runtime.model.receivePushTap(["bot_id": botId]) }
+                    } else if (url.scheme == "swarmaa" || url.scheme == "codenotch"), url.host == "pair" {
+                        Task {
+                            do { try await Runtime.model.handlePairingURL(url) }
+                            catch { Runtime.model.error = safeError(error) }
+                        }
+                    }
                 }
         }
     }
@@ -340,16 +347,7 @@ struct RootView: View {
     @State private var sheet: Sheet?
     @State private var homeAppeared = false
     @State private var search = ""
-    @State private var composer = ""
-    @State private var photos: [ChatPhoto] = []
-    @State private var selections: [PhotosPickerItem] = []
-    @State private var preparingPhotos = false
-    @State private var draftGeneration = UUID()
-    @State private var dictationStarting = false
-    @State private var dictationToken = UUID()
-    @State private var demoPreviewLoaded = false
     @State private var drafts: [String: (text: String, photos: [ChatPhoto])] = [:]
-    @StateObject private var dictation = ChatDictation()
     @State private var filter = "All"
     @Namespace private var taskFilterSelection
     @ScaledMetric(relativeTo: .subheadline) private var filterLabelSize: CGFloat = 14
@@ -359,7 +357,6 @@ struct RootView: View {
     @Environment(\.dynamicTypeSize) private var textSize
     @Environment(\.horizontalSizeClass) private var sizeClass
     @FocusState private var searchFocused: Bool
-    @FocusState private var composerFocused: Bool
     var body: some View {
         GeometryReader { geo in
             VStack(spacing: 0) {
@@ -443,7 +440,7 @@ struct RootView: View {
             } else { await model.restore() }
             if Runtime.openStarRequested, model.openBot != nil { screen = .thread; Runtime.openStarRequested = false }
         }
-        .onChange(of: model.connected) { _, connected in if !connected && !model.isDemo { drafts = [:]; photos = []; composer = ""; dictation.stop() } }
+        .onChange(of: model.connected) { _, connected in if !connected && !model.isDemo { drafts = [:] } }
         .onChange(of: model.pendingPushBotID) { _, _ in openPushBot() }
         // "Allow Reminders on this iPhone": the Ring sheet holds the This iPhone section.
         .onChange(of: ThisIPhoneRoute.shared.requested, initial: true) { _, open in
@@ -453,46 +450,18 @@ struct RootView: View {
         }
         .onChange(of: model.didLoadBots) { _, _ in openPushBot() }
         .onChange(of: model.bots) { _, _ in openPushBot() }
-        .onChange(of: screen) { _, value in if value != .home { searchFocused = false }; if value != .thread { dictation.stop(); dictationToken = UUID(); dictationStarting = false }; updateVisibleThread() }
+        .onChange(of: screen) { _, value in if value != .home { searchFocused = false }; updateVisibleThread() }
         .onChange(of: sheet?.id) { _, _ in updateVisibleThread() }
         .onChange(of: sizeClass) { _, _ in updateVisibleThread() }
         // On iPad another bot opens without leaving .home, so follow the open bot too.
-        .onChange(of: model.openBot?.id) { _, _ in updateVisibleThread(); model.clearVisibleUnread() }
-        .onChange(of: model.openBot?.id) { oldID, id in
-            dictation.stop(); dictationToken = UUID(); dictationStarting = false; draftGeneration = UUID()
-            if let oldID, model.connected || model.isDemo { drafts[oldID] = (composer, photos) }
-            let draft = id.flatMap { drafts[$0] }
-            photos = draft?.photos ?? []; composer = draft?.text ?? ""; selections = []
-            if id != nil, model.isDemo, !demoPreviewLoaded, ProcessInfo.processInfo.arguments.contains("-photo-preview-demo"),
-               let url = Bundle.main.url(forResource: "moji-scout", withExtension: "png"),
-               let data = try? Data(contentsOf: FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("demo-photo.jpg")) ?? Data(contentsOf: url),
-               let image = UIImage(data: data), let jpeg = image.jpegData(compressionQuality: 0.8) {
-                photos = [ChatPhoto(id: UUID(), name: "Demo photo.jpg", data: jpeg)]; demoPreviewLoaded = true
-            }
+        .onChange(of: model.openBot?.id) { _, id in
             if id == nil && (screen == .thread || screen == .settings) { screen = .home; sheet = nil }
+            if id != nil, Runtime.openStarRequested { screen = .thread; Runtime.openStarRequested = false }
             updateVisibleThread()
-        }
-        .onChange(of: model.openBot?.id) { _, value in if value != nil, Runtime.openStarRequested { screen = .thread; Runtime.openStarRequested = false } }
-        .onDisappear { dictation.stop() }
-        .onChange(of: selections) { _, items in
-            guard !items.isEmpty else { return }
-            let thread = model.openBot?.threadID, generation = draftGeneration
-            preparingPhotos = true
-            Task {
-                defer { preparingPhotos = false }
-                for item in items.prefix(max(0, 2 - photos.count)) {
-                    do {
-                        guard let data = try await item.loadTransferable(type: Data.self) else { throw AppFailure.invalidResponse }
-                        let photo = try await ChatPhoto.prepare(data: data, name: "Photo.jpg")
-                        guard thread == model.openBot?.threadID, generation == draftGeneration else { return }
-                        photos.append(photo)
-                    } catch { if thread == model.openBot?.threadID && generation == draftGeneration { model.error = "Could not prepare this photo. Please try again." } }
-                }
-                selections = []
-            }
+            model.clearVisibleUnread()
         }
         .onChange(of: phase) { _, phase in
-            guard phase == .active else { dictation.stop(); dictationToken = UUID(); dictationStarting = false; return }
+            guard phase == .active else { return }
             if !model.isDemo && !ProcessInfo.processInfo.arguments.contains("-demo") { WatchBridge.shared.changed() }
             Task { await model.refresh() }
             if Runtime.openStarRequested, model.openBot != nil { screen = .thread; Runtime.openStarRequested = false }
@@ -545,15 +514,22 @@ struct RootView: View {
             Text(text).font(KS.body()).multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
         }.foregroundStyle(KS.muted).padding(32).frame(maxWidth: .infinity, maxHeight: .infinity)
     }
-    private func barIcon(_ symbol: String) -> some View {
-        Image(systemName: symbol).font(.system(size: 17, weight: .medium)).foregroundStyle(KS.ink)
-            .frame(width: 44, height: 44).background(KS.chip, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+    private func barIcon(_ symbol: String, title: String) -> some View {
+        VStack(spacing: 2) {
+            Image(systemName: symbol).font(.system(size: 16, weight: .medium)).foregroundStyle(KS.ink)
+            Text(title).font(.system(size: 10, weight: .medium)).foregroundStyle(KS.soft).lineLimit(1)
+        }
+        .frame(minWidth: 50, minHeight: 44)
+        .padding(.horizontal, 6)
+        .background(KS.chip, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
     private var home: some View {
-        let bots = model.sortedBots.filter(matches)
+        let sorted = model.sortedBots
+        let bots = sorted.filter(matches)
         let hidden = model.hiddenBots.filter(matches)
-        let needsYou = model.sortedBots.filter { $0.needsYou > 0 }.count
-        let newUser = search.isEmpty && model.sortedBots.isEmpty && model.hiddenBots.isEmpty && !model.loading
+        let needsYou = sorted.filter { $0.needsYou > 0 }.count
+        let totalNeedsYou = sorted.reduce(0) { $0 + $1.needsYou }
+        let newUser = search.isEmpty && sorted.isEmpty && model.hiddenBots.isEmpty && !model.loading
         return VStack(spacing: 0) {
             // Read-only up top: host state and the title. Every control lives in the bottom bar.
             VStack(alignment: .leading, spacing: 6) {
@@ -571,11 +547,11 @@ struct RootView: View {
             if model.loading { ProgressView("Loading your bots").tint(KS.signal).foregroundStyle(KS.muted).padding() }
             ScrollView {
                 LazyVStack(spacing: 8) {
-                    ForEach(Array(bots.enumerated()), id: \.element.id) { index, bot in
+                    ForEach(bots) { bot in
                         row(bot)
-                            .opacity(reduceMotion || homeAppeared || index >= 10 ? 1 : 0)
-                            .offset(y: reduceMotion || homeAppeared || index >= 10 ? 0 : 8)
-                            .animation(reduceMotion || index >= 10 ? nil : .easeOut(duration: 0.3).delay(Double(index) * 0.035), value: homeAppeared)
+                            .opacity(reduceMotion || homeAppeared ? 1 : 0)
+                            .offset(y: reduceMotion || homeAppeared ? 0 : 8)
+                            .animation(reduceMotion ? nil : .easeOut(duration: 0.25), value: homeAppeared)
                     }
                     if !hidden.isEmpty {
                         Button {
@@ -628,20 +604,20 @@ struct RootView: View {
                     }
                 }
                 HStack(spacing: 8) {
-                    Button { sheet = .you } label: { barIcon("person.crop.circle") }.accessibilityLabel("You")
+                    Button { sheet = .you } label: { barIcon("person.crop.circle", title: "You") }.accessibilityLabel("You")
                     Button { screen = .tasks; perform { try await model.loadTasks() } } label: {
-                        barIcon("list.bullet")
+                        barIcon("list.bullet", title: "Tasks")
                             .overlay(alignment: .topTrailing) {
-                                if model.sortedBots.reduce(0, { $0 + $1.needsYou }) > 0 {
-                                    Text("\(model.sortedBots.reduce(0, { $0 + $1.needsYou }))").font(KS.mono(.semibold)).foregroundStyle(KS.onSignal)
+                                if totalNeedsYou > 0 {
+                                    Text("\(totalNeedsYou)").font(KS.mono(.semibold)).foregroundStyle(KS.onSignal)
                                         .padding(.horizontal, 5).frame(minWidth: 20, minHeight: 20).background(KS.needsText, in: Capsule()).offset(x: 6, y: -6)
                                 }
                             }
                     }.accessibilityLabel("Tasks")
-                    Button { screen = .usage } label: { barIcon("chart.pie") }.accessibilityLabel("Usage")
+                    Button { screen = .usage } label: { barIcon("chart.pie", title: "Usage") }.accessibilityLabel("Usage")
                     Spacer(minLength: 0)
                     // New users get the big card above instead; this is the quick way for everyone else.
-                    if !model.sortedBots.isEmpty || !model.hiddenBots.isEmpty {
+                    if !sorted.isEmpty || !model.hiddenBots.isEmpty {
                         Button { sheet = .newBot } label: { Label("New bot", systemImage: "plus") }.buttonStyle(Pill(fill: KS.signal))
                             .accessibilityLabel("New bot").accessibilityIdentifier("new-bot-header")
                     }
@@ -716,7 +692,7 @@ struct RootView: View {
                                 messageView(message).id(message.id)
                             }
                         }
-                        ForEach(Array(model.typing.enumerated()), id: \.offset) { _, typing in
+                        ForEach(model.typing, id: \.self) { typing in
                             let agent = model.replyingAgent(typing)
                             HStack(alignment: .top, spacing: 10) {
                                 Avatar(name: agent.name, size: 28, provider: provider(agent.id))
@@ -741,7 +717,9 @@ struct RootView: View {
                 }.frame(maxHeight: .infinity)
                     .scrollDismissesKeyboard(.interactively)
                     // Tapping the conversation puts the keyboard away; simultaneous, so buttons and links in messages still work.
-                    .simultaneousGesture(TapGesture().onEnded { composerFocused = false })
+                    .simultaneousGesture(TapGesture().onEnded {
+                        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+                    })
                     .defaultScrollAnchor(.bottom)
                     .onScrollGeometryChange(for: Bool.self) { geometry in
                         geometry.contentOffset.y + geometry.containerSize.height >= geometry.contentSize.height - 80
@@ -753,44 +731,16 @@ struct RootView: View {
                     .onChange(of: model.typing) { _, _ in if nearBottom { proxy.scrollTo("bottom", anchor: .bottom) } }
                     .onAppear { nearBottom = true }
             }
-            VStack(alignment: .leading, spacing: 6) {
-                if !photos.isEmpty {
-                    ScrollView(.horizontal) { HStack { ForEach(photos) { photo in
-                        if let image = UIImage(data: photo.data) {
-                            Image(uiImage: image).resizable().scaledToFill().frame(width: 60, height: 60).clipped().clipShape(RoundedRectangle(cornerRadius: 10))
-                                .overlay(alignment: .topTrailing) { Button { photos.removeAll { $0.id == photo.id } } label: { Image(systemName: "xmark").font(.system(size: 11, weight: .bold)).foregroundStyle(KS.strong).padding(5).background(KS.inset, in: Circle()).frame(width: 44, height: 44) }.accessibilityLabel("Remove photo") }
-                        }
-                    } } }
-                }
-                HStack(alignment: .bottom, spacing: 6) {
-                Menu {
-                    Button("Earlier messages") { perform { try await model.olderMessages() } }
-                    Button("Bot settings") { screen = .settings }
-                } label: { Image(systemName: "ellipsis").font(.system(size: 16, weight: .semibold)).foregroundStyle(KS.ink).frame(width: 44, height: 44).background(KS.chip, in: RoundedRectangle(cornerRadius: 12, style: .continuous)).contentShape(Rectangle()) }
-                    .accessibilityLabel("Chat options").accessibilityIdentifier("chat-options")
-                HStack(alignment: .bottom, spacing: 6) {
-                    if !model.hasOpenApproval {
-                    PhotosPicker(selection: $selections, maxSelectionCount: max(1, 2 - photos.count), matching: .images) { Image(systemName: "plus").font(.system(size: 17)).foregroundStyle(KS.soft).frame(width: 44, height: 44) }.disabled(photos.count >= 2 || preparingPhotos || dictation.isRecording || dictationStarting).accessibilityLabel("Add photo") }
-                    TextField("", text: $composer, prompt: Text(model.hasOpenApproval ? "Answer the approval above to continue" : "Ask your bot…").foregroundStyle(KS.muted), axis: .vertical).font(KS.body()).foregroundStyle(KS.ink).lineLimit(1...4).focused($composerFocused).padding(.vertical, 8).padding(.leading, model.hasOpenApproval ? 14 : 0).frame(minHeight: 44).disabled(dictation.isRecording || dictationStarting).accessibilityIdentifier("composer")
-                    if !model.hasOpenApproval {
-                    Button {
-                        if dictation.isRecording || dictationStarting { dictation.stop(); dictationToken = UUID(); dictationStarting = false }
-                        else { composerFocused = false; dictationStarting = true; let token = UUID(); dictationToken = token; let prefix = composer.isEmpty ? "" : composer + " "; Task { await dictation.start { utterance in composer = prefix + utterance }; if dictationToken == token { dictationStarting = false } } }
-                    } label: { Image(systemName: (dictation.isRecording || dictationStarting) ? "stop.fill" : "mic").foregroundStyle((dictation.isRecording || dictationStarting) ? KS.onSignal : KS.soft).background { if dictation.isRecording || dictationStarting { Circle().fill(KS.signal).frame(width: 32, height: 32) } }.frame(width: 44, height: 44) }.accessibilityLabel((dictation.isRecording || dictationStarting) ? "Stop dictation" : "Dictate message")
-                    }
-                    Button {
-                        dictation.stop(); dictationToken = UUID(); dictationStarting = false
-                        let text = composer, selected = photos, thread = model.openBot?.threadID, botID = model.openBot?.id
-                        perform { try await model.post(text, photos: selected); if let botID, let draft = drafts[botID], draft.text == text && draft.photos == selected { drafts[botID] = nil }; if model.openBot?.threadID == thread && composer == text && photos == selected { composer = ""; photos = [] } }
-                    } label: { Image(systemName: "arrow.up").font(.system(size: 16, weight: .semibold)).foregroundStyle(KS.onSignal).frame(width: 36, height: 36).background(KS.signal.opacity(composer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && photos.isEmpty ? 0.3 : 1), in: RoundedRectangle(cornerRadius: 9, style: .continuous)).frame(width: 44, height: 44).contentShape(Rectangle()) }.disabled((composer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && photos.isEmpty) || model.busy || preparingPhotos).accessibilityLabel("Send message")
-                }.buttonStyle(PressStyle(icon: true)).padding(.horizontal, 2)
-                    .disabled(model.hasOpenApproval)
-                    .card(KS.inset)
-                }
-                if let error = dictation.error { Text(error).font(KS.secondary()).foregroundStyle(KS.soft) }
-            }.padding(.horizontal, 12).padding(.top, 8).padding(.bottom, 6).background(KS.ground)
-                .overlay(alignment: .top) { Rectangle().fill(KS.hairline).frame(height: 1) }
-
+            ThreadComposerBar(
+                model: model,
+                botID: model.openBot?.id ?? "",
+                threadID: model.openBot?.threadID ?? "",
+                drafts: $drafts,
+                onOpenSettings: { screen = .settings },
+                onOlderMessages: { perform { try await model.olderMessages() } },
+                perform: perform
+            )
+            .id(model.openBot?.id ?? "")
         }
     }
     @ViewBuilder private func messageView(_ message: Message) -> some View {
@@ -855,7 +805,7 @@ struct RootView: View {
         let runner = provider(message.raw["author"]["id"].string)
         let stamp = time(message.raw["created_at"].string)
         let content = VStack(alignment: .leading, spacing: 4) {
-            ForEach(Array(message.raw["attachments"].array.enumerated()), id: \.offset) { _, attachment in
+            ForEach(message.raw["attachments"].array, id: \.self) { attachment in
                 ChatAttachmentView(service: model.service, threadID: model.openBot?.threadID ?? "", messageID: message.id, attachment: attachment)
             }
             if !text.isEmpty || message.raw["attachments"].array.isEmpty { ChatMarkdownView(text: text.isEmpty ? (message.kind == "answer" ? "Answer sent" : message.kind.capitalized) : text, style: .init(
@@ -911,7 +861,7 @@ struct RootView: View {
             }.padding(.horizontal, 16)
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 8) {
-                    ForEach(Array(filteredTasks.enumerated()), id: \.offset) { _, row in
+                    ForEach(filteredTasks, id: \.self) { row in
                         Button {
                             if let bot = model.bots.first(where: { $0.id == row["bot_id"].string || $0.threadID == row["thread_id"].string }) { open(bot) }
                             else { sheet = .changes(row["objective"].string + "\n\n" + row["status"].string + "\n" + row["next_step"].string) }
@@ -981,7 +931,7 @@ struct RootView: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 10) {
                     Text("Auto work follows your host’s routing policy and available quota.").font(KS.body()).foregroundStyle(KS.soft).fixedSize(horizontal: false, vertical: true)
-                    ForEach(Array(model.status["usage"].array.enumerated()), id: \.offset) { _, usage in
+                    ForEach(model.status["usage"].array, id: \.self) { usage in
                         let provider = usage["provider"].string
                         let left = usage["headroom"].number
                         VStack(alignment: .leading, spacing: 8) {
@@ -998,7 +948,7 @@ struct RootView: View {
                                     Capsule().fill(KS.tint(provider)).frame(width: geo.size.width * max(0, min(1, (left ?? 0) / 100)))
                                 }
                             }.frame(height: 6).accessibilityHidden(true)
-                            ForEach(Array(usage["windows"].array.enumerated()), id: \.offset) { _, window in
+                            ForEach(usage["windows"].array, id: \.self) { window in
                                 Text(windowText(window)).font(KS.mono()).foregroundStyle(KS.muted)
                             }
                             if !usage["ok"].bool { Text("Quota reading unavailable").font(KS.secondary()).foregroundStyle(KS.needsText) }
@@ -1071,6 +1021,7 @@ struct ConnectView: View {
     @State private var code = ""
     @State private var error: String?
     @State private var connecting = false
+    @State private var scanningQR = false
     @FocusState private var focused: Bool
     private var digits: String { String(code.filter(\.isNumber).prefix(6)) }
     private func connect() {
@@ -1080,6 +1031,29 @@ struct ConnectView: View {
             defer { connecting = false }
             do { try await model.pair(code: digits); code = ""; close() }
             catch { self.error = safeError(error) }
+        }
+    }
+    private func handleScannedOrPasted(_ raw: String) {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        if let url = URL(string: trimmed),
+           (url.scheme == "swarmaa" || url.scheme == "codenotch"),
+           url.host == "pair" {
+            guard !connecting else { return }
+            connecting = true; error = nil
+            Task {
+                defer { connecting = false }
+                do { try await model.handlePairingURL(url); code = ""; close() }
+                catch { self.error = safeError(error) }
+            }
+            return
+        }
+        let cleaned = String(trimmed.filter(\.isNumber).prefix(6))
+        if cleaned.count == 6 {
+            code = cleaned
+            connect()
+        } else {
+            self.error = AppFailure.invalidPairing.localizedDescription
         }
     }
     var body: some View {
@@ -1097,11 +1071,36 @@ struct ConnectView: View {
             }
             Text("Your agents run on your Mac. This phone talks to them through the Swarmaa relay, from anywhere.").font(KS.body()).foregroundStyle(KS.soft)
             VStack(alignment: .leading, spacing: 8) {
-                Eyebrow("On your Mac, run")
+                Eyebrow("On your Mac")
+                Text("Open Connect Phone in Swarmaa on your Mac, or run:")
+                    .font(KS.body()).foregroundStyle(KS.ink)
                 Text("npm run relay:pair").font(KS.mono(.semibold)).foregroundStyle(KS.signal).textSelection(.enabled)
                     .padding(.horizontal, 10).padding(.vertical, 8).frame(maxWidth: .infinity, alignment: .leading).card(KS.inset, radius: 8)
-                Text("Type the 6-digit code it shows. It works once, for five minutes.").font(KS.body()).foregroundStyle(KS.ink)
+                Text("Scan the QR code, paste the pairing link, or type the 6-digit code. It works once, for five minutes.").font(KS.body()).foregroundStyle(KS.ink)
             }.padding(14).card()
+            HStack(spacing: 10) {
+                Button {
+                    focused = false
+                    scanningQR = true
+                } label: {
+                    Label("Scan QR Code", systemImage: "qrcode.viewfinder")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(Pill(fill: KS.surface))
+                .disabled(connecting || model.isDemo)
+                Button {
+                    if let pasted = UIPasteboard.general.string {
+                        handleScannedOrPasted(pasted)
+                    } else {
+                        error = "No pairing link or code on the clipboard."
+                    }
+                } label: {
+                    Label("Paste Link", systemImage: "doc.on.clipboard")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(Pill(fill: KS.surface))
+                .disabled(connecting || model.isDemo)
+            }
             Spacer(minLength: 0)
             Eyebrow("Pairing code")
             TextField("", text: $code, prompt: Text("000 000").foregroundStyle(KS.muted))
@@ -1126,6 +1125,361 @@ struct ConnectView: View {
           }.scrollDismissesKeyboard(.interactively).scrollBounceBehavior(.basedOnSize)
         }.background(KS.ground)
         .onAppear { focused = !model.isDemo }
+        .sheet(isPresented: $scanningQR) {
+            QRScannerSheet(onCode: { payload in
+                scanningQR = false
+                handleScannedOrPasted(payload)
+            }, onCancel: {
+                scanningQR = false
+            })
+            .background(KS.ground)
+            .preferredColorScheme(.dark)
+        }
+    }
+}
+
+private struct QRScannerSheet: View {
+    var onCode: (String) -> Void
+    var onCancel: () -> Void
+    @State private var unavailableReason: String?
+
+    var body: some View {
+        VStack(spacing: 16) {
+            HStack {
+                CloseButton(action: onCancel)
+                Text("Scan QR code").font(KS.title()).foregroundStyle(KS.strong)
+                Spacer()
+            }
+            .padding(.horizontal, 16).padding(.top, 12)
+            if let reason = unavailableReason {
+                VStack(spacing: 12) {
+                    Image(systemName: "camera.viewfinder").font(.system(size: 36, weight: .light)).foregroundStyle(KS.muted)
+                    Text(reason).font(KS.body()).foregroundStyle(KS.soft).multilineTextAlignment(.center)
+                    Button("Use manual entry instead", action: onCancel).buttonStyle(Pill(fill: KS.signal, primary: true))
+                }
+                .padding(24)
+                Spacer()
+            } else {
+                QRScannerRepresentable(onCode: onCode, onUnavailable: { unavailableReason = $0 })
+                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    .padding(.horizontal, 16)
+                Text("Point your camera at the QR code shown in Swarmaa on your Mac.")
+                    .font(KS.secondary()).foregroundStyle(KS.muted).multilineTextAlignment(.center)
+                    .padding(.horizontal, 24).padding(.bottom, 16)
+            }
+        }
+        .background(KS.ground)
+    }
+}
+
+private struct QRScannerRepresentable: UIViewControllerRepresentable {
+    var onCode: (String) -> Void
+    var onUnavailable: (String) -> Void
+
+    func makeUIViewController(context: Context) -> QRScannerController {
+        let controller = QRScannerController()
+        controller.onCode = onCode
+        controller.onUnavailable = onUnavailable
+        return controller
+    }
+    func updateUIViewController(_ uiViewController: QRScannerController, context: Context) {}
+}
+
+private final class QRScannerController: UIViewController, @preconcurrency AVCaptureMetadataOutputObjectsDelegate {
+    var onCode: ((String) -> Void)?
+    var onUnavailable: ((String) -> Void)?
+    private let session = AVCaptureSession()
+    private var previewLayer: AVCaptureVideoPreviewLayer?
+    private var delivered = false
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = .black
+        switch AVCaptureDevice.authorizationStatus(for: .video) {
+        case .authorized:
+            configureSession()
+        case .notDetermined:
+            AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
+                DispatchQueue.main.async {
+                    if granted { self?.configureSession() }
+                    else { self?.onUnavailable?("Camera access is denied. Enable it in Settings or paste the pairing link instead.") }
+                }
+            }
+        default:
+            onUnavailable?("Camera access is denied. Enable it in Settings or paste the pairing link instead.")
+        }
+    }
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        previewLayer?.frame = view.bounds
+    }
+
+    override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+        let session = self.session
+        DispatchQueue.global(qos: .userInitiated).async {
+            if session.isRunning { session.stopRunning() }
+        }
+    }
+
+    private func configureSession() {
+        guard let device = AVCaptureDevice.default(for: .video),
+              let input = try? AVCaptureDeviceInput(device: device),
+              session.canAddInput(input) else {
+            onUnavailable?("Camera is not available on this device. Paste the pairing link or type the 6-digit code instead.")
+            return
+        }
+        session.addInput(input)
+        let output = AVCaptureMetadataOutput()
+        guard session.canAddOutput(output) else {
+            onUnavailable?("QR scanning is not supported on this device.")
+            return
+        }
+        session.addOutput(output)
+        output.setMetadataObjectsDelegate(self, queue: .main)
+        output.metadataObjectTypes = [.qr]
+
+        let preview = AVCaptureVideoPreviewLayer(session: session)
+        preview.videoGravity = .resizeAspectFill
+        preview.frame = view.bounds
+        view.layer.addSublayer(preview)
+        previewLayer = preview
+
+        let session = self.session
+        DispatchQueue.global(qos: .userInitiated).async {
+            session.startRunning()
+        }
+    }
+
+    func metadataOutput(_ output: AVCaptureMetadataOutput,
+                        didOutput metadataObjects: [AVMetadataObject],
+                        from connection: AVCaptureConnection) {
+        guard !delivered,
+              let first = metadataObjects.first as? AVMetadataMachineReadableCodeObject,
+              let value = first.stringValue, !value.isEmpty else { return }
+        delivered = true
+        let session = self.session
+        DispatchQueue.global(qos: .userInitiated).async {
+            if session.isRunning { session.stopRunning() }
+        }
+        onCode?(value)
+    }
+}
+
+/// Isolated composer view so typing never re-renders `RootView`, `home`, or `threadBody`.
+private struct ThreadComposerBar: View {
+    @Bindable var model: AppModel
+    let botID: String
+    let threadID: String
+    @Binding var drafts: [String: (text: String, photos: [ChatPhoto])]
+    var onOpenSettings: () -> Void
+    var onOlderMessages: () -> Void
+    var perform: (@escaping @MainActor () async throws -> Void) -> Void
+
+    @State private var composer = ""
+    @State private var photos: [ChatPhoto] = []
+    @State private var thumbnails: [UUID: UIImage] = [:]
+    @State private var selections: [PhotosPickerItem] = []
+    @State private var preparingPhotos = false
+    @State private var draftGeneration = UUID()
+    @State private var dictationStarting = false
+    @State private var dictationToken = UUID()
+    @State private var demoPreviewLoaded = false
+    @State private var flushTask: Task<Void, Never>?
+    @StateObject private var dictation = ChatDictation()
+    @FocusState private var composerFocused: Bool
+    @Environment(\.scenePhase) private var phase
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if !photos.isEmpty {
+                ScrollView(.horizontal) {
+                    HStack {
+                        ForEach(photos) { photo in
+                            Group {
+                                if let image = thumbnails[photo.id] {
+                                    Image(uiImage: image).resizable().scaledToFill()
+                                } else {
+                                    RoundedRectangle(cornerRadius: 10).fill(KS.chip)
+                                        .overlay { ProgressView().controlSize(.mini) }
+                                }
+                            }
+                            .frame(width: 60, height: 60).clipped().clipShape(RoundedRectangle(cornerRadius: 10))
+                            .overlay(alignment: .topTrailing) {
+                                Button {
+                                    photos.removeAll { $0.id == photo.id }
+                                    thumbnails.removeValue(forKey: photo.id)
+                                    flushDraftNow()
+                                } label: {
+                                    Image(systemName: "xmark").font(.system(size: 11, weight: .bold))
+                                        .foregroundStyle(KS.strong).padding(5).background(KS.inset, in: Circle())
+                                        .frame(width: 44, height: 44)
+                                }.accessibilityLabel("Remove photo")
+                            }
+                        }
+                    }
+                }
+            }
+            HStack(alignment: .bottom, spacing: 6) {
+                Menu {
+                    Button("Earlier messages", action: onOlderMessages)
+                    Button("Bot settings", action: onOpenSettings)
+                } label: {
+                    Image(systemName: "ellipsis").font(.system(size: 16, weight: .semibold)).foregroundStyle(KS.ink)
+                        .frame(width: 44, height: 44).background(KS.chip, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        .contentShape(Rectangle())
+                }
+                .accessibilityLabel("Chat options").accessibilityIdentifier("chat-options")
+                HStack(alignment: .bottom, spacing: 6) {
+                    if !model.hasOpenApproval {
+                        PhotosPicker(selection: $selections, maxSelectionCount: max(1, 2 - photos.count), matching: .images) {
+                            Image(systemName: "plus").font(.system(size: 17)).foregroundStyle(KS.soft).frame(width: 44, height: 44)
+                        }
+                        .disabled(photos.count >= 2 || preparingPhotos || dictation.isRecording || dictationStarting)
+                        .accessibilityLabel("Add photo")
+                    }
+                    TextField("", text: $composer, prompt: Text(model.hasOpenApproval ? "Answer the approval above to continue" : "Ask your bot…").foregroundStyle(KS.muted), axis: .vertical)
+                        .font(KS.body()).foregroundStyle(KS.ink).lineLimit(1...4).focused($composerFocused)
+                        .padding(.vertical, 8).padding(.leading, model.hasOpenApproval ? 14 : 0).frame(minHeight: 44)
+                        .disabled(dictation.isRecording || dictationStarting).accessibilityIdentifier("composer")
+                    if !model.hasOpenApproval {
+                        Button {
+                            if dictation.isRecording || dictationStarting {
+                                dictation.stop(); dictationToken = UUID(); dictationStarting = false
+                            } else {
+                                composerFocused = false; dictationStarting = true
+                                let token = UUID(); dictationToken = token
+                                let prefix = composer.isEmpty ? "" : composer + " "
+                                Task {
+                                    await dictation.start { utterance in composer = prefix + utterance }
+                                    if dictationToken == token { dictationStarting = false }
+                                }
+                            }
+                        } label: {
+                            Image(systemName: (dictation.isRecording || dictationStarting) ? "stop.fill" : "mic")
+                                .foregroundStyle((dictation.isRecording || dictationStarting) ? KS.onSignal : KS.soft)
+                                .background { if dictation.isRecording || dictationStarting { Circle().fill(KS.signal).frame(width: 32, height: 32) } }
+                                .frame(width: 44, height: 44)
+                        }
+                        .accessibilityLabel((dictation.isRecording || dictationStarting) ? "Stop dictation" : "Dictate message")
+                    }
+                    Button {
+                        dictation.stop(); dictationToken = UUID(); dictationStarting = false
+                        flushTask?.cancel()
+                        let text = composer, selected = photos, currentThread = threadID, currentBotID = botID
+                        perform {
+                            try await model.post(text, photos: selected)
+                            if !currentBotID.isEmpty, let draft = drafts[currentBotID], draft.text == text && draft.photos == selected {
+                                drafts[currentBotID] = nil
+                            }
+                            if model.openBot?.threadID == currentThread && composer == text && photos == selected {
+                                composer = ""; photos = []; thumbnails = [:]
+                            }
+                        }
+                    } label: {
+                        Image(systemName: "arrow.up").font(.system(size: 16, weight: .semibold)).foregroundStyle(KS.onSignal)
+                            .frame(width: 36, height: 36)
+                            .background(KS.signal.opacity(composer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && photos.isEmpty ? 0.3 : 1), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                            .frame(width: 44, height: 44).contentShape(Rectangle())
+                    }
+                    .disabled((composer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && photos.isEmpty) || model.busy || preparingPhotos)
+                    .accessibilityLabel("Send message")
+                }
+                .buttonStyle(PressStyle(icon: true)).padding(.horizontal, 2)
+                .disabled(model.hasOpenApproval)
+                .card(KS.inset)
+            }
+            if let error = dictation.error { Text(error).font(KS.secondary()).foregroundStyle(KS.soft) }
+        }
+        .padding(.horizontal, 12).padding(.top, 8).padding(.bottom, 6).background(KS.ground)
+        .overlay(alignment: .top) { Rectangle().fill(KS.hairline).frame(height: 1) }
+        .onAppear { loadDraft() }
+        .onDisappear {
+            dictation.stop(); dictationToken = UUID(); dictationStarting = false
+            flushDraftNow()
+        }
+        .onChange(of: composer) { _, _ in scheduleDraftFlush() }
+        .onChange(of: phase) { _, phase in
+            if phase != .active {
+                dictation.stop(); dictationToken = UUID(); dictationStarting = false
+                flushDraftNow()
+            }
+        }
+        .onChange(of: selections) { _, items in
+            guard !items.isEmpty else { return }
+            let targetThread = threadID, generation = draftGeneration
+            preparingPhotos = true
+            Task {
+                defer { preparingPhotos = false }
+                for item in items.prefix(max(0, 2 - photos.count)) {
+                    do {
+                        guard let data = try await item.loadTransferable(type: Data.self) else { throw AppFailure.invalidResponse }
+                        let photo = try await ChatPhoto.prepare(data: data, name: "Photo.jpg")
+                        let thumb = await decodeThumbnail(photo.data)
+                        guard targetThread == model.openBot?.threadID, generation == draftGeneration else { return }
+                        if let thumb { thumbnails[photo.id] = thumb }
+                        photos.append(photo)
+                    } catch {
+                        if targetThread == model.openBot?.threadID && generation == draftGeneration {
+                            model.error = "Could not prepare this photo. Please try again."
+                        }
+                    }
+                }
+                selections = []
+                flushDraftNow()
+            }
+        }
+    }
+
+    private func loadDraft() {
+        draftGeneration = UUID()
+        let draft = botID.isEmpty ? nil : drafts[botID]
+        composer = draft?.text ?? ""
+        photos = draft?.photos ?? []
+        thumbnails = [:]
+        if !botID.isEmpty, model.isDemo, !demoPreviewLoaded, ProcessInfo.processInfo.arguments.contains("-photo-preview-demo"),
+           let url = Bundle.main.url(forResource: "moji-scout", withExtension: "png"),
+           let data = try? Data(contentsOf: FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("demo-photo.jpg")) ?? Data(contentsOf: url),
+           let image = UIImage(data: data), let jpeg = image.jpegData(compressionQuality: 0.8) {
+            let demoPhoto = ChatPhoto(id: UUID(), name: "Demo photo.jpg", data: jpeg)
+            photos = [demoPhoto]
+            thumbnails[demoPhoto.id] = image
+            demoPreviewLoaded = true
+        }
+        for photo in photos where thumbnails[photo.id] == nil {
+            Task {
+                if let thumb = await decodeThumbnail(photo.data) {
+                    thumbnails[photo.id] = thumb
+                }
+            }
+        }
+    }
+
+    private func scheduleDraftFlush() {
+        flushTask?.cancel()
+        flushTask = Task {
+            try? await Task.sleep(for: .milliseconds(300))
+            guard !Task.isCancelled else { return }
+            flushDraftNow()
+        }
+    }
+
+    private func flushDraftNow() {
+        flushTask?.cancel()
+        flushTask = nil
+        guard !botID.isEmpty, model.connected || model.isDemo else { return }
+        if composer.isEmpty && photos.isEmpty {
+            drafts[botID] = nil
+        } else {
+            drafts[botID] = (composer, photos)
+        }
+    }
+
+    private func decodeThumbnail(_ data: Data) async -> UIImage? {
+        await Task.detached(priority: .userInitiated) {
+            UIImage(data: data)?.preparingThumbnail(of: CGSize(width: 120, height: 120)) ?? UIImage(data: data)
+        }.value
     }
 }
 
@@ -1270,15 +1624,44 @@ struct SettingsView: View {
                         }
                         Eyebrow("03 — Who does what")
                         ForEach(["research", "patch", "review", "summary"], id: \.self) { kind in
-                            Picker(kind.capitalized, selection: Binding(get: { draft.raw["routing"][kind]["provider"].string.isEmpty ? draft.raw["routing"][kind]["mode"].string : draft.raw["routing"][kind]["provider"].string }, set: { value in
+                            Picker(kind.capitalized, selection: Binding(get: {
+                                let raw = draft.raw["routing"][kind]["provider"].string.isEmpty
+                                    ? draft.raw["routing"][kind]["mode"].string
+                                    : draft.raw["routing"][kind]["provider"].string
+                                return raw.isEmpty ? "auto" : raw
+                            }, set: { value in
                                 draft.raw["routing"][kind] = ["claude", "codex", "antigravity"].contains(value) ? .object(["provider": .string(value)]) : .object(["mode": .string(value)])
                             })) {
-                                Text("Auto").tag("auto"); Text("Auto").tag("")
+                                Text("Auto").tag("auto")
                                 if kind == "review" { Text("Different from author").tag("different_from_author") }
                                 Text("Claude").tag("claude"); Text("Codex").tag("codex"); Text("Antigravity").tag("antigravity")
                             }.tint(KS.ink).frame(minHeight: 44)
                         }
                         Eyebrow("04 — Schedule")
+                        let schedulePresets: [(label: String, cron: String)] = [
+                            ("Off", ""),
+                            ("Daily 9am", "0 9 * * *"),
+                            ("Weekdays 9am", "0 9 * * 1-5"),
+                            ("Hourly", "0 * * * *")
+                        ]
+                        let currentSchedule = draft.raw["schedule"].string.trimmingCharacters(in: .whitespacesAndNewlines)
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 8) {
+                                ForEach(schedulePresets, id: \.label) { preset in
+                                    let active = currentSchedule == preset.cron
+                                    Button(preset.label) {
+                                        draft.raw["schedule"] = preset.cron.isEmpty ? .null : .string(preset.cron)
+                                    }
+                                    .buttonStyle(Pill(fill: active ? KS.signal : KS.chip))
+                                }
+                                let isCustom = !currentSchedule.isEmpty && !schedulePresets.contains(where: { $0.cron == currentSchedule })
+                                if isCustom {
+                                    Text("Custom").font(KS.secondary(.semibold)).foregroundStyle(KS.onSignal)
+                                        .padding(.horizontal, 12).frame(minHeight: 36)
+                                        .background(KS.signal, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                                }
+                            }
+                        }
                         TextField("Cron, e.g. 0 9 * * 1-5", text: Binding(get: { draft.raw["schedule"].string }, set: {
                             draft.raw["schedule"] = $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? .null : .string($0)
                         })).textInputAutocapitalization(.never).autocorrectionDisabled().font(KS.mono()).padding(12).card(KS.inset)
@@ -1625,6 +2008,14 @@ struct ApprovalCard: View {
     }
 }
 
+private enum DecodedPhotoCache {
+    nonisolated(unsafe) static let images: NSCache<NSString, UIImage> = {
+        let cache = NSCache<NSString, UIImage>()
+        cache.countLimit = 80
+        return cache
+    }()
+}
+
 private struct ChatAttachmentView: View {
     let service: (any HostService)?
     let threadID: String
@@ -1634,26 +2025,41 @@ private struct ChatAttachmentView: View {
     @State private var failed = false
     init(service: (any HostService)?, threadID: String, messageID: String, attachment: JSON) {
         self.service = service; self.threadID = threadID; self.messageID = messageID; self.attachment = attachment
-        // A cached photo shows in the first frame: no spinner flash when a chat reopens.
-        _image = State(initialValue: PhotoCache.data(attachment["sha256"].string).flatMap(UIImage.init(data:)))
+        // Only check the already-decoded UIImage cache synchronously (no JPEG decode in init/body).
+        let sha = attachment["sha256"].string
+        _image = State(initialValue: sha.isEmpty ? nil : DecodedPhotoCache.images.object(forKey: sha as NSString))
     }
     var body: some View {
         Group {
             if let image { Image(uiImage: image).resizable().scaledToFit().frame(maxWidth: 230, maxHeight: 260).clipShape(RoundedRectangle(cornerRadius: 10)).accessibilityLabel(attachment["name"].string) }
             else if failed { Button("Retry photo") { Task { await load() } }.frame(minHeight: 44) }
             else { ProgressView().frame(width: 100, height: 80) }
-        }.task { await load() }
+        }.task(id: attachment["sha256"].string + attachment["id"].string) { await load() }
     }
     private func load() async {
         let sha = attachment["sha256"].string
-        if let data = PhotoCache.data(sha), let cached = UIImage(data: data) { image = cached; failed = false; return }
+        if !sha.isEmpty, let hit = DecodedPhotoCache.images.object(forKey: sha as NSString) {
+            image = hit; failed = false; return
+        }
+        if let data = PhotoCache.data(sha),
+           let decoded = await Self.decode(data) {
+            if !sha.isEmpty { DecodedPhotoCache.images.setObject(decoded, forKey: sha as NSString) }
+            image = decoded; failed = false; return
+        }
         do {
             guard let service else { throw AppFailure.invalidResponse }
             let result = try await service.call("thread_attachment_get", ["thread_id": .string(threadID), "message_id": .string(messageID), "attachment_id": attachment["id"]])
-            guard let data = Data(base64Encoded: result["attachment"]["data_base64"].string), data.count <= 160 * 1024, let decoded = UIImage(data: data) else { throw AppFailure.invalidResponse }
+            guard let data = Data(base64Encoded: result["attachment"]["data_base64"].string), data.count <= 160 * 1024,
+                  let decoded = await Self.decode(data) else { throw AppFailure.invalidResponse }
+            if !sha.isEmpty { DecodedPhotoCache.images.setObject(decoded, forKey: sha as NSString) }
             image = decoded; failed = false
             PhotoCache.store(data, sha256: sha)
         } catch { failed = true }
+    }
+    private static func decode(_ data: Data) async -> UIImage? {
+        await Task.detached(priority: .userInitiated) {
+            UIImage(data: data)?.preparingForDisplay() ?? UIImage(data: data)
+        }.value
     }
 }
 

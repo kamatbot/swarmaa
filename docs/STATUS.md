@@ -1,41 +1,34 @@
 # Release status — 0.1.0
 
-Prepared 2026-10-21. This is an authored implementation, with source inspection and cross-component review. No dependency installation, typecheck, test, build, migration, service, provider CLI or real account connection was executed during authoring. There is no generated package lockfile and no compiled distribution in the ZIP.
+Swarmaa is an active local-first implementation covering the PostgreSQL core service, MCP/REST/OAuth/passkey transports, macOS worker bridges, local chat capture and lesson distillation, PTY idle-wake wrapper, native macOS and iOS companion apps, and an optional end-to-end relay. Schema migrations span `001` through `046` (`db/migrations/`), with unit tests (`npm test`), TypeScript typechecking (`npm run typecheck`), production build (`npm run build`), and disposable-database PostgreSQL integration tests (`npm run test:integration`).
 
 ## Delivered behavior
 
-| Area | Present in source | Still requires local verification/setup |
+| Area | Status in repository | Notes |
 |---|---|---|
-| Memory | PostgreSQL records/revisions/proposals, source provenance, explicit conflict responses, expiration, owner promotion and live retraction | Migrations and concurrency/authorization suite |
-| Tasks | Scoped submission, continuation, idempotency, attempts, leases, heartbeat/checkpoint, resource coordination and completion receipts | PostgreSQL races and worker interruption scenarios |
-| Artifacts | Bounded UTF-8 text, hashes, task/run provenance, scoped retrieval | Storage limits and client display |
-| MCP | Legacy and modern request framing, tool discovery/calls, stdio proxy | Actual installed client interoperability |
-| OAuth | Public clients, dynamic registration, S256 PKCE, browser consent, token hashes, refresh replay revocation, grant narrowing | Actual Dot/Grok/Claude callback registration and browser flow |
-| Events | Persistent subscriptions/deliveries, callback challenge, HMAC signatures, retries, expiry, OAuth grant binding and polling | Public HTTPS receiver lifecycle and vendor event delivery |
-| Workers | Claude/Codex/Antigravity adapters (read by default; opt-in sandboxed git-worktree edits, local branches, never pushed), bounded processes, static project mapping | Installed CLI versions, account login, permission enforcement and actual tasks |
-| Antigravity | MCP config; sandboxed worker for review and in-project edits (no research) | Installed CLI version and actual tasks |
-| Sources | Verified GitHub intake, HMAC verification, code-first filter, and observe-by-default durable deliveries | Webhook integration and provider notification verification |
-| Reason | Optional targeted notifications and vendored upstream source | Local upstream install, pairing and live peer sessions |
+| Memory | Implemented & tested | Scoped PostgreSQL records, revisions, competing proposals, source provenance, expiration, owner promotion (`memory_promote`) and live retraction (`memory_retract`) |
+| Tasks & Routing | Implemented & tested | Scoped submission, continuations, idempotency, attempts, DB-clock lease fencing, heartbeats/checkpoints, resource locks, quota-aware `auto.read`/`auto.patch` routing, and usage cost accounting |
+| Flows | Implemented & tested | Declarative step DAGs, provider separation (`different_provider_than`), commit pinning, owner-configured bridge checks (`tests_pass`, `build_passes`), and owner approval gates |
+| Teams & Bots | Implemented & tested | Persistent agents, threads, channels, tracked swarms (`swarm_*`), structured questions/approvals, persistent bots (`bot_*` including archive/unarchive/delete, scheduling, routing floors, task cards, avatars/colors), and SSE live stream (`/api/stream`) |
+| Inbox & Hooks | Implemented & tested | Scoped cross-session notifications (`message_send`, `inbox_get`, `inbox_poll`, `inbox_ack`, `task_watch`), POSIX dirty-flag `PostToolUse` fast-path guard, Claude/Codex/Antigravity inbox/memory/journal hooks, and `/swarm` command |
+| Sessions & Lessons | Implemented & tested | Cross-harness chat journal (`session_record`, `session_list`, `session_get`), read-only local capture (`src/capture/` for Cursor, OpenCode, Copilot CLI, Cline, Roo Code, Devin CLI, Hermes, Factory, Pi), and lesson distillation/review (`lesson_*`) |
+| MCP, OAuth & Passkeys | Implemented & tested | Stateless HTTP MCP and local single-process stdio proxy (`src/stdio-proxy.ts`), OAuth 2.1 S256 PKCE with dynamic registration and grant narrowing, and WebAuthn owner passkeys |
+| Events & Webhooks | Implemented & tested | Transactional event outbox (`(xid, seq)` cursors), subscriptions, SSRF IP-pinned HMAC webhook delivery, and GitHub repo source intake (`POST /hooks/github/<id>`, `source_*`, `task_subscribe`) |
+| Workers & Bridge | Implemented & tested | Claude Code, Codex CLI, and Antigravity (`agy` headless + ACP `src/bridge/acp.ts`) adapters; read-only by default, opt-in sandboxed git-worktree patches (`swarmaa/<provider>/<id>`, never pushed), Seatbelt credential isolation, and native transcript resume |
+| PTY Wrapper | Implemented & tested | `swarmaa wrap codex|agy` (`src/wrap/`) preserves interactive terminals and delivers idle-composer inbox wakes |
+| Native Apps & Relay | Implemented & tested | Native Swift macOS app (`Mac-app/`), iOS/iPadOS/watchOS companion (`iOS-app/`), shared Swift package (`Shared/`), voice/local actions (`src/local/`), APNs push registration (`push_*`), and Cloudflare Durable Object relay (`relay/`, `src/relay-agent.ts`) |
+| Reason Network | Optional vendored snapshot | Pinned upstream source in `vendor/reason-network` for optional targeted notifications; never auto-installed |
 
-## Deliberate scope of this release
+## Architectural boundaries and deliberate scope
 
-- **Explicit shared memory:** the server stores records agents publish through tools. It does not import hidden vendor memories or entire chat histories automatically.
-- **Small private network:** one service/database is the intended starting deployment. Multi-process task claims use per-scope database locks and accept up to 64 projects per request; identities support 512 scopes. HTTP rate limits are per process. Event polling uses snapshot-xmin filtering and `(xid, seq)` cursors without a table read barrier. See [scale-hardening results](briefs/scale-hardening-results.md) for current validation and load evidence.
-- **Text artifacts:** up to 256 KiB per artifact, stored in PostgreSQL. The earlier design's object-storage adapter and semantic/vector retrieval are not included. Memory search uses PostgreSQL text search.
-- **At-least-once work:** leases fence service writes. They do not guarantee exactly-once external effects or stop an already-issued action. Keep unattended work read-only initially (setup's default); enable edits per install.
-- **Provider result vs acceptance:** a successful provider terminal response is recorded as task completion, with acceptance criteria explicitly unverified. Human or subsequent agent review remains necessary before integration.
-- **No automatic task decomposition/consensus:** entrypoints choose work, can submit multiple bounded tasks and can compare their results. The service is not a universal autonomous planner, voting engine or all-to-all agent conversation loop.
-- **Antigravity workers:** review and in-project edits only, always inside the Seatbelt sandbox; no research tasks.
-- **Edits are opt-in and local:** edit tasks run in sandboxed git worktrees with commands allowed, commit to `swarmaa/<provider>/<id>` and never push. Deployments and pushes are not task capabilities.
-- **Hosted entrypoints need HTTPS:** local loopback works for local clients. Dot and a cloud Grok connection require an accessible HTTPS endpoint and account-specific connection setup.
-- **Grok callbacks are generic:** an owner can configure a receiver and its documented auth headers. The bundle does not assume the exact webhook authentication schema or claim a tested Grok routine connection.
-- **Reason is optional:** its peer channel improves notifications; the companion service owns durable memory/tasks. The vendored public source does not include Reason's hosted account/relay backend.
-- **Operations remain owner work:** choose deployment hosting, monitor usage, manage backups/retention, perform dependency/security review and test restores. There is no signup system, MFA, billing, dashboard or automatic fleet administration.
+- **Local-first single-host default:** One local PostgreSQL 17 cluster and Node 24 service on your Mac is the default deployment (`npm run setup`). Multi-process task claims use per-scope database locks and accept up to 64 projects per claim; identities support up to 512 scopes. HTTP rate limits are per process.
+- **Role and permission separation:** Default `frontend` identities (coding CLIs, Dot, Grok) receive core memory/task/event permissions (`memory:read`, `memory:write`, `task:read`, `task:submit`, `task:cancel`, `artifact:read`, `events:read`). Native Mac/iOS app capabilities (`agent:read`, `agent:manage`, `thread:read`, `thread:write`, `app:device`, `answer_questions`, `routing:manage`) are explicit grantable permissions provisioned for `swarmaa-mac` and paired phone connections.
+- **Text artifacts:** Up to 256 KiB per artifact, stored in PostgreSQL. Memory search uses PostgreSQL full-text search (no external vector store required).
+- **At-least-once work & unverified acceptance:** Leases fence service writes; they do not guarantee exactly-once external side effects. A `completed` task means the provider returned terminal success (`acceptance_criteria_verified: false`). Patch tasks run owner-configured `checks` before committing, commit locally to `swarmaa/<provider>/<id>`, and never push or merge automatically.
+- **Antigravity workers:** Review and in-project edits only (no research tasks), always Seatbelt-sandboxed, with ACP (`agy acp --stdio`) support in `src/bridge/acp.ts`.
+- **Hosted entrypoints need HTTPS:** Local loopback serves desktop CLIs and the Mac app. Dot, cloud Grok, and remote connectors require an HTTPS endpoint (e.g., `npm run tunnel` or Tailscale) with OAuth PKCE.
+- **External account & hardware verification:** Live provider CLIs, OAuth redirects with third-party hosts, APNs push delivery, Apple EventKit/Speech permissions, and RetireOdds ledger calls still require local credentials and hardware validation on the target Mac/iPhone (see [VALIDATION.md](VALIDATION.md)).
 
 ## Source provenance
 
-Reason Network snapshot: `https://github.com/reason-machines/reason-network`, commit `3e08ce1d4e538a5576f52cc06b62ca36c2360998`, upstream package `0.12.3`. The snapshot includes the original licenses and NOTICE. Git metadata and upstream GitHub automation files are omitted from the source bundle. No remote fork, branch, commit, PR or deployment was created by this work.
-
-The original HTML architecture report is included for context. The current implementation replaces the planned object store with bounded PostgreSQL text artifacts and defers provider modes that could not be restricted reliably. Treat the source and this status file as the release description.
-
-Tests and builds were not run. Local Codex should validate the changes before integration. Claude Code can perform the same documented local validation once the user authorizes it.
+Reason Network snapshot: `https://github.com/reason-machines/reason-network`, commit `3e08ce1d4e538a5576f52cc06b62ca36c2360998`, upstream package `0.12.3` (MIT OR Apache-2.0). See [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md) for all third-party attributions and licenses.

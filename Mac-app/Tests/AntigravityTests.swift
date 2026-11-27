@@ -2,38 +2,8 @@ import XCTest
 import Sparkle
 @testable import Swarmaa
 
-/// Fixtures are the real thing: the keychain payload's shape and the actual
-/// `loadCodeAssist` response from a signed-in install.
+/// Timestamp parsing and compliant refusal behavior for `AntigravityCredentials`.
 final class AntigravityCredentialsTests: XCTestCase {
-    /// Go's keyring package base64-encodes behind this marker instead of
-    /// storing raw JSON, which is the first thing that has to be undone.
-    private func stored(_ json: String) -> Data {
-        Data(("go-keyring-base64:" + Data(json.utf8).base64EncodedString()).utf8)
-    }
-
-    private let payload = """
-    {"auth_method":"consumer","token":{"access_token":"ya29.token",\
-    "expiry":"2126-08-31T21:53:49.575961+07:00","refresh_token":"r","token_type":"Bearer"}}
-    """
-
-    func testItDecodesTheGoKeyringEnvelope() throws {
-        let creds = try XCTUnwrap(AntigravityCredentials.decode(stored(payload)))
-        XCTAssertEqual(creds.accessToken, "ya29.token")
-        XCTAssertEqual(creds.authMethod, "consumer")
-        XCTAssertFalse(creds.isExpired)
-    }
-
-    /// Without stripping the marker the value is not JSON at all, so this is
-    /// the difference between reading the account and reporting it missing.
-    func testRawJSONWithoutTheMarkerStillWorks() throws {
-        let creds = try XCTUnwrap(AntigravityCredentials.decode(
-            Data(Data(payload.utf8).base64EncodedString().utf8)))
-        XCTAssertEqual(creds.accessToken, "ya29.token")
-    }
-
-    /// An offset timestamp, not UTC and not epoch milliseconds. Reading it as
-    /// either is how a live token reads as long expired — the mistake Codex's
-    /// `procStart` already cost this project once.
     func testItParsesAnOffsetTimestampAtTheRightInstant() throws {
         let date = try XCTUnwrap(AntigravityCredentials.parse("2026-08-31T21:53:49.575961+07:00"))
         // 21:53:49 at +07:00 is 14:53:49 UTC.
@@ -47,64 +17,8 @@ final class AntigravityCredentialsTests: XCTestCase {
         XCTAssertNotNil(AntigravityCredentials.parse("2026-08-31T21:53:49+07:00"))
     }
 
-    func testAnExpiredTokenIsRecognised() throws {
-        let old = payload.replacingOccurrences(of: "2126-", with: "2020-")
-        let creds = try XCTUnwrap(AntigravityCredentials.decode(stored(old)))
-        XCTAssertTrue(creds.isExpired)
-    }
-
-    func testGarbageIsRejectedRatherThanCrashing() {
-        XCTAssertNil(AntigravityCredentials.decode(Data("not base64 at all".utf8)))
-    }
-
-    func testCredentialsCarriesProjectAndEmail() {
-        let creds = AntigravityCredentials(
-            accessToken: "token-123",
-            expiresAt: Date().addingTimeInterval(3600),
-            authMethod: "consumer",
-            projectId: "aicode-consumers",
-            email: "user@example.com"
-        )
-        XCTAssertEqual(creds.accessToken, "token-123")
-        XCTAssertEqual(creds.projectId, "aicode-consumers")
-        XCTAssertEqual(creds.email, "user@example.com")
-        XCTAssertFalse(creds.isExpired)
-    }
-}
-
-final class AntigravityTierTests: XCTestCase {
-    /// Verbatim from a signed-in install. Note what is absent: no used, no
-    /// limit, no reset. That absence is why the provider reports the plan and
-    /// admits there is nothing metered instead of drawing a ring.
-    private let real = Data("""
-    {"allowedTiers":[{"id":"standard-tier","name":"Gemini Code Assist",
-    "description":"Unlimited coding assistant with the most powerful Gemini models",
-    "userDefinedCloudaicompanionProject":true,"privacyNotice":{},"isDefault":true,
-    "usesGcpTos":true}],"ineligibleTiers":[{"reasonCode":"UNSUPPORTED_CLIENT",
-    "reasonMessage":"This client is no longer supported.","tierId":"free-tier",
-    "tierName":"Gemini Code Assist for individuals"}]}
-    """.utf8)
-
-    func testItNamesThePlanFromTheDefaultAllowedTier() {
-        XCTAssertEqual(AntigravityProvider.tier(in: real), "Gemini Code Assist")
-    }
-
-    /// An ineligible tier is what you cannot have; picking it would name the
-    /// wrong plan on the cell.
-    func testItIgnoresIneligibleTiers() {
-        XCTAssertNotEqual(AntigravityProvider.tier(in: real), "Gemini Code Assist for individuals")
-    }
-
-    func testCurrentTierWinsWhenTheAccountHasChosenOne() {
-        let chosen = Data("""
-        {"currentTier":{"id":"paid","name":"Gemini Code Assist Standard"},
-         "allowedTiers":[{"id":"standard-tier","name":"Gemini Code Assist","isDefault":true}]}
-        """.utf8)
-        XCTAssertEqual(AntigravityProvider.tier(in: chosen), "Gemini Code Assist Standard")
-    }
-
-    func testItFallsBackRatherThanThrowingOnNonsense() {
-        XCTAssertEqual(AntigravityProvider.tier(in: Data("{}".utf8)), "Gemini")
+    func testGarbageTimestampReturnsNil() {
+        XCTAssertNil(AntigravityCredentials.parse("not a date"))
     }
 }
 
@@ -466,9 +380,7 @@ final class AntigravityQuotaTests: XCTestCase {
         """.utf8)
 
         let providerWindows = AntigravityProvider.windows(in: body)
-        let bridgeWindows = AntigravityBridge.windows(in: body)
 
-        XCTAssertEqual(bridgeWindows, providerWindows)
         XCTAssertEqual(providerWindows.count, 4)
         XCTAssertEqual(providerWindows[0].id, "gemini-5h")
         XCTAssertEqual(providerWindows[1].id, "gemini-weekly")
@@ -567,11 +479,8 @@ final class AntigravityCountSnapshotTests: XCTestCase {
     }
 }
 
-/// The bridge to Antigravity's own language server — the only route that
-/// actually returns the weekly figure, because it is the route Antigravity
-/// itself uses.
+/// Quota parser normalization tests (pure data parsing; no local RPC or process spawning).
 final class AntigravityBridgeTests: XCTestCase {
-    /// Verbatim from the running language server.
     private let real = Data("""
     {"response":{"groups":[
       {"displayName":"Gemini Models",
@@ -585,11 +494,8 @@ final class AntigravityBridgeTests: XCTestCase {
                    "resetTime":"2026-09-08T09:12:10Z"}]}]}}
     """.utf8)
 
-    /// The server reports what is *left*; the app shows what is spent.
-    /// Inverting it here rather than in the view keeps a percentage meaning the
-    /// same thing whichever provider produced it.
     func testRemainingIsTurnedIntoUsed() {
-        let windows = AntigravityBridge.windows(in: real)
+        let windows = AntigravityProvider.windows(in: real)
         XCTAssertEqual(windows.count, 2)
         XCTAssertEqual(windows[0].id, "gemini-weekly")
         XCTAssertEqual(windows[0].usedFraction ?? 0, 1 - 0.96262, accuracy: 0.00001)
@@ -598,253 +504,29 @@ final class AntigravityBridgeTests: XCTestCase {
         XCTAssertEqual(windows[0].duration, 7 * 86400)
     }
 
-    /// A full bucket is 0% used, not "no reading".
     func testAnUntouchedLimitIsZeroUsed() {
-        XCTAssertEqual(AntigravityBridge.windows(in: real)[1].usedFraction, 0)
+        XCTAssertEqual(AntigravityProvider.windows(in: real)[1].usedFraction, 0)
     }
 
     func testItKeepsTheResetTime() throws {
-        let resets = try XCTUnwrap(AntigravityBridge.windows(in: real)[0].resetsAt)
+        let resets = try XCTUnwrap(AntigravityProvider.windows(in: real)[0].resetsAt)
         XCTAssertEqual(resets, ISO8601DateFormatter().date(from: "2026-09-07T14:12:34Z"))
     }
 
-    /// A fraction outside 0...1 is not a fraction; better nothing than a ring
-    /// past full or below empty.
     func testImpossibleFractionsAreDropped() {
         let wild = Data(#"{"response":{"groups":[{"displayName":"G","buckets":[{"bucketId":"a","remainingFraction":1.4},{"bucketId":"b","remainingFraction":-0.2}]}]}}"#.utf8)
-        XCTAssertTrue(AntigravityBridge.windows(in: wild).isEmpty)
+        XCTAssertTrue(AntigravityProvider.windows(in: wild).isEmpty)
     }
 
     func testAnUnfamiliarShapeYieldsNothing() {
-        XCTAssertTrue(AntigravityBridge.windows(in: Data(#"{"other":1}"#.utf8)).isEmpty)
-        XCTAssertTrue(AntigravityBridge.windows(in: Data("nonsense".utf8)).isEmpty)
+        XCTAssertTrue(AntigravityProvider.windows(in: Data(#"{"other":1}"#.utf8)).isEmpty)
+        XCTAssertTrue(AntigravityProvider.windows(in: Data("nonsense".utf8)).isEmpty)
     }
 
-    // MARK: - Discovery
-
-    /// The token is only ever on the command line: the server is started with
-    /// `--https_server_port 0`, so nothing about it is written to disk.
-    func testItReadsTheTokenFromTheProcessTable() throws {
-        let table = """
-        29283 /Applications/Antigravity.app/Contents/Resources/bin/language_server --standalone \
-        --csrf_token d4bd9204-bf02-4111-b1fe-71f0d0d921d0 --app_data_dir antigravity
-        """
-        let endpoint = try XCTUnwrap(
-            AntigravityBridge.discover(processTable: table, listeningPorts: { pid in
-                XCTAssertEqual(pid, 29283)
-                return [63881, 63882]
-            })
-        )
-        XCTAssertEqual(endpoint.csrfToken, "d4bd9204-bf02-4111-b1fe-71f0d0d921d0")
-        XCTAssertEqual(endpoint.ports, [63881, 63882])
-    }
-
-    func testNoAntigravityMeansNoEndpoint() {
-        XCTAssertNil(AntigravityBridge.discover(processTable: "1 /sbin/launchd",
-                                                listeningPorts: { _ in [] }))
-    }
-
-    /// Antigravity running but listening nowhere we can see is not an endpoint.
-    func testNoPortMeansNoEndpoint() {
-        let table = "1 language_server --csrf_token abc"
-        XCTAssertNil(AntigravityBridge.discover(processTable: table, listeningPorts: { _ in [] }))
-    }
-
-    // MARK: - The CLI is an install too
-
-    /// Antigravity ships a CLI as well as an IDE, and it serves the same RPC.
-    /// Looking only for `language_server --csrf_token` meant someone who uses
-    /// `agy` and never installs the IDE got the counted-requests fallback while
-    /// a real quota was being served on loopback the whole time.
-    func testTheCLIIsFoundAndAsksForNoToken() throws {
-        let table = """
-        1 /sbin/launchd
-        34221 agy
-        """
-        let endpoint = try XCTUnwrap(
-            AntigravityBridge.discover(processTable: table, listeningPorts: { pid in
-                XCTAssertEqual(pid, 34221)
-                return [54166, 54167]
-            })
-        )
-
-        XCTAssertNil(endpoint.csrfToken, "the CLI serves this without one")
-        XCTAssertEqual(endpoint.ports, [54166, 54167])
-    }
-
-    func testTheCLIIsFoundByItsFullPathToo() throws {
-        let table = "700 /Users/someone/.local/bin/agy"
-        let endpoint = try XCTUnwrap(
-            AntigravityBridge.discover(processTable: table, listeningPorts: { _ in [9000] })
-        )
-
-        XCTAssertNil(endpoint.csrfToken)
-    }
-
-    /// The IDE keeps its place: it is the one that needs the token, and sending
-    /// none to it is the one way to be refused.
-    func testTheIDEWinsWhenBothAreRunning() throws {
-        let table = """
-        29283 /Applications/Antigravity.app/Contents/Resources/bin/language_server --csrf_token abc
-        34221 agy
-        """
-        let endpoint = try XCTUnwrap(
-            AntigravityBridge.discover(processTable: table, listeningPorts: { _ in [1] })
-        )
-
-        XCTAssertEqual(endpoint.csrfToken, "abc")
-    }
-
-    /// "agy" is three letters and turns up inside real words and real paths, so
-    /// the executable's own name is what is matched — not the line.
-    func testSomethingElseWithAgyInItIsNotTheCLI() {
-        for command in ["/opt/legacy/bin/server", "/usr/bin/agyllomerate", "500 imagy-daemon"] {
-            XCTAssertNil(
-                AntigravityBridge.discover(processTable: "500 \(command)",
-                                           listeningPorts: { _ in [1] }),
-                "\(command) was taken for the Antigravity CLI"
-            )
-        }
-    }
-
-    func testItParsesPortsFromLSOF() {
-        let output = """
-        language_server 29283 vinz 12u IPv4 0x1 0t0 TCP 127.0.0.1:63881 (LISTEN)
-        language_server 29283 vinz 13u IPv4 0x2 0t0 TCP 127.0.0.1:63882 (LISTEN)
-        """
-        XCTAssertEqual(AntigravityBridge.parsePorts(fromLSOF: output), [63881, 63882])
-    }
-
-    /// The server refuses an absolute `--app_data_dir` outright, before it reads
-    /// anything, and the message ("must not be absolute") looks like a
-    /// configuration problem rather than the path mistake it is. The IDE passes
-    /// a bare name, and so must we.
-    func testTheStartedServerGetsANameForItsDataDirectoryNotAPath() {
-        let args = AntigravityBridge.arguments(token: "t")
-        let index = try? XCTUnwrap(args.firstIndex(of: "--app_data_dir"))
-        XCTAssertNotNil(index)
-        let value = args[(index ?? 0) + 1]
-        XCTAssertFalse(value.hasPrefix("/"), "an absolute --app_data_dir kills the server")
-        XCTAssertFalse(value.contains("~"))
-    }
-
-    /// Same flags the IDE passes, minus everything that wires it to a running
-    /// IDE. `--standalone` is what makes starting one without an IDE legal, and
-    /// `--csrf_token` is what `discover()` later matches on to find the server
-    /// we started — so without it this one would be invisible to the next poll.
-    func testTheStartedServerIsDiscoverableAndSelfContained() {
-        let args = AntigravityBridge.arguments(token: "tok-123")
-        XCTAssertTrue(args.contains("--standalone"))
-        XCTAssertEqual(AntigravityBridge.value(of: "--csrf_token", in: args.joined(separator: " ")), "tok-123")
-        XCTAssertTrue(args.contains("--https_server_port"))
-        // Nothing that names a running IDE, which there is none of.
-        XCTAssertFalse(args.contains { $0.contains("host_bridge") })
-    }
-
-    /// The port is left at 0 so the server picks one and `lsof` finds it, the
-    /// same way the IDE's own is found. Handing it a port chosen here would race
-    /// whatever claimed it in between.
-    func testThePortIsLeftForTheServerToChoose() {
-        let args = AntigravityBridge.arguments(token: "t")
-        let joined = args.joined(separator: " ")
-        XCTAssertEqual(AntigravityBridge.value(of: "--https_server_port", in: joined), "0")
-    }
-
-    /// A data directory of its own, so two writers never reach the IDE's SQLite
-    /// files if it is launched while a started server is still up.
-    func testTheStartedServerDoesNotShareTheIDEsDataDirectory() {
-        let joined = AntigravityBridge.arguments(token: "t").joined(separator: " ")
-        XCTAssertNotEqual(
-            AntigravityBridge.value(of: "--app_data_dir", in: joined), "antigravity")
-    }
-
-    /// The spawn itself, driven through the seam that replaces `run()` so a test
-    /// launches nothing. What matters is the Process we would have started: the
-    /// flags, and stdout not inherited — the server logs there, and the app's
-    /// stdout is not somewhere it should write.
-    func testStartingOneBuildsTheServerAndDoesNotInheritStdout() throws {
+    func testOwnedStopIsSafeNoOp() {
         let owned = AntigravityBridge.Owned()
-        defer { owned.stop() }
-
-        var built: Process?
-        let endpoint = try XCTUnwrap(owned.endpointOrStart(
-            binary: URL(fileURLWithPath: "/Applications/Antigravity.app/Contents/Resources/bin/language_server"),
-            start: { built = $0; return true }))
-
-        let process = try XCTUnwrap(built)
-        XCTAssertTrue(process.arguments?.contains("--standalone") == true)
-        XCTAssertTrue((process.standardOutput as AnyObject) === FileHandle.nullDevice)
-        XCTAssertTrue((process.standardError as AnyObject) === FileHandle.nullDevice)
-        // Ports arrive empty: the server has not bound yet, and asking it here
-        // would be asking before it has listened.
-        XCTAssertTrue(endpoint.ports.isEmpty)
-        XCTAssertNotNil(endpoint.csrfToken)
-    }
-
-    /// A second poll must not start a second server. Two would bind their own
-    /// ports and one would be dialled for nothing.
-    func testStartingTwiceKeepsTheFirstServer() throws {
-        let owned = AntigravityBridge.Owned()
-        defer { owned.stop() }
-
-        var starts = 0
-        let binary = URL(fileURLWithPath: "/tmp/language_server")
-        let first = try XCTUnwrap(owned.endpointOrStart(binary: binary, start: { _ in starts += 1; return true }))
-        let second = try XCTUnwrap(owned.endpointOrStart(binary: binary, start: { _ in starts += 1; return true }))
-        XCTAssertEqual(starts, 1, "started a second server")
-        XCTAssertEqual(first.csrfToken, second.csrfToken)
-    }
-
-    /// A server that will not start leaves nothing behind to be dialled later.
-    func testAServerThatFailsToStartIsNotRemembered() {
-        let owned = AntigravityBridge.Owned()
-        XCTAssertNil(owned.endpointOrStart(binary: URL(fileURLWithPath: "/tmp/x"), start: { _ in false }))
-        XCTAssertNil(owned.current)
-    }
-
-    /// Ports are filled in once, and only once there are some — an empty set
-    /// means "not bound yet", not "bound on no ports".
-    func testPortsAreRecordedOnlyOnceTheServerHasBound() throws {
-        let owned = AntigravityBridge.Owned()
-        defer { owned.stop() }
-        _ = owned.endpointOrStart(binary: URL(fileURLWithPath: "/tmp/x"), start: { _ in true })
-
-        owned.resolvePorts([])
-        XCTAssertTrue(try XCTUnwrap(owned.current).ports.isEmpty)
-
-        owned.resolvePorts([57312])
-        XCTAssertEqual(owned.current?.ports, [57312])
-    }
-
-    /// No Antigravity installed is the honest answer — there is nothing to
-    /// start — and must not be papered over with some other path.
-    func testNoBinaryWithoutAnInstalledIDE() {
-        let empty = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("no-apps-\(UUID().uuidString)")
-        try? FileManager.default.createDirectory(at: empty, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: empty) }
-        XCTAssertNil(AntigravityBridge.serverBinaryURL(applications: [empty]))
-    }
-
-    /// Found through the bundle rather than a hardcoded path, and only when the
-    /// binary inside it is actually executable — a directory that merely exists
-    /// is not an installation.
-    func testFindsTheBinaryInsideTheApp() throws {
-        let root = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("apps-\(UUID().uuidString)")
-        let bin = root.appendingPathComponent("Antigravity.app/Contents/Resources/bin")
-        try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: root) }
-
-        let fake = bin.appendingPathComponent("language_server")
-        try Data("#!/bin/sh\n".utf8).write(to: fake)
-        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fake.path)
-        XCTAssertEqual(AntigravityBridge.serverBinaryURL(applications: [root])?.lastPathComponent,
-                       "language_server")
-
-        // Present but not runnable — a stub, or a partial install.
-        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: fake.path)
-        XCTAssertNil(AntigravityBridge.serverBinaryURL(applications: [root]))
+        owned.stop()
+        AntigravityBridge.owned.stop()
     }
 }
 
@@ -1760,113 +1442,45 @@ final class KeychainDuplicateTests: XCTestCase {
     }
 }
 
-/// Which source Antigravity's ring is drawn from, and in what order.
-///
-/// The language server holds the credential and the client identity already,
-/// so it needs nothing from the keychain. Asking it third — after a keychain
-/// read and a round trip to Google — meant that dismissing the keychain prompt
-/// produced an empty ring while the server that would have answered sat running
-/// on the same machine, never asked.
+/// Verifies that `AntigravityProvider` reports honest derived local activity
+/// without scraping Keychain tokens, hitting private Google endpoints, or
+/// spawning Antigravity's language server.
 final class AntigravitySourceOrderTests: XCTestCase {
+    func testProviderReportsDerivedLocalActivityWithZeroNetworkOrScraping() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("agy-compliant-\(UUID().uuidString)")
+        let logs = root.appendingPathComponent("t1/.system_generated/logs")
+        try FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
 
-    override func tearDown() {
-        GoogleStub.reset()
-        super.tearDown()
-    }
+        let nowStamp = ISO8601DateFormatter().string(from: Date())
+        let line = #"{"created_at":"\#(nowStamp)","source":"MODEL","type":"PLANNER_RESPONSE"}"#
+        try line.write(to: logs.appendingPathComponent("transcript.jsonl"), atomically: true, encoding: .utf8)
 
-    /// The whole point: a language server that answers ends the fetch before
-    /// anything is asked of macOS or of Google.
-    ///
-    /// The request count is the assertion that carries it. `:loadCodeAssist` is
-    /// sent immediately after the credential is read, so zero requests means
-    /// the credential was never read either — which is not otherwise
-    /// observable, the keychain read being a static call with nothing to
-    /// substitute.
-    func testAnAnsweringBridgeEndsTheFetchBeforeTheKeychain() async throws {
-        let windows = [LimitWindow(id: "gemini-weekly", label: "Weekly", usedFraction: 0.2)]
-        let provider = AntigravityProvider(session: GoogleStub.session(),
-                                           localQuota: { windows })
-
+        let provider = AntigravityProvider(activityRoots: [root])
         let snapshot = try await provider.fetchSnapshot()
 
-        XCTAssertEqual(snapshot.windows.map(\.id), ["gemini-weekly"])
-        XCTAssertEqual(snapshot.fidelity, .official)
-        XCTAssertEqual(GoogleStub.requestCount, 0,
-                       "Google was called even though the language server answered")
+        XCTAssertEqual(snapshot.id, "gemini")
+        XCTAssertEqual(snapshot.fidelity, .derived)
+        XCTAssertEqual(snapshot.status, .ok)
+        XCTAssertEqual(snapshot.windows.map(\.id), ["requests"])
+        XCTAssertEqual(snapshot.windows.first?.used, 1)
+        XCTAssertNil(snapshot.windows.first?.usedFraction, "never fabricates a quota percentage")
     }
 
-    /// Once the server has answered, its going away means Antigravity was
-    /// closed — keep the last reading dated rather than going back to the
-    /// keychain for a number the token cannot produce anyway.
-    func testOnceBridgedItDoesNotFallBackToTheToken() async throws {
-        let answers = Answers([[LimitWindow(id: "gemini-weekly", label: "Weekly", usedFraction: 0.2)], nil])
-        let provider = AntigravityProvider(session: GoogleStub.session(),
-                                           localQuota: { answers.next() })
+    func testProviderReportsZeroRequestsHonestlyWhenNoTranscriptsExist() async throws {
+        let empty = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("agy-empty-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: empty, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: empty) }
 
-        _ = try await provider.fetchSnapshot()
-        GoogleStub.reset()
+        let provider = AntigravityProvider(activityRoots: [empty])
+        let snapshot = try await provider.fetchSnapshot()
 
-        do {
-            _ = try await provider.fetchSnapshot()
-            XCTFail("expected credentialExpired")
-        } catch UsageProviderError.credentialExpired {
-            XCTAssertEqual(GoogleStub.requestCount, 0,
-                           "it went back to the token after the bridge had answered once")
-        } catch {
-            XCTFail("expected credentialExpired, got \(error)")
-        }
+        XCTAssertEqual(snapshot.fidelity, .derived)
+        XCTAssertEqual(snapshot.windows.first?.used, 0)
+        XCTAssertNil(snapshot.usedFraction)
     }
-}
-
-/// Hands out canned bridge answers in order, so one test can watch Antigravity
-/// answer and then go away.
-private final class Answers: @unchecked Sendable {
-    private let lock = NSLock()
-    private var queued: [[LimitWindow]?]
-
-    init(_ queued: [[LimitWindow]?]) { self.queued = queued }
-
-    func next() -> [LimitWindow]? {
-        lock.lock(); defer { lock.unlock() }
-        return queued.isEmpty ? nil : queued.removeFirst()
-    }
-}
-
-/// Counts what actually reached Google. Nothing should, while the language
-/// server is answering.
-private final class GoogleStub: URLProtocol {
-    private static let lock = NSLock()
-    private static var served = 0
-
-    static func reset() {
-        lock.lock(); served = 0; lock.unlock()
-    }
-
-    static var requestCount: Int {
-        lock.lock(); defer { lock.unlock() }
-        return served
-    }
-
-    static func session() -> URLSession {
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.protocolClasses = [GoogleStub.self]
-        return URLSession(configuration: configuration)
-    }
-
-    override class func canInit(with request: URLRequest) -> Bool { true }
-    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
-
-    override func startLoading() {
-        Self.lock.lock(); Self.served += 1; Self.lock.unlock()
-        // 403 is what a personal account genuinely gets here, and it ends the
-        // fetch without another round trip.
-        let response = HTTPURLResponse(url: request.url!, statusCode: 403,
-                                       httpVersion: nil, headerFields: nil)!
-        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-        client?.urlProtocolDidFinishLoading(self)
-    }
-
-    override func stopLoading() {}
 }
 
 final class AntigravityHeadlineTests: XCTestCase {
@@ -1879,7 +1493,7 @@ final class AntigravityHeadlineTests: XCTestCase {
             LimitWindow(id: "gemini-argon-wtu-weekly", group: "Gemini 4 Argon", label: "Weekly", usedFraction: 0.61),
         ]
         let provider = AntigravityProvider()
-        XCTAssertEqual(provider.resolveHeadlineID(for: windows), "gemini-5h")
-        XCTAssertEqual(provider.resolveWeeklyID(for: windows), "gemini-weekly")
+        XCTAssertEqual(provider.resolveHeadlineID(for: windows, preferredLimit: .automatic, preferredModel: .gemini), "gemini-5h")
+        XCTAssertEqual(provider.resolveWeeklyID(for: windows, preferredModel: .gemini), "gemini-weekly")
     }
 }

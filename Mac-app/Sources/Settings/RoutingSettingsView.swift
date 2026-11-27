@@ -77,7 +77,7 @@ struct RoutingSettingsView: View {
                     ProviderGlyphView(glyph: SwarmaCells.glyph(forProvider: provider), size: 14)
                     Text(verbatim: SwarmaCells.vendorName(provider)).fontWeight(.semibold)
                 } else {
-                    Text(L10n.t("No service available")).fontWeight(.semibold)
+                    Text(L10n.t("No provider available")).fontWeight(.semibold)
                 }
                 if !pick.reason.isEmpty { Text(verbatim: "· " + pick.reason).foregroundStyle(.secondary) }
             } else {
@@ -94,27 +94,32 @@ struct RoutingSettingsView: View {
         VStack(alignment: .leading, spacing: 6) {
             Text(L10n.t("Priority — top is tried first"))
                 .font(.headline)
-            List {
+            VStack(spacing: 0) {
                 ForEach(Array(model.draft.providers.enumerated()), id: \.element.id) { index, rule in
+                    if index > 0 {
+                        Divider()
+                            .overlay(Color.white.opacity(0.08))
+                    }
                     RuleRow(rule: $model.draft.providers[index], index: index,
                             count: model.draft.providers.count,
                             fiveHourUsed: model.usedPercent(rule.provider, .fiveHour),
                             weeklyUsed: model.usedPercent(rule.provider, .weekly),
                             move: { model.draft.move(index, by: $0) })
-                        .listRowSeparator(.visible)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 8)
                 }
-                .onMove { model.draft.move(fromOffsets: $0, toOffset: $1) }
             }
-            .listStyle(.inset)
-            .scrollDisabled(true)
-            .frame(height: 3 * 125 + 12)
-            .clipShape(RoundedRectangle(cornerRadius: 10))
+            .background(Color.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 10))
+            .overlay(
+                RoundedRectangle(cornerRadius: 10)
+                    .strokeBorder(Color.white.opacity(0.08), lineWidth: 1)
+            )
             .disabled(!model.canEdit)
         }
     }
 
     private var fallbackPicker: some View {
-        Picker(L10n.t("If no service qualifies"), selection: $model.draft.fallback) {
+        Picker(L10n.t("If no provider qualifies"), selection: $model.draft.fallback) {
             Text(L10n.t("Use the one with most quota left")).tag(RoutingPolicy.fallbackMostHeadroom)
             Text(L10n.t("Wait")).tag(RoutingPolicy.fallbackNone)
         }

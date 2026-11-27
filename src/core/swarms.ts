@@ -559,7 +559,7 @@ export class SwarmsService {
          AND ($2::boolean OR s.scope = ANY($3::text[]))
          AND ($4::text IS NULL OR s.scope = $4)
          ${statusCondition}
-         AND ($5::uuid IS NULL OR s.updated_at < (SELECT updated_at FROM swarms WHERE id = $5))
+         AND ($5::uuid IS NULL OR (s.updated_at, s.id) < (SELECT updated_at, id FROM swarms WHERE id = $5))
        ORDER BY s.updated_at DESC, s.id DESC
        LIMIT $6`,
       params
@@ -568,15 +568,22 @@ export class SwarmsService {
     const hasMore = rows.length > limit;
     const paged = rows.slice(0, limit);
 
-    const swarms = await Promise.all(
-      paged.map(async sw => {
-        const steps = (await this.pool.query<SwarmStepRow>(
-          'SELECT * FROM swarm_steps WHERE swarm_id=$1 ORDER BY order_index ASC',
-          [sw.id]
-        )).rows;
-        return swarmView(sw, steps);
-      })
-    );
+    const stepsBySwarm = new Map<string, SwarmStepRow[]>();
+    if (paged.length > 0) {
+      const allSteps = (await this.pool.query<SwarmStepRow>(
+        'SELECT * FROM swarm_steps WHERE swarm_id = ANY($1::uuid[]) ORDER BY order_index ASC',
+        [paged.map(sw => sw.id)]
+      )).rows;
+      for (const st of allSteps) {
+        let list = stepsBySwarm.get(st.swarm_id);
+        if (!list) {
+          list = [];
+          stepsBySwarm.set(st.swarm_id, list);
+        }
+        list.push(st);
+      }
+    }
+    const swarms = paged.map(sw => swarmView(sw, stepsBySwarm.get(sw.id) ?? []));
 
     return {
       swarms,
@@ -884,9 +891,9 @@ export class SwarmsService {
 
   async questionAnswer(p: Principal, input: Record<string, unknown>): Promise<unknown> {
     noExtraKeys(input, ['question_id', 'choices', 'text', 'idempotency_key']);
-    requirePermission(p, 'thread:write');
     // The owner answers: admin, or a frontend identity the owner granted answer_questions. Never the Dot or Grok entrypoints.
     requireCondition(!['grok', 'dot'].includes(p.name.toLowerCase()) && hasPermission(p, 'answer_questions'), 403, 'owner_required', 'Only the owner can answer questions.');
+    requirePermission(p, 'thread:write');
     const questionId = uuid(input.question_id, 'question_id');
     const rawChoices = input.choices !== undefined ? input.choices : [];
     if (!Array.isArray(rawChoices)) throw new AppError(400, 'invalid_arguments', 'choices must be an array of strings.');
@@ -1101,7 +1108,7 @@ export class SwarmsService {
        WHERE q.tenant_id = $1
          AND ($2::boolean OR q.scope = ANY($3::text[]))
          ${statusCondition}
-         AND ($4::uuid IS NULL OR q.created_at < (SELECT created_at FROM questions WHERE id = $4))
+         AND ($4::uuid IS NULL OR (q.created_at, q.id) < (SELECT created_at, id FROM questions WHERE id = $4))
        ORDER BY q.created_at DESC, q.id DESC
        LIMIT $5`,
       params
@@ -1130,54 +1137,90 @@ export class SwarmsService {
     const limit = input.limit !== undefined ? integer(input.limit, 'limit', 1, 100) : 50;
     const after = input.after !== undefined ? string(input.after, 'after', 100) : null;
 
-    // 1. Open questions
-    const qRows = (await this.pool.query<QuestionRow>(
-      `SELECT * FROM questions
-       WHERE tenant_id=$1 AND status='open'
-         AND ($2::boolean OR scope = ANY($3::text[]))
-         AND ($4::text IS NULL OR scope = $4)
-       ORDER BY created_at DESC LIMIT $5`,
-      [p.tenantId, all, grantedScopes, scope, limit + 1]
-    )).rows;
+    let cursorTs: Date | null = null;
+    let cursorId: string | null = null;
+    if (after) {
+      const pipeIdx = after.indexOf('|');
+      if (pipeIdx > 0) {
+        const tsPart = after.slice(0, pipeIdx);
+        const idPart = after.slice(pipeIdx + 1);
+        const parsedTs = new Date(tsPart);
+        requireCondition(!Number.isNaN(parsedTs.getTime()), 400, 'invalid_arguments', 'Invalid attention cursor timestamp.');
+        cursorTs = parsedTs;
+        cursorId = uuid(idPart, 'after');
+      } else {
+        // Legacy UUID-only cursor: resolve its (at, id) from the underlying tables.
+        const legacyId = uuid(after, 'after');
+        const resolved = (await this.pool.query<{ at: Date; id: string }>(
+          `SELECT at, id FROM (
+             SELECT created_at AS at, id FROM questions WHERE tenant_id=$1 AND id=$2
+             UNION ALL
+             SELECT updated_at AS at, id FROM tasks WHERE tenant_id=$1 AND id=$2
+             UNION ALL
+             SELECT updated_at AS at, id FROM swarms WHERE tenant_id=$1 AND id=$2
+           ) c LIMIT 1`,
+          [p.tenantId, legacyId]
+        )).rows[0];
+        if (resolved) {
+          cursorTs = new Date(resolved.at);
+          cursorId = resolved.id;
+        }
+      }
+    }
 
-    // 2. Completed patch and turn tasks with review_required, not yet resolved
-    const reviewTasks = (await this.pool.query<{
-      id: string; objective: string; scope: string; kind: string; updated_at: Date; result: Record<string, unknown> | null;
-    }>(
-      `SELECT id, objective, scope, kind, updated_at, result
-       FROM tasks
-       WHERE tenant_id=$1 AND status='completed' AND resolved_at IS NULL
-         AND kind IN ('patch', 'turn')
-         AND (result->>'review_required')::boolean IS TRUE
-         AND result->>'head_commit' IS NOT NULL
-         AND ($2::boolean OR scope = ANY($3::text[]))
-         AND ($4::text IS NULL OR scope = $4)
-       ORDER BY updated_at DESC LIMIT $5`,
-      [p.tenantId, all, grantedScopes, scope, limit + 1]
-    )).rows;
+    // Fetch all 4 attention categories in parallel using the same SQL (ts, id) cursor.
+    const [qRes, reviewRes, failedRes, swarmsRes] = await Promise.all([
+      this.pool.query<QuestionRow>(
+        `SELECT * FROM questions
+         WHERE tenant_id=$1 AND status='open'
+           AND ($2::boolean OR scope = ANY($3::text[]))
+           AND ($4::text IS NULL OR scope = $4)
+           AND ($5::timestamptz IS NULL OR (created_at, id) < ($5::timestamptz, $6::uuid))
+         ORDER BY created_at DESC, id DESC LIMIT $7`,
+        [p.tenantId, all, grantedScopes, scope, cursorTs, cursorId, limit + 1]
+      ),
+      this.pool.query<{
+        id: string; objective: string; scope: string; kind: string; updated_at: Date; result: Record<string, unknown> | null;
+      }>(
+        `SELECT id, objective, scope, kind, updated_at, result
+         FROM tasks
+         WHERE tenant_id=$1 AND status='completed' AND resolved_at IS NULL
+           AND kind IN ('patch', 'turn')
+           AND (result->>'review_required')::boolean IS TRUE
+           AND result->>'head_commit' IS NOT NULL
+           AND ($2::boolean OR scope = ANY($3::text[]))
+           AND ($4::text IS NULL OR scope = $4)
+           AND ($5::timestamptz IS NULL OR (updated_at, id) < ($5::timestamptz, $6::uuid))
+         ORDER BY updated_at DESC, id DESC LIMIT $7`,
+        [p.tenantId, all, grantedScopes, scope, cursorTs, cursorId, limit + 1]
+      ),
+      this.pool.query<{
+        id: string; objective: string; scope: string; updated_at: Date; result: Record<string, unknown> | null;
+      }>(
+        `SELECT id, objective, scope, updated_at, result
+         FROM tasks
+         WHERE tenant_id=$1 AND status='failed' AND resolved_at IS NULL
+           AND ($2::boolean OR scope = ANY($3::text[]))
+           AND ($4::text IS NULL OR scope = $4)
+           AND ($5::timestamptz IS NULL OR (updated_at, id) < ($5::timestamptz, $6::uuid))
+         ORDER BY updated_at DESC, id DESC LIMIT $7`,
+        [p.tenantId, all, grantedScopes, scope, cursorTs, cursorId, limit + 1]
+      ),
+      this.pool.query<SwarmRow>(
+        `SELECT * FROM swarms
+         WHERE tenant_id=$1 AND status IN ('waiting_on_you', 'blocked')
+           AND ($2::boolean OR scope = ANY($3::text[]))
+           AND ($4::text IS NULL OR scope = $4)
+           AND ($5::timestamptz IS NULL OR (updated_at, id) < ($5::timestamptz, $6::uuid))
+         ORDER BY updated_at DESC, id DESC LIMIT $7`,
+        [p.tenantId, all, grantedScopes, scope, cursorTs, cursorId, limit + 1]
+      ),
+    ]);
 
-    // 3. Failed tasks not resolved
-    const failedTasks = (await this.pool.query<{
-      id: string; objective: string; scope: string; updated_at: Date; result: Record<string, unknown> | null;
-    }>(
-      `SELECT id, objective, scope, updated_at, result
-       FROM tasks
-       WHERE tenant_id=$1 AND status='failed' AND resolved_at IS NULL
-         AND ($2::boolean OR scope = ANY($3::text[]))
-         AND ($4::text IS NULL OR scope = $4)
-       ORDER BY updated_at DESC LIMIT $5`,
-      [p.tenantId, all, grantedScopes, scope, limit + 1]
-    )).rows;
-
-    // 4. Swarms waiting_on_you or blocked
-    const swarms = (await this.pool.query<SwarmRow>(
-      `SELECT * FROM swarms
-       WHERE tenant_id=$1 AND status IN ('waiting_on_you', 'blocked')
-         AND ($2::boolean OR scope = ANY($3::text[]))
-         AND ($4::text IS NULL OR scope = $4)
-       ORDER BY updated_at DESC LIMIT $5`,
-      [p.tenantId, all, grantedScopes, scope, limit + 1]
-    )).rows;
+    const qRows = qRes.rows;
+    const reviewTasks = reviewRes.rows;
+    const failedTasks = failedRes.rows;
+    const swarms = swarmsRes.rows;
 
     interface AttentionItem {
       kind: 'question' | 'task' | 'swarm';
@@ -1249,25 +1292,17 @@ export class SwarmsService {
       });
     }
 
-    // Sort newest first
-    items.sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
+    // Sort newest first with deterministic id tiebreaker matching the SQL cursor.
+    items.sort((a, b) => (Date.parse(b.at) - Date.parse(a.at)) || b.id.localeCompare(a.id));
 
-    let filtered = items;
-    if (after) {
-      const idx = items.findIndex(it => it.id === after);
-      if (idx !== -1) {
-        filtered = items.slice(idx + 1);
-      }
-    }
-
-    const anyExceeded = qRows.length > limit || reviewTasks.length > limit || failedTasks.length > limit || swarms.length > limit;
-    const hasMore = filtered.length > limit || anyExceeded;
-    const paged = filtered.slice(0, limit);
+    const hasMore = items.length > limit;
+    const paged = items.slice(0, limit);
+    const last = paged.at(-1);
 
     return {
       items: paged,
       has_more: hasMore,
-      next_cursor: hasMore ? paged.at(-1)?.id ?? null : null
+      next_cursor: hasMore && last ? `${last.at}|${last.id}` : null
     };
   }
 
@@ -1970,6 +2005,7 @@ export async function dispatchToBot(db: Db, p: Principal, opts: {
     [opts.botId, p.tenantId]
   )).rows[0];
   if (!target) throw new AppError(404, 'not_found', 'target bot not found');
+  requireScope(p, target.scope);
   const thread = (await db.query<ThreadRow>('SELECT * FROM threads WHERE id=$1 AND tenant_id=$2 FOR UPDATE', [target.thread_id, p.tenantId])).rows[0];
   const lead = (await db.query<AgentRow>('SELECT * FROM agents WHERE id=$1 AND NOT archived FOR UPDATE', [target.lead_agent_id])).rows[0];
   if (!thread || !lead) throw new AppError(409, 'invalid_state', `bot '${target.name}' has no thread or lead agent`);

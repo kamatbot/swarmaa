@@ -22,7 +22,7 @@ describe('schedule cards', {skip:!connectionString}, () => {
   });
   after(async () => { await pool?.end(); if(control) { await control.query(`DROP SCHEMA ${schema} CASCADE`); await control.end(); } });
   it('create/replay/edit/pause/resume/clear keep one card and ticker respects pause', async () => {
-    const p:Principal={id:randomUUID(),tenantId:randomUUID(),name:'test',role:'frontend',scopes:['project:a'],permissions:[...ROLE_PERMISSIONS.frontend]};
+    const p:Principal={id:randomUUID(),tenantId:randomUUID(),name:'test',role:'frontend',scopes:['project:a'],permissions:[...ROLE_PERMISSIONS.frontend,'agent:read','agent:manage','thread:read','thread:write']};
     await pool.query('INSERT INTO principals(id,tenant_id,name,role,scopes,permissions,token_hash) VALUES($1,$2,$3,$4,$5,$6,$7)',[p.id,p.tenantId,p.name,p.role,p.scopes,p.permissions,randomUUID()]);
     const call=async(name:string,input:Record<string,unknown>)=>await core.call(p,name,input) as any;
     const {agent}=await call('agent_create',{name:'Lead',role:'Lead',instructions:'Help',scope:'project:a',runner:{mode:'auto'}});

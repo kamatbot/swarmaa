@@ -13,9 +13,9 @@ import { loadConfig } from '../src/config.js';
 import { createPool } from '../src/db.js';
 import { PasskeyService } from '../src/passkeys.js';
 import { SOURCES, detectSources } from '../src/capture/index.js';
-import { installInboxHooks, removeInboxHooks, installJournalHooks, removeJournalHooks, type Harness } from './hooks-install.js';
+import { installInboxHooks, removeInboxHooks, installJournalHooks, removeJournalHooks, installSwarmCommand, stableNode, type Harness } from './hooks-install.js';
 import {
-  AGY_TOOLS, DEFAULT_HOSTNAME, isCompiled, packageRoot, scriptCommand, HARNESS_KEYS, HOOK_APP_KEYS, PlanError, SHARING_HARNESSES, WORKER_HARNESSES, bridgeConfig, identityScopes, mergeAgyPermissions,
+  AGY_TOOLS, DEFAULT_HOSTNAME, NATIVE_APP_PERMISSIONS, isCompiled, packageRoot, scriptCommand, HARNESS_KEYS, HOOK_APP_KEYS, PlanError, SHARING_HARNESSES, WORKER_HARNESSES, bridgeConfig, identityScopes, mergeAgyPermissions,
   parseEnv, plist, slugScopes, splitFolder, stateFile, validHostname, validatePlan, yes,
   type HarnessKey, type HookAppKey, type ScopeRoot, type SetupPlan, type State,
 } from './setup-lib.js';
@@ -67,13 +67,34 @@ export interface Detected {
   hookApps?: HookAppKey[];
 }
 
+export function checkNodeVersion(version = process.versions.node): { ok: boolean; warning?: string; error?: string } {
+  const major = Number(version.split('.')[0]);
+  if (!Number.isFinite(major) || major < 24) {
+    return { ok: false, error: `Swarmaa needs Node.js 24+ (running v${version}). Install Node 24 (e.g. brew install node@24) and re-run setup.` };
+  }
+  if (major > 24) {
+    return { ok: true, warning: `Swarmaa is tested on Node.js 24.x (running v${version}); continuing.` };
+  }
+  return { ok: true };
+}
+
 const exe = (p: string) => { try { accessSync(p, constants.X_OK); return statSync(p).isFile(); } catch { return false; } };
 function findCli(cmd: string): string | undefined {
-  const sh = spawnSync('/bin/sh', ['-lc', `command -v ${cmd}`], { encoding: 'utf8' }).stdout?.trim().split('\n').pop() ?? '';
-  return [sh, join(HOME, '.local/bin', cmd), join('/opt/homebrew/bin', cmd)].find(p => p.startsWith('/') && exe(p));
+  if (!/^[a-z0-9_-]+$/i.test(cmd)) return undefined;
+  const zsh = spawnSync('/bin/zsh', ['-lc', `command -v ${cmd}`], { encoding: 'utf8', timeout: 5000 }).stdout?.trim().split('\n').pop() ?? '';
+  const pathDirs = (process.env.PATH ?? '').split(':').filter(Boolean).map(d => join(d, cmd));
+  return [zsh, ...pathDirs, join('/opt/homebrew/bin', cmd), join('/usr/local/bin', cmd), join(HOME, '.local/bin', cmd)].find(p => p.startsWith('/') && exe(p));
 }
-// SWARMAA_PG_BIN (the bundled PostgreSQL) wins over Homebrew.
-const findPgBin = () => [process.env.SWARMAA_PG_BIN?.trim(), '/opt/homebrew/opt/postgresql@17/bin', '/opt/homebrew/opt/postgresql@16/bin', spawnSync('pg_config', ['--bindir'], { encoding: 'utf8' }).stdout?.trim()].find(d => d && existsSync(join(d, 'pg_ctl')));
+// SWARMAA_PG_BIN (the bundled PostgreSQL) wins over Homebrew and Postgres.app.
+const findPgBin = () => [
+  process.env.SWARMAA_PG_BIN?.trim(),
+  '/opt/homebrew/opt/postgresql@17/bin',
+  '/opt/homebrew/opt/postgresql@16/bin',
+  '/usr/local/opt/postgresql@17/bin',
+  '/usr/local/opt/postgresql@16/bin',
+  '/Applications/Postgres.app/Contents/Versions/latest/bin',
+  spawnSync('pg_config', ['--bindir'], { encoding: 'utf8', timeout: 5000 }).stdout?.trim(),
+].find(d => d && existsSync(join(d, 'pg_ctl')));
 async function pgConnect(target: string): Promise<pg.Client | undefined> {
   const c = new pg.Client({ connectionString: target, connectionTimeoutMillis: 3000 });
   c.on('error', () => undefined);
@@ -166,7 +187,9 @@ export async function runSetup(plan: SetupPlan, opts: RunOpts): Promise<SetupSum
     say('Building (npm run build) ...'); const r = run('npm', ['run', 'build']); if (r.status !== 0) say(`  build failed:\n${tail(r)}`); return built = r.status === 0; };
 
   try {
-    if (Number(process.versions.node.split('.')[0]) !== 24) die(`Swarmaa needs Node 24.x (running ${process.versions.node}). Install Node 24 and re-run setup.`);
+    const nv = checkNodeVersion();
+    if (!nv.ok) die(nv.error!);
+    if (nv.warning) summary.warnings.push(nv.warning);
     say("The hosted gateway at swarmaa.com is invite-only. You don't need it: everything runs on your Mac.");
 
     await step('env', 'Local credentials', async () => {
@@ -248,13 +271,20 @@ export async function runSetup(plan: SetupPlan, opts: RunOpts): Promise<SetupSum
     const workerScopes = identityScopes('worker', projects).join(',');
     for (const p of projects) say(`  ${p.scope} -> ${p.root}`);
 
-    /** `patch` (workers only) reconciles the task:patch grant: created with it, granted on an existing worker, or revoked when switching back to read-only. */
-    const ensureIdentity = (name: string, role: string, file: string, scopes: string, patch?: boolean): boolean => {
+    /** Reconciles identity scopes plus optional worker task:patch or native-app frontend grants. */
+    const ensureIdentity = (name: string, role: string, file: string, scopes: string, patch?: boolean, grants?: readonly string[]): boolean => {
       const exists = existsSync(file);
-      const r = exists ? admin('set-scopes', '--name', name, '--scopes', scopes) : admin('create', '--name', name, '--role', role, '--scopes', scopes, ...(patch ? ['--grant', 'task:patch'] : []), '--out', file);
+      const createGrants = [...(patch ? ['task:patch'] : []), ...(grants ?? [])].flatMap(p => ['--grant', p]);
+      const r = exists ? admin('set-scopes', '--name', name, '--scopes', scopes) : admin('create', '--name', name, '--role', role, '--scopes', scopes, ...createGrants, '--out', file);
       if (r.status === 0 && exists && patch !== undefined) {
         const g = admin(patch ? 'grant' : 'revoke-grant', '--name', name, '--permission', 'task:patch');
         if (g.status !== 0) { say(`  could not ${patch ? 'grant' : 'revoke'} task:patch for ${name}:\n${tail(g)}`); return false; }
+      }
+      if (r.status === 0 && exists && grants?.length) {
+        for (const p of grants) {
+          const g = admin('grant', '--name', name, '--permission', p);
+          if (g.status !== 0) { say(`  could not grant ${p} for ${name}:\n${tail(g)}`); return false; }
+        }
       }
       if (r.status === 0) { say(`  ${exists ? 'updated scopes of' : 'created'} ${name}`); return true; }
       if (!exists && /already exists|duplicate|unique/i.test(r.stderr)) say(`  ${name} already exists but ${file} is missing. Rotate it into place with:\n    npm run admin -- rotate --name ${name} --out ${file}\n  (or revoke it and use another name), then re-run setup.`);
@@ -272,11 +302,20 @@ export async function runSetup(plan: SetupPlan, opts: RunOpts): Promise<SetupSum
         if ((CLI_KEYS as readonly string[]).includes(key) && !cli) return { skipped: `${m.label} was not found on this Mac` };
         if (key === 'mac' && !det.mac) return { skipped: 'the Swarmaa Mac app is not installed' };
         if (cli && !existsSync(join(root, 'dist/src/stdio-proxy.js'))) build();
-        if (!ensureIdentity(m.ident, 'frontend', join(root, `.local/${m.stem}.json`), interactive)) throw new Error(`could not create or update the ${m.ident} identity`);
-        if (key === 'claude') { run(cli!, ['mcp', 'remove', '-s', 'user', 'swarma']); run(cli!, ['mcp', 'add', '-s', 'user', 'swarma', '--', '/bin/sh', LAUNCHER, m.stem]); }
-        else if (key === 'codex') { run(cli!, ['mcp', 'remove', 'swarma']); run(cli!, ['mcp', 'add', 'swarma', '--', '/bin/sh', LAUNCHER, m.stem]); }
-        else if (key === 'agy') {
-          run(cli!, ['mcp', 'add', 'swarma', '/bin/sh', LAUNCHER, m.stem]);
+        const extraGrants = key === 'mac' ? NATIVE_APP_PERMISSIONS : undefined;
+        if (!ensureIdentity(m.ident, 'frontend', join(root, `.local/${m.stem}.json`), interactive, undefined, extraGrants)) throw new Error(`could not create or update the ${m.ident} identity`);
+        if (key === 'claude') {
+          run(cli!, ['mcp', 'remove', '-s', 'user', 'swarma']);
+          const add = run(cli!, ['mcp', 'add', '-s', 'user', 'swarma', '--', '/bin/sh', LAUNCHER, m.stem]);
+          if (add.status !== 0) throw new Error(`claude mcp add failed:\n${tail(add)}`);
+        } else if (key === 'codex') {
+          run(cli!, ['mcp', 'remove', 'swarma']);
+          const add = run(cli!, ['mcp', 'add', 'swarma', '--', '/bin/sh', LAUNCHER, m.stem]);
+          if (add.status !== 0) throw new Error(`codex mcp add failed:\n${tail(add)}`);
+        } else if (key === 'agy') {
+          run(cli!, ['mcp', 'remove', 'swarma']);
+          const add = run(cli!, ['mcp', 'add', 'swarma', '--', '/bin/sh', LAUNCHER, m.stem]);
+          if (add.status !== 0) throw new Error(`agy mcp add failed:\n${tail(add)}`);
           const f = join(HOME, '.gemini/antigravity-cli/settings.json');
           let cur: unknown = {}, ok = true;
           if (existsSync(f)) try { cur = JSON.parse(readFileSync(f, 'utf8')); } catch { ok = false; say(`  ${f} is not valid JSON; left untouched. Add mcp(swarma/<tool>) allow entries yourself.`); }
@@ -297,13 +336,24 @@ export async function runSetup(plan: SetupPlan, opts: RunOpts): Promise<SetupSum
       });
     }
 
+    const hookNode = bundledNode ?? stableNode();
     for (const k of ['claude','codex','agy'] as const) {
       if (!summary.agents.includes(k) && !state.agents?.includes(k)) continue;
       await step(`inbox:${k}`, `${META[k].label} inbox`, async () => {
-        const o = {root,dry,node:bundledNode,log:(line: string) => say(`  ${line}`)};
+        const o = {root,dry,node:hookNode,log:(line: string) => say(`  ${line}`)};
         const r = await (summary.agents.includes(k) ? installInboxHooks : removeInboxHooks)(k,o);
         if (r.skipped) throw new Error(r.skipped);
         return summary.agents.includes(k) ? 'inbox notifications installed' : 'inbox notifications removed';
+      });
+    }
+
+    if (CLI_KEYS.some(k => summary.agents.includes(k))) {
+      await step('swarm-cmd', '/swarm command', async () => {
+        const cmdRoot = existsSync(join(root, 'clients/commands/swarm.md')) ? root : ROOT;
+        const results = await installSwarmCommand(true, { root: cmdRoot, dry, log: (line: string) => say(`  ${line}`) });
+        const skipped = results.filter(r => r.skipped);
+        for (const r of skipped) say(`  ${r.harness}: ${r.skipped}`);
+        return skipped.length ? `installed (${skipped.length} skipped)` : '/swarm command installed';
       });
     }
 
@@ -314,7 +364,7 @@ export async function runSetup(plan: SetupPlan, opts: RunOpts): Promise<SetupSum
         const want = !!plan.harnesses[k]?.connect && plan.harnesses[k]!.share && summary.agents.includes(k);
         if (!want && !state.sharing?.includes(k)) continue;
         try {
-          const o = { root, dry, node: bundledNode, log: (l: string) => say(`  ${l}`) };
+          const o = { root, dry, node: hookNode, log: (l: string) => say(`  ${l}`) };
           if (want) { await installJournalHooks(k as Harness, o); summary.sharing.push(k); say(`  ${META[k].label}: chats are shared`); }
           else { await removeJournalHooks(k as Harness, o); say(`  ${META[k].label}: chat sharing removed`); }
         } catch (e) {
@@ -330,7 +380,7 @@ export async function runSetup(plan: SetupPlan, opts: RunOpts): Promise<SetupSum
       const want = !!plan.hookApps[k]?.share && foundApps.includes(k);
       if (!want && !state.hookApps?.includes(k)) continue;
       await step(`hookapp:${k}`, HOOK_APPS[k].label, async () => {
-        const o = { root, dry, node: bundledNode, log: (l: string) => say(`  ${l}`) };
+        const o = { root, dry, node: hookNode, log: (l: string) => say(`  ${l}`) };
         if (!want) { await removeJournalHooks(k, o); return 'chat sharing removed'; }
         if (!ensureIdentity(k, 'frontend', join(root, `.local/${k}.json`), interactive)) throw new Error(`could not create or update the ${k} identity`);
         const r = await installJournalHooks(k, o);
@@ -466,7 +516,7 @@ export function printSummary(s: SetupSummary, say: (l?: string) => void): void {
 // ---------------------------------------------------------------- browser onboarding server
 
 const MAX_BODY = 64 * 1024;
-const CSP = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+const CSP = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 
 class HttpError extends Error { constructor(readonly status: number, message: string) { super(message); } }
 
@@ -487,9 +537,22 @@ export function createOnboarding(o: OnboardingOptions) {
   interface Job { id: number; running: boolean; lines: string[]; steps: StepRecord[]; summary?: SetupSummary; dry: boolean }
   let job: Job | undefined, seq = 0;
 
-  // Never show .env secrets to the page, even inside an error message.
-  const secrets = (() => { try { return Object.entries(parseEnv(readFileSync(join(root, '.env'), 'utf8'))).filter(([k, v]) => v.length >= 8 && /PASSWORD|KEY|TOKEN|SECRET|^DATABASE_URL$/i.test(k)).map(([, v]) => v); } catch { return []; } })();
-  const redact = (s: string) => secrets.reduce((a, v) => a.split(v).join('[redacted]'), s);
+  // Never show .env secrets to the page, even inside an error message; re-read whenever .env appears or changes (e.g. after init-local).
+  let secretsMtime = -1;
+  let secrets: string[] = [];
+  const refreshSecrets = () => {
+    try {
+      const p = join(root, '.env');
+      const mtime = statSync(p).mtimeMs;
+      if (mtime === secretsMtime) return;
+      secretsMtime = mtime;
+      secrets = Object.entries(parseEnv(readFileSync(p, 'utf8')))
+        .filter(([k, v]) => v.length >= 8 && /PASSWORD|KEY|TOKEN|SECRET|^DATABASE_URL$/i.test(k))
+        .map(([, v]) => v);
+    } catch { /* .env not created yet */ }
+  };
+  refreshSecrets();
+  const redact = (s: string) => { refreshSecrets(); return secrets.reduce((a, v) => a.split(v).join('[redacted]'), s); };
 
   const server: Server = createServer((req, res) => { void handle(req, res); });
   const send = (res: ServerResponse, status: number, body: unknown, type = 'application/json; charset=utf-8') => {
@@ -683,8 +746,15 @@ async function runJson(dry: boolean): Promise<number> {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const args = process.argv.slice(2);
-  const dry = args.includes('--dry-run');
-  const code = await (args.includes('--detect-json') ? detectJson() : args.includes('--run-json') ? runJson(dry)
-    : args.includes('--cli') ? cliMain(dry) : webMain(dry, !args.includes('--no-open'))).catch(e => { console.error(`\nSetup failed: ${(e as Error).message}`); return 1; });
-  process.exitCode = code;
+  const nv = checkNodeVersion();
+  if (!nv.ok && !args.includes('--detect-json')) {
+    console.error(`\nSetup failed: ${nv.error}`);
+    process.exitCode = 1;
+  } else {
+    if (nv.warning && !args.includes('--detect-json') && !args.includes('--run-json')) console.warn(`Warning: ${nv.warning}`);
+    const dry = args.includes('--dry-run');
+    const code = await (args.includes('--detect-json') ? detectJson() : args.includes('--run-json') ? runJson(dry)
+      : args.includes('--cli') ? cliMain(dry) : webMain(dry, !args.includes('--no-open'))).catch(e => { console.error(`\nSetup failed: ${(e as Error).message}`); return 1; });
+    process.exitCode = code;
+  }
 }

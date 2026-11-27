@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import type { Pool } from 'pg';
 import { getPricingFile } from '../config.js';
 import { requireCondition } from '../errors.js';
@@ -43,16 +43,26 @@ export interface UsageCostResult {
 /** Default price table is shipped empty; populated only by owner override via SWARMAA_PRICING_FILE. */
 export const DEFAULT_PRICES: Record<string, ModelPricing> = {};
 
+let priceCache: { file: string; mtimeMs: number; prices: Record<string, ModelPricing> } | undefined;
+
 /**
  * Loads price table from DEFAULT_PRICES combined with owner overrides from SWARMAA_PRICING_FILE.
+ * Cached by file path and mtimeMs so repeated pricing calls avoid re-reading and re-parsing disk.
  */
 export function loadPrices(filePath?: string): Record<string, ModelPricing> {
   const file = filePath !== undefined ? filePath : getPricingFile();
-  const prices: Record<string, ModelPricing> = { ...DEFAULT_PRICES };
-  if (!file) return prices;
+  if (!file) return { ...DEFAULT_PRICES };
 
   try {
-    if (!existsSync(file)) return prices;
+    if (!existsSync(file)) {
+      if (priceCache?.file === file) priceCache = undefined;
+      return { ...DEFAULT_PRICES };
+    }
+    const { mtimeMs } = statSync(file);
+    if (priceCache && priceCache.file === file && priceCache.mtimeMs === mtimeMs) {
+      return { ...priceCache.prices };
+    }
+    const prices: Record<string, ModelPricing> = { ...DEFAULT_PRICES };
     const raw = readFileSync(file, 'utf8');
     const data = JSON.parse(raw);
     if (!data || typeof data !== 'object') return prices;
@@ -88,10 +98,11 @@ export function loadPrices(filePath?: string): Record<string, ModelPricing> {
         };
       }
     }
+    priceCache = { file, mtimeMs, prices };
+    return { ...prices };
   } catch {
-    // Return base prices on error
+    return { ...DEFAULT_PRICES };
   }
-  return prices;
 }
 
 /**

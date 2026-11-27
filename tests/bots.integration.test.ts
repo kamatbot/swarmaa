@@ -64,7 +64,11 @@ describe('bots core service (Brief B1)', { skip: !connectionString, concurrency:
       name,
       role,
       scopes,
-      permissions: role === 'worker' ? [...ROLE_PERMISSIONS[role], 'task:patch'] : [...ROLE_PERMISSIONS[role]]
+      permissions: role === 'worker'
+        ? [...ROLE_PERMISSIONS[role], 'task:patch']
+        : role === 'frontend'
+          ? [...ROLE_PERMISSIONS.frontend, 'agent:read', 'agent:manage', 'thread:read', 'thread:write', 'app:device']
+          : [...ROLE_PERMISSIONS[role]]
     };
     const token = newToken();
     await pool.query(
@@ -1366,7 +1370,7 @@ describe('bots core service (Brief B1)', { skip: !connectionString, concurrency:
     assert.equal(finishedTurn4.result?.failure?.code, 'router_edit_forbidden');
   });
   it('a coordinator bot sends work to another project\'s bot with project_dispatch and gets the reply back', async () => {
-    const user = await createPrincipal(randomUUID(), 'dispatch-owner');
+    const user = await createPrincipal(randomUUID(), 'dispatch-owner', 'admin');
     const worker = await createPrincipal(user.tenantId, 'dispatch-worker', 'worker');
     const mk = async (name: string, scope: string, rules: Record<string, unknown>) => {
       const agent = (await call(user, 'agent_create', { name: `${name}Lead`, role: 'Lead', instructions: 'Help', scope, runner: { provider: 'codex' } })).agent;

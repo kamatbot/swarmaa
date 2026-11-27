@@ -469,3 +469,24 @@ test('timer kind (docs/RING-AGENT.md §11.3): accepted and kept, JXA still makes
   assert.equal(apps.reminders[0].name, '⏱ Wake up');
   assert.equal((await r.undo('alarm-1', alarm, out.handle!)).summary, 'Alarm cancelled: Wake up');
 });
+
+test('note.append uses per-call runOpts.timeZone rather than falling back to env timeZone', async () => {
+  const { mkdtempSync, rmSync, existsSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const dir = mkdtempSync(join(tmpdir(), 'swarmaa-note-tz-'));
+  try {
+    // 2026-11-22T20:00:00Z is 2026-11-22 in UTC, but 2026-11-23 03:00 in Asia/Bangkok (+7).
+    const r = runner({
+      now: () => new Date('2026-11-22T20:00:00Z'),
+      env: { SWARMAA_TIME_ZONE: 'UTC', SWARMAA_NOTES_DIR: dir, SWARMAA_LOCAL_ACTIONS: 'notes' },
+    });
+    const out = await r.run('note-tz-1', { type: 'note.append', text: 'Late night thought' }, { timeZone: 'Asia/Bangkok' });
+    assert.equal(out.ok, true);
+    assert.equal(out.handle, 'inbox/2026-11-23.md');
+    assert.equal(existsSync(join(dir, 'inbox', '2026-11-23.md')), true, 'must write to local date in per-call timeZone');
+    assert.equal(existsSync(join(dir, 'inbox', '2026-11-22.md')), false, 'must not use env UTC date');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

@@ -127,10 +127,12 @@ dependencies installed, `npm run bridge -- --config /ABSOLUTE/PATH/bridge.local.
 TypeScript source entrypoint. Follow the repository's local validation instructions before
 starting a persistent worker.
 
-The default capabilities are `claude.read` and `codex.read`. A task must name one of those exact
-strings. `research` and `review` tasks are eligible by default. A single bridge process executes
-one task at a time, then polls the next configured project. Multiple machines can compete for
-the same queue using different worker identities.
+The default read capabilities are `claude.read`, `codex.read`, `antigravity.read`, and quota-routed
+`auto.read`; opt-in edit capabilities add `claude.patch`, `codex.patch`, `antigravity.patch`, and
+`auto.patch`. `research` and `review` tasks are eligible by default (Antigravity takes `review` and
+in-project `patch`, never `research`). Each bridge process runs up to `max_concurrent` tasks (default
+10, bounded 1–16) across configured projects in parallel. Multiple machines can compete for the same
+queue using different worker identities.
 
 The bridge claims a 120-second database lease and renews it every 20 seconds by default. It
 saves an initial checkpoint and bounded partial output on renewals. Completion stores a
@@ -163,45 +165,26 @@ killed bridge cannot keep writing while a new attempt starts.
 
 | Provider | Autonomous support | Enforced mode |
 |---|---|---|
-| Claude Code | Research/review; opt-in edits in sandboxed git worktrees (commands allowed) | `--restricted`, explicit built-in tool list, MCP tools denied, empty strict MCP config, permission prompts denied. |
-| Codex CLI | Research/review; opt-in edits in sandboxed git worktrees | `exec --sandbox read-only`, never approvals, user config ignored, apps/plugins disabled. |
-| Antigravity (`agy`) | Review and in-project edits (no research) | `--mode plan --output-format json --print-timeout`, prompt as one argv element (`-p=<text>`), no `--dangerously-skip-permissions`. Requires `sandbox:true`: the Seatbelt profile is the file boundary. |
+| Claude Code | Research, review, turns, and opt-in edits in sandboxed git worktrees | `--print`, `--output-format json` (`stream-json` for turns), `--permission-mode bypassPermissions`, light macOS Seatbelt profile blocking credential directories; native session resume via `--session-id` / `--resume`. |
+| Codex CLI | Research, review, turns, and opt-in edits in sandboxed git worktrees | `--search exec --json --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox` (and `exec resume <id>` on retries/continuations), wrapped in macOS Seatbelt sandbox. |
+| Antigravity (`agy`) | Review, turns, and opt-in in-project edits (no research) | Verified ACP stdio transport (`agy acp --stdio`, `src/bridge/acp.ts`, with `--sandbox` for read and `--dangerously-skip-permissions` for patch — no prompt in argv, no private endpoints) inside mandatory Seatbelt (`sandbox: true`). |
 
-Claude requires a release supporting `--restricted` and `--permission-prompts none` (at least
-v2.1.259 for the latter). Read-only mode exposes `Read`, `Glob` and `Grep`. File-only patch mode
-adds `Edit` and `Write` with `acceptEdits`; command execution, subagents, browser and MCP tools
-are absent from that tool list. Managed organization policy remains authoritative. The bridge
-never falls back to a permission-bypass flag if a CLI version rejects an option.
+All three providers run inside the macOS Seatbelt sandbox (`src/bridge/sandbox.ts`, enabled by default and mandatory for Antigravity) which blocks credential directories (`~/.ssh`, `~/.aws`, `~/.config/gh`, etc.) and isolates project writes to the task's git worktree. Service tokens (`COLLECTIVE_*` / `SWARMAA_*`) are always stripped from provider subprocess environments.
 
-Codex must support the flags shown in `src/bridge/adapters.ts`. Its read-only filesystem sandbox
-does not mean that every readable file is limited to the project directory. Keep the worker's
-account and project data appropriate for the tasks it is authorized to analyze. Codex patch
-mode is rejected in this release; use an interactive reviewed workflow for Codex edits.
+- **Claude Code:** Runs headless with `--print` and `--permission-mode bypassPermissions`. Non-edit chat turns use `--setting-sources project --strict-mcp-config` for fast replies; patch and full task runs keep the project setup inside the Seatbelt profile. Native transcripts are persisted back to `~/.claude/projects/<project slug>/` after patch runs so the user can resume locally with `claude --resume <id>`.
+- **Codex CLI:** Runs headless via `codex --search exec --json` (and `exec resume <id>` when resuming a checkpointed `native_session`) inside the outer macOS Seatbelt sandbox (Codex's own sandbox cannot nest inside Seatbelt). Supports both read tasks and opt-in worktree patch tasks.
+- **Antigravity (`agy`):** Uses the verified ACP stdio protocol (`agy acp --stdio` in `src/bridge/acp.ts`), passing prompts over JSON-RPC stdin rather than argv, streaming activity/usage/model metadata, and never probing private endpoints. Requires `sandbox: true` in bridge config so Seatbelt enforces workspace boundaries and hides `~/.gemini/config/mcp_config.json` and unrelated conversations. Optional `auth_mode` (`oauth`, `api_key`, `enterprise`, `agent_platform`) is configurable per agent. Antigravity serves review and in-project edits (`antigravity.read` / `antigravity.patch`), never research, and does not accept photo inputs (`photo_provider_unsupported`).
 
-Antigravity workers run `agy` in plan mode: headless, it auto-denies shell commands and reads outside the
-workspace (reported as `denied_actions`; the bridge treats an empty answer as failure), and the outer
-Seatbelt profile independently blocks project writes, credential directories and other chats. Its MCP
-servers are defined in `~/.gemini/config/mcp_config.json` (which can hold tokens); the profile hides that
-file, so the worker has no MCP tools and cannot call Swarmaa. `agy` still needs its own state writable
-(`~/.gemini/antigravity-cli`, `~/.gemini/antigravity`, `~/.gemini/config/projects`), and other
-conversations' `brain/` and `conversations/` are unreadable. Not confined: network access, and the
-read-only guarantee for patch work (Antigravity has no patch mode here). Interactive MCP use of Antigravity is unchanged.
-
-Contract: Read tasks run as `<provider>.read` or `auto.read`; edit tasks as `<provider>.patch` or `auto.patch`. Edits are an explicit per-install opt-in (setup's "Allow edits", default read-only): the worker gets the `task:patch` grant and `enable_patch`/`allow_patch` together. Edit tasks run in sandboxed git worktrees with commands allowed, commit to the local branch `swarmaa/<provider>/<id>` and never push. Antigravity does review and in-project edits, not research. The routing policy picks the provider by order and quota.
-
-Edits are opt-in. `npm run setup` ("Allow edits") provisions all of the following together and reconciles them on re-run (switching back to read-only revokes the grant). By hand, do all three:
+**Patch mode contract:** Read tasks run as `<provider>.read` or `auto.read`; edit tasks run as `<provider>.patch` or `auto.patch`. Edits are an explicit per-install opt-in (setup's "Allow edits", default read-only) that provisions all three requirements together (and reconciles them on re-run, revoking `task:patch` when switching back to read-only):
 
 1. Grant `task:patch` to the worker principal: `--grant task:patch` on `admin create`, or
    `admin grant --name <n> --permission task:patch` for an existing worker.
 2. Set the agent's `enable_patch` and the intended project's `allow_patch` to `true` in
-   local bridge configuration. Use a dedicated reviewable working copy.
-3. Submit a `patch` task with `required_capability: "claude.patch"`, a stable `resource_key`,
-   clear constraints, and acceptance criteria.
+   local bridge configuration.
+3. Submit a `patch` task with `required_capability: "auto.patch"` (or `<provider>.patch`), optional
+   `resource_key` / `base_ref`, clear constraints, and acceptance criteria.
 
-The adapter produces local source edits and a provider transcript. It does not commit, push,
-merge, deploy or run tests/builds. Review the working copy's diff locally. No automated rollback
-is performed, because it could discard a user's concurrent edits. Other task kinds cannot gain
-patch authority through task prose or a memory entry.
+Every patch task executes in an isolated git worktree under `~/.swarma/worktrees/` with shell commands, builds, and tests allowed inside that worktree. Before committing, if the project configures `projects[].checks` (`tests_pass`, `build_passes`), the bridge runs those deterministic checks in the worktree and records `checks` and `checks_passed` (a failing check fails the attempt with `swarmaa_checks_failed` and retries with the resumed provider session). On success, the bridge commits edits to the local branch `swarmaa/<provider>/<task id>`, uploads a bounded diff artifact, and **never pushes or merges**. Always review the branch diff locally before integrating. Other task kinds cannot gain patch authority through task prose or a memory entry.
 
 ## 5. Optional Reason Network integration
 
@@ -229,21 +212,16 @@ task succeeded. Failure to notify Reason does not erase the durable task result.
 
 ## 6. Keep a worker running after validation
 
-`clients/macos/com.collective.bridge.example.plist` is a launch-agent template. Replace every
-absolute path, configure the Keychain launcher, choose log locations, and then install it through
-your normal macOS launch-agent workflow. Do the same on any additional worker Mac with a different Keychain
-item and principal token. Start with read-only capabilities on each machine.
+`npm run setup` generates `LaunchAgents` in `~/Library/LaunchAgents/` with `ProcessType` set to `Standard` for long-running daemons (`postgres`, `service`, `bridge.*`) and `Background` only for periodic one-shot jobs (`capture`, `distill`), avoiding macOS background-tier CPU/disk throttling on active workers. For manual Keychain setups, `clients/macos/com.collective.bridge.example.plist` provides a launch-agent template using `ProcessType` `Interactive`. Replace every absolute path, configure the Keychain launcher, choose log locations, and load it with `launchctl bootstrap`. Do the same on any additional worker Mac with a different Keychain item and principal token. Start with read-only capabilities on each machine.
 
 The sample log files contain task IDs and operational event codes, not task bodies or tokens.
 Arrange log rotation if you leave the worker running. Stop the bridge cleanly with SIGTERM;
 it aborts its active subprocess and attempts a final blocked result when its lease is still valid.
+Use `npm run deploy:local` (SIGUSR2 drain) to upgrade running bridges without interrupting active tasks.
 
-## Validation status and references
+## Validation and references
 
-Tests in `tests/bridge*.test.ts` cover mode restrictions, prompt/argv separation, environment
-filtering, heartbeat loss, wrong-scope claims, output/time bounds, and proxy framing. They are
-provided for local validation and were **not run** while this source package was authored.
-Provider CLIs, service connections and cross-device failover also require a local smoke test.
+Unit tests in `tests/bridge*.test.ts`, `tests/antigravity-acp.test.ts`, `tests/worktree.test.ts`, and `tests/sandbox.test.ts` cover mode restrictions, ACP transport, prompt/argv separation, environment filtering, heartbeat loss, wrong-scope claims, output/time bounds, and proxy framing (`npm test`). Run `npm run smoke:providers` to verify live provider CLIs, account logins, and end-to-end execution on your Mac (see [VALIDATION.md](VALIDATION.md)).
 
 Official references reviewed while implementing this package:
 

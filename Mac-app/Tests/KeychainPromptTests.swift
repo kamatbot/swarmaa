@@ -27,39 +27,29 @@ final class PromptPermissionTests: XCTestCase {
     }
 }
 
-/// Antigravity's keychain item is written through Go's keyring, which files it
-/// with `/usr/bin/security` — so it is refused the same way Claude Code's is,
-/// and on a five-minute retry the dialogue kept coming back. Only a person's
-/// click may make a read interactive.
+/// Antigravity never reads secret OAuth bytes from Keychain, and any recorded
+/// refusal blocks even metadata checks until the user explicitly asks again.
 final class AntigravityKeychainPromptTests: XCTestCase {
-    private var interactive: [Bool] = []
+    private var previousRefusal: KeychainRefusal!
 
     override func setUp() {
         super.setUp()
-        interactive = []
-        AntigravityCredentials.forgetCached()
-        AntigravityCredentials.readKeychainForTesting = { [unowned self] flag in
-            interactive.append(flag)
-            return (errSecItemNotFound, nil)
-        }
+        previousRefusal = AntigravityCredentials.refusal
+        AntigravityCredentials.refusal = KeychainRefusal(key: "antigravity-prompt-test", defaults: nil)
+        AntigravityCredentials.metadataPresentForTesting = { true }
     }
 
     override func tearDown() {
-        AntigravityCredentials.readKeychainForTesting = nil
-        AntigravityCredentials.forgetCached()
+        AntigravityCredentials.refusal = previousRefusal
+        AntigravityCredentials.metadataPresentForTesting = nil
         super.tearDown()
     }
 
-    func testABackgroundReadNeverPrompts() {
-        _ = try? AntigravityCredentials.load()
-        XCTAssertEqual(interactive.first, false)
-    }
-
-    func testAllowAccessLetsTheNextReadPromptAndNoMore() {
+    func testRefusalBlocksPresenceCheckUntilAskAgain() {
+        XCTAssertTrue(AntigravityCredentials.isSignedIn())
+        AntigravityCredentials.recordRefusal()
+        XCTAssertFalse(AntigravityCredentials.isSignedIn())
         AntigravityCredentials.askAgain()
-        _ = try? AntigravityCredentials.load()
-        AntigravityCredentials.forgetCached()
-        _ = try? AntigravityCredentials.load()
-        XCTAssertEqual(interactive, [true, false])
+        XCTAssertTrue(AntigravityCredentials.isSignedIn())
     }
 }

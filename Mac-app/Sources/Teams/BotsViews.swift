@@ -288,7 +288,7 @@ struct BotThreadHeader: View {
 
     private var botMenu: some View {
         Menu {
-            Button(L10n.t("Bot settings")) { model.editingBotID = bot.id }.keyboardShortcut(",", modifiers: .command)
+            Button(L10n.t("Bot settings")) { model.editingBotID = bot.id }.keyboardShortcut(",", modifiers: [.command, .shift])
             Button(L10n.t("Rename…")) { name = bot.name; renaming = true }
                 .disabled(bot.isLegacyAgent || model.savingBot)
             Button(starLabel) { Task { await model.setBotStarred(bot, starred: !starred) } }
@@ -338,9 +338,8 @@ struct TaskCardView: View {
                         Button(L10n.t("Retry")) { Task { await model.retry(task.id) } }.buttonStyle(.ks(.primary, compact: true))
                             .disabled(model.busyTasks.contains(task.id))
                     } else if let branch = task.branch, !task.resolved {
-                        Button(L10n.t("Copy review command")) {
-                            NSPasteboard.general.clearContents()
-                            NSPasteboard.general.setString("git log -p \(branch)", forType: .string)
+                        Button(model.reviewed.contains(task.id) ? L10n.t("Copied") : L10n.t("Copy review command")) {
+                            model.review(taskID: task.id, branch: branch)
                         }.buttonStyle(.ks(.paper, compact: true))
                         Button(L10n.t("Mark resolved")) { Task { await model.resolve(task.id, true) } }
                             .buttonStyle(.ks(.white, compact: true)).disabled(model.busyTasks.contains(task.id))
@@ -507,10 +506,10 @@ struct BotSettingsPane: View {
         }
     }
 
-    // 03 — Which service does what
+    // 03 — Which provider does what
     private var routingSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            KSLabel(L10n.t("03 — Which service does what"))
+            KSLabel(L10n.t("03 — Which provider does what"))
             VStack(spacing: 0) {
                 ForEach(Array(TeamsBotRouting.Kind.allCases.enumerated()), id: \.element) { i, kind in
                     HStack(spacing: 16) {
@@ -534,7 +533,7 @@ struct BotSettingsPane: View {
     }
 
     private func runnerTitle(_ kind: TeamsBotRouting.Kind) -> String {
-        if kind == .review, routing.review == nil, routing.reviewDifferentFromAuthor { return L10n.t("A different service than the author") }
+        if kind == .review, routing.review == nil, routing.reviewDifferentFromAuthor { return L10n.t("A different provider than the author") }
         guard let r = routing[kind] else { return L10n.t("Auto · most quota left") }
         return r.label
     }
@@ -543,7 +542,7 @@ struct BotSettingsPane: View {
         Menu {
             Button(L10n.t("Auto · most quota left")) { routing[kind] = nil; if kind == .review { routing.reviewDifferentFromAuthor = false } }
             if kind == .review {
-                Button(L10n.t("A different service than the author")) { routing.review = nil; routing.reviewDifferentFromAuthor = true }
+                Button(L10n.t("A different provider than the author")) { routing.review = nil; routing.reviewDifferentFromAuthor = true }
             }
             Divider()
             ForEach(model.runnerProviders, id: \.provider) { p in

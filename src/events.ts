@@ -22,7 +22,7 @@ interface SubscriptionRow {
   id: string; principal_id: string; oauth_grant_id: string | null; credential_version: number; revision: number; tenant_id: string; scope: string; name: EventName;
   mode: 'mcp' | 'generic'; callback_url: string; secret_ciphertext: string;
   previous_secret_ciphertext: string | null; previous_secret_until: Date | null;
-  verified_until: Date; starts_at: Date; expires_at: Date; active: boolean; last_seq: string;
+  verified_until: Date; starts_at: Date; expires_at: Date; active: boolean; last_xid: string; last_seq: string;
 }
 interface DeliveryRow {
   subscription_id: string; event_id: string; attempts: number; lock_token: string; callback_url?: string;
@@ -164,14 +164,15 @@ export class EventService implements EventBackend {
         }
       }
       const saved = await client.query<{ expires_at: Date }>(
-        `INSERT INTO event_subscriptions(id,principal_id,tenant_id,scope,name,mode,callback_url,secret_ciphertext,previous_secret_ciphertext,previous_secret_until,verified_until,expires_at,oauth_grant_id,credential_version,last_seq)
+        `INSERT INTO event_subscriptions(id,principal_id,tenant_id,scope,name,mode,callback_url,secret_ciphertext,previous_secret_ciphertext,previous_secret_until,verified_until,expires_at,oauth_grant_id,credential_version,last_xid,last_seq)
          VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$13,$12,clock_timestamp()+($10::bigint*interval '1 millisecond'),$11,$14,
-           COALESCE((SELECT max(seq) FROM events WHERE tenant_id=$3 AND scope=$4 AND name=$5 AND created_at<clock_timestamp()), 0))
+           pg_snapshot_xmin(pg_current_snapshot()), 0)
          ON CONFLICT(id) DO UPDATE SET secret_ciphertext=EXCLUDED.secret_ciphertext,
            previous_secret_ciphertext=EXCLUDED.previous_secret_ciphertext,previous_secret_until=EXCLUDED.previous_secret_until,
            verified_until=EXCLUDED.verified_until,expires_at=EXCLUDED.expires_at,oauth_grant_id=EXCLUDED.oauth_grant_id,credential_version=EXCLUDED.credential_version,
            revision=event_subscriptions.revision+1,active=true,updated_at=clock_timestamp(),
            starts_at=CASE WHEN event_subscriptions.active AND event_subscriptions.expires_at>clock_timestamp() THEN event_subscriptions.starts_at ELSE clock_timestamp() END,
+           last_xid=CASE WHEN event_subscriptions.active AND event_subscriptions.expires_at>clock_timestamp() THEN event_subscriptions.last_xid ELSE EXCLUDED.last_xid END,
            last_seq=CASE WHEN event_subscriptions.active AND event_subscriptions.expires_at>clock_timestamp() THEN event_subscriptions.last_seq ELSE EXCLUDED.last_seq END
          RETURNING expires_at`, [input.id, principal.id, principal.tenantId, input.scope, input.name, input.mode, input.url, cipher, oldCipher, input.ttl, principal.oauthGrantId ?? null, input.verifiedUntil, oldUntil, row.credential_version]);
       if (previous && !previous.live) {
@@ -233,13 +234,15 @@ export class EventService implements EventBackend {
   private async tick(): Promise<void> {
     await this.pool.query(
       `WITH batch AS (
-         SELECT s.id AS subscription_id, e.id AS event_id, e.seq
+         SELECT s.id AS subscription_id, e.id AS event_id, e.xid, e.seq
          FROM event_subscriptions s
          JOIN LATERAL (
-           SELECT e.id, e.seq FROM events e
+           SELECT e.id, e.xid, e.seq FROM events e
            WHERE e.tenant_id = s.tenant_id AND e.scope = s.scope AND e.name = s.name
-             AND e.seq > s.last_seq AND e.created_at >= s.starts_at
-           ORDER BY e.seq LIMIT 200
+             AND (e.xid, e.seq) > (s.last_xid, s.last_seq)
+             AND e.xid < pg_snapshot_xmin(pg_current_snapshot())
+             AND e.created_at >= s.starts_at
+           ORDER BY e.xid, e.seq LIMIT 200
          ) e ON true
          WHERE s.active AND s.expires_at > clock_timestamp()
        ),
@@ -247,11 +250,17 @@ export class EventService implements EventBackend {
          INSERT INTO event_deliveries(subscription_id, event_id)
          SELECT subscription_id, event_id FROM batch
          ON CONFLICT DO NOTHING
+       ),
+       latest AS (
+         SELECT DISTINCT ON (subscription_id) subscription_id, xid AS max_xid, seq AS max_seq
+         FROM batch
+         ORDER BY subscription_id, xid DESC, seq DESC
        )
        UPDATE event_subscriptions s
-       SET last_seq = GREATEST(s.last_seq, sub.max_seq), updated_at = clock_timestamp()
-       FROM (SELECT subscription_id, max(seq) AS max_seq FROM batch GROUP BY subscription_id) sub
-       WHERE s.id = sub.subscription_id`);
+       SET last_xid = latest.max_xid, last_seq = latest.max_seq, updated_at = clock_timestamp()
+       FROM latest
+       WHERE s.id = latest.subscription_id
+         AND (latest.max_xid, latest.max_seq) > (s.last_xid, s.last_seq)`);
     await this.pool.query("UPDATE event_deliveries SET state='failed',lock_token=NULL,locked_until=NULL,last_error_code='attempt_limit' WHERE attempts >= $1 AND (state='pending' OR (state='sending' AND locked_until<clock_timestamp()))", [MAX_ATTEMPTS]);
     await this.dispatchAvailable();
   }

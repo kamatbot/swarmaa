@@ -6,7 +6,19 @@ struct OnboardingView: View {
     var onFinish: () -> Void
 
     var body: some View {
+        let step = model.stepProgress
         VStack(spacing: 0) {
+            HStack {
+                Text("Step \(step.current) of \(step.total)")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .accessibilityLabel("Step \(step.current) of \(step.total)")
+                Spacer()
+            }
+            .padding(.horizontal, 32)
+            .padding(.top, 16)
+            .padding(.bottom, 4)
+
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     switch model.page {
@@ -22,7 +34,9 @@ struct OnboardingView: View {
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(32)
+                .padding(.horizontal, 32)
+                .padding(.top, 12)
+                .padding(.bottom, 32)
             }
             Divider()
             footer
@@ -128,7 +142,7 @@ private struct WelcomePage: View {
         }
         option(.connectRemote, "Connect to an existing Swarmaa",
                "For a second Mac. Signs in with your browser and passkey; nothing is installed here.") {
-            TextField("https://api.swarmaa.com", text: $model.remoteAddress)
+            TextField("https://swarmaa.example.com", text: $model.remoteAddress)
                 .textFieldStyle(.roundedBorder)
                 .accessibilityLabel("Swarmaa address")
         }
@@ -188,6 +202,7 @@ private struct ConnectedPage: View {
 struct StarterPromptBox: View {
     let text: String
     @State private var copied = false
+    @State private var resetTask: Task<Void, Never>?
     var body: some View {
         Text("Get started").font(.headline)
         Text("Paste this into Claude Code, Codex or Antigravity:").foregroundStyle(.secondary)
@@ -200,9 +215,16 @@ struct StarterPromptBox: View {
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(text, forType: .string)
             copied = true
+            resetTask?.cancel()
+            resetTask = Task {
+                try? await Task.sleep(for: .seconds(2))
+                guard !Task.isCancelled else { return }
+                copied = false
+            }
         }
         .buttonStyle(.borderedProminent)
         .accessibilityLabel("Copy starter prompt")
+        .onDisappear { resetTask?.cancel() }
     }
 }
 
@@ -215,8 +237,25 @@ private struct ServicesPage: View {
     ]
 
     var body: some View {
-        PageHeader(title: "Services", subtitle: "Choose which agents Swarmaa connects to.")
-        ForEach(Self.rows, id: \.0) { harness, name in row(harness, name) }
+        PageHeader(title: "Providers", subtitle: "Choose which coding agents and providers Swarmaa connects to.")
+        if model.detecting {
+            HStack(spacing: 10) {
+                ProgressView().controlSize(.small)
+                Text("Detecting installed providers on this Mac…")
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.vertical, 12)
+        } else if model.detection == nil {
+            if let error = model.detectionError {
+                Text(error).foregroundStyle(.red).font(.callout)
+            } else {
+                Text("Could not inspect installed providers on this Mac.")
+                    .foregroundStyle(.secondary)
+            }
+            Button("Try Again") { model.retryDetection() }
+        } else {
+            ForEach(Self.rows, id: \.0) { harness, name in row(harness, name) }
+        }
     }
 
     private func row(_ h: SetupHarness, _ name: String) -> some View {
@@ -274,7 +313,7 @@ private struct ProjectsPage: View {
     @ObservedObject var model: OnboardingModel
     var body: some View {
         PageHeader(title: "Projects",
-                   subtitle: "Add the folders your agents work in. Each becomes a project scope that tasks and memory are kept under. The scope project:demo is created automatically.")
+                   subtitle: "Add the folders your agents work in. Each becomes a project scope that tasks and memory are kept under. The scope project:general is created automatically.")
         ForEach($model.projects) { $project in
             HStack {
                 TextField("Scope name", text: $project.name)
@@ -303,7 +342,7 @@ private struct RemotePage: View {
                    subtitle: "Grok and Dot run in the cloud, so they reach Swarmaa through a public hostname.")
         Toggle("Set up now", isOn: $model.setUpRemoteNow)
             .accessibilityLabel("Set up remote access now")
-        TextField("Hostname", text: $model.hostname)
+        TextField("swarmaa.example.com", text: $model.hostname)
             .textFieldStyle(.roundedBorder)
             .disabled(!model.setUpRemoteNow)
             .accessibilityLabel("Remote access hostname")
@@ -374,6 +413,8 @@ private struct ProgressPage: View {
 
 private struct SummaryPage: View {
     @ObservedObject var model: OnboardingModel
+    @State private var copiedMCP = false
+    @State private var mcpCopyTask: Task<Void, Never>?
     var body: some View {
         let s = model.summary ?? SetupSummary()
         PageHeader(title: "You're connected", subtitle: nil)
@@ -385,8 +426,19 @@ private struct SummaryPage: View {
             HStack {
                 Text("MCP URL").font(.headline)
                 Text(mcp).textSelection(.enabled).font(.system(.callout, design: .monospaced))
-                Button("Copy") { model.copyMCPURL() }.accessibilityLabel("Copy MCP URL")
+                Button(copiedMCP ? "Copied" : "Copy") {
+                    model.copyMCPURL()
+                    copiedMCP = true
+                    mcpCopyTask?.cancel()
+                    mcpCopyTask = Task {
+                        try? await Task.sleep(for: .seconds(2))
+                        guard !Task.isCancelled else { return }
+                        copiedMCP = false
+                    }
+                }
+                .accessibilityLabel("Copy MCP URL")
             }
+            .onDisappear { mcpCopyTask?.cancel() }
         }
         ForEach(s.warnings, id: \.self) { Label($0, systemImage: "exclamationmark.triangle").foregroundStyle(.orange) }
         if !s.nextSteps.isEmpty {

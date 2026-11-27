@@ -14,6 +14,7 @@ export interface HostAttachment {
   version?: string;
   replaced?: boolean;
   connectedAt: number;
+  helloDeadline: number;
 }
 
 export interface ClientAttachment {
@@ -21,8 +22,13 @@ export interface ClientAttachment {
   connId: string;
   authed: boolean;
   openStreams: string[];
-  reqTimestamps: number[];
+  tokens: number;
+  lastRefillMs: number;
 }
+
+const MAX_CLIENT_OPEN_STREAMS = 40; // 40 * 35B + ~120B metadata <= 1.5 KiB, well under Cloudflare's 2 KiB attachment limit
+const TOKEN_BUCKET_CAPACITY = 120;
+const TOKEN_BUCKET_REFILL_MS = 60_000;
 
 export type SocketAttachment = HostAttachment | ClientAttachment;
 
@@ -152,29 +158,28 @@ export class HostRoom extends DurableObject<Env> {
       const nonceBytes = crypto.getRandomValues(new Uint8Array(32));
       const nonce = bytesToBase64Url(nonceBytes);
 
+      const timeoutMs = this.env.HELLO_TIMEOUT_MS
+        ? parseInt(this.env.HELLO_TIMEOUT_MS, 10)
+        : 10000;
+      const now = Date.now();
+      const helloDeadline = now + timeoutMs;
+
       this.ctx.acceptWebSocket(server, ["host"]);
       server.serializeAttachment({
         type: "host",
         hostId,
         nonce,
         authed: false,
-        connectedAt: Date.now()
+        connectedAt: now,
+        helloDeadline
       } satisfies HostAttachment);
 
       server.send(JSON.stringify({ t: "challenge", nonce }));
 
-      const timeoutMs = this.env.HELLO_TIMEOUT_MS
-        ? parseInt(this.env.HELLO_TIMEOUT_MS, 10)
-        : 10000;
-
-      setTimeout(() => {
-        try {
-          const att = server.deserializeAttachment() as HostAttachment | null;
-          if (att && !att.authed) {
-            server.close(4001, "no_hello");
-          }
-        } catch {}
-      }, timeoutMs);
+      const existingAlarm = await this.ctx.storage.getAlarm();
+      if (!existingAlarm || existingAlarm > helloDeadline) {
+        await this.ctx.storage.setAlarm(helloDeadline);
+      }
 
       return new Response(null, { status: 101, webSocket: client });
     }
@@ -203,13 +208,42 @@ export class HostRoom extends DurableObject<Env> {
         connId,
         authed: false,
         openStreams: [],
-        reqTimestamps: []
+        tokens: TOKEN_BUCKET_CAPACITY,
+        lastRefillMs: Date.now()
       } satisfies ClientAttachment);
 
       return new Response(null, { status: 101, webSocket: client });
     }
 
     return new Response("Not Found", { status: 404 });
+  }
+
+  async alarm(): Promise<void> {
+    const now = Date.now();
+    let nextAlarm: number | null = null;
+    for (const ws of this.ctx.getWebSockets("host")) {
+      try {
+        const att = ws.deserializeAttachment() as HostAttachment | null;
+        if (att && !att.authed) {
+          if (att.helloDeadline <= now) {
+            ws.close(4001, "no_hello");
+          } else if (nextAlarm === null || att.helloDeadline < nextAlarm) {
+            nextAlarm = att.helloDeadline;
+          }
+        }
+      } catch {}
+    }
+    const pending = await this.ctx.storage.get<{ code_hash: string; expires_at: number }>("pending_pairing");
+    if (pending) {
+      if (pending.expires_at <= now) {
+        await this.ctx.storage.delete("pending_pairing");
+      } else if (nextAlarm === null || pending.expires_at < nextAlarm) {
+        nextAlarm = pending.expires_at;
+      }
+    }
+    if (nextAlarm !== null) {
+      await this.ctx.storage.setAlarm(nextAlarm);
+    }
   }
 
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
@@ -453,29 +487,42 @@ export class HostRoom extends DurableObject<Env> {
         break;
       }
       case "req": {
+        if (!att.authed) {
+          ws.close(4001, "not_authed");
+          return;
+        }
         if (typeof frame.sid !== "string" || frame.sid.length > 32) return;
 
         const now = Date.now();
-        att.reqTimestamps = (att.reqTimestamps || []).filter(ts => now - ts < 60000);
-        if (att.reqTimestamps.length >= 120) {
+        const elapsed = Math.max(0, now - (att.lastRefillMs ?? now));
+        const refilled = Math.min(
+          TOKEN_BUCKET_CAPACITY,
+          (att.tokens ?? TOKEN_BUCKET_CAPACITY) + (elapsed * TOKEN_BUCKET_CAPACITY) / TOKEN_BUCKET_REFILL_MS
+        );
+        if (refilled < 1) {
           ws.send(JSON.stringify({ t: "end", sid: frame.sid, error: "rate_limited" }));
           return;
         }
-        att.reqTimestamps.push(now);
+        att.tokens = Math.round((refilled - 1) * 100) / 100;
+        att.lastRefillMs = now;
 
         att.openStreams = att.openStreams || [];
-        if (att.openStreams.length >= 64) {
+        if (att.openStreams.length >= MAX_CLIENT_OPEN_STREAMS) {
+          ws.serializeAttachment(att);
           ws.send(JSON.stringify({ t: "end", sid: frame.sid, error: "rate_limited" }));
           return;
         }
 
         const hostWs = this.getActiveHostSocket();
         if (!hostWs) {
+          ws.serializeAttachment(att);
           ws.send(JSON.stringify({ t: "end", sid: frame.sid, error: "host_offline" }));
           return;
         }
 
-        att.openStreams.push(frame.sid);
+        if (!att.openStreams.includes(frame.sid)) {
+          att.openStreams.push(frame.sid);
+        }
         ws.serializeAttachment(att);
 
         if (frame.headers && typeof frame.headers === "object") {
@@ -498,6 +545,10 @@ export class HostRoom extends DurableObject<Env> {
         break;
       }
       case "end": {
+        if (!att.authed) {
+          ws.close(4001, "not_authed");
+          return;
+        }
         if (typeof frame.sid !== "string") return;
         att.openStreams = (att.openStreams || []).filter(s => s !== frame.sid);
         ws.serializeAttachment(att);
@@ -513,6 +564,10 @@ export class HostRoom extends DurableObject<Env> {
         break;
       }
       case "pair_redeem": {
+        if (!att.authed) {
+          ws.close(4001, "not_authed");
+          return;
+        }
         if (typeof frame.rid !== "string") return;
 
         const now = Date.now();

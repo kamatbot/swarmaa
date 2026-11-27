@@ -3,19 +3,47 @@ import test from 'node:test';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { botSecrets, scrubSecrets } from '../src/bridge/bot-secrets.js';
+import { botSecrets, clearBotSecretsCache, scrubSecrets } from '../src/bridge/bot-secrets.js';
 import { extractActionsBlock } from '../src/core/actions.js';
 
-test('bot secrets come only from the scope index, never Swarmaa tokens, and skip missing items', () => {
+test('bot secrets come only from the scope index, never Swarmaa tokens, and skip missing items', async () => {
+  clearBotSecretsCache();
   const dir = mkdtempSync(join(tmpdir(), 'swarmaa-secrets-'));
   const index = join(dir, 'bot-secrets.json');
   writeFileSync(index, JSON.stringify({ 'project:a': ['GITHUB_TOKEN', 'SWARMAA_WORKER_TOKEN', 'lower', 'MISSING'], 'project:b': ['OTHER'] }));
   const asked: string[] = [];
-  const read = (account: string): string => { asked.push(account); if (account.endsWith('MISSING')) throw new Error('not found'); return 'ghp_abcdefgh12345\n'; };
-  assert.deepEqual(botSecrets('project:a', index, read), { GITHUB_TOKEN: 'ghp_abcdefgh12345' });
+  const read = async (account: string): Promise<string> => { asked.push(account); if (account.endsWith('MISSING')) throw new Error('not found'); return 'ghp_abcdefgh12345\n'; };
+  assert.deepEqual(await botSecrets('project:a', index, read), { GITHUB_TOKEN: 'ghp_abcdefgh12345' });
   assert.deepEqual(asked, ['project:a/GITHUB_TOKEN', 'project:a/MISSING']);
-  assert.deepEqual(botSecrets('project:none', index, read), {});
-  assert.deepEqual(botSecrets('project:a', join(dir, 'absent.json'), read), {});
+  assert.deepEqual(await botSecrets('project:none', index, read), {});
+  assert.deepEqual(await botSecrets('project:a', join(dir, 'absent.json'), read), {});
+});
+
+test('bot secrets reads concurrently and caches within TTL', async () => {
+  clearBotSecretsCache();
+  const dir = mkdtempSync(join(tmpdir(), 'swarmaa-secrets-cache-'));
+  const index = join(dir, 'bot-secrets.json');
+  writeFileSync(index, JSON.stringify({ 'project:c': ['TOKEN_ONE', 'TOKEN_TWO'] }));
+  let reads = 0;
+  let clock = 1000;
+  const read = async (account: string): Promise<string> => {
+    reads++;
+    return `val_${account.split('/').pop()}\n`;
+  };
+  const first = await botSecrets('project:c', index, read, { ttlMs: 30_000, now: () => clock });
+  assert.deepEqual(first, { TOKEN_ONE: 'val_TOKEN_ONE', TOKEN_TWO: 'val_TOKEN_TWO' });
+  assert.equal(reads, 2);
+
+  // Within 30s TTL -> cached, no additional reads
+  clock += 15_000;
+  const second = await botSecrets('project:c', index, read, { ttlMs: 30_000, now: () => clock });
+  assert.deepEqual(second, first);
+  assert.equal(reads, 2);
+
+  // Past 30s TTL -> refreshed
+  clock += 20_000;
+  await botSecrets('project:c', index, read, { ttlMs: 30_000, now: () => clock });
+  assert.equal(reads, 4);
 });
 
 test('secret values are scrubbed from output', () => {

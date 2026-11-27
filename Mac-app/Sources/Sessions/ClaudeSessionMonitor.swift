@@ -54,9 +54,10 @@ final class ClaudeSessionMonitor: ObservableObject, AgentActivityMonitor {
     /// timer is already what covers everything a file event cannot report.
     var ownership: ClaudeSessionOwnership?
 
+    private let scanQueue = DispatchQueue(label: "app.swarmaa.mac.claude-activity", qos: .utility)
     private var source: DispatchSourceFileSystemObject?
     private var descriptor: CInt = -1
-    private var livenessTimer: Timer?
+    private var livenessTimer: DispatchSourceTimer?
     private var debounce: DispatchWorkItem?
     private var wakeObserver: NSObjectProtocol?
 
@@ -81,20 +82,22 @@ final class ClaudeSessionMonitor: ObservableObject, AgentActivityMonitor {
         // timer would stack on the first pair, so stop whatever is running.
         // (`AntigravityActivityMonitor` does the same.)
         stop()
-        rescan()
         watchDirectory()
 
-        let timer = Timer(timeInterval: livenessInterval, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.rescan() }
+        let timer = DispatchSource.makeTimerSource(queue: scanQueue)
+        timer.schedule(deadline: .now(), repeating: livenessInterval, leeway: .milliseconds(250))
+        timer.setEventHandler { [weak self] in
+            self?.triggerRescanFromBackground()
         }
-        RunLoop.main.add(timer, forMode: .common)
         livenessTimer = timer
+        timer.resume()
     }
 
     func stop() {
-        livenessTimer?.invalidate()
+        livenessTimer?.cancel()
         livenessTimer = nil
         debounce?.cancel()
+        debounce = nil
         source?.cancel()
         source = nil
     }
@@ -106,10 +109,10 @@ final class ClaudeSessionMonitor: ObservableObject, AgentActivityMonitor {
         let source = DispatchSource.makeFileSystemObjectSource(
             fileDescriptor: descriptor,
             eventMask: [.write, .extend, .attrib, .delete, .rename, .revoke],
-            queue: .main
+            queue: scanQueue
         )
         source.setEventHandler { [weak self] in
-            MainActor.assumeIsolated { self?.scheduleRescan() }
+            self?.scheduleRescanFromBackground()
         }
         source.setCancelHandler { [descriptor] in
             if descriptor >= 0 { close(descriptor) }
@@ -119,26 +122,82 @@ final class ClaudeSessionMonitor: ObservableObject, AgentActivityMonitor {
     }
 
     /// A single state change can produce several file events; coalesce them.
-    private func scheduleRescan() {
-        debounce?.cancel()
-        let work = DispatchWorkItem { [weak self] in
-            MainActor.assumeIsolated { self?.rescan() }
+    nonisolated private func scheduleRescanFromBackground() {
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated { [weak self] in
+                guard let self, self.livenessTimer != nil else { return }
+                self.debounce?.cancel()
+                let work = DispatchWorkItem { [weak self] in
+                    self?.triggerRescanFromBackground()
+                }
+                self.debounce = work
+                self.scanQueue.asyncAfter(deadline: .now() + 0.12, execute: work)
+            }
         }
-        debounce = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: work)
     }
 
-    private func rescan() {
-        let found = Self.read(directory: directory, transcripts: transcripts,
-                              ignoring: ignoredPIDs(),
-                              ignoringDirectories: ignoredWorkingDirectories,
-                              ownership: ownership)
-        guard found != sessions else { return }   // don't churn SwiftUI for nothing
-        // Only on a change, so this is a handful of lines an hour rather than a
-        // firehose. It is the one way to see what the app thinks is running
-        // without hovering over it:
-        //
-        //     log stream --predicate 'category == "sessions"' --level debug
+    nonisolated private func triggerRescanFromBackground() {
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated { [weak self] in
+                guard let self else { return }
+                self.beginBackgroundScan()
+            }
+        }
+    }
+
+    private func beginBackgroundScan() {
+        guard livenessTimer != nil else { return }
+        let sources = ownership?.directories ?? [directory]
+        let ignored = ignoredPIDs()
+        let ignoredDirs = ignoredWorkingDirectories
+        scanQueue.async { [weak self] in
+            var scanned: [(URL, [ClaudeSessionRecord])] = []
+            for source in sources {
+                scanned.append((source, Self.records(in: source, ignoring: ignored, ignoringDirectories: ignoredDirs)))
+            }
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { [weak self] in
+                    guard let self else { return }
+                    self.finishOwnershipAndReadTranscripts(scanned: scanned)
+                }
+            }
+        }
+    }
+
+    private func finishOwnershipAndReadTranscripts(scanned: [(URL, [ClaudeSessionRecord])]) {
+        guard livenessTimer != nil else { return }
+        var live: [ClaudeSessionRecord] = []
+        var origin: [Int32: URL] = [:]
+        for (source, records) in scanned {
+            for record in records {
+                if let ownership, !ownership.claims(record, foundIn: source) { continue }
+                live.append(record)
+                origin[record.pid] = source
+            }
+        }
+        let deduped = Self.deduplicated(live)
+        var pairs: [(ClaudeSessionRecord, ClaudeTranscriptReader?)] = []
+        for record in deduped {
+            let reader = origin[record.pid].flatMap { ownership?.reader(for: $0) } ?? transcripts
+            pairs.append((record, reader))
+        }
+        scanQueue.async { [weak self] in
+            var found: [AgentSession] = []
+            for (record, reader) in pairs {
+                found.append(Self.state(of: record, transcripts: reader))
+            }
+            found.sort { $0.since == $1.since ? $0.id < $1.id : $0.since > $1.since }
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { [weak self] in
+                    guard let self else { return }
+                    self.applyScannedSessions(found)
+                }
+            }
+        }
+    }
+
+    private func applyScannedSessions(_ found: [AgentSession]) {
+        guard livenessTimer != nil, found != sessions else { return }
         let summary = found.map { "\($0.name)=\($0.state)" }.joined(separator: " ")
         Log.sessions.debug("\(ClaudeProfile.tilde(self.directory.path), privacy: .public): \(summary, privacy: .public)")
         sessions = found
@@ -200,9 +259,9 @@ final class ClaudeSessionMonitor: ObservableObject, AgentActivityMonitor {
     /// file stays and its process is alive, but nobody has it open: one seen on
     /// a real machine sat stopped for a day behind the session resumed in the
     /// same tab, drawn as an idle row nobody could find.
-    static func records(in directory: URL, ignoring: Set<Int32> = [],
-                        ignoringDirectories: Set<String> = [],
-                        isAttended: (Int32) -> Bool = ClaudeSessionMonitor.isAttended(pid:))
+    nonisolated static func records(in directory: URL, ignoring: Set<Int32> = [],
+                                    ignoringDirectories: Set<String> = [],
+                                    isAttended: (Int32) -> Bool = ClaudeSessionMonitor.isAttended(pid:))
     -> [ClaudeSessionRecord] {
         let ignoredDirectories = Set(ignoringDirectories.map {
             URL(fileURLWithPath: $0).standardizedFileURL.path
@@ -244,8 +303,8 @@ final class ClaudeSessionMonitor: ObservableObject, AgentActivityMonitor {
     /// not. Desktop sessions always take the second path; terminal ones never
     /// do, which is what keeps their `waiting` state — the one thing only the
     /// terminal interface knows — exactly as it was.
-    static func state(of record: ClaudeSessionRecord,
-                      transcripts: ClaudeTranscriptReader?) -> AgentSession {
+    nonisolated static func state(of record: ClaudeSessionRecord,
+                                  transcripts: ClaudeTranscriptReader?) -> AgentSession {
         guard !record.reportsStatus,
               let sessionID = record.sessionID,
               let activity = transcripts?.activity(sessionID: sessionID, cwd: record.cwd)
@@ -259,7 +318,7 @@ final class ClaudeSessionMonitor: ObservableObject, AgentActivityMonitor {
     /// and for a moment both files pass the liveness check. Claude Code settles
     /// this by keeping the most recently started record, so the app does the
     /// same rather than drawing one session twice.
-    static func deduplicated(_ records: [ClaudeSessionRecord]) -> [ClaudeSessionRecord] {
+    nonisolated static func deduplicated(_ records: [ClaudeSessionRecord]) -> [ClaudeSessionRecord] {
         var newest: [String: ClaudeSessionRecord] = [:]
         var unidentified: [ClaudeSessionRecord] = []
         for record in records {

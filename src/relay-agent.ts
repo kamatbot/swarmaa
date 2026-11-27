@@ -89,8 +89,9 @@ export class RelayAgent {
     const socket = new WebSocket(`${this.options.relayUrl.replace(/\/$/, '')}/host/${this.identity.id}`);
     this.socket = socket; this.ready = false; this.announced = '';
     this.handshake = setTimeout(() => socket.close(), 10_000);
-    socket.addEventListener('error', () => socket.close());
+    socket.addEventListener('error', () => { if (this.socket === socket) socket.close(); });
     socket.addEventListener('message', event => {
+      if (this.socket !== socket) return;
       if (typeof event.data !== 'string' || Buffer.byteLength(event.data) > 1024 * 1024) { socket.close(1009); return; }
       let f: Frame;
       try { f = JSON.parse(event.data); } catch { return; }
@@ -108,6 +109,7 @@ export class RelayAgent {
       }
     });
     socket.addEventListener('close', () => {
+      if (this.socket !== socket) return;
       this.ready = false; clearInterval(this.ping); clearTimeout(this.handshake); this.abortAll();
       if (!this.stopped) {
         const min = this.options.reconnectMinMs ?? 1000, max = this.options.reconnectMaxMs ?? 60_000;

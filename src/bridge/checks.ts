@@ -6,13 +6,13 @@ import { tmpdir } from 'node:os';
 import { COMMIT } from '../core/flow-definition.js';
 import { redactSecrets } from '../safety/redact.js';
 import { wrapCommand } from './sandbox.js';
-import { inspectWorktree } from './worktree.js';
+import { inspectWorktree, sanitizedEnv } from './worktree.js';
 import type { Worktree } from './worktree.js';
 import type { AgentConfig, BridgeConfig, CheckCommand, ProcessRunner, ProjectConfig, Task } from './types.js';
 
 /** Untracked, non-ignored paths, so check output (build files) can be removed before the patch is committed. */
 const untracked = async (dir:string):Promise<Set<string>> =>
-  new Set((await promisify(execFile)('git',['-C',dir,'ls-files','--others','--exclude-standard','-z'],{timeout:30_000,maxBuffer:16*1024*1024})).stdout.split('\0').filter(Boolean));
+  new Set((await promisify(execFile)('git',['-C',dir,'-c','core.hooksPath=/dev/null','-c','core.fsmonitor=false','ls-files','--others','--exclude-standard','-z'],{env:sanitizedEnv(),timeout:30_000,maxBuffer:16*1024*1024})).stdout.split('\0').filter(Boolean));
 
 async function runCheckCommand(command:CheckCommand,agent:AgentConfig,config:BridgeConfig,worktree:Worktree,runner:ProcessRunner,signal:AbortSignal) {
   // Check commands get a small environment, without service/provider tokens or shell startup overrides.

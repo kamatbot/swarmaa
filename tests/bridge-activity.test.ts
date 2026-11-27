@@ -209,16 +209,20 @@ test('extractActivity: caps at 20 newest entries and redacts secrets', () => {
   }
 });
 
-test('extractActivity: antigravity returns empty array', () => {
-  const agyOutput = JSON.stringify({
-    status: 'SUCCESS',
-    response: 'I ran the tool',
-    tool_calls: [{ name: 'bash', input: { command: 'ls' } }]
-  });
-  assert.deepEqual(extractActivity('antigravity', agyOutput), []);
+test('extractActivity: antigravity extracts ACP tool_call / tool_call_update and redacts secrets', () => {
+  const agyStream = [
+    JSON.stringify({ jsonrpc: '2.0', method: 'session/update', params: { update: { sessionUpdate: 'tool_call', toolCallId: 'tc_1', kind: 'bash', title: 'Run npm test token=secret_agy_1234', status: 'in_progress' } } }),
+    JSON.stringify({ jsonrpc: '2.0', method: 'session/update', params: { update: { sessionUpdate: 'tool_call_update', toolCallId: 'tc_1', status: 'completed' } } }),
+  ].join('\n');
+  const items = extractActivity('antigravity', agyStream);
+  assert.equal(items.length, 1);
+  assert.equal(items[0]!.id, 'tc_1');
+  assert.equal(items[0]!.state, 'done');
+  assert.ok(!items[0]!.label.includes('secret_agy_1234'));
+  assert.deepEqual(extractActivity('antigravity', JSON.stringify({ status: 'SUCCESS', response: 'plain' })), []);
 });
 
-test('BridgeWorker: checkpoints include activity for running claude task and omit for antigravity', async () => {
+test('BridgeWorker: checkpoints include activity for running claude and antigravity tasks', async () => {
   const cfg = parseBridgeConfig({
     service_url: 'http://localhost:8080',
     agents: [
@@ -318,8 +322,14 @@ test('BridgeWorker: checkpoints include activity for running claude task and omi
     }
   };
 
+  const agyToolLine = JSON.stringify({
+    jsonrpc: '2.0',
+    method: 'session/update',
+    params: { update: { sessionUpdate: 'tool_call', toolCallId: 'tc_agy_1', kind: 'read', title: 'Read src/app.ts', status: 'in_progress' } }
+  }) + '\n';
+
   const agyWorker = new BridgeWorker(cfg, agyClient, () => {}, async request => {
-    request.on_progress?.({ output_bytes: 50, stdout_tail: '{"tool":"call"}\n' });
+    request.on_progress?.({ output_bytes: agyToolLine.length, stdout_bytes: agyToolLine.length, stdout_tail: agyToolLine });
     return {
       exit_code: 0,
       signal: null,
@@ -331,9 +341,9 @@ test('BridgeWorker: checkpoints include activity for running claude task and omi
   });
 
   await agyWorker.claimAndRun(cfg.projects, new AbortController().signal);
-  for (const cp of agyCheckpoints) {
-    assert.equal(cp.activity, undefined, 'Antigravity checkpoint must omit activity');
-  }
+  const agyWithActivity = agyCheckpoints.filter(c => Array.isArray(c.activity) && c.activity.length > 0);
+  assert.ok(agyWithActivity.length >= 1, 'Antigravity checkpoint should include ACP activity');
+  assert.equal(agyWithActivity[0].activity[0].label, 'Read src/app.ts');
 });
 
 test('thread_read parseActivity: validates 4 string fields, drops invalid, caps 20, clips 120, redacts secrets', () => {

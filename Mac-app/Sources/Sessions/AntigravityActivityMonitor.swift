@@ -1,17 +1,12 @@
 import Combine
 import Foundation
-import SQLite3
 
 /// Notices when Antigravity is working.
 ///
 /// Its transcripts are appended to as an agent runs, so a file written moments
-/// ago is a turn in progress. The step *statuses* cannot be used for this —
-/// every one of them says `DONE`, because a step is only written once it is
-/// finished. Recency is the signal there is.
-///
-/// Without this the Gemini ring never showed the working state that Claude,
-/// Cursor and Codex all had, and the store never learned Antigravity was busy,
-/// so it stayed on its slow idle poll while usage was actively being spent.
+/// ago is a turn in progress. Polling runs on a utility background queue so the
+/// main thread never performs directory scans or file I/O; only state changes
+/// are dispatched to the main queue.
 final class AntigravityActivityMonitor: AgentActivityMonitor {
     @Published private(set) var sessions: [AgentSession] = []
     var sessionsPublisher: AnyPublisher<[AgentSession], Never> { $sessions.eraseToAnyPublisher() }
@@ -21,7 +16,8 @@ final class AntigravityActivityMonitor: AgentActivityMonitor {
     /// How recently a transcript must have been written to count as live.
     /// Generous, because a model can think for a while between two lines.
     private let staleAfter: TimeInterval
-    private var timer: Timer?
+    private let queue = DispatchQueue(label: "com.swarmaa.antigravity-activity-monitor", qos: .utility)
+    private var timer: DispatchSourceTimer?
 
     init(roots: [URL] = AntigravityActivity.transcriptRoots,
          interval: TimeInterval = 2,
@@ -40,36 +36,39 @@ final class AntigravityActivityMonitor: AgentActivityMonitor {
 
     func start() {
         stop()
-        poll()
-        let timer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
-            self?.poll()
+        let roots = roots
+        let staleAfter = staleAfter
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: .now(), repeating: interval, leeway: .milliseconds(250))
+        timer.setEventHandler { [weak self] in
+            let found = Self.read(roots: roots, staleAfter: staleAfter)
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let self, self.timer != nil, found != self.sessions else { return }
+                    self.sessions = found
+                }
+            }
         }
-        RunLoop.main.add(timer, forMode: .common)
         self.timer = timer
+        timer.resume()
     }
 
     func stop() {
-        timer?.invalidate()
+        timer?.cancel()
         timer = nil
-    }
-
-    private func poll() {
-        let found = Self.read(roots: roots, staleAfter: staleAfter)
-        guard found != sessions else { return }
-        sessions = found
     }
 
     /// The most recent turn across every install — the same reasoning as
     /// `AntigravityActivity.transcriptRoots`. Watching one directory meant the
     /// ring never span for anyone whose Antigravity wrote to another.
-    static func read(roots: [URL], staleAfter: TimeInterval, now: Date = Date()) -> [AgentSession] {
+    nonisolated static func read(roots: [URL], staleAfter: TimeInterval, now: Date = Date()) -> [AgentSession] {
         roots
             .flatMap { read(root: $0, staleAfter: staleAfter, now: now) }
             .max { $0.since < $1.since }
             .map { [$0] } ?? []
     }
 
-    static func read(root: URL, staleAfter: TimeInterval, now: Date = Date()) -> [AgentSession] {
+    nonisolated static func read(root: URL, staleAfter: TimeInterval, now: Date = Date()) -> [AgentSession] {
         let manager = FileManager.default
         guard let trajectories = try? manager.contentsOfDirectory(
             at: root, includingPropertiesForKeys: nil
@@ -102,7 +101,7 @@ final class AntigravityActivityMonitor: AgentActivityMonitor {
         return [session]
     }
 
-    static func tail(of url: URL, bytes: Int = 64 * 1024) -> Data? {
+    nonisolated static func tail(of url: URL, bytes: Int = 64 * 1024) -> Data? {
         guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
         defer { try? handle.close() }
         guard let end = try? handle.seekToEnd() else { return nil }
@@ -111,15 +110,15 @@ final class AntigravityActivityMonitor: AgentActivityMonitor {
         return try? handle.readToEnd()
     }
 
-    static func parseState(inTail data: Data) -> (state: AgentSession.State, waitingFor: String?) {
+    nonisolated static func parseState(inTail data: Data) -> (state: AgentSession.State, waitingFor: String?) {
         let lines = data.split(separator: UInt8(ascii: "\n"), omittingEmptySubsequences: true)
-        
+
         var isTurnOver = false
-        
+
         for line in lines.reversed() {
             guard let json = (try? JSONSerialization.jsonObject(with: Data(line))) as? [String: Any],
                   let type = json["type"] as? String else { continue }
-            
+
             if type == "USER_INPUT" {
                 if isTurnOver {
                     return (.idle, nil)
@@ -155,34 +154,20 @@ final class AntigravityActivityMonitor: AgentActivityMonitor {
                 }
             }
         }
-        
+
         return (.idle, nil)
     }
 
     /// Only a transcript written within the window counts. An older one is a
     /// finished turn, and showing it as work in progress would be a guess
     /// dressed as a fact.
-    static func session(
+    nonisolated static func session(
         trajectory: URL, modified: Date, staleAfter: TimeInterval, now: Date
     ) -> AgentSession? {
         var (state, waitingFor) = tail(of: trajectory).map(parseState(inTail:)) ?? (.idle, nil)
-        
-        if state == .busy {
-            let conversationID = trajectory.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().lastPathComponent
-            let dbURL = trajectory.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("conversations/" + conversationID + ".db")
-            
-            if let db = SQLiteStore.open(dbURL) {
-                defer { sqlite3_close(db) }
-                let rows = SQLiteStore.rows(in: db, sql: "SELECT status FROM steps ORDER BY idx DESC LIMIT 1")
-                if let first = rows.first, first.first == "2" {
-                    state = .waiting
-                    waitingFor = L10n.t("Permission")
-                }
-            }
-        }
-        
+
         let age = now.timeIntervalSince(modified)
-        
+
         if state == .idle {
             if age <= 9 {
                 state = .success
@@ -200,7 +185,7 @@ final class AntigravityActivityMonitor: AgentActivityMonitor {
         // `transcript.jsonl`.
         let id = trajectory.deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent().lastPathComponent
-            
+
         let detail: String
         switch state {
         case .busy: detail = L10n.t("Working")
