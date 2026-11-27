@@ -293,7 +293,7 @@ test('Google ToS compliance boundary: interactive turns use ACP, unattended OAut
     );
   }
 
-  // 4. Unattended background task WITH GEMINI_API_KEY or auth_mode: uses stream-json over stdin + --effort
+  // 4. Print-mode work (person-started review/research/patch): json output, prompt on -p=, --effort
   assert.equal(hasAntigravityEnterpriseAuth(agent, { GEMINI_API_KEY: 'key' }), true);
   assert.equal(hasAntigravityEnterpriseAuth({ ...agent, auth_mode: 'enterprise' }, {}), true);
   const bgReq = buildInvocation(
@@ -307,11 +307,11 @@ test('Google ToS compliance boundary: interactive turns use ACP, unattended OAut
   );
   assert.equal(bgReq.acp, undefined);
   const directArgs = bgReq.args.slice(bgReq.args.indexOf('/bin/agy') + 1);
-  assert.ok(directArgs.includes('--input-format') && directArgs.includes('stream-json'));
-  assert.ok(directArgs.includes('--output-format'));
+  assert.ok(!directArgs.includes('--input-format'), "agy's stream-json input wants event-shaped messages");
+  assert.equal(directArgs[directArgs.indexOf('--output-format') + 1], 'json');
   assert.equal(directArgs[directArgs.indexOf('--effort') + 1], 'high');
-  assert.ok(!directArgs.some(a => a.startsWith('-p=')), 'prompt goes via stdin, never argv');
-  assert.equal(JSON.parse(bgReq.input).type, 'user');
+  assert.equal(directArgs.filter(a => a.startsWith('-p=')).length, 1, 'prompt attached to -p=');
+  assert.equal(bgReq.input, '');
 });
 
 test('BridgeWorker finishes unattended consumer-OAuth Antigravity task as blocked with actionable code', { skip: process.platform !== 'darwin' }, async () => {
