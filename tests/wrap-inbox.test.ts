@@ -5,9 +5,9 @@ import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { childEnvironment, main } from '../src/wrap/cli.js';
+import { childEnvironment, main, resolveHarnessBinary } from '../src/wrap/cli.js';
 import { Delivery, type Verdict } from '../src/wrap/delivery.js';
-import { connection, Inbox, listen } from '../src/wrap/inbox.js';
+import { connection, Inbox, listen, parseEnvPort } from '../src/wrap/inbox.js';
 const H:Record<string,any>=await import('../clients/hooks/swarmaa-inbox.mjs' as string);
 
 test('child environment preserves terminal keys and colours but removes every service token',() => {
@@ -102,4 +102,51 @@ test('alias command is print-only and can run without a TTY or service identity'
   let output=''; t.mock.method(process.stdout,'write',(chunk:string)=>{output+=chunk; return true;});
   assert.equal(await main(['wrap','--aliases']),0);
   assert.equal(output,"alias codex='swarmaa wrap codex'\nalias agy='swarmaa wrap agy'\n");
+});
+
+test('pre-write prompt_unproven and pre-write user_cancelled remain retryable; post-write cancels do not replay',async () => {
+  for (const firstVerdict of ['prompt_unproven','user_cancelled'] as const) {
+    const stop=new AbortController(),id=randomUUID();
+    let polls=0,attempts=0,wrote=false;
+    const delivery={
+      generation:1,
+      get lastWrote(){return wrote;},
+      deliver:async()=>{
+        attempts++;
+        if (attempts===1) { wrote=false; return firstVerdict; }
+        wrote=true;
+        return 'accepted';
+      }
+    } as unknown as Delivery;
+    await listen({
+      wait:async()=>{ if (++polls>2) stop.abort(); return {items:[{delivery_id:id,body:'retry me'}]}; },
+      ack:async()=>({})
+    },delivery,'wrap:codex:test',stop.signal,()=>{});
+    assert.equal(attempts,2,`${firstVerdict} before write must allow retry`);
+  }
+
+  // Post-write user_cancelled must NEVER replay
+  const stop=new AbortController(),id=randomUUID();
+  let polls=0,attempts=0,wrote=false;
+  const delivery={
+    generation:1,
+    get lastWrote(){return wrote;},
+    deliver:async()=>{ attempts++; wrote=true; return 'user_cancelled'; }
+  } as unknown as Delivery;
+  await listen({
+    wait:async()=>{ if (++polls>2) stop.abort(); return {items:[{delivery_id:id,body:'no replay'}]}; },
+    ack:async()=>({})
+  },delivery,'wrap:codex:test',stop.signal,()=>{});
+  assert.equal(attempts,1,'post-write user_cancelled must be retained in attempted');
+});
+
+test('parseEnvPort handles quotes, export, comments and invalid values; resolveHarnessBinary gives actionable error',() => {
+  assert.equal(parseEnvPort('PORT=9000\n'),9000);
+  assert.equal(parseEnvPort('export PORT="9001" # comment\n'),9001);
+  assert.equal(parseEnvPort("PORT='9002'\n"),9002);
+  assert.equal(parseEnvPort('# PORT=1111\nPORT=9003 # dev\n'),9003);
+  assert.equal(parseEnvPort('OTHER=1\n'),undefined);
+  assert.ok(Number.isNaN(parseEnvPort('PORT=invalid\n')));
+  assert.throws(()=>resolveHarnessBinary('codex',''),/Could not find 'codex' on PATH/);
+  assert.throws(()=>resolveHarnessBinary('agy',''),/Could not find 'agy' on PATH/);
 });

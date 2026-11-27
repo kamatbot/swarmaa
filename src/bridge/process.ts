@@ -45,6 +45,7 @@ export async function runBoundedProcess(request: ProcessRequest): Promise<Proces
     const errors: Buffer[] = [];
     let stdoutTail: Uint8Array = Buffer.alloc(0);
     let bytes = 0;
+    let stdoutBytes = 0;
     let stopReason: ProcessResult['stop_reason'] = null;
     let settled = false;
     let killTimer: ReturnType<typeof setTimeout> | undefined;
@@ -81,9 +82,12 @@ export async function runBoundedProcess(request: ProcessRequest): Promise<Proces
       const available = Math.max(0, request.max_output_bytes - bytes);
       const kept = available ? chunk.subarray(0, available) : Buffer.alloc(0);
       if (kept.length) destination.push(kept);
-      if (destination === output && kept.length) stdoutTail = slideTail(stdoutTail, kept);
+      if (destination === output) {
+        if (kept.length) stdoutTail = slideTail(stdoutTail, kept);
+        stdoutBytes += chunk.byteLength;
+      }
       bytes += chunk.byteLength;
-      request.on_progress?.({ output_bytes: bytes, stdout_tail: Buffer.from(stdoutTail).toString('utf8') });
+      request.on_progress?.({ output_bytes: bytes, stdout_bytes: stdoutBytes, stdout_tail: Buffer.from(stdoutTail).toString('utf8') });
       if (bytes > request.max_output_bytes) stop('output_limit');
     };
     // Line head and tail for on_line: bounded per line, so a huge event never buffers more than 2 x LINE_HEAD.

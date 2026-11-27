@@ -26,9 +26,7 @@ final class GrokActivityMonitor: ObservableObject, AgentActivityMonitor {
     private let sessionsRoot: URL
     private let interval: TimeInterval
     private let staleAfter: TimeInterval
-    private var timer: Timer?
-    /// One scan at a time: a slow one is not stacked on by the next tick.
-    private var isScanning = false
+    private var timer: DispatchSourceTimer?
     private static let scanQueue = DispatchQueue(label: "app.swarmaa.mac.grok-activity", qos: .utility)
 
     init(
@@ -43,39 +41,32 @@ final class GrokActivityMonitor: ObservableObject, AgentActivityMonitor {
         self.staleAfter = staleAfter
     }
 
+    /// Runs the timer and process/file scanning directly on a utility queue so
+    /// neither the timer wakeup nor kernel process listings touch RunLoop.main.
     func start() {
-        rescan()
-        let timer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.rescan() }
-        }
-        RunLoop.main.add(timer, forMode: .common)
-        self.timer = timer
-    }
-
-    func stop() {
-        timer?.invalidate()
-        timer = nil
-    }
-
-    /// Off the main thread. Finding headless `grok -p` runs lists every
-    /// process on the Mac and asks the kernel about each — hundreds of calls a
-    /// tick — which is not work to put between the app and its next frame.
-    private func rescan() {
-        guard !isScanning else { return }
-        isScanning = true
-        let activeURL = activeURL, sessionsRoot = sessionsRoot, staleAfter = staleAfter
-        Self.scanQueue.async { [weak self] in
+        stop()
+        let activeURL = activeURL
+        let sessionsRoot = sessionsRoot
+        let staleAfter = staleAfter
+        let timer = DispatchSource.makeTimerSource(queue: Self.scanQueue)
+        timer.schedule(deadline: .now(), repeating: interval, leeway: .milliseconds(250))
+        timer.setEventHandler { [weak self] in
             let found = GrokActivity.read(activeURL: activeURL, sessionsRoot: sessionsRoot,
                                           staleAfter: staleAfter)
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
-                    guard let self else { return }
-                    self.isScanning = false
-                    guard found != self.sessions else { return }
+                    guard let self, self.timer != nil, found != self.sessions else { return }
                     self.sessions = found
                 }
             }
         }
+        self.timer = timer
+        timer.resume()
+    }
+
+    func stop() {
+        timer?.cancel()
+        timer = nil
     }
 }
 

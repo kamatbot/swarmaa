@@ -36,9 +36,17 @@ enum ChatMarkdown {
     private static func isSeparator(_ line: String) -> Bool {
         line.contains("-") && line.contains("|") && line.allSatisfy { "|-: \t".contains($0) }
     }
-    private static func matches(_ s: String, _ pattern: String) -> [String]? {
-        guard let m = s.firstMatch(of: try! Regex(pattern)) else { return nil }
-        return m.output.map { $0.substring.map(String.init) ?? "" }
+    private static let headingRegex = try! NSRegularExpression(pattern: #"^(#{1,6})\s+(.*)$"#)
+    private static let ruleRegex = try! NSRegularExpression(pattern: #"^([-*_])(\s*\1){2,}$"#)
+    private static let itemRegex = try! NSRegularExpression(pattern: #"^(\s*)([-*•]|\d+[.)])\s+(.*)$"#)
+
+    private static func matches(_ s: String, _ regex: NSRegularExpression) -> [String]? {
+        let range = NSRange(s.startIndex..., in: s)
+        guard let m = regex.firstMatch(in: s, range: range) else { return nil }
+        return (0..<m.numberOfRanges).map { idx in
+            guard let r = Range(m.range(at: idx), in: s) else { return "" }
+            return String(s[r])
+        }
     }
 
     private static func parse(_ text: String) -> [Block] {
@@ -60,9 +68,9 @@ enum ChatMarkdown {
                 i += 1
                 out.append(.code(code.joined(separator: "\n")))
             } else if t.isEmpty { flush()
-            } else if let m = matches(t, #"^(#{1,6})\s+(.*)$"#) {
+            } else if t.first == "#", let m = matches(t, headingRegex) {
                 flush(); out.append(.heading(min(m[1].count, 3), inline(m[2])))
-            } else if matches(t, #"^([-*_])(\s*\1){2,}$"#) != nil {
+            } else if let first = t.first, (first == "-" || first == "*" || first == "_"), matches(t, ruleRegex) != nil {
                 flush(); out.append(.rule)
             } else if t.hasPrefix(">") {
                 if !para.isEmpty { flush() }
@@ -76,7 +84,7 @@ enum ChatMarkdown {
                     raw.append(lines[i].trimmingCharacters(in: .whitespaces)); rows.append(cells(lines[i]).map(inline)); i += 1
                 }
                 out.append(.table(header: cells(t).map(inline), rows: rows, raw: raw.joined(separator: "\n")))
-            } else if let m = matches(line, #"^(\s*)([-*•]|\d+[.)])\s+(.*)$"#) {
+            } else if let m = matches(line, itemRegex) {
                 flush()
                 let marker = m[2].first!.isNumber ? m[2] : "•"
                 out.append(.item(marker: marker, level: m[1].count >= 2 ? 1 : 0, inline(m[3])))

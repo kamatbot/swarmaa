@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
-import { encodeMcpName, StdioHttpProxy } from '../src/stdio-proxy.js';
+import { classifyProxyError, encodeMcpName, readTokenFile, StdioHttpProxy } from '../src/stdio-proxy.js';
 
 test('modern name header encodes Unicode, trimming and sentinel collisions', () => {
   assert.equal(encodeMcpName('context_get'),'context_get');
@@ -63,4 +66,43 @@ test('token reader is called per request, so rotation and revocation apply witho
   token='';
   await proxy.forward({jsonrpc:'2.0',id:3,method:'tools/list'});
   assert.deepEqual(auth,['Bearer first','Bearer second',null]);
+});
+
+test('readTokenFile supports both JSON identity files and raw token files', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'swarmaa-token-file-'));
+  try {
+    const rawFile = join(dir, 'raw.tok');
+    writeFileSync(rawFile, '  raw-secret-token\n');
+    assert.equal(readTokenFile(rawFile), 'raw-secret-token');
+
+    const jsonFile = join(dir, 'claude.json');
+    writeFileSync(jsonFile, JSON.stringify({ id: 'p1', token: 'json-secret-token', scopes: ['project:a'] }));
+    assert.equal(readTokenFile(jsonFile), 'json-secret-token');
+
+    const emptyJsonFile = join(dir, 'empty.json');
+    writeFileSync(emptyJsonFile, JSON.stringify({ id: 'p1' }));
+    assert.equal(readTokenFile(emptyJsonFile), '');
+
+    assert.equal(readTokenFile(join(dir, 'missing.tok')), '');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('classifyProxyError differentiates ECONNREFUSED, timeout, TLS, and invalid JSON with Swarmaa MCP wording', async () => {
+  const refused = Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }) });
+  assert.match(classifyProxyError(refused), /Swarmaa MCP service refused connection/i);
+
+  const timeout = Object.assign(new Error('The operation was aborted due to timeout'), { name: 'TimeoutError' });
+  assert.match(classifyProxyError(timeout), /Swarmaa MCP request timed out/i);
+
+  const tls = Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error('self signed certificate'), { code: 'DEPTH_ZERO_SELF_SIGNED_CERT' }) });
+  assert.match(classifyProxyError(tls), /Swarmaa MCP TLS verification failed/i);
+
+  const badJson = new SyntaxError('Unexpected token < in JSON');
+  assert.match(classifyProxyError(badJson), /invalid JSON/i);
+
+  const proxy = new StdioHttpProxy('http://127.0.0.1:1', 'tok', async () => { throw refused; });
+  const reply = await proxy.forward({ jsonrpc: '2.0', id: 9, method: 'tools/list' });
+  assert.match(String((reply?.error as { message: string }).message), /Swarmaa MCP service refused connection/i);
 });

@@ -61,7 +61,7 @@ actor CodexRemoteProvider: UsageProvider {
     }
 
     private func fetch(retryingOnUnauthorized: Bool) async throws -> ProviderSnapshot {
-        let credential = try currentCredential()
+        let credential = try await currentCredential()
 
         var request = URLRequest(
             url: URL(string: "https://chatgpt.com/backend-api/wham/usage")!,
@@ -117,13 +117,18 @@ actor CodexRemoteProvider: UsageProvider {
         )
     }
 
-    private func currentCredential(now: Date = Date()) throws -> CodexCredentials.Credential {
+    private func currentCredential(now: Date = Date()) async throws -> CodexCredentials.Credential {
         // The local provider re-reads its file on every fetch, so expiry is
         // judged for free; the held copy here must be re-judged instead. The
         // rule is the loader's own: a token with no `exp` claim is trusted
         // and left for the server to validate.
         if let credential, !Self.isExpired(credential, now: now) { return credential }
-        let fresh = try loadCredential()
+        let loader = loadCredential
+        let fresh = try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                continuation.resume(with: Result { try loader() })
+            }
+        }
         Log.usage.debug("\(self.id, privacy: .public): read remote codex session")
         credential = fresh
         return fresh

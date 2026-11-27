@@ -53,7 +53,7 @@ npm run setup
 3. Registers the `swarma` MCP server in **Claude Code**, **Codex**, and **Antigravity** using `clients/macos/swarma-mcp.sh` (tokens stay in `.local/*.json` and never appear in client configs or process arguments).
 4. Configures read-only background worker bridges (`.local/bridge-<agent>.json`) and optional macOS `LaunchAgents` (`com.swarma.postgres`, `com.swarma.service`, `com.swarma.bridge.<agent>`).
 
-Once connected, type `/swarm` inside Claude Code or Antigravity (or `$swarm` in Codex, after `npx tsx scripts/hooks-install.ts`) to inspect live workers, provider quota headroom, and recent swarm runs.
+Once connected, type `/swarm` inside Claude Code or Antigravity (or `$swarm` in Codex; installed automatically by `npm run setup` or `npm run hooks:install`) to inspect live workers, provider quota headroom, active swarms, and recent tasks.
 
 See [docs/SWARMA.md](docs/SWARMA.md) for day-to-day commands, `/swarm` usage, chat capture, and lesson distillation.
 
@@ -131,19 +131,23 @@ flowchart TD
 
 | Path | Purpose |
 |---|---|
-| `src/core/` | Scoped memory, durable tasks/leases, quota-aware routing, sessions, lessons, and MCP tool schemas |
-| `src/http.ts`, `src/mcp.ts`, `src/oauth.ts`, `src/passkeys.ts` | HTTP/MCP protocol framing, OAuth 2.1 S256 PKCE, and WebAuthn passkey sign-in |
-| `src/events.ts`, `src/webhook.ts` | Transactional event outbox, subscriptions, and signed webhook delivery with DNS/IP pinning |
-| `src/bridge/`, `src/bridge.ts` | macOS worker orchestration, CLI adapters, Seatbelt profiles, and git worktree management |
+| `src/core/` | Scoped memory, durable tasks/leases, quota-aware routing, flows, inbox, teams, bots, sources, sessions, lessons, push, and MCP tool schemas |
+| `src/http.ts`, `src/mcp.ts`, `src/oauth.ts`, `src/passkeys.ts` | HTTP/MCP protocol framing, SSE live stream, OAuth 2.1 S256 PKCE, and WebAuthn passkey sign-in |
+| `src/events.ts`, `src/webhook.ts`, `src/relay-agent.ts` | Transactional event outbox, subscriptions, signed SSRF-pinned webhook delivery, and host-side relay agent |
+| `src/bridge/`, `src/bridge.ts` | macOS worker orchestration, CLI/ACP adapters (`adapters.ts`, `acp.ts`), Seatbelt profiles, git worktree management, and native transcript resume |
 | `src/capture/`, `src/safety/`, `src/usage/` | Local chat transcript capture, secret redaction/safety linting, and provider quota parsers |
-| `src/stdio-proxy.ts` | Local stdio-to-HTTP MCP proxy for desktop agent clients |
-| `db/migrations/` | Ordered PostgreSQL schema migrations |
-| `scripts/` | Interactive setup wizard, identity administration, migrations, tunnel, distillation, and smoke tests |
-| `clients/` | Client config templates, `/swarm` command skill, journal hooks, and macOS Keychain launchers |
+| `src/wrap/` | Interactive PTY terminal wrapper (`swarmaa wrap codex\|agy`) for idle-composer inbox wakes |
+| `src/local/` | Local macOS voice-intent action runner (Reminders, Calendar, notebook notes, timers) |
+| `src/stdio-proxy.ts` | Local single-process stdio-to-HTTP MCP proxy for desktop agent clients |
+| `Mac-app/`, `iOS-app/`, `Shared/` | Native Swift macOS app, iOS/iPadOS/watchOS companion app, and shared Swift package |
+| `relay/` | Cloudflare Worker + Durable Object relay for remote Mac/iPhone pairing and streaming |
+| `db/migrations/` | Ordered PostgreSQL schema migrations (`001` through `046`) |
+| `scripts/` | Setup wizard (`setup.ts`, `onboarding.html`), hook installer (`hooks-install.ts`), identity admin, migrations, deploy, tunnel, pairing, capture, distillation, and smoke tests |
+| `clients/` | Client config templates, `/swarm` command skill, inbox/memory/journal hooks, and macOS launchers |
 | `tests/` | Unit tests (`npm test`) and PostgreSQL integration suites (`npm run test:integration`) |
 | `vendor/reason-network/` | Optional pinned upstream Reason Network source snapshot |
 
-Further documentation: [Core API](docs/API.md) · [Swarmaa Guide](docs/SWARMA.md) · [Agent Setup](docs/AGENT_SETUP.md) · [Transport & OAuth](docs/TRANSPORT.md) · [Operations](docs/OPERATIONS.md) · [Validation](docs/VALIDATION.md) · [Release Status](docs/STATUS.md) · [Sources](docs/SOURCES.md) · [Contributor Guide](CONTRIBUTING.md) · [Agent Invariants](AGENTS.md).
+Further documentation: [Core API](docs/API.md) · [Swarmaa Guide](docs/SWARMA.md) · [Agent Setup](docs/AGENT_SETUP.md) · [Bots](docs/BOTS.md) · [Teams](docs/TEAMS.md) · [Flows](docs/FLOWS.md) · [Transport & OAuth](docs/TRANSPORT.md) · [Relay](docs/RELAY.md) · [Sources & GitHub Intake](docs/SOURCES-INTAKE.md) · [PTY Wrapper](docs/PTY_WRAP.md) · [Local Actions](docs/LOCAL-ACTIONS.md) · [Ring & Voice Agent](docs/RING-AGENT.md) · [Watch Host](docs/WATCH-HOST.md) · [Operations](docs/OPERATIONS.md) · [Security](docs/SECURITY.md) · [Validation](docs/VALIDATION.md) · [Release Status](docs/STATUS.md) · [Sources](docs/SOURCES.md) · [Contributor Guide](CONTRIBUTING.md) · [Agent Invariants](AGENTS.md).
 
 ---
 

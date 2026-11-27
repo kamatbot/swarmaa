@@ -6,6 +6,7 @@ import { createServer } from 'node:http';
 import { AuthService } from './auth.js';
 import { loadConfig } from './config.js';
 import { CoreService } from './core/index.js';
+import { initInboxDirtyDir } from './core/inbox.js';
 import { createPool } from './db.js';
 import { EventService } from './events.js';
 import { createHttpHandler } from './http.js';
@@ -30,6 +31,7 @@ server.on('clientError', (_error, socket) => {
 server.on('error', () => { process.stderr.write('HTTP server error. Check address and port configuration.\n'); void shutdown(1); });
 server.listen(config.port, config.host, () => {
   process.stderr.write(`Swarmaa listening on ${config.host}:${config.port}; public origin ${config.publicUrl}\n`);
+  initInboxDirtyDir();
   oauth?.start();
   events?.start();
   push.start();

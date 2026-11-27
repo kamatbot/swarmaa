@@ -172,4 +172,22 @@ test('user input during the network request cancels the not-yet-started batch',a
   f.delivery.userInput();
   const verdict:Verdict=await f.delivery.deliver('hello',generation);
   assert.equal(verdict,'user_cancelled'); assert.deepEqual(f.writes,[]);
+  assert.equal(f.delivery.lastWrote,false);
+});
+
+test('DECRST 2004 clears bracketedPaste and resize recovers on full-screen cursor-home repaint',() => {
+  const screen=new Terminal(120,32);
+  screen.feed('\x1b[?2004h',0);
+  assert.equal(screen.bracketedPaste,true);
+  screen.feed('\x1b[?2004l',10);
+  assert.equal(screen.bracketedPaste,false);
+
+  // After resize, an explicit cursor-home repaint (\x1b[H or \x1b[1;1H\x1b[0J) recovers reliable=true
+  screen.resize(80,24);
+  screen.feed('\x1b[H› \r\x1b[2C',100);
+  assert.equal(screen.idle('codex',500),true);
+
+  screen.resize(90,30);
+  screen.feed('\x1b[1;1H\x1b[0J› \r\x1b[2C',600);
+  assert.equal(screen.idle('codex',1000),true);
 });

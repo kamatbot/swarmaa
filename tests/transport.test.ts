@@ -269,3 +269,74 @@ test('forwarded-IP headers are ignored from non-trusted sources and honored only
   await registerRequest(trustedPort, `127.0.0.1:${trustedPort}`, { 'cf-connecting-ip': '198.51.100.100' });
   assert.equal(trusted.recordedIpHashes[beforeDirect], trusted.recordedIpHashes[beforeDirect + 1]);
 });
+
+test('MCP serverInfo uses swarmaa branding, includes routing guidance, and preserves safe error details', async () => {
+  const init = await handleMcp(principal, {
+    jsonrpc: '2.0', id: 1, method: 'initialize',
+    params: { protocolVersion: LEGACY_VERSION, capabilities: {}, clientInfo: { name: 'test', version: '1' } },
+  }, {}, { core });
+  const initRes = init.body?.result as Record<string, any>;
+  assert.equal(initRes.serverInfo.name, 'swarmaa');
+  assert.match(String(initRes.instructions), /swarm_status/);
+
+  const discover = await handleMcp(principal, {
+    jsonrpc: '2.0', id: 2, method: 'server/discover', params: modernParams,
+  }, { protocolVersion: MODERN_VERSION, method: 'server/discover' }, { core });
+  const discRes = discover.body?.result as Record<string, any>;
+  assert.match(String(discRes.instructions), /swarm_status/);
+
+  const errReply = await handleMcp(principal, {
+    jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'context_get', arguments: {} },
+  }, { protocolVersion: LEGACY_VERSION }, {
+    core: { ...core, call: async () => { throw new AppError(403, 'scope_forbidden', 'Scope denied.', { hint: 'call swarm_status' }); } },
+  });
+  const errResult = errReply.body?.result as { isError: boolean; content: { type: string; text: string }[] };
+  assert.equal(errResult.isError, true);
+  const errPayload = JSON.parse(errResult.content[0]!.text) as { error: { code: string; details?: unknown } };
+  assert.deepEqual(errPayload.error.details, { hint: 'call swarm_status' });
+});
+
+test('cookieRoute checks normalized path and rejects hostile origins on /./account', async t => {
+  const { url } = await listeningServer(t);
+  const port = new URL(url).port;
+  const status = await new Promise<number>((resolve, reject) => {
+    const req = request({
+      host: '127.0.0.1', port, path: '/./account', method: 'GET',
+      headers: { host: `127.0.0.1:${port}`, origin: 'https://attacker.example' },
+    }, res => { res.resume(); resolve(res.statusCode ?? 0); });
+    req.on('error', reject);
+    req.end();
+  });
+  assert.equal(status, 403);
+});
+
+test('SSE stream failure cleans up principalStreams slot and never leaks across repeated failures', async t => {
+  const server = createServer();
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(async () => {
+    server.closeAllConnections();
+    await new Promise<void>((resolve, reject) => server.close(e => e ? reject(e) : resolve()));
+  });
+  const port = (server.address() as { port: number }).port;
+  const url = `http://127.0.0.1:${port}`;
+  const failingPool = {
+    query: async () => { throw new Error('db unavailable'); },
+    connect: async () => { throw new Error('db unavailable'); },
+  } as unknown as Pool;
+  const deps: HttpDependencies = {
+    config: {
+      host: '127.0.0.1', port, publicUrl: url, allowedOrigins: [], allowInsecureLocalhost: true,
+      maxBodyBytes: 4096, oauthEnabled: false, oauthRedirectHosts: [], eventCallbackHosts: [], eventEncryptionKey: '',
+    },
+    core,
+    pool: failingPool,
+    auth: { authenticate: async tok => tok === 'test-connection-token' ? principal : null, getPrincipal: async () => principal },
+  };
+  server.on('request', createHttpHandler(deps));
+  // If principalStreams leaked on initial query throw, the 9th request would fail with 429 (limit is 8).
+  for (let i = 0; i < 10; i++) {
+    const res = await fetch(`${url}/api/stream`, { headers: { authorization: 'Bearer test-connection-token' } });
+    assert.notEqual(res.status, 429, `attempt ${i + 1} must not hit 429 due to leaked stream counter`);
+    await res.text().catch(() => {});
+  }
+});

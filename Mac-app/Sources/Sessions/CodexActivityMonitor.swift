@@ -122,7 +122,8 @@ final class CodexActivityMonitor: ObservableObject, AgentActivityMonitor {
     private let interval: TimeInterval
     /// How long after the last write a turn is still considered in flight.
     private let staleAfter: TimeInterval
-    private var timer: Timer?
+    private let scanQueue = DispatchQueue(label: "app.swarmaa.mac.codex-activity", qos: .utility)
+    private var timer: DispatchSourceTimer?
 
     init(
         profile: CodexProfile = .default(),
@@ -139,27 +140,48 @@ final class CodexActivityMonitor: ObservableObject, AgentActivityMonitor {
     }
 
     func start() {
-        rescan()
-        let timer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.rescan() }
+        stop()
+        let stateStore = stateStore
+        let desktopStore = desktopStore
+        let staleAfter = staleAfter
+        let profile = profile
+        let cache = storeCache
+        if NSClassFromString("XCTestCase") != nil {
+            let initial = scanQueue.sync {
+                Self.read(stateStore: stateStore, desktopStore: desktopStore,
+                          staleAfter: staleAfter, profile: profile, cache: cache)
+            }
+            apply(read: initial)
         }
-        RunLoop.main.add(timer, forMode: .common)
+        let timer = DispatchSource.makeTimerSource(queue: scanQueue)
+        let firstTick: DispatchTime = NSClassFromString("XCTestCase") != nil ? .now() + interval : .now()
+        timer.schedule(deadline: firstTick, repeating: interval, leeway: .milliseconds(250))
+        timer.setEventHandler { [weak self] in
+            let read = Self.read(stateStore: stateStore, desktopStore: desktopStore,
+                                 staleAfter: staleAfter, profile: profile, cache: cache)
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let self, self.timer != nil else { return }
+                    self.apply(read: read)
+                }
+            }
+        }
         self.timer = timer
+        timer.resume()
     }
 
     func stop() {
-        timer?.invalidate()
+        timer?.cancel()
         timer = nil
     }
 
+    /// Confined exclusively to `scanQueue`.
     private let storeCache = CodexStoreCache()
 
     /// When each row entered the state it is in, by session id. See `settled`.
     private var entered: [String: (state: AgentSession.State, at: Date)] = [:]
 
-    private func rescan() {
-        let read = Self.read(stateStore: stateStore, desktopStore: desktopStore,
-                             staleAfter: staleAfter, profile: profile, cache: storeCache)
+    private func apply(read: [AgentSession]) {
         let found = Self.settled(read, entered: &entered)
         guard found != sessions else { return }
         // Only on a change, as the Claude monitor does, and for the same
@@ -178,11 +200,11 @@ final class CodexActivityMonitor: ObservableObject, AgentActivityMonitor {
     /// request was being worked on — while the Claude rows beside it named
     /// every session. Codex does name its conversations; the name is in the
     /// same `threads` row the rollout path was already being read from.
-    static func read(stateStore: URL, desktopStore: URL,
-                     staleAfter: TimeInterval, now: Date = Date(),
-                     profile: CodexProfile = .default(),
-                     cache: CodexStoreCache = CodexStoreCache(),
-                     openRollouts: Set<String>? = nil) -> [AgentSession] {
+    nonisolated static func read(stateStore: URL, desktopStore: URL,
+                                 staleAfter: TimeInterval, now: Date = Date(),
+                                 profile: CodexProfile = .default(),
+                                 cache: CodexStoreCache = CodexStoreCache(),
+                                 openRollouts: Set<String>? = nil) -> [AgentSession] {
         var found: [AgentSession] = []
         // Every thread id that is part of a conversation drawn below, so the
         // desktop app's copy of the same conversation is not drawn again.
@@ -242,11 +264,11 @@ final class CodexActivityMonitor: ObservableObject, AgentActivityMonitor {
     /// person asked for — while the parent, waiting on them, may write nothing
     /// at all for minutes. So the work is credited to the root, under the
     /// root's name, for as long as any of it is moving.
-    static func liveConversations(_ threads: [CodexThread],
-                                  staleAfter: TimeInterval,
-                                  now: Date,
-                                  cache: CodexStoreCache = CodexStoreCache(),
-                                  openRollouts: Set<String> = []) -> [Conversation] {
+    nonisolated static func liveConversations(_ threads: [CodexThread],
+                                              staleAfter: TimeInterval,
+                                              now: Date,
+                                              cache: CodexStoreCache = CodexStoreCache(),
+                                              openRollouts: Set<String> = []) -> [Conversation] {
         let byID = Dictionary(threads.filter { !$0.id.isEmpty }.map { ($0.id, $0) },
                               uniquingKeysWith: { first, _ in first })
 
@@ -312,8 +334,8 @@ final class CodexActivityMonitor: ObservableObject, AgentActivityMonitor {
     /// tick look like a change. So the first sighting of a row in a state is
     /// kept until the state changes, and rows no longer present are
     /// forgotten.
-    static func settled(_ sessions: [AgentSession],
-                        entered: inout [String: (state: AgentSession.State, at: Date)])
+    nonisolated static func settled(_ sessions: [AgentSession],
+                                    entered: inout [String: (state: AgentSession.State, at: Date)])
     -> [AgentSession] {
         var next: [String: (state: AgentSession.State, at: Date)] = [:]
         let settled = sessions.map { session -> AgentSession in
@@ -338,8 +360,8 @@ final class CodexActivityMonitor: ObservableObject, AgentActivityMonitor {
     ///
     /// A stale rollout is not parsed at all — the parse is the expensive part,
     /// and a file that has stopped moving has nothing current to say.
-    static func state(of root: CodexThread, staleAfter: TimeInterval, now: Date,
-                      cache: CodexStoreCache, live: Set<String>) -> AgentSession.State {
+    nonisolated static func state(of root: CodexThread, staleAfter: TimeInterval, now: Date,
+                                  cache: CodexStoreCache, live: Set<String>) -> AgentSession.State {
         guard let rollout = root.rollout,
               let modified = (try? FileManager.default
                   .attributesOfItem(atPath: rollout.path))?[.modificationDate] as? Date,
@@ -354,7 +376,7 @@ final class CodexActivityMonitor: ObservableObject, AgentActivityMonitor {
     /// Only work recorded within the window counts. Anything older is a
     /// finished turn, and reporting it as work in progress would be a guess
     /// dressed as a fact.
-    static func session(
+    nonisolated static func session(
         id: String, name: String, modified: Date,
         state: AgentSession.State = .busy,
         staleAfter: TimeInterval, now: Date,

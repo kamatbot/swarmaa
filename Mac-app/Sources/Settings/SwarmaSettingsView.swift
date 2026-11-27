@@ -1,13 +1,14 @@
 import SwiftUI
 
-/// Settings pane for Swarma, the local multi-agent network whose workers and
-/// project scopes get cells of their own.
+/// Settings pane for Swarmaa, the local multi-agent network whose workers and
+/// project scopes surface status and routing controls.
 struct SwarmaSettingsView: View {
     @ObservedObject var preferences: Preferences
+    @ObservedObject private var navigator = SettingsNavigator.shared
     @State private var tab = Tab.general
     @StateObject private var setup = TeamsModel()
 
-    private enum Tab { case general, routing, setup }
+    enum Tab { case general, routing, setup }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -26,21 +27,32 @@ struct SwarmaSettingsView: View {
             case .setup: ScrollView { SetupChecklistView(model: setup) }
             }
         }
+        .onAppear {
+            if let requested = navigator.requestedSwarmaTab {
+                tab = requested
+                navigator.requestedSwarmaTab = nil
+            }
+        }
+        .onChange(of: navigator.requestedSwarmaTab) { requested in
+            guard let requested else { return }
+            tab = requested
+            navigator.requestedSwarmaTab = nil
+        }
     }
 
     private var general: some View {
         Form {
             Section("Swarmaa") {
-                Toggle("Show Swarmaa agents and swarms", isOn: $preferences.swarmaEnabled)
+                Toggle("Show Swarmaa workers and swarms", isOn: $preferences.swarmaEnabled)
 
-                Text("One cell per worker, with its quota and the task it is on, and one per project scope, with what is running, queued and done today. The list comes from the service, so cells appear and disappear as workers do.")
+                Text("Track each active worker's quota and current task alongside each project scope's running, queued, and completed work. Entries appear and disappear automatically as workers connect.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
 
                 Toggle("Show active chats", isOn: $preferences.swarmaShowsChats)
                     .disabled(!preferences.swarmaEnabled)
-                Text("One cell per service with a chat in the last 15 minutes: Claude Code, Codex, Antigravity, Grok or Dot. It goes when the chats do.")
+                Text("Show each provider with a chat in the last 15 minutes: Claude Code, Codex, Antigravity, Grok, or Dot. Entries clear once chats go idle.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

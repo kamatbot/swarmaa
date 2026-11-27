@@ -400,7 +400,7 @@ export function createLocalActionRunner(opts: LocalRunnerOptions = {}): LocalAct
       const action = g.action, at = now(), zone = validZone(runOpts?.timeZone) ?? tz;
       if (action.type === 'note.append') {
         return notebook(action.type, false, async root => {
-          const r = await appendNote(root, id, action, at, tz);
+          const r = await appendNote(root, id, action, at, zone);
           return { ok: true, handle: r.handle, summary: successSummary(action, at, zone) };
         });
       }

@@ -62,7 +62,9 @@ describe('teams phase 2 swarms and coordination', { skip: !connectionString, con
       name,
       role,
       scopes,
-      permissions: [...ROLE_PERMISSIONS[role]]
+      permissions: role === 'frontend'
+        ? [...ROLE_PERMISSIONS.frontend, 'agent:read', 'agent:manage', 'thread:read', 'thread:write']
+        : [...ROLE_PERMISSIONS[role]]
     };
     const token = newToken();
     await pool.query(
@@ -1339,13 +1341,12 @@ describe('teams phase 2 swarms and coordination', { skip: !connectionString, con
 
     const writes: Record<string, () => Promise<unknown>> = {
       thread_post: () => call(t.user, 'thread_post', { thread_id: C.main_thread_id, body: 'hi', idempotency_key: 'lock-post' }),
-      thread_mark_read: () => call(t.user, 'thread_mark_read', { thread_id: A.main_thread_id, seq: 1 }),
+      // Per-principal thread_mark_read and section_set intentionally avoid tenant-wide teamsLock contention.
       agent_create: () => call(t.user, 'agent_create', { name: 'F', role: 'R', instructions: 'I', scope: t.scope, runner: { provider: 'codex' } }),
       agent_update: () => call(t.user, 'agent_update', { agent_id: D.id, expected_version: 1, role: 'Renamed' }),
       agent_archive: () => call(t.user, 'agent_archive', { agent_id: C.id }),
       channel_create: () => call(t.user, 'channel_create', { name: 'new', scope: t.scope, members: [] }),
       channel_update: () => call(t.user, 'channel_update', { channel_id: channel.id, expected_version: 1, name: 'renamed' }),
-      section_set: () => call(t.user, 'section_set', { sections: [{ name: 'S', items: [] }] }),
       swarm_start: () => call(t.user, 'swarm_start', { title: 'New', goal: 'g', scope: t.scope, thread_id: D.main_thread_id, steps: [{ title: 'n', assignee_agent_id: D.id, check: 'it works' }] }),
       swarm_update: () => call(t.user, 'swarm_update', { swarm_id: swarm.id, ops: [{ op: 'edit', title: 'Edited' }] }),
       swarm_cancel: () => call(t.user, 'swarm_cancel', { swarm_id: other.id }),

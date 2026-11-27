@@ -22,25 +22,11 @@ import { SwarmsService } from './swarms.js';
 import { findTask, TaskService, taskWithInstructions, type TaskRow } from './tasks.js';
 import { aggregateUsageCost } from './pricing.js';
 import { TeamService } from './teams.js';
-import { TOOL_PERMISSIONS, TOOLS } from './tools.js';
+import { OWNER_TOOLS, RESPONSE_READ_PERMISSIONS, TOOL_PERMISSIONS, TOOLS, WORKER_TOOLS } from './tools.js';
 
-const workerTools = new Set(['usage_report','task_claim','task_heartbeat','task_checkpoint','task_finish','artifact_put']);
-const ownerTools = new Set(['memory_promote','memory_retract','flow_approve']);
-const responseReadPermissions:Partial<Record<string,Permission>> = {
-  task_watch:'events:read',flow_start:'task:read',flow_cancel:'task:read',flow_approve:'task:read',
-  memory_propose:'memory:read',memory_promote:'memory:read',memory_retract:'memory:read',
-  task_submit:'task:read',task_continue:'task:read',task_claim:'task:read',task_heartbeat:'task:read',
-  task_checkpoint:'task:read',task_finish:'task:read',task_cancel:'task:read',
-  lesson_propose:'memory:read',lesson_review:'memory:read',
-  agent_create:'agent:read',agent_update:'agent:read',agent_archive:'agent:read',thread_post:'thread:read',
-  bot_create:'agent:read',bot_update:'agent:read',bot_archive:'agent:read',bot_unarchive:'agent:read',bot_delete:'agent:read',
-  swarm_start:'task:read',swarm_update:'task:read',swarm_cancel:'task:read',question_answer:'thread:read',
-  channel_create:'agent:read',channel_update:'agent:read',section_set:'thread:read',task_resolve:'task:read',
-  attention_list:'thread:read',source_update:'task:read',
-  watch_memo_put:'thread:read',watch_memo_delete:'thread:read',watch_memo_status:'thread:write',watch_transaction_preview:'thread:read',watch_transaction_confirm:'thread:read',watch_transaction_get:'thread:write',
-  voice_intent:'thread:read',voice_warm:'thread:read',local_action_run:'thread:read',local_action_undo:'thread:read',local_action_report:'thread:read',local_action_pending:'thread:read',
-  task_subscribe:'task:read',task_unsubscribe:'task:read',task_subscriptions:'task:read',
-};
+const workerTools = WORKER_TOOLS;
+const ownerTools = OWNER_TOOLS;
+const responseReadPermissions = RESPONSE_READ_PERMISSIONS;
 
 /** Transport-independent authorization and one implementation shared by MCP, REST and stdio proxy. */
 export class CoreService implements ToolBackend {
@@ -93,7 +79,9 @@ export class CoreService implements ToolBackend {
   async call(principal:Principal,name:string,args:unknown):Promise<unknown> {
     const permission = Object.hasOwn(TOOL_PERMISSIONS,name) ? TOOL_PERMISSIONS[name] : undefined;
     if (!permission) throw new AppError(404,'unknown_tool','Unknown tool name.');
-    requirePermission(principal,permission);
+    // question_answer enforces owner_required inside SwarmsService so non-owners get 403 owner_required while
+    // TOOL_PERMISSIONS still hides it from coding-CLI listTools().
+    if (name !== 'question_answer') requirePermission(principal,permission);
     const responseRead = responseReadPermissions[name];
     if (responseRead) requirePermission(principal,responseRead);
     requireCondition(!workerTools.has(name) || principal.role === 'worker',403,'worker_required','This operation requires a worker connection.');

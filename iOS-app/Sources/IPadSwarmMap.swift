@@ -150,10 +150,41 @@ func elapsedText(_ s: TimeInterval?) -> String {
         let todo = state.unpriced
         state.unpriced = []
         guard !todo.isEmpty else { return }
+        let batch = Array(todo.prefix(30))
+        let tasksByID: [String: JSON] = Dictionary(
+            model.tasks.compactMap { card -> (String, JSON)? in
+                let id = card["id"].string
+                return id.isEmpty ? nil : (id, card)
+            },
+            uniquingKeysWith: { first, _ in first }
+        )
         Task { [weak self] in
-            for job in todo.prefix(30) {
-                let card = model.tasks.first { $0["id"].string == job.id } ?? .null
-                if let n = await TaskTokens.lookup(model, id: job.id, card: card) { self?.state.addTokens(n, provider: job.provider, task: job.id) }
+            await withTaskGroup(of: (String, String, Int?).self) { group in
+                var index = 0
+                let limit = min(6, batch.count)
+                while index < limit {
+                    let id = batch[index].id
+                    let provider = batch[index].provider
+                    let card = tasksByID[id] ?? .null
+                    index += 1
+                    group.addTask {
+                        let n = await TaskTokens.lookup(model, id: id, card: card)
+                        return (id, provider, n)
+                    }
+                }
+                for await (id, provider, n) in group {
+                    if let n { self?.state.addTokens(n, provider: provider, task: id) }
+                    if index < batch.count {
+                        let nextID = batch[index].id
+                        let nextProvider = batch[index].provider
+                        let card = tasksByID[nextID] ?? .null
+                        index += 1
+                        group.addTask {
+                            let n = await TaskTokens.lookup(model, id: nextID, card: card)
+                            return (nextID, nextProvider, n)
+                        }
+                    }
+                }
             }
         }
     }
@@ -166,6 +197,7 @@ struct SwarmMapPanel: View {
     var expand: () -> Void
     var close: () -> Void
     @State private var store = SwarmMapStore()
+    @Environment(\.scenePhase) private var scenePhase
 
     private var needYou: Int { model.sortedBots.reduce(0) { $0 + $1.needsYou } }
     /// Which bot a running task belongs to, when the task list knows it.
@@ -200,10 +232,12 @@ struct SwarmMapPanel: View {
         }
         .background(KS.ground)
         .onChange(of: model.status, initial: true) { _, status in store.ingest(status, model: model) }
-        .task {
-            // The Mac polls its local service every 3 s; over the relay every 5 s, only while the map is on screen.
+        .task(id: scenePhase) {
+            guard scenePhase == .active else { return }
+            // The Mac polls its local service every 3 s; over the relay every 5 s, only while active and visible.
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(5))
+                guard !Task.isCancelled else { break }
                 await model.refreshStatus()
             }
         }
@@ -263,8 +297,8 @@ struct SwarmMapPanel: View {
             }
             if monitor { Eyebrow("Recent events").padding(.horizontal, 16).padding(.bottom, 6) }
             ScrollView {
-                // Running rows count up each second; a static list when nothing runs.
-                TimelineView(.periodic(from: .now, by: 1)) { tl in
+                // Running rows count up each second; paused when nothing is running so idle costs zero CPU.
+                TimelineView(.animation(minimumInterval: 1.0, paused: s.runningCount == 0)) { tl in
                     VStack(alignment: .leading, spacing: monitor ? 8 : 4) {
                         ForEach(rows) { row in
                             Text(Self.line(row, now: tl.date, bot: botName(row.id)))

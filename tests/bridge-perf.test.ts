@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFileSync } from 'node:fs';
-import { BridgeWorker } from '../src/bridge/worker.js';
+import { BridgeWorker, cleanText } from '../src/bridge/worker.js';
 import { parseBridgeConfig } from '../src/bridge/config.js';
 import {
   buildInvocation,
@@ -364,8 +364,9 @@ test('stream-json parsing yields partial_text and an unchanged final answer', as
   assert.equal(extractPartialText('codex', codexOutput), 'Codex response so far');
   assert.equal(finalAnswer('codex', codexOutput), 'Codex response so far');
 
-  // 3. Antigravity omits partial_text
+  // 3. Antigravity extracts streamed partial text (and returns '' for non-streaming single JSON)
   assert.equal(extractPartialText('antigravity', '{"status":"SUCCESS","response":"hi"}'), '');
+  assert.equal(extractPartialText('antigravity', '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"streamed"}}'), 'streamed');
 
   // 4. End-to-end worker stream test: verify partial_text in checkpoints
   const cfg = baseConfig();
@@ -570,4 +571,155 @@ test('a submitted task can name its model and effort; codex gets effort as a con
   assert.ok(!req.args.includes('--effort'), 'codex has no --effort flag');
   const plain = buildInvocation(cfg.agents[0]!, cfg.projects[0]!, makeTurnTask({ kind: 'patch', required_capability: 'codex.patch', permission_envelope: { local_patch: true } } as any), {}, cfg, new AbortController().signal);
   assert.ok(!plain.args.includes('-c') && !plain.args.includes('--model'), 'no override keeps the provider default');
+});
+
+test('cleanText slices UTF-8 safely without splitting multi-byte characters', () => {
+  // Each emoji is 4 UTF-8 bytes; slicing at 5 or 6 bytes must yield 1 whole emoji (4 bytes), never U+FFFD
+  const emojis = '🎉🚀🔥';
+  assert.equal(cleanText(emojis, 4), '🎉');
+  assert.equal(cleanText(emojis, 5), '🎉');
+  assert.equal(cleanText(emojis, 7), '🎉');
+  assert.equal(cleanText(emojis, 8), '🎉🚀');
+  assert.ok(!cleanText('é'.repeat(20), 5).includes('\uFFFD'));
+  assert.equal(cleanText('a\0b', 10), 'a\uFFFDb');
+});
+
+test('Claude streaming deltas are never duplicated when stderr is written or a large burst exceeds 8 KiB', async () => {
+  const cfg = baseConfig();
+  const checkpoints: any[] = [];
+  const client: ToolClient = {
+    async call<T>(name: string, args: Record<string, unknown>): Promise<T> {
+      if (name === 'task_claim') {
+        return { task: makeTurnTask({ kind: 'turn', required_capability: 'claude.read', permission_envelope: { local_patch: false } } as any), lease_token: 'l', lease_generation: 1 } as T;
+      }
+      if (name === 'context_get') return { scope: 'project:demo', memories: [], conflicts: [] } as T;
+      if (name === 'artifact_put') return { artifact: { id: 'art-1' } } as T;
+      if (name === 'session_list') return { sessions: [] } as T;
+      if (name === 'task_checkpoint') { checkpoints.push(args.checkpoint); return {} as T; }
+      return {} as T;
+    }
+  };
+  const d1 = '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"Alpha"}}}\n';
+  const d2 = '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":" Beta"}}}\n';
+  const worker = new BridgeWorker(cfg, client, () => {}, async request => {
+    // Chunk 1: stdout has d1, stderr adds 500 bytes (output_bytes > stdout_bytes)
+    request.on_progress?.({ output_bytes: d1.length + 500, stdout_bytes: d1.length, stdout_tail: d1 });
+    await new Promise(r => setTimeout(r, 10));
+    // More stderr only (stdout_bytes unchanged, stdout_tail unchanged) -> must NOT duplicate "Alpha"
+    request.on_progress?.({ output_bytes: d1.length + 1200, stdout_bytes: d1.length, stdout_tail: d1 });
+    await new Promise(r => setTimeout(r, 10));
+    // Chunk 2: d2 arrives
+    const total = d1 + d2;
+    request.on_progress?.({ output_bytes: total.length + 1200, stdout_bytes: total.length, stdout_tail: total });
+    await new Promise(r => setTimeout(r, 10));
+    return {
+      exit_code: 0,
+      signal: null,
+      stdout: total + '{"type":"result","subtype":"success","result":"Alpha Beta"}\n',
+      stderr: 'x'.repeat(1200),
+      duration_ms: 30,
+      stop_reason: null
+    };
+  });
+  await worker.claimAndRun(cfg.projects, new AbortController().signal);
+  const lastPartial = checkpoints.filter(c => typeof c.partial_text === 'string').at(-1)?.partial_text;
+  assert.equal(lastPartial, 'Alpha Beta', 'stderr bytes must not cause duplicate deltas');
+});
+
+test('SSE stream buffer cap at 1 MiB triggers reconnect without unbounded memory growth', { timeout: 3000 }, async () => {
+  const cfg = baseConfig();
+  cfg.poll_seconds = 10;
+  cfg.usage_seconds = 0;
+  const logs: Array<{ event: string; message?: unknown }> = [];
+  let fetchCount = 0;
+  const overflowLogged = deferred();
+
+  const fakeFetch: typeof fetch = async () => {
+    fetchCount++;
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        if (fetchCount === 1) {
+          // Enqueue > 1 MiB with no double-newline boundary
+          controller.enqueue(Buffer.alloc(1024 * 1024 + 128, 0x61));
+        }
+      }
+    });
+    return new Response(stream, { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+  };
+  const client: ToolClient = {
+    async call<T>(name: string): Promise<T> {
+      return (name === 'task_claim' ? { task: null } : {}) as T;
+    }
+  };
+  const stop = new AbortController();
+  const worker = new BridgeWorker(cfg, client, (event, meta) => {
+    logs.push({ event, message: meta?.message });
+    if (event === 'stream_connection_failed' && String(meta?.message).includes('1 MiB')) overflowLogged.resolve();
+  }, undefined, undefined, fakeFetch);
+  const runPromise = worker.run(stop.signal);
+  try {
+    await overflowLogged.promise;
+    assert.ok(logs.some(l => l.event === 'stream_connection_failed' && String(l.message).includes('1 MiB')));
+  } finally {
+    worker.drain();
+    stop.abort();
+    await runPromise;
+  }
+});
+
+test('inflight slot is released before slow recordSession finishes while drain still waits for it', { timeout: 3000 }, async () => {
+  const cfg = baseConfig();
+  cfg.max_concurrent = 1;
+  cfg.poll_seconds = 10;
+  cfg.usage_seconds = 0;
+
+  let claimCount = 0;
+  const sessionHold = deferred();
+  const secondClaimed = deferred();
+  let sessionDone = false;
+
+  const client: ToolClient = {
+    async call<T>(name: string): Promise<T> {
+      if (name === 'task_claim') {
+        claimCount++;
+        if (claimCount === 1) return { task: makeTurnTask({ id: '11111111-1111-4111-8111-111111111111', kind: 'review' }), lease_token: 'l1', lease_generation: 1 } as T;
+        if (claimCount === 2) {
+          secondClaimed.resolve();
+          return { task: null } as T;
+        }
+        return { task: null } as T;
+      }
+      if (name === 'context_get') return { scope: 'project:demo', memories: [], conflicts: [] } as T;
+      if (name === 'artifact_put') return { artifact: { id: 'a1' } } as T;
+      if (name === 'session_list') {
+        await sessionHold.promise;
+        return { sessions: [] } as T;
+      }
+      if (name === 'session_record') {
+        sessionDone = true;
+        return {} as T;
+      }
+      return {} as T;
+    }
+  };
+
+  const stop = new AbortController();
+  const worker = new BridgeWorker(cfg, client, () => {}, async () => ({
+    exit_code: 0, signal: null, stdout: '{"type":"result","subtype":"success","is_error":false,"result":"ok"}', stderr: '', duration_ms: 5, stop_reason: null
+  }));
+  const runPromise = worker.run(stop.signal);
+  try {
+    // Even with max_concurrent=1 and task 1 still blocked in recordSession, claim #2 runs!
+    await secondClaimed.promise;
+    assert.equal(sessionDone, false, 'second claim ran while recordSession was still pending');
+    worker.drain();
+    sessionHold.resolve();
+    await runPromise;
+    assert.equal(sessionDone, true, 'drain waited for in-flight recordSession to complete');
+  } finally {
+    sessionHold.resolve();
+    worker.drain();
+    stop.abort();
+    await runPromise;
+  }
 });

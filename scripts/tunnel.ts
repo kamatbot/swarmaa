@@ -6,7 +6,7 @@ import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
-import { plist } from './setup-lib.js';
+import { plist, validHostname as normalizeHostname } from './setup-lib.js';
 
 export interface TunnelResult { publicUrl: string; changed: string[] }
 
@@ -24,27 +24,39 @@ export function envValue(text: string, key: string): string {
   return text.match(new RegExp(`^${key}=(.*)$`, 'm'))?.[1]?.trim() ?? '';
 }
 
+/** Reuses the punycode-safe hostname validator from setup-lib.ts. */
 export function validHostname(host: string): boolean {
-  return /^(?=.{4,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/.test(host);
+  return normalizeHostname(host) !== undefined;
 }
 
 export async function setupTunnel(opts: { hostname: string; root: string; dry: boolean; log: (line: string) => void; home?: string }): Promise<TunnelResult> {
-  const { hostname, root, dry, log } = opts;
+  const { root, dry, log } = opts;
   const home = opts.home ?? homedir();
-  if (!hostname) throw new Error('pass --hostname swarm.example.com with a hostname on your domain');
-  if (!validHostname(hostname)) throw new Error(`hostname must be a valid DNS name on your domain, got ${hostname}`);
+  if (!opts.hostname) throw new Error('pass --hostname swarm.example.com with a hostname on your domain');
+  const hostname = normalizeHostname(opts.hostname);
+  if (!hostname) throw new Error(`hostname must be a valid DNS name on your domain, got ${opts.hostname}`);
   const cf = ['/opt/homebrew/bin/cloudflared', '/usr/local/bin/cloudflared'].find(existsSync) ?? (dry ? 'cloudflared' : undefined);
   if (!cf) throw new Error('cloudflared is not installed (brew install cloudflared)');
-  const run = (args: string[], capture = true) => {
-    if (dry) { log(`  [dry-run] cloudflared ${args.join(' ')}`); return { status: 0, stdout: '', stderr: '' }; }
-    const r = spawnSync(cf, args, { encoding: 'utf8', stdio: capture ? 'pipe' : 'inherit' });
-    return { status: r.status ?? 1, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
+  const interactive = Boolean(process.stdin.isTTY && process.stdout.isTTY);
+  const run = (args: string[], capture = true, timeout = 60_000) => {
+    if (dry) { log(`  [dry-run] cloudflared ${args.join(' ')}`); return { status: 0, stdout: '', stderr: '', timedOut: false }; }
+    const usePipe = capture || !interactive;
+    const r = spawnSync(cf, args, { encoding: 'utf8', stdio: usePipe ? ['ignore', 'pipe', 'pipe'] : 'inherit', timeout });
+    return { status: r.status ?? 1, stdout: r.stdout ?? '', stderr: r.stderr ?? '', timedOut: (r.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT' };
   };
   const changed: string[] = [];
 
   if (dry || !existsSync(join(home, '.cloudflared', 'cert.pem'))) {
     log('Authorize Cloudflare: approve your domain in the browser window that opens.');
-    if (run(['tunnel', 'login'], false).status !== 0) throw new Error('cloudflared tunnel login did not complete');
+    const login = run(['tunnel', 'login'], !interactive, 300_000);
+    if (login.status !== 0) {
+      const hint = login.timedOut
+        ? 'timed out waiting for Cloudflare browser authorization'
+        : !interactive
+          ? 'run "cloudflared tunnel login" in a terminal first, then re-run setup'
+          : login.stderr.trim().split('\n').at(-1) || 'did not complete';
+      throw new Error(`cloudflared tunnel login failed: ${hint}`);
+    }
   }
 
   let id = '';

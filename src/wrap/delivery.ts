@@ -27,13 +27,16 @@ export class Delivery {
   private pending?:AbortController;
   private userAt=-Infinity;
   private inputGeneration=0;
+  private wroteLast=false;
   constructor(readonly terminal:Terminal,private harness:Harness,private write:(data:string)=>void,private options:DeliveryOptions={}) {}
   userInput() { this.inputGeneration++; this.userAt=this.now(); this.pending?.abort(); }
   cancel() { this.pending?.abort(); }
   get generation() { return this.inputGeneration; }
+  get lastWrote() { return this.wroteLast; }
   private now() { return this.options.now?.() ?? Date.now(); }
   private sleep(ms:number,signal:AbortSignal) { return this.options.sleep?.(ms,signal) ?? delay(ms,undefined,{signal}); }
   async deliver(text:string,generation=this.generation):Promise<Verdict> {
+    this.wroteLast=false;
     if (this.pending) return 'unconfirmed';
     if (generation!==this.generation) return 'user_cancelled';
     const pending=new AbortController(), {signal}=pending;
@@ -51,10 +54,10 @@ export class Delivery {
       const body=paste ? sanitise(text) : sanitise(text).replace(/[\n\t]/g,' ');
       if (!body || Buffer.byteLength(body)>NOTICE_BYTES) return 'unconfirmed';
       const startRevision=this.terminal.revision;
-      if (paste) { this.write(`\x1b[200~${body}\x1b[201~`); wrote=true; }
+      if (paste) { this.write(`\x1b[200~${body}\x1b[201~`); wrote=true; this.wroteLast=true; }
       else for (const ch of body) {
         if (signal.aborted) return 'user_cancelled';
-        this.write(ch); wrote=true;
+        this.write(ch); wrote=true; this.wroteLast=true;
         await this.sleep(5,signal);
       }
       // A separate write matters: Codex can leave body+CR in one burst parked in the editor.

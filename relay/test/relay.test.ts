@@ -626,4 +626,59 @@ describe("HostRoom DO and Cloudflare Worker Relay", () => {
     host.ws.close();
     client.ws.close();
   });
+
+  it("unauthenticated client sending req/end/pair_redeem is closed with 4001", async () => {
+    const { hostId } = await createKeyPair();
+    for (const payload of [
+      { t: "req", sid: "s1", method: "GET", path: "/healthz" },
+      { t: "end", sid: "s1" },
+      { t: "pair_redeem", rid: "r1", code: "123456", device_name: "evil" }
+    ]) {
+      const res = await SELF.fetch(`http://example.com/h/${hostId}`, { headers: { Upgrade: "websocket" } });
+      const ws = res.webSocket!;
+      ws.accept();
+      const collector = attachMessageCollector(ws);
+      // Do NOT send client hello first
+      ws.send(JSON.stringify(payload));
+      const closed = await collector.waitForClose(1000);
+      expect(closed.code).toBe(4001);
+    }
+  });
+
+  it("limits: 40 concurrent 32-char streams stay within attachment size limit and 41st is rate_limited", async () => {
+    const { keyPair, rawPubkey, hostId } = await createKeyPair();
+    const host = await connectHost(hostId, keyPair, rawPubkey);
+    const client = await connectClient(hostId);
+
+    for (let i = 0; i < 40; i++) {
+      const sid = `s_${String(i).padStart(2, "0")}_${"a".repeat(27)}`; // 32 chars
+      client.ws.send(JSON.stringify({ t: "req", sid, method: "GET", path: "/api/stream" }));
+    }
+    // Wait until host receives the 40th request
+    await host.waitForMessage((m) => m.t === "req" && m.sid.endsWith(`s_39_${"a".repeat(27)}`));
+
+    // 41st concurrent open stream is rejected with rate_limited (not attachment overflow)
+    client.ws.send(JSON.stringify({ t: "req", sid: `s_40_${"a".repeat(27)}`, method: "GET", path: "/api/stream" }));
+    const rejected = await client.waitForMessage((m) => m.t === "end" && m.sid === `s_40_${"a".repeat(27)}`);
+    expect(rejected.error).toBe("rate_limited");
+
+    host.ws.close();
+    client.ws.close();
+  });
+
+  it("PairIndex rejects malformed JSON (400) and oversized bodies (413)", async () => {
+    const badJson = await SELF.fetch("http://example.com/pair/resolve", {
+      method: "POST",
+      body: "{not-json",
+      headers: { "cf-connecting-ip": "198.51.100.50" }
+    });
+    expect(badJson.status).toBe(400);
+
+    const tooBig = await SELF.fetch("http://example.com/pair/resolve", {
+      method: "POST",
+      body: JSON.stringify({ code: "123456", padding: "x".repeat(5000) }),
+      headers: { "cf-connecting-ip": "198.51.100.51" }
+    });
+    expect(tooBig.status).toBe(413);
+  });
 });

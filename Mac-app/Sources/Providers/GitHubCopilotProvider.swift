@@ -26,7 +26,12 @@ actor GitHubCopilotProvider: UsageProvider {
     }
 
     func fetchSnapshot() async throws -> ProviderSnapshot {
-        let credentials = try loadCredentials()
+        let loader = loadCredentials
+        let credentials = try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                continuation.resume(with: Result { try loader() })
+            }
+        }
         var request = URLRequest(url: endpoint)
         request.setValue("Bearer \(credentials.token)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
@@ -235,16 +240,15 @@ enum GitHubCopilotUsage {
         (value as? NSNumber)?.doubleValue
     }
 
+    private static let isoFractional = Date.ISO8601FormatStyle(includingFractionalSeconds: true)
+    private static let isoPlain = Date.ISO8601FormatStyle(includingFractionalSeconds: false)
+
     private static func date(_ value: Any?) -> Date? {
         if let seconds = number(value) {
             return Date(timeIntervalSince1970: seconds > 10_000_000_000 ? seconds / 1000 : seconds)
         }
         guard let text = value as? String else { return nil }
-        let fractional = ISO8601DateFormatter()
-        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let plain = ISO8601DateFormatter()
-        plain.formatOptions = [.withInternetDateTime]
-        return fractional.date(from: text) ?? plain.date(from: text)
+        return (try? isoFractional.parse(text)) ?? (try? isoPlain.parse(text))
     }
 
     private static func label(for id: String) -> String {

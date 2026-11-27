@@ -9,14 +9,37 @@ export function installRoot() {
   const root=resolve(dirname(fileURLToPath(import.meta.url)),'../..');
   return existsSync(join(root,'package.json')) ? root : dirname(root);
 }
+/** Parse `PORT` from a .env file, handling optional `export`, quotes, and trailing `#` comments. */
+export function parseEnvPort(envText:string):number|undefined {
+  for (const rawLine of envText.split(/\r?\n/)) {
+    const line=rawLine.trim();
+    if (!line || line.startsWith('#')) continue;
+    const match=/^(?:export\s+)?PORT\s*=\s*(.*)$/.exec(line);
+    if (!match) continue;
+    let raw=match[1]!.trim();
+    if ((raw.startsWith('"') && raw.includes('"',1)) || (raw.startsWith("'") && raw.includes("'",1))) {
+      const quote=raw[0]!;
+      const end=raw.indexOf(quote,1);
+      const trailing=raw.slice(end+1).trim();
+      if (trailing && !trailing.startsWith('#')) return Number.NaN;
+      raw=raw.slice(1,end).trim();
+    } else {
+      raw=raw.replace(/\s+#.*$/,'').trim();
+    }
+    if (!/^\d+$/.test(raw)) return Number.NaN;
+    return Number(raw);
+  }
+  return undefined;
+}
+
 export function connection(root:string,harness:Harness) {
   const identity=harness==='agy' ? 'antigravity' : 'codex';
   const {token}=JSON.parse(readFileSync(join(root,'.local',`${identity}.json`),'utf8'));
   if (typeof token!=='string' || !token || /[\r\n]/.test(token)) throw new Error('missing wrapper identity');
   let port=8787;
   try {
-    const value=readFileSync(join(root,'.env'),'utf8').match(/^PORT=(.*)$/m)?.[1];
-    if (value!==undefined) port=Number(value.trim());
+    const parsed=parseEnvPort(readFileSync(join(root,'.env'),'utf8'));
+    if (parsed!==undefined) port=parsed;
   } catch { /* same default as the MCP launcher */ }
   if (!Number.isInteger(port) || port<1 || port>65535) throw new Error('invalid service port');
   return new Inbox(`http://127.0.0.1:${port}`,token);
@@ -70,8 +93,11 @@ export async function listen(inbox:Pick<Inbox,'wait'|'ack'>,delivery:Delivery,se
       if (!items.length) continue;
       // ponytail: stop automatic input after 4096 deliveries per session to bound replay protection; start a new wrap session for longer use.
       if (attempted.size+items.length>4096) { report({event:'delivery_limit'}); return; }
-      for (const item of items) attempted.add(item.delivery_id);
       const formatted=notice(items,session),verdict:Verdict=await delivery.deliver(formatted.text,generation);
+      // Only retain IDs in attempted after bytes were actually written to the PTY; pre-write cancellations
+      // and prompt_unproven leave the item eligible for delivery once the prompt settles.
+      const wrote=verdict==='accepted' || verdict==='unconfirmed' || (verdict==='user_cancelled' && delivery.lastWrote===true);
+      if (wrote) for (const item of items) attempted.add(item.delivery_id);
       for (const item of items) {
         // Acceptance hides bodies from inbox_get; a summary has not delivered those bodies.
         pending.set(item.delivery_id,verdict==='accepted' && !formatted.summary ? 'accepted' : 'unconfirmed');

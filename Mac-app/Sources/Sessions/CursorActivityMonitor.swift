@@ -40,7 +40,8 @@ final class CursorActivityMonitor: ObservableObject, AgentActivityMonitor {
     /// which is the one that used to linger for ever, is now retired instantly
     /// by the launch check rather than by waiting this out.
     private let staleAfter: TimeInterval
-    private var timer: Timer?
+    private let scanQueue = DispatchQueue(label: "app.swarmaa.mac.cursor-activity", qos: .utility)
+    private var timer: DispatchSourceTimer?
 
     init(store: URL = CursorCredentials.storeURL,
          interval: TimeInterval = 2,
@@ -51,27 +52,31 @@ final class CursorActivityMonitor: ObservableObject, AgentActivityMonitor {
     }
 
     func start() {
-        rescan()
+        stop()
         // Polled rather than watched: the interesting writes land in the WAL
         // sidecar, and a directory event tells us a byte moved, not that a run
-        // started. Two seconds is well inside "did that finish yet?".
-        let timer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.rescan() }
+        // started. Run off RunLoop.main and MainActor so SQLite reads never stall UI.
+        let store = store
+        let staleAfter = staleAfter
+        let timer = DispatchSource.makeTimerSource(queue: scanQueue)
+        timer.schedule(deadline: .now(), repeating: interval, leeway: .milliseconds(250))
+        timer.setEventHandler { [weak self] in
+            let launched = Self.cursorLaunchDate()
+            let found = Self.read(store: store, cursorLaunchedAt: launched, staleAfter: staleAfter)
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let self, self.timer != nil, found != self.sessions else { return }
+                    self.sessions = found
+                }
+            }
         }
-        RunLoop.main.add(timer, forMode: .common)
         self.timer = timer
+        timer.resume()
     }
 
     func stop() {
-        timer?.invalidate()
+        timer?.cancel()
         timer = nil
-    }
-
-    private func rescan() {
-        let found = Self.read(store: store, cursorLaunchedAt: Self.cursorLaunchDate(),
-                              staleAfter: staleAfter)
-        guard found != sessions else { return }
-        sessions = found
     }
 
     /// When the running editor started, or nil if Cursor is not running at all.
@@ -89,22 +94,21 @@ final class CursorActivityMonitor: ObservableObject, AgentActivityMonitor {
     /// "Running, start time unknown" must not collapse into "not running", so it
     /// answers `.distantPast`: every row then predates it and the staleness
     /// window alone decides, which is the behaviour we had before this check.
-    static func cursorLaunchDate() -> Date? {
-        let running = NSWorkspace.shared.runningApplications
-        let cursor = running.first { $0.bundleIdentifier == CursorCredentials.bundleID }
-            ?? running.first { $0.bundleURL?.lastPathComponent == "Cursor.app" }
+    nonisolated static func cursorLaunchDate() -> Date? {
+        let cursor = NSRunningApplication.runningApplications(withBundleIdentifier: CursorCredentials.bundleID).first
+            ?? NSWorkspace.shared.runningApplications.first { $0.bundleURL?.lastPathComponent == "Cursor.app" }
         return launchDate(found: cursor != nil, launchDate: cursor?.launchDate)
     }
 
     /// The two-state answer above, split out because `NSRunningApplication`
     /// cannot be built in a test and this is the half worth pinning.
-    static func launchDate(found: Bool, launchDate: Date?) -> Date? {
+    nonisolated static func launchDate(found: Bool, launchDate: Date?) -> Date? {
         guard found else { return nil }
         return launchDate ?? .distantPast
     }
 
-    static func read(store: URL, cursorLaunchedAt: Date?,
-                     staleAfter: TimeInterval, now: Date = Date()) -> [AgentSession] {
+    nonisolated static func read(store: URL, cursorLaunchedAt: Date?,
+                                 staleAfter: TimeInterval, now: Date = Date()) -> [AgentSession] {
         guard let db = SQLiteStore.open(store) else { return [] }
         defer { sqlite3_close(db) }
 
@@ -161,11 +165,11 @@ final class CursorActivityMonitor: ObservableObject, AgentActivityMonitor {
     /// process is not a question — and a wait that has gone silent longer
     /// than `staleAfter` with the editor shut or restarted is retired the
     /// same way a dead run is.
-    static func session(fromHeader json: String,
-                        isSubagent: Bool = false,
-                        cursorLaunchedAt: Date?,
-                        staleAfter: TimeInterval,
-                        now: Date = Date()) -> AgentSession? {
+    nonisolated static func session(fromHeader json: String,
+                                    isSubagent: Bool = false,
+                                    cursorLaunchedAt: Date?,
+                                    staleAfter: TimeInterval,
+                                    now: Date = Date()) -> AgentSession? {
         guard let data = json.data(using: .utf8),
               let head = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let id = head["composerId"] as? String
@@ -246,10 +250,10 @@ final class CursorActivityMonitor: ObservableObject, AgentActivityMonitor {
     /// a plan for hours — or if the last write is still inside the staleness
     /// window, which covers a crash-and-restart. An undated row with the
     /// editor up is trusted: we cannot prove it is old.
-    private static func isCurrentWait(touched: Date?,
-                                      cursorLaunchedAt: Date?,
-                                      staleAfter: TimeInterval,
-                                      now: Date) -> Bool {
+    nonisolated private static func isCurrentWait(touched: Date?,
+                                                  cursorLaunchedAt: Date?,
+                                                  staleAfter: TimeInterval,
+                                                  now: Date) -> Bool {
         let recentlyTouched = touched.map { now.timeIntervalSince($0) <= staleAfter } ?? false
         guard let cursorLaunchedAt else { return recentlyTouched }
         guard let touched else { return true }
@@ -258,7 +262,7 @@ final class CursorActivityMonitor: ObservableObject, AgentActivityMonitor {
 
     /// Cursor stores booleans as 0/1 in SQLite, and JSONSerialization often
     /// hands them back as `NSNumber`. Empty and unknown values are false.
-    private static func flag(_ value: Any?) -> Bool {
+    nonisolated private static func flag(_ value: Any?) -> Bool {
         switch value {
         case let flag as Bool:
             return flag
@@ -273,7 +277,7 @@ final class CursorActivityMonitor: ObservableObject, AgentActivityMonitor {
     }
 
     /// Cursor writes its timestamps as milliseconds since the epoch.
-    private static func date(_ value: Any?) -> Date? {
+    nonisolated private static func date(_ value: Any?) -> Date? {
         (value as? NSNumber).map { Date(timeIntervalSince1970: $0.doubleValue / 1000) }
     }
 }

@@ -14,9 +14,20 @@ final class SwarmMapStore: ObservableObject {
             let todo = self.state.unpriced
             self.state.unpriced = []
             guard let model, !todo.isEmpty else { return }
+            let batch = Array(todo.prefix(30))
             Task { @MainActor [weak self] in
-                for job in todo.prefix(30) {
-                    if let n = await model.taskTokens(id: job.id) { self?.state.addTokens(n, provider: job.provider, task: job.id) }
+                await withTaskGroup(of: (String, String, Int?).self) { group in
+                    var pending = batch[...]
+                    func add(_ job: (id: String, provider: String)) {
+                        group.addTask { @MainActor in
+                            (job.id, job.provider, await model.taskTokens(id: job.id))
+                        }
+                    }
+                    for _ in 0..<6 { if let job = pending.popFirst() { add(job) } }
+                    for await (id, provider, n) in group {
+                        if let job = pending.popFirst() { add(job) }
+                        if let n { self?.state.addTokens(n, provider: provider, task: id) }
+                    }
                 }
             }
         }
@@ -37,9 +48,11 @@ struct SwarmMapPanel: View {
         .background(KS.paper)
         .overlay(alignment: .leading) { Rectangle().fill(KS.hairline).frame(width: 1) }
         .onAppear { store.attach(model) }
-        .task {
+        .task(id: model.isWindowOpen) {
+            guard model.isWindowOpen else { return }
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 3_000_000_000)
+                guard !Task.isCancelled else { break }
                 await model.refreshUsage()
             }
         }
@@ -85,7 +98,7 @@ struct SwarmMapPanel: View {
                     .padding(.horizontal, 16).padding(.vertical, 8)
             }
             ScrollView {
-                TimelineView(.periodic(from: .now, by: 1)) { tl in
+                TimelineView(.animation(minimumInterval: 1.0, paused: store.state.runningCount == 0)) { tl in
                     VStack(alignment: .leading, spacing: 4) {
                         ForEach(rows) { row in
                             Text(verbatim: Self.line(row, now: tl.date)).font(KS.meta())

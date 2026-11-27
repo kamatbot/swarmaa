@@ -38,6 +38,7 @@ import XCTest
             func events(after: String) -> AsyncThrowingStream<Data, Error> { AsyncThrowingStream { $0.finish() } }
         }
         let service = AppearanceService(), model = AppModel()
+        model.botRefreshDebounce = .zero
         model.service = service
         model.openBot = Bot(raw: .object(["id": .string("b"), "thread_id": .string("t")]))
         try await model.handle(.object(["name": .string("bot.updated"), "payload": .object(["bot_id": .string("b"), "reason": .string("appearance")])]))

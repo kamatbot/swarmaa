@@ -88,7 +88,7 @@ describe('watch services', { skip: !connectionString, concurrency: false }, () =
   const rejects = (promise: Promise<unknown>, status: number, code: string) =>
     assert.rejects(promise, (e: any) => { assert.equal(e.code, code); assert.equal(e.status, status); return true; });
 
-  async function principal(tenantId: string, permissions: Permission[] = ROLE_PERMISSIONS.frontend) {
+  async function principal(tenantId: string, permissions: Permission[] = [...ROLE_PERMISSIONS.frontend, 'agent:read', 'agent:manage', 'thread:read', 'thread:write', 'app:device']) {
     const p: Principal = { id: randomUUID(), tenantId, name: `phone-${randomUUID()}`, role: 'frontend', scopes: ['project:a'], permissions: [...permissions] };
     await pool.query(`INSERT INTO principals(id, tenant_id, name, role, scopes, permissions, token_hash, last_seen_at)
       VALUES($1,$2,$3,$4,$5,$6,$7,clock_timestamp())`, [p.id, tenantId, p.name, p.role, p.scopes, p.permissions, randomUUID()]);

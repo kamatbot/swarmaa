@@ -22,7 +22,8 @@ final class KimiActivityMonitor: ObservableObject, AgentActivityMonitor {
     private let root: URL
     private let interval: TimeInterval
     private let staleAfter: TimeInterval
-    private var timer: Timer?
+    private let scanQueue = DispatchQueue(label: "app.swarmaa.mac.kimi-activity", qos: .utility)
+    private var timer: DispatchSourceTimer?
 
     init(
         root: URL = KimiActivity.root,
@@ -35,23 +36,27 @@ final class KimiActivityMonitor: ObservableObject, AgentActivityMonitor {
     }
 
     func start() {
-        rescan()
-        let timer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.rescan() }
+        stop()
+        let root = root
+        let staleAfter = staleAfter
+        let timer = DispatchSource.makeTimerSource(queue: scanQueue)
+        timer.schedule(deadline: .now(), repeating: interval, leeway: .milliseconds(250))
+        timer.setEventHandler { [weak self] in
+            let found = KimiActivity.read(root: root, staleAfter: staleAfter)
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let self, self.timer != nil, found != self.sessions else { return }
+                    self.sessions = found
+                }
+            }
         }
-        RunLoop.main.add(timer, forMode: .common)
         self.timer = timer
+        timer.resume()
     }
 
     func stop() {
-        timer?.invalidate()
+        timer?.cancel()
         timer = nil
-    }
-
-    private func rescan() {
-        let found = KimiActivity.read(root: root, staleAfter: staleAfter)
-        guard found != sessions else { return }
-        sessions = found
     }
 }
 

@@ -116,7 +116,7 @@ struct TasksPane: View {
             }
             HStack(spacing: 0) {
             ScrollView {
-                VStack(alignment: .leading, spacing: 24) {
+                LazyVStack(alignment: .leading, spacing: 24) {
                     if sections.isEmpty {
                         TeamsEmptyState(symbol: "checklist", title: model.taskSearch.isEmpty ? L10n.t("No tasks") : L10n.t("No matches"),
                                         detail: model.taskSearch.isEmpty ? L10n.t("Tasks your bots run show up here.") : nil, action: nil)
@@ -217,8 +217,8 @@ struct TasksPane: View {
     }
 
     private func panel(_ rows: [TeamsTaskRow], shadow: Bool) -> some View {
-        VStack(spacing: 0) {
-            ForEach(Array(rows.enumerated()), id: \.element.id) { i, row in
+        LazyVStack(spacing: 0) {
+            ForEach(rows) { row in
                 Button { activate(row) } label: {
                     HStack(spacing: 0) {
                         if model.selectingTasks {
@@ -314,7 +314,7 @@ struct TaskDetailPanel: View {
                     let context = model.taskContext(d.task.id)
                     if !context.isEmpty { field("Team", context.joined(separator: " · ")) }
                     field("Agent", d.result?.agent)
-                    field("Service", d.served?.provider)
+                    field("Provider", d.served?.provider)
                     field("Model", d.served?.model)
                     if d.served?.model == nil { field("Requested model", d.permission?.runner?.model) }
                     field("Effort", d.permission?.runner?.effort)

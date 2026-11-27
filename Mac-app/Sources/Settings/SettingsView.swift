@@ -25,7 +25,7 @@ extension View {
 /// on that provider's own row in Accounts, not repeated here, but the
 /// crossing-and-notification machinery it switches is Notifications' to
 /// explain.
-private enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
+enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
     case swarma, accounts, phone, deepseek, ollama, lmstudio, omlx, customEndpoints, remoteHosts, appearance, notifications, costs, general
 
     /// The sections the sidebar lists; Phone only once pairing is offered.
@@ -426,6 +426,7 @@ struct SettingsView: View {
     /// The providers the menu bar can show, from the same snapshots it draws.
     @State private var menuBarChoices: [MenuBarChoice] = []
     @State private var selection: SettingsSection = .accounts
+    @ObservedObject private var navigator = SettingsNavigator.shared
     /// Whether Accounts shows its provider panes. Remembered, so someone who
     /// folds the group away finds it folded next time.
     @AppStorage("settingsAccountsExpanded") private var accountsExpanded = true
@@ -546,7 +547,17 @@ struct SettingsView: View {
         .ignoresSafeArea()
         .onAppear {
             refreshVisibleState()
-            if embedded, !SettingsSection.embedded.contains(selection) { selection = .swarma }
+            if let requested = navigator.requestedSection {
+                selection = requested
+                navigator.requestedSection = nil
+            } else if embedded, !SettingsSection.embedded.contains(selection) {
+                selection = .swarma
+            }
+        }
+        .onChange(of: navigator.requestedSection) { requested in
+            guard let requested else { return }
+            selection = requested
+            navigator.requestedSection = nil
         }
         .onReceive(NotificationCenter.default.publisher(
             for: NSWindow.didBecomeKeyNotification
@@ -2165,6 +2176,19 @@ extension SettingsView {
     }
 }
 
+/// Coordinates programmatic deep-links into Settings sections and sub-tabs.
+@MainActor
+final class SettingsNavigator: ObservableObject {
+    static let shared = SettingsNavigator()
+    @Published var requestedSection: SettingsSection?
+    @Published var requestedSwarmaTab: SwarmaSettingsView.Tab?
+
+    func openRouting() {
+        requestedSection = .swarma
+        requestedSwarmaTab = .routing
+    }
+}
+
 struct PhoneSettingsPane: View {
     @ObservedObject var preferences: Preferences
     @ObservedObject var pairing: PhoneLinkPairing
@@ -2172,23 +2196,42 @@ struct PhoneSettingsPane: View {
     @ObservedObject var serverStatus: PhoneLinkServerStatus
     
     @State private var deviceToRemove: PairedDevice?
+
+    private static func pairedDateFormatter(locale: Locale) -> DateFormatter {
+        let key = "PhoneSettingsPane.pairedDate.\(locale.identifier)"
+        let dict = Thread.current.threadDictionary
+        if let cached = dict[key] as? DateFormatter { return cached }
+        let df = DateFormatter()
+        df.locale = locale
+        df.dateStyle = .medium
+        df.timeStyle = .none
+        dict[key] = df
+        return df
+    }
+
+    private static func relativeFormatter(locale: Locale) -> RelativeDateTimeFormatter {
+        let key = "PhoneSettingsPane.relative.\(locale.identifier)"
+        let dict = Thread.current.threadDictionary
+        if let cached = dict[key] as? RelativeDateTimeFormatter { return cached }
+        let rf = RelativeDateTimeFormatter()
+        rf.locale = locale
+        rf.unitsStyle = .full
+        dict[key] = rf
+        return rf
+    }
     
     private func lastSeenText(for device: PairedDevice) -> String {
-        let diff = Date().timeIntervalSince(device.lastSeenAt)
+        let now = Date()
+        let diff = now.timeIntervalSince(device.lastSeenAt)
         if diff < 60 {
             return L10n.t("Active now")
         }
         if device.lastSeenAt == device.pairedAt {
-            let df = DateFormatter()
-            df.locale = L10n.locale
-            df.dateStyle = .medium
-            df.timeStyle = .none
+            let df = Self.pairedDateFormatter(locale: L10n.locale)
             return L10n.t("Paired \(df.string(from: device.pairedAt))")
         }
-        let rf = RelativeDateTimeFormatter()
-        rf.locale = L10n.locale
-        rf.unitsStyle = .full
-        return "Last seen \(rf.localizedString(for: device.lastSeenAt, relativeTo: Date()))"
+        let rf = Self.relativeFormatter(locale: L10n.locale)
+        return "Last seen \(rf.localizedString(for: device.lastSeenAt, relativeTo: now))"
     }
     
     var body: some View {

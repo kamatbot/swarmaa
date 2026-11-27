@@ -252,7 +252,7 @@ async function fireSchedule(pool:Pool,candidate:BotRoutingRow):Promise<void> {
             AND (e.name IN ('message.created','memory.changed','question.created')
               OR (e.name='task.updated' AND e.payload->>'action'='finished'))
             AND NOT EXISTS (
-              SELECT 1 FROM events own JOIN tasks t ON t.id::text=own.subject_id
+              SELECT 1 FROM events own JOIN tasks t ON t.id = CASE WHEN own.subject_id ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' THEN own.subject_id::uuid END
               WHERE own.tenant_id=e.tenant_id AND own.scope=e.scope AND own.xid=e.xid
                 AND own.name='task.updated' AND t.tenant_id=$1 AND t.scope=$2
                 AND t.bot_id=$3 AND t.initiator_kind='schedule'

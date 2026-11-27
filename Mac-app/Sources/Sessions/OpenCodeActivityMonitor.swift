@@ -16,14 +16,15 @@ final class OpenCodeActivityMonitor: ObservableObject, AgentActivityMonitor {
     private let directory: URL
     private let providerID: String
     private let modelID: String
-    private let isAlive: (Int32, Date) -> Bool
-    private var timer: Timer?
+    private let isAlive: @Sendable (Int32, Date) -> Bool
+    private let scanQueue = DispatchQueue(label: "app.swarmaa.mac.opencode-activity", qos: .utility)
+    private var timer: DispatchSourceTimer?
     private var files: [String: OpenCodeActivityFile] = [:]
     private var watchingSince: Double
 
     init(providerID: String, modelID: String = "", directory: URL = OpenCodeActivityMonitor.directory,
          beganAt: Date = Date(),
-         isAlive: @escaping (Int32, Date) -> Bool = {
+         isAlive: @escaping @Sendable (Int32, Date) -> Bool = {
              ProcessLiveness.isAlive(pid: $0, startedAt: $1)
          }) {
         self.providerID = providerID
@@ -36,22 +37,38 @@ final class OpenCodeActivityMonitor: ObservableObject, AgentActivityMonitor {
     func start() {
         stop()
         watchingSince = Date().timeIntervalSince1970 * 1000
-        rescan()
-        let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.rescan() }
+        let directory = directory
+        let isAlive = isAlive
+        let timer = DispatchSource.makeTimerSource(queue: scanQueue)
+        timer.schedule(deadline: .now(), repeating: 1.0, leeway: .milliseconds(200))
+        timer.setEventHandler { [weak self] in
+            let found = Self.scanFiles(in: directory, isAlive: isAlive)
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let self, self.timer != nil else { return }
+                    self.apply(found: found)
+                }
+            }
         }
-        RunLoop.main.add(timer, forMode: .common)
         self.timer = timer
+        timer.resume()
     }
 
     func stop() {
-        timer?.invalidate()
+        timer?.cancel()
         timer = nil
         files.removeAll()
         sessions = []
     }
 
     func rescan() {
+        apply(found: Self.scanFiles(in: directory, isAlive: isAlive))
+    }
+
+    nonisolated private static func scanFiles(
+        in directory: URL,
+        isAlive: (Int32, Date) -> Bool
+    ) -> [String: OpenCodeActivityEnvelope] {
         let urls = (try? FileManager.default.contentsOfDirectory(at: directory,
             includingPropertiesForKeys: [.fileSizeKey, .isSymbolicLinkKey, .contentModificationDateKey])) ?? []
         // Crashed OpenCode processes can leave files behind. Prefer recent
@@ -73,7 +90,10 @@ final class OpenCodeActivityMonitor: ObservableObject, AgentActivityMonitor {
             else { continue }
             found[url.path] = envelope
         }
+        return found
+    }
 
+    private func apply(found: [String: OpenCodeActivityEnvelope]) {
         let removed = Set(files.keys).subtracting(found.keys)
         if !removed.isEmpty {
             for key in removed { files.removeValue(forKey: key) }

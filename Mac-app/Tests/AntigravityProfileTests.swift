@@ -84,9 +84,9 @@ final class AntigravityProfileTests: XCTestCase {
         XCTAssertNil(AntigravityProfile.slug(fromDirectoryName: "not-antigravity-work"))
     }
 
-    // MARK: - Discovery
+    // MARK: - Single-Profile Compliance
 
-    func testDiscoveryFindsProfilesInStableOrder() throws {
+    func testDiscoveryReturnsOnlyDefaultProfile() throws {
         let root = try home([
             "antigravity": ["oauth_creds.json"],
             "antigravity-work": ["oauth_creds.json"],
@@ -95,42 +95,23 @@ final class AntigravityProfileTests: XCTestCase {
             "antigravity-cli": ["oauth_creds.json"],
             "antigravity-backup": ["agent.db"],
             "antigravity-empty": [],
-            "antigravity-settings-only": ["settings.json"],
-            "antigravity-state-only": ["state"],
-            "antigravity-no-creds": ["brain/uuid/transcript.jsonl"],
             "other-tool": ["oauth_creds.json"]
         ])
 
         let found = AntigravityProfile.discover(home: root)
-        XCTAssertEqual(found.map(\.id), ["gemini", "antigravity-alpha", "antigravity-work"])
-        XCTAssertEqual(found.map(\.displayName), ["Antigravity", "Antigravity (alpha)", "Antigravity (work)"])
+        XCTAssertEqual(found.map(\.id), ["gemini"])
+        XCTAssertEqual(found.map(\.displayName), ["Antigravity"])
         XCTAssertEqual(found[0].configDirectory, root.appendingPathComponent(".gemini/antigravity"))
-        XCTAssertEqual(found[1].configDirectory, root.appendingPathComponent(".gemini/antigravity-alpha"))
-        XCTAssertEqual(found[2].configDirectory, root.appendingPathComponent(".gemini/antigravity-work"))
     }
 
-    func testDiscoveryRequiresCredentials() throws {
-        let root = try home([
-            "antigravity-work": ["oauth_creds.json"],
-            "antigravity-settings": ["settings.json"],
-            "antigravity-state": ["state"],
-            "antigravity-brain-only": ["brain/agent.db"]
-        ])
-
-        let found = AntigravityProfile.discover(home: root)
-        XCTAssertEqual(found.map(\.id), ["gemini", "antigravity-work"])
-    }
-
-    func testDiscoveryRespectsCredentialFilter() throws {
+    func testDiscoveryIgnoresExtraProfilesEvenWithCustomFilter() throws {
         let root = try home([
             "antigravity-work": ["oauth_creds.json"],
             "antigravity-test": ["oauth_creds.json"]
         ])
 
-        let found = AntigravityProfile.discover(home: root) { profile in
-            profile.slug != "test"
-        }
-        XCTAssertEqual(found.map(\.id), ["gemini", "antigravity-work"])
+        let found = AntigravityProfile.discover(home: root) { _ in true }
+        XCTAssertEqual(found.map(\.id), ["gemini"])
     }
 
     // MARK: - Gemini-API Clash Prevention & Default-Off Rule
@@ -170,9 +151,9 @@ final class AntigravityProfileTests: XCTestCase {
         XCTAssertNotNil(workMonitor)
     }
 
-    // MARK: - Account Details and Isolation
+    // MARK: - Compliant Non-Secret Presence & Refusal
 
-    func testAccountResolutionFromOAuthCreds() throws {
+    func testNamedProfileNeverScrapesOAuthCreds() throws {
         let root = try home([
             "antigravity": [],
             "antigravity-work": []
@@ -189,61 +170,53 @@ final class AntigravityProfileTests: XCTestCase {
         """
         try credsJSON.data(using: .utf8)!.write(to: workProfile.authURL)
 
-        XCTAssertTrue(AntigravityCredentials.isSignedIn(for: workProfile))
-        let loaded = try AntigravityCredentials.load(for: workProfile)
-        XCTAssertEqual(loaded.accessToken, "ya29.work-test-token")
-        XCTAssertEqual(loaded.email, "work@example.com")
-        XCTAssertEqual(loaded.projectId, "work-project")
-
+        XCTAssertFalse(AntigravityCredentials.isSignedIn(for: workProfile))
         let provider = AntigravityProvider(profile: workProfile)
-        let account = provider.account()
-        XCTAssertEqual(account?.label, "work@example.com")
-        XCTAssertEqual(account?.plan, "Personal")
-        XCTAssertTrue(account?.source.contains("antigravity-work") ?? false)
-
-        AntigravityCredentials.forgetCached(for: workProfile)
-        XCTAssertNil(AntigravityCredentials.held(for: workProfile))
+        XCTAssertNil(provider.account())
     }
 
-    func testForgetCachedCredentialGrantsPromptPermission() {
+    func testKeychainRefusalIsHonouredAndClearedOnAskAgain() {
+        let previousRefusal = AntigravityCredentials.refusal
+        let testRefusal = KeychainRefusal(key: "antigravity-test", defaults: nil)
+        AntigravityCredentials.refusal = testRefusal
+        AntigravityCredentials.metadataPresentForTesting = { true }
+        addTeardownBlock {
+            AntigravityCredentials.refusal = previousRefusal
+            AntigravityCredentials.metadataPresentForTesting = nil
+        }
+
         let defaultProfile = AntigravityProfile.default()
         let provider = AntigravityProvider(profile: defaultProfile)
 
-        var promptedInteractive: Bool?
-        AntigravityCredentials.readKeychainForTesting = { interactive in
-            promptedInteractive = interactive
-            return (errSecItemNotFound, nil)
-        }
-        addTeardownBlock { AntigravityCredentials.readKeychainForTesting = nil }
+        XCTAssertTrue(AntigravityCredentials.isSignedIn(for: defaultProfile))
+        XCTAssertNotNil(provider.account())
+
+        AntigravityCredentials.recordRefusal()
+        XCTAssertTrue(AntigravityCredentials.isRefused)
+        XCTAssertFalse(AntigravityCredentials.isSignedIn(for: defaultProfile))
+        XCTAssertNil(provider.account())
 
         provider.forgetCachedCredential()
-        _ = try? AntigravityCredentials.load(for: defaultProfile)
-
-        XCTAssertEqual(promptedInteractive, true, "Allow access... must grant interactive permission for default profile")
+        XCTAssertFalse(AntigravityCredentials.isRefused)
+        XCTAssertTrue(AntigravityCredentials.isSignedIn(for: defaultProfile))
     }
 
-    func testPromptPermissionIsIsolatedPerProfile() {
+    func testExtraProfileAskAgainDoesNotClearDefaultRefusal() {
+        let previousRefusal = AntigravityCredentials.refusal
+        let testRefusal = KeychainRefusal(key: "antigravity-iso", defaults: nil)
+        AntigravityCredentials.refusal = testRefusal
+        addTeardownBlock { AntigravityCredentials.refusal = previousRefusal }
+
         let defaultProfile = AntigravityProfile.default()
         let workProfile = AntigravityProfile(slug: "work", configDirectory: URL(fileURLWithPath: "/tmp/antigravity-work"))
         let defaultProvider = AntigravityProvider(profile: defaultProfile)
         let workProvider = AntigravityProvider(profile: workProfile)
 
-        var promptedInteractive: Bool?
-        AntigravityCredentials.readKeychainForTesting = { interactive in
-            promptedInteractive = interactive
-            return (errSecItemNotFound, nil)
-        }
-        addTeardownBlock { AntigravityCredentials.readKeychainForTesting = nil }
-
-        // Extra profile forgetCachedCredential must not grant default profile's keychain prompt
-        AntigravityCredentials.forgetCached(for: defaultProfile)
+        AntigravityCredentials.recordRefusal()
         workProvider.forgetCachedCredential()
-        _ = try? AntigravityCredentials.load(for: defaultProfile)
-        XCTAssertEqual(promptedInteractive, false, "Extra profile grant must not grant default profile prompt")
+        XCTAssertTrue(AntigravityCredentials.isRefused, "Extra profile must not clear default refusal")
 
-        // Default profile forgetCachedCredential grants default's prompt
         defaultProvider.forgetCachedCredential()
-        _ = try? AntigravityCredentials.load(for: defaultProfile)
-        XCTAssertEqual(promptedInteractive, true, "Default profile grant must grant default profile prompt")
+        XCTAssertFalse(AntigravityCredentials.isRefused, "Default profile askAgain clears default refusal")
     }
 }

@@ -367,3 +367,34 @@ test('aggregateUsageCost correctly aggregates SQL rows across models and groups'
   assert.equal(res.total_usd, 10.4);
   assert.equal(res.has_unpriced, true);
 });
+
+test('loadPrices caches parsed file by mtimeMs and invalidates on update or deletion', async () => {
+  const { utimesSync, unlinkSync } = await import('node:fs');
+  const dir = mkdtempSync(join(tmpdir(), 'swarmaa-pricing-cache-'));
+  const file = join(dir, 'prices.json');
+  try {
+    const pinned = new Date(Math.floor(Date.now() / 1000) * 1000);
+    writeFileSync(file, JSON.stringify({ 'model-a': { input: 1, cached_input: 0.1, output: 2 } }));
+    utimesSync(file, pinned, pinned);
+    const first = loadPrices(file);
+    assert.equal(first['model-a']?.input, 1);
+
+    // Overwrite file content while pinning the exact same whole-second mtime -> cache hit returns old value (1)
+    writeFileSync(file, JSON.stringify({ 'model-a': { input: 9, cached_input: 0.9, output: 18 } }));
+    utimesSync(file, pinned, pinned);
+    const cached = loadPrices(file);
+    assert.equal(cached['model-a']?.input, 1, 'unchanged mtimeMs must serve from cache without re-reading disk');
+
+    // Advance mtime -> cache invalidates and reads new value (9)
+    const future = new Date(pinned.getTime() + 5000);
+    utimesSync(file, future, future);
+    const updated = loadPrices(file);
+    assert.equal(updated['model-a']?.input, 9);
+
+    unlinkSync(file);
+    const removed = loadPrices(file);
+    assert.deepEqual(removed, {});
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

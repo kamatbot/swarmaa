@@ -504,7 +504,7 @@ export class TeamService {
          AND ($3::boolean OR a.scope = ANY($4::text[]))
          AND ($5::text IS NULL OR a.scope = $5)
          AND ($6::boolean OR NOT a.archived)
-         AND ($7::uuid IS NULL OR a.created_at < (SELECT created_at FROM agents WHERE id = $7))
+         AND ($7::uuid IS NULL OR (a.created_at, a.id) < (SELECT created_at, id FROM agents WHERE id = $7))
        ORDER BY a.created_at DESC, a.id DESC
        LIMIT $8`,
       [p.id, p.tenantId, all, grantedScopes, scope, includeArchived, after, limit + 1]
@@ -596,9 +596,9 @@ export class TeamService {
       const ref = replyTo || photos.length ? { ...(replyTo ? { reply_to: replyTo } : {}), ...(photos.length ? { attachments: photos } : {}) } : null;
 
       const inserted = (await db.query<MessageRow>(
-        `INSERT INTO messages (id, tenant_id, scope, thread_id, seq, author, kind, body, ref, idempotency_key)
-         VALUES ($1, $2, $3, $4, $5, $6::jsonb, 'text', $7, $8::jsonb, $9) RETURNING *`,
-        [msgId, p.tenantId, thread.scope, threadId, nextSeq, JSON.stringify(author), body, ref ? JSON.stringify(ref) : null, idempotency]
+        `INSERT INTO messages (id, tenant_id, scope, thread_id, seq, author, kind, body, ref, idempotency_key, has_attachments)
+         VALUES ($1, $2, $3, $4, $5, $6::jsonb, 'text', $7, $8::jsonb, $9, $10) RETURNING *`,
+        [msgId, p.tenantId, thread.scope, threadId, nextSeq, JSON.stringify(author), body, ref ? JSON.stringify(ref) : null, idempotency, photos.length > 0]
       )).rows[0]!;
 
       await db.query('UPDATE threads SET updated_at=clock_timestamp() WHERE id=$1', [threadId]);
@@ -612,39 +612,41 @@ export class TeamService {
         author
       });
 
-      // If posting to an agent thread by a human, queue a turn task if none is currently active
+      // If posting to an agent thread by a human, queue a turn task if none is currently active and the agent is not archived
       if (thread.agent_id) {
-        const agent = (await db.query<AgentRow>('SELECT * FROM agents WHERE id=$1 FOR UPDATE', [thread.agent_id])).rows[0]!;
-        const activeTurn = (await db.query(
-          "SELECT id FROM tasks WHERE tenant_id=$1 AND agent_id=$2 AND status IN ('queued', 'running') LIMIT 1",
-          [p.tenantId, thread.agent_id]
-        )).rows[0];
+        const agent = (await db.query<AgentRow>('SELECT * FROM agents WHERE id=$1 FOR UPDATE', [thread.agent_id])).rows[0];
+        if (agent && !agent.archived) {
+          const activeTurn = (await db.query(
+            "SELECT id FROM tasks WHERE tenant_id=$1 AND agent_id=$2 AND status IN ('queued', 'running') LIMIT 1",
+            [p.tenantId, thread.agent_id]
+          )).rows[0];
 
-        if (!activeTurn) {
-          const requiredCap = runnerCapability(agent.runner, agent.edits);
-          const taskId = newId();
-          const turnObjective = `Turn for agent ${agent.name}`;
-          const envelope = {
-            deploy: false, publish: false, purchase: false, local_patch: agent.edits,
-            read_project: true, send_messages: false, permission_changes: false, external_side_effects: false
-          };
-          const contextVersions = { message_seq: Number(nextSeq) };
-          const reqHash = sha256(canonicalJson({
-            kind: 'turn', scope: agent.scope, agent_id: agent.id, thread_id: threadId, seq: Number(nextSeq)
-          }));
+          if (!activeTurn) {
+            const requiredCap = runnerCapability(agent.runner, agent.edits);
+            const taskId = newId();
+            const turnObjective = `Turn for agent ${agent.name}`;
+            const envelope = {
+              deploy: false, publish: false, purchase: false, local_patch: agent.edits,
+              read_project: true, send_messages: false, permission_changes: false, external_side_effects: false
+            };
+            const contextVersions = { message_seq: Number(nextSeq) };
+            const reqHash = sha256(canonicalJson({
+              kind: 'turn', scope: agent.scope, agent_id: agent.id, thread_id: threadId, seq: Number(nextSeq)
+            }));
 
-          await db.query(
-            `INSERT INTO tasks
-               (id, tenant_id, scope, kind, agent_id, thread_id, objective, constraints, acceptance_criteria,
-                permission_envelope, required_capability, resource_key, context_versions, status, created_by,
-                idempotency_key, request_hash, max_attempts)
-             VALUES ($1, $2, $3, 'turn', $4, $5, $6, '[]'::jsonb, '[]'::jsonb, $7::jsonb, $8, $9, $10::jsonb, 'queued', $11, $12, $13, 3)`,
-            [taskId, p.tenantId, agent.scope, agent.id, threadId, turnObjective, JSON.stringify(envelope),
-             requiredCap, `agent:${agent.id}`, JSON.stringify(contextVersions), p.id, newId(), reqHash]
-          );
+            await db.query(
+              `INSERT INTO tasks
+                 (id, tenant_id, scope, kind, agent_id, thread_id, objective, constraints, acceptance_criteria,
+                  permission_envelope, required_capability, resource_key, context_versions, status, created_by,
+                  idempotency_key, request_hash, max_attempts)
+               VALUES ($1, $2, $3, 'turn', $4, $5, $6, '[]'::jsonb, '[]'::jsonb, $7::jsonb, $8, $9, $10::jsonb, 'queued', $11, $12, $13, 3)`,
+              [taskId, p.tenantId, agent.scope, agent.id, threadId, turnObjective, JSON.stringify(envelope),
+               requiredCap, `agent:${agent.id}`, JSON.stringify(contextVersions), p.id, newId(), reqHash]
+            );
 
-          await audit(db, p, agent.scope, 'task.submitted', taskId, { kind: 'turn', agent_id: agent.id, thread_id: threadId });
-          await event(db, p, agent.scope, 'task.updated', taskId, { task_id: taskId, kind: 'turn', thread_id: threadId, status: 'queued', action: 'submitted' });
+            await audit(db, p, agent.scope, 'task.submitted', taskId, { kind: 'turn', agent_id: agent.id, thread_id: threadId });
+            await event(db, p, agent.scope, 'task.updated', taskId, { task_id: taskId, kind: 'turn', thread_id: threadId, status: 'queued', action: 'submitted' });
+          }
         }
       }
 
@@ -686,7 +688,7 @@ export class TeamService {
         const cleanBody = clipUtf8(redactSecrets(body).replace(/@[a-zA-Z0-9_-]+\s*/g, '').trim(), 256);
         for (const agentId of targetAgents) {
           const agent = (await db.query<AgentRow>('SELECT * FROM agents WHERE id=$1 FOR UPDATE', [agentId])).rows[0];
-          if (!agent) continue;
+          if (!agent || agent.archived) continue;
           await enqueueAgentTurn(db, p, {
             thread,
             agent,
@@ -762,21 +764,53 @@ export class TeamService {
     }
 
     // Reference ids are untrusted; constrain every batch to this tenant and thread scope.
+    const canReadTasks = hasPermission(p, 'task:read');
     const questionIds = rows.filter(r => r.kind === 'question' || r.kind === 'answer')
       .flatMap(r => typeof r.ref?.question_id === 'string' && /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(r.ref.question_id) ? [r.ref.question_id] : []);
-    const questions = new Map((questionIds.length ? (await this.pool.query<QuestionRow>(
-      'SELECT * FROM questions WHERE id=ANY($1::uuid[]) AND tenant_id=$2 AND scope=$3',
-      [questionIds, p.tenantId, thread.scope]
-    )).rows : []).map(q => [q.id, q]));
-    const swarmIds = rows.filter(r => r.kind === 'swarm' && hasPermission(p, 'task:read'))
-      .flatMap(r => typeof r.ref?.swarm_id === 'string' && /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(r.ref.swarm_id) ? [r.ref.swarm_id] : []);
-    // A join keeps swarm headers and ordered steps in one round trip and preserves pg Date parsing.
-    const swarmRows = swarmIds.length ? (await this.pool.query<SwarmStepRow & { card: SwarmRow }>(
-      `SELECT st.*, row_to_json(s) AS card FROM swarms s
-       LEFT JOIN swarm_steps st ON st.swarm_id=s.id
-       WHERE s.id=ANY($1::uuid[]) AND s.tenant_id=$2 AND s.scope=$3
-       ORDER BY st.order_index ASC`, [swarmIds, p.tenantId, thread.scope]
-    )).rows : [];
+    const swarmIds = canReadTasks
+      ? rows.filter(r => r.kind === 'swarm')
+          .flatMap(r => typeof r.ref?.swarm_id === 'string' && /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(r.ref.swarm_id) ? [r.ref.swarm_id] : [])
+      : [];
+    const taskCardIds = canReadTasks
+      ? rows.filter(r => r.kind === 'task')
+          .flatMap(r => typeof r.ref?.task_id === 'string' && /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(r.ref.task_id) ? [r.ref.task_id] : [])
+      : [];
+
+    const [questionRows, swarmRows, taskRows, typingRows] = await Promise.all([
+      questionIds.length
+        ? this.pool.query<QuestionRow>(
+            'SELECT * FROM questions WHERE id=ANY($1::uuid[]) AND tenant_id=$2 AND scope=$3',
+            [questionIds, p.tenantId, thread.scope]
+          ).then(r => r.rows)
+        : Promise.resolve([] as QuestionRow[]),
+      swarmIds.length
+        ? this.pool.query<SwarmStepRow & { card: SwarmRow }>(
+            `SELECT st.*, row_to_json(s) AS card FROM swarms s
+             LEFT JOIN swarm_steps st ON st.swarm_id=s.id
+             WHERE s.id=ANY($1::uuid[]) AND s.tenant_id=$2 AND s.scope=$3
+             ORDER BY st.order_index ASC`,
+            [swarmIds, p.tenantId, thread.scope]
+          ).then(r => r.rows)
+        : Promise.resolve([] as (SwarmStepRow & { card: SwarmRow })[]),
+      taskCardIds.length
+        ? this.pool.query<TaskRow>(
+            'SELECT * FROM tasks WHERE id=ANY($1::uuid[]) AND tenant_id=$2 AND scope=$3',
+            [taskCardIds, p.tenantId, thread.scope]
+          ).then(r => r.rows)
+        : Promise.resolve([] as TaskRow[]),
+      this.pool.query<{ task_id: string; agent_id: string; text: unknown; activity: unknown; updated_at: Date }>(
+        `SELECT id AS task_id, agent_id, checkpoint->>'partial_text' AS text, checkpoint->'activity' AS activity, updated_at
+         FROM tasks WHERE tenant_id=$1 AND scope=$2 AND thread_id=$3 AND kind='turn' AND status='running'
+         AND (
+           (jsonb_typeof(checkpoint->'partial_text')='string' AND checkpoint->>'partial_text' <> '')
+           OR (jsonb_typeof(checkpoint->'activity')='array' AND jsonb_array_length(checkpoint->'activity') > 0)
+         )
+         ORDER BY updated_at, id`,
+        [p.tenantId, thread.scope, threadId]
+      ),
+    ]);
+
+    const questions = new Map(questionRows.map(q => [q.id, q]));
     const swarms = new Map<string, { swarm: SwarmRow; steps: SwarmStepRow[] }>();
     for (const r of swarmRows) {
       const s = r.card;
@@ -785,12 +819,6 @@ export class TeamService {
         closed_at: s.closed_at ? new Date(s.closed_at) : null }, steps: [] });
       if (r.id) swarms.get(s.id)!.steps.push(r);
     }
-    const taskCardIds = rows.filter(r => r.kind === 'task')
-      .flatMap(r => typeof r.ref?.task_id === 'string' && /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(r.ref.task_id) ? [r.ref.task_id] : []);
-    const taskRows = taskCardIds.length ? (await this.pool.query<TaskRow>(
-      'SELECT * FROM tasks WHERE id=ANY($1::uuid[]) AND tenant_id=$2 AND scope=$3',
-      [taskCardIds, p.tenantId, thread.scope]
-    )).rows : [];
     const taskMap = new Map(taskRows.map(t => [t.id, t]));
     const messages = rows.map(r => {
       const view = messageView(r);
@@ -826,15 +854,6 @@ export class TeamService {
       }
       return view;
     });
-    const typingRows = await this.pool.query<{ task_id: string; agent_id: string; text: unknown; activity: unknown; updated_at: Date }>(
-      `SELECT id AS task_id, agent_id, checkpoint->>'partial_text' AS text, checkpoint->'activity' AS activity, updated_at
-       FROM tasks WHERE tenant_id=$1 AND scope=$2 AND thread_id=$3 AND kind='turn' AND status='running'
-       AND (
-         (jsonb_typeof(checkpoint->'partial_text')='string' AND checkpoint->>'partial_text' <> '')
-         OR (jsonb_typeof(checkpoint->'activity')='array' AND jsonb_array_length(checkpoint->'activity') > 0)
-       )
-       ORDER BY updated_at, id`, [p.tenantId, thread.scope, threadId]
-    );
     const typing = typingRows.rows
       .map(r => {
         const text = typeof r.text === 'string' ? redactSecrets(r.text).slice(-4000) : '';
@@ -884,7 +903,6 @@ export class TeamService {
     const seq = integer(input.seq, 'seq', 0, 9223372036854775807);
 
     return transaction(this.pool, async db => {
-      await teamsLock(db, p.tenantId);
       const thread = (await db.query<ThreadRow>('SELECT * FROM threads WHERE id=$1 AND tenant_id=$2', [threadId, p.tenantId])).rows[0];
       requireFound(thread, 'Thread');
       requireScope(p, thread.scope);
@@ -939,7 +957,7 @@ export class TeamService {
            END
          )
          AND ($7::boolean OR NOT t.archived)
-         AND ($8::uuid IS NULL OR t.created_at < (SELECT created_at FROM threads WHERE id = $8))
+         AND ($8::uuid IS NULL OR (t.created_at, t.id) < (SELECT created_at, id FROM threads WHERE id = $8))
        ORDER BY t.created_at DESC, t.id DESC
        LIMIT $9`,
       [p.id, p.tenantId, all, grantedScopes, agentId, kind, includeArchived, after, limit + 1]
@@ -963,7 +981,8 @@ export class TeamService {
     assertKnownScope(p, scope);
     requireScope(p, scope);
     if (!Array.isArray(input.members)) throw new AppError(400, 'invalid_arguments', 'members must be an array of agent ids.');
-    const memberIds = input.members.map(m => uuid(m, 'member'));
+    requireCondition(input.members.length <= 100, 400, 'invalid_arguments', 'members cannot exceed 100 agents.');
+    const memberIds = [...new Set(input.members.map(m => uuid(m, 'member')))];
     const leadAgentId = input.lead_agent_id !== undefined && input.lead_agent_id !== null ? uuid(input.lead_agent_id, 'lead_agent_id') : null;
 
     return transaction(this.pool, async db => {
@@ -1025,7 +1044,8 @@ export class TeamService {
       let memberIds: string[];
       if (input.members !== undefined) {
         if (!Array.isArray(input.members)) throw new AppError(400, 'invalid_arguments', 'members must be an array.');
-        memberIds = input.members.map(m => uuid(m, 'member'));
+        requireCondition(input.members.length <= 100, 400, 'invalid_arguments', 'members cannot exceed 100 agents.');
+        memberIds = [...new Set(input.members.map(m => uuid(m, 'member')))];
         for (const mId of memberIds) {
           const a = (await db.query('SELECT id FROM agents WHERE id=$1 AND tenant_id=$2 AND scope=$3 AND NOT archived', [mId, p.tenantId, thread.scope])).rows[0];
           requireCondition(Boolean(a), 400, 'agent_not_found', `Member agent ${mId} not found or archived in scope ${thread.scope}`);
@@ -1054,21 +1074,32 @@ export class TeamService {
     noExtraKeys(input, ['sections']);
     requirePermission(p, 'thread:read');
     if (!Array.isArray(input.sections)) throw new AppError(400, 'invalid_arguments', 'sections must be an array.');
+    requireCondition(input.sections.length <= 100, 400, 'invalid_arguments', 'sections cannot exceed 100 entries.');
     const rawSections = input.sections as Array<Record<string, unknown>>;
+    const seenIds = new Set<string>();
+    const parsedSections = rawSections.map((raw, i) => {
+      const s = object(raw);
+      noExtraKeys(s, ['id', 'name', 'order', 'items', 'collapsed']);
+      const secId = s.id !== undefined ? uuid(s.id, `sections[${i}].id`) : newId();
+      requireCondition(!seenIds.has(secId), 400, 'invalid_arguments', `Duplicate section id: ${secId}`);
+      seenIds.add(secId);
+      const name = string(s.name, `sections[${i}].name`, 100);
+      if (s.items !== undefined && !Array.isArray(s.items)) throw new AppError(400, 'invalid_arguments', `sections[${i}].items must be an array.`);
+      const rawItems = Array.isArray(s.items) ? s.items : [];
+      requireCondition(rawItems.length <= 100, 400, 'invalid_arguments', `sections[${i}].items cannot exceed 100 entries.`);
+      const items = [...new Set(rawItems.map((it, j) => string(it, `sections[${i}].items[${j}]`, 100)))];
+      const collapsed = s.collapsed !== undefined ? booleanOption(s.collapsed, 'collapsed') : false;
+      return { secId, name, items, collapsed };
+    });
     return transaction(this.pool, async db => {
-      await teamsLock(db, p.tenantId);
       await db.query('DELETE FROM sections WHERE tenant_id=$1 AND principal_id=$2', [p.tenantId, p.id]);
       const inserted: SectionRow[] = [];
-      for (let i = 0; i < rawSections.length; i++) {
-        const s = object(rawSections[i]);
-        const secId = s.id !== undefined ? uuid(s.id, `sections[${i}].id`) : newId();
-        const name = string(s.name, `sections[${i}].name`, 100);
-        const items = Array.isArray(s.items) ? s.items.map(it => String(it)) : [];
-        const collapsed = s.collapsed !== undefined ? booleanOption(s.collapsed, 'collapsed') : false;
+      for (let i = 0; i < parsedSections.length; i++) {
+        const s = parsedSections[i]!;
         const row = (await db.query<SectionRow>(
           `INSERT INTO sections (id, tenant_id, principal_id, name, order_index, items, collapsed)
            VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7) RETURNING *`,
-          [secId, p.tenantId, p.id, name, i, JSON.stringify(items), collapsed]
+          [s.secId, p.tenantId, p.id, s.name, i, JSON.stringify(s.items), s.collapsed]
         )).rows[0]!;
         inserted.push(row);
       }

@@ -14,6 +14,7 @@ export class Terminal {
   private scrollBottom:number;
   private visible=true;
   private reliable=true;
+  private resized=false;
   private queries:{pattern:RegExp;until:number}[]=[];
   bracketedPaste=false;
   alternateScreen=false;
@@ -26,13 +27,13 @@ export class Terminal {
     this.clear();
   }
   private blank() { return {text:'',ghost:false}; }
-  private clear() { this.grid=Array.from({length:this.rows},() => Array.from({length:this.cols},() => this.blank())); this.reliable=true; }
+  private clear() { this.grid=Array.from({length:this.rows},() => Array.from({length:this.cols},() => this.blank())); this.reliable=true; this.resized=false; }
   resize(cols:number,rows:number) {
     this.cols=Math.max(1,Math.min(500,cols)); this.rows=Math.max(1,Math.min(200,rows));
     this.row=Math.min(this.row,this.rows-1); this.col=Math.min(this.col,this.cols-1);
     this.scrollTop=0; this.scrollBottom=this.rows-1; this.wrapped=false;
-    // ponytail: a resize needs a full repaint before automated input; add VT reflow if a supported harness cannot repaint.
-    this.clear(); this.reliable=false;
+    // A resize requires a full repaint (ED 2, cursor-home repaint, or ED 0 from home) before automated input.
+    this.clear(); this.reliable=false; this.resized=true;
   }
   private line(row=this.row) { return this.grid[row].map(c => c.text || ' ').join('').trimEnd(); }
   private down() {
@@ -105,7 +106,7 @@ export class Terminal {
     }
     if (ch==='h' || ch==='l') {
       const modes=parameters.replace(/^\?/, '').split(';');
-      if (ch==='h' && modes.includes('2004')) this.bracketedPaste=true;
+      if (modes.includes('2004')) this.bracketedPaste=ch==='h';
       if (modes.some(x => ['1049','1047','47'].includes(x))) { this.alternateScreen=ch==='h'; this.clear(); this.row=this.col=0; }
       if (modes.includes('25')) this.visible=ch==='h';
       return;
@@ -116,7 +117,11 @@ export class Terminal {
     }
     if (!/^[0-9;]*$/.test(parameters)) { this.reliable=false; return; }
     this.wrapped=false;
-    if (ch==='H' || ch==='f') { this.row=Math.min(this.rows-1,Math.max(0,(n[0]||1)-1)); this.col=Math.min(this.cols-1,Math.max(0,(n[1]||1)-1)); }
+    if (ch==='H' || ch==='f') {
+      this.row=Math.min(this.rows-1,Math.max(0,(n[0]||1)-1));
+      this.col=Math.min(this.cols-1,Math.max(0,(n[1]||1)-1));
+      if (this.resized && this.row===0 && this.col===0) { this.reliable=true; this.resized=false; }
+    }
     else if (ch==='A') this.row=Math.max(0,this.row-count);
     else if (ch==='B' || ch==='e') this.row=Math.min(this.rows-1,this.row+count);
     else if (ch==='C' || ch==='a') this.col=Math.min(this.cols-1,this.col+count);
@@ -128,7 +133,7 @@ export class Terminal {
     else if (ch==='s') this.saved=[this.row,this.col];
     else if (ch==='u') [this.row,this.col]=this.saved;
     else if (ch==='J') {
-      if (n[0]===2) this.clear();
+      if (n[0]===2 || (n[0]===0 && this.row===0 && this.col===0)) this.clear();
       else if (n[0]!==3) for (let r=0;r<this.rows;r++) for (let c=0;c<this.cols;c++)
         if (n[0]===1 ? r<this.row || (r===this.row && c<=this.col) : r>this.row || (r===this.row && c>=this.col)) this.grid[r][c]=this.blank();
     } else if (ch==='K') {

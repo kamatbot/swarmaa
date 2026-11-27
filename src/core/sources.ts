@@ -19,7 +19,7 @@ import {
   type NormalizedDigest,
   type SourceRules,
 } from './source-filter.js';
-import { assertKnownScope, audit, canonicalJson, event, newId, noExtraKeys, requireFound, scopeLock, scopeSql, sha256, type Db } from './shared.js';
+import { assertKnownScope, audit, canonicalJson, event, newId, noExtraKeys, requireFound, scopeLock, scopeSql, sha256, teamsLock, type Db } from './shared.js';
 import { TaskService, type TaskRow } from './tasks.js';
 import { assignThreadSeq, clipUtf8, enqueueAgentTurn, type AgentRow } from './teams.js';
 
@@ -359,10 +359,10 @@ export class SourceService {
       `SELECT * FROM source_deliveries
        WHERE source_id = $1
          AND ($2::text IS NULL OR status = $2)
-         AND ($3::timestamptz IS NULL OR received_at < $3)
+         AND ($3::timestamptz IS NULL OR (received_at, id) < ($3::timestamptz, $4::uuid))
        ORDER BY received_at DESC, id DESC
-       LIMIT $4`,
-      [sourceId, status, cursorRow ? cursorRow.received_at : null, limit]
+       LIMIT $5`,
+      [sourceId, status, cursorRow ? cursorRow.received_at : null, cursorRow ? cursorRow.id : null, limit]
     )).rows;
 
     return { deliveries: rows.map(deliveryView) };
@@ -837,7 +837,13 @@ export async function receiveGithubDelivery(
 }
 
 export async function tickSourceDeliveries(pool: Pool): Promise<void> {
-  await pool.query("DELETE FROM source_deliveries WHERE received_at < clock_timestamp() - interval '30 days'");
+  await pool.query(
+    `DELETE FROM source_deliveries WHERE id IN (
+       SELECT id FROM source_deliveries
+       WHERE received_at < clock_timestamp() - interval '30 days'
+       LIMIT 1000
+     )`
+  );
 
   const candidates = (await pool.query<{ id: string }>(
     `SELECT id FROM source_deliveries
@@ -878,6 +884,25 @@ export function isRecoveryDelivery(delivery: { action?: string | null; digest?: 
 
 export async function processOneDelivery(pool: Pool, deliveryId: string): Promise<void> {
   await transaction(pool, async db => {
+    const meta = (await db.query<{ tenant_id: string; scope: string }>(
+      `SELECT tenant_id, scope FROM source_deliveries
+       WHERE id = $1 AND status IN ('received', 'deferred')`,
+      [deliveryId]
+    )).rows[0];
+    if (!meta) return;
+
+    // Match task/bot lock ordering: scopeLock('tasks', scope) -> teamsLock(tenant) -> row locks.
+    const lockPrincipal: Principal = {
+      id: deliveryId,
+      tenantId: meta.tenant_id,
+      name: 'source-worker',
+      role: 'admin',
+      scopes: [meta.scope],
+      permissions: [],
+    };
+    await scopeLock(db, 'tasks', lockPrincipal, meta.scope);
+    await teamsLock(db, meta.tenant_id);
+
     const delivery = (await db.query<SourceDeliveryRow>(
       `SELECT * FROM source_deliveries
        WHERE id = $1 AND status IN ('received', 'deferred')
@@ -949,8 +974,9 @@ export async function processOneDelivery(pool: Pool, deliveryId: string): Promis
           const tasksService = new TaskService(pool);
           let continued = false;
           for (const sub of subs) {
-            const task = (await db.query<TaskRow>(
-              'SELECT * FROM tasks WHERE id = $1 FOR UPDATE',
+            const task = (await db.query<TaskRow & { lease_live: boolean }>(
+              `SELECT *, (status = 'running' AND lease_expires_at IS NOT NULL AND lease_expires_at > clock_timestamp()) AS lease_live
+               FROM tasks WHERE id = $1 FOR UPDATE`,
               [sub.task_id]
             )).rows[0];
             if (!task) continue;
@@ -961,8 +987,7 @@ export async function processOneDelivery(pool: Pool, deliveryId: string): Promis
               continue;
             }
 
-            const isLiveRunning = task.status === 'running' && task.lease_expires_at && (new Date(task.lease_expires_at).getTime() > Date.now());
-            if (task.status === 'queued' || isLiveRunning) {
+            if (task.status === 'queued' || task.lease_live) {
               await db.query(
                 "UPDATE source_deliveries SET status = 'deferred', next_attempt_at = clock_timestamp() + interval '30 seconds' WHERE id = $1",
                 [delivery.id]

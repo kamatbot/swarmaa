@@ -10,7 +10,7 @@ const BT = '`';
 
 // A label that marks the value after it as a secret (`token`, `GITHUB_TOKEN`, `api_key`, `"password"`). It must end in
 // the marker, so `input_tokens: 812` and `max_tokens=4096` stay readable.
-const LABEL = String.raw`[A-Za-z0-9_.-]*?(?:api[_-]?key|access[_-]?key|secret[_-]?key|private[_-]?key|client[_-]?secret|token|secret|password|passwd|passphrase|authorization|credentials?)`;
+const LABEL = String.raw`[A-Za-z0-9_.-]{0,64}?(?:api[_-]?key|access[_-]?key|secret[_-]?key|private[_-]?key|client[_-]?secret|token|secret|password|passwd|passphrase|authorization|credentials?)`;
 // From the end of a label to its value: optional closing quote (escaped too, for JSON inside a string) and separator.
 const SEPARATOR = String.raw`(?:\\?["'${BT}])?\s*[:=]\s*`;
 const OPEN_QUOTE = String.raw`\\?["'${BT}]`;
@@ -28,7 +28,7 @@ const UNQUOTED = String.raw`(?:[^"'${BT},\s\\]|\\[^"'${BT}])[^"'${BT},\s]*`;
 // Bare value after a quoted label: a JSON number or literal.
 const BARE = String.raw`[^"'${BT}\\\s,{}\[\]][^"'${BT}\\\s,{}\[\]]*`;
 // A command-line flag named for a secret: `--password `, `--token=`, `-api-key `.
-const FLAG = String.raw`(?:^|\s)--?[a-z0-9-]*(?:password|passwd|passphrase|token|secret|api-?key|access-?key)(?:=|\s+)`;
+const FLAG = String.raw`(?:^|\s)--?[a-z0-9-]{0,64}(?:password|passwd|passphrase|token|secret|api-?key|access-?key)(?:=|\s+)`;
 
 const isAuthScheme = (value: string): boolean => {
   const f = value.trim().split(/\s+/).filter(Boolean);
@@ -60,7 +60,7 @@ const RULES: Rule[] = [
   ...quotedRules(FLAG, 'flag'),
   rule(String.raw`(${FLAG})([^\s"'-][^\s"']*)`, '${1}' + REDACTED, { flags: 'gi', gate: 'flag' }),
   // Password in URL userinfo: `postgres://user:pw@host`.
-  rule(String.raw`(\b[a-z][a-z0-9+.-]*://[^/\s:@"'<>]+:)([^@/\s"'<>]+)(@)`, '${1}' + REDACTED + '${3}', { flags: 'gi' }),
+  rule(String.raw`(\b[a-z][a-z0-9+.-]{0,31}://[^/\s:@"'<>]+:)([^@/\s"'<>]+)(@)`, '${1}' + REDACTED + '${3}', { flags: 'gi' }),
   // Credentials recognisable by shape; the public type prefix stays (`ghp_[REDACTED]`).
   rule(String.raw`\b(sk-)[A-Za-z0-9_-]{20,}`, '${1}' + REDACTED),
   rule(String.raw`(\b(?:AKIA|ASIA)[A-Z0-9]{16}\b[\s,:|"']{1,8})[A-Za-z0-9/+]{40}([^A-Za-z0-9/+=]|$)`, '${1}' + REDACTED + '${2}'),

@@ -214,6 +214,8 @@ final class TeamsModel: ObservableObject {
 
     /// Set by the window: marking read only counts while it is on screen.
     var isVisible = false { didSet { if isVisible { markSelectedRead() } } }
+    /// Whether the main Teams window is currently open (not closed). Drives background polling in panels.
+    @Published var isWindowOpen = false
 
     private let client: SwarmaTeamsClient
     private var streamTask: Task<Void, Never>?
@@ -825,12 +827,16 @@ final class TeamsModel: ObservableObject {
         return match()
     }
 
-    /// Copies `git log -p <branch>` and offers Mark resolved.
+    /// Copies `git log -p <branch>` and marks the task as reviewed so buttons show Copied / Mark resolved.
     func review(_ row: TeamsTaskRow) {
         guard let branch = row.branch else { return }
+        review(taskID: row.id, branch: branch)
+    }
+
+    func review(taskID: String, branch: String) {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString("git log -p \(branch)", forType: .string)
-        reviewed.insert(row.id)
+        reviewed.insert(taskID)
     }
 
     /// Checks or unchecks a task's Resolved box. Returns whether it took.
@@ -1124,6 +1130,9 @@ final class TeamsModel: ObservableObject {
 
     func stopStream() {
         streamTask?.cancel(); streamTask = nil
+        botRefresh?.cancel(); botRefresh = nil
+        taskRefresh?.cancel(); taskRefresh = nil
+        mapRefresh?.cancel(); mapRefresh = nil
         staleThreads.formUnion(messages.keys)
     }
 

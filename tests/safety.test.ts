@@ -140,9 +140,10 @@ describe('redactSecrets (privacy.go behavior)', () => {
     assert.deepEqual(out, { tool_input: { password: '[REDACTED]', headers: { 'X-Api-Key': '[REDACTED]', Cookie: ['[REDACTED]', ''], Accept: 'application/json' }, env: { PWD: '/home/ada' } }, usage: { input_tokens: 12 }, token_type: 'Bearer' });
   });
 
-  it('stays fast on a long dotted run', () => {
+  it('stays fast on a long dotted run even when LABEL_GATE is open', () => {
     const start = Date.now();
     redactSecrets(`token ${'a.'.repeat(4000)}`);
+    redactSecrets(`password=secret1234 ${'a.'.repeat(25000)}`);
     redactSecrets('x'.repeat(100000));
     assert.ok(Date.now() - start < 2000);
   });

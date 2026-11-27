@@ -303,15 +303,35 @@ struct TimelinePane: View {
         day = cal.date(byAdding: comp, value: n, to: day) ?? day
     }
 
-    private var dayTitle: String {
+    private static func cachedFormatter(key: String, locale: Locale? = nil, configure: (DateFormatter) -> Void) -> DateFormatter {
+        let fullKey = "ActivityView.\(key).\(locale?.identifier ?? "sys")"
+        let dict = Thread.current.threadDictionary
+        if let cached = dict[fullKey] as? DateFormatter { return cached }
         let f = DateFormatter()
-        f.locale = L10n.locale
+        if let locale { f.locale = locale }
+        configure(f)
+        dict[fullKey] = f
+        return f
+    }
+
+    private var dayTitle: String {
+        let locale = L10n.locale
         switch period {
-        case .day: f.dateStyle = .full; f.timeStyle = .none; return f.string(from: day).capitalized
+        case .day:
+            let f = Self.cachedFormatter(key: "dayFull", locale: locale) {
+                $0.dateStyle = .full; $0.timeStyle = .none
+            }
+            return f.string(from: day).capitalized
         case .week:
-            f.dateFormat = "d MMM"
+            let f = Self.cachedFormatter(key: "weekRange", locale: locale) {
+                $0.dateFormat = "d MMM"
+            }
             return "\(f.string(from: interval.start)) – \(f.string(from: interval.end.addingTimeInterval(-1)))"
-        case .month: f.dateFormat = "LLLL yyyy"; return f.string(from: day).capitalized
+        case .month:
+            let f = Self.cachedFormatter(key: "monthTitle", locale: locale) {
+                $0.dateFormat = "LLLL yyyy"
+            }
+            return f.string(from: day).capitalized
         }
     }
 
@@ -320,7 +340,7 @@ struct TimelinePane: View {
     @State private var hoveredDay: Date?
 
     static func dayTitle(_ d: Date) -> String {
-        let f = DateFormatter(); f.locale = L10n.locale; f.dateFormat = "EEE d MMM"
+        let f = cachedFormatter(key: "dayShort", locale: L10n.locale) { $0.dateFormat = "EEE d MMM" }
         return f.string(from: d).capitalized
     }
 
@@ -332,8 +352,9 @@ struct TimelinePane: View {
         let cost = perDay.mapValues { $0.compactMap(\.cost).reduce(0, +) }
         let time = perDay.mapValues { $0.map(\.duration).reduce(0, +) }
         let maxV = max(cost.values.max() ?? 0, 0.01)
-        let f = DateFormatter(); f.dateFormat = period == .week ? "EEE" : "d"
-        f.locale = L10n.locale
+        let formatKey = period == .week ? "barWeek" : "barMonth"
+        let format = period == .week ? "EEE" : "d"
+        let f = Self.cachedFormatter(key: formatKey, locale: L10n.locale) { $0.dateFormat = format }
         return VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .bottom, spacing: period == .week ? 14 : 4) {
                 ForEach(days, id: \.self) { dd in
@@ -413,7 +434,8 @@ struct TimelinePane: View {
     }
 
     static func time(_ d: Date) -> String {
-        let f = DateFormatter(); f.dateFormat = "HH:mm"; return f.string(from: d)
+        let f = cachedFormatter(key: "timeHHmm") { $0.dateFormat = "HH:mm" }
+        return f.string(from: d)
     }
     static func duration(_ s: TimeInterval) -> String {
         let m = Int(s / 60)

@@ -11,11 +11,24 @@ import type { Task } from './types.js';
 const run = promisify(execFile);
 const fail = (code: string, message: string): Error => Object.assign(new Error(message), { code });
 
+/** Strip Swarmaa service tokens and DATABASE_URL before spawning git or helper subprocesses. */
+export function sanitizedEnv(parent: NodeJS.ProcessEnv = process.env, extra?: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(parent)) {
+    if (key === 'DATABASE_URL' || /^(?:COLLECTIVE|SWARMAA)_/u.test(key)) continue;
+    env[key] = value;
+  }
+  if (extra) Object.assign(env, extra);
+  return env;
+}
+
 export interface Worktree { dir: string; gitDir: string; branch: string; baseRef: string; baseCommit: string; continued: boolean }
 export interface PatchOutcome { branch: string; base_ref: string; base_commit: string; head_commit: string | null; changed_files: number; diffstat: string; diff: string; continued: boolean }
 
+const GIT_SAFE_FLAGS = ['-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false'];
+
 async function git(cwd: string, args: string[], env?: NodeJS.ProcessEnv, maxBuffer = 64 * 1024 * 1024): Promise<string> {
-  const { stdout } = await run('git', ['-C', cwd, ...args], { env: { ...process.env, ...env }, maxBuffer, encoding: 'utf8', timeout: 60_000 });
+  const { stdout } = await run('git', ['-C', cwd, ...GIT_SAFE_FLAGS, ...args], { env: sanitizedEnv(process.env, env), maxBuffer, encoding: 'utf8', timeout: 60_000 });
   return stdout;
 }
 
@@ -70,7 +83,7 @@ const DEPENDENCY_DIRS = ['node_modules'];
 async function seedDependencies(root: string, dir: string): Promise<void> {
   for (const name of DEPENDENCY_DIRS) {
     if (!existsSync(join(root, name)) || existsSync(join(dir, name))) continue;
-    try { await run('/bin/cp', ['-cR', join(root, name), join(dir, name)], { timeout: 60_000 }); } catch { /* not APFS, or no room */ }
+    try { await run('/bin/cp', ['-cR', join(root, name), join(dir, name)], { env: sanitizedEnv(), timeout: 60_000 }); } catch { /* not APFS, or no room */ }
   }
 }
 
@@ -92,16 +105,24 @@ export async function createWorktree(root: string, provider: string, task: Task,
   await mkdir(dirname(dir), { recursive: true });
   // Attempt-aware: reuse a surviving worktree (keeps a crashed run's edits), else continue the retained branch, else branch fresh.
   // Branch from the resolved commit, not the ref name, so a moving ref cannot change what the diff is against.
-  return serialized(root, async () => {
+  const wt = await serialized(root, async () => {
     await git(root, ['worktree', 'prune']);
     const real = (d: string): string => { try { return realpathSync(d); } catch { return d; } };
     const registered = (await git(root, ['worktree', 'list', '--porcelain'])).split('\n').some(l => l.startsWith('worktree ') && real(l.slice(9)) === real(dir));
-    const hasBranch = (b: string): Promise<boolean> => git(root, ['rev-parse', '--verify', '--quiet', `refs/heads/${b}`]).then(() => true, () => false);
-    const primaryExists = await hasBranch(primaryBranch);
-    const shortExists = !primaryExists && await hasBranch(shortBranch);
-    const legacyExists = !primaryExists && !shortExists && await hasBranch(legacyBranch);
-    const branch = primaryExists ? primaryBranch : shortExists ? shortBranch : legacyExists ? legacyBranch : primaryBranch;
-    const branchExists = primaryExists || shortExists || legacyExists;
+    const existingBranches = new Set(
+      (await git(root, ['for-each-ref', '--format=%(refname:short)', `refs/heads/${primaryBranch}`, `refs/heads/${shortBranch}`, `refs/heads/${legacyBranch}`]))
+        .split('\n')
+        .map(s => s.trim())
+        .filter(Boolean)
+    );
+    const branch = existingBranches.has(primaryBranch)
+      ? primaryBranch
+      : existingBranches.has(shortBranch)
+        ? shortBranch
+        : existingBranches.has(legacyBranch)
+          ? legacyBranch
+          : primaryBranch;
+    const branchExists = existingBranches.size > 0;
     if (existsSync(dir) && !registered) throw fail('worktree_dir_occupied', 'Worktree directory exists but is not a registered worktree of this repository');
     if (registered || branchExists) {
       await fenceOrphan(dir, log);
@@ -110,13 +131,14 @@ export async function createWorktree(root: string, provider: string, task: Task,
         ? (await git(dir, ['rev-parse', '--abbrev-ref', 'HEAD']).catch(() => branch)).trim() || branch
         : branch;
       const base = (await git(root, ['merge-base', activeBranch, baseCommit])).trim();
-      await seedDependencies(root, dir);
       return { dir, gitDir, branch: activeBranch, baseRef, baseCommit: base, continued: true };
     }
     await git(root, ['worktree', 'add', '-b', primaryBranch, dir, baseCommit]);
-    await seedDependencies(root, dir);
     return { dir, gitDir, branch: primaryBranch, baseRef, baseCommit, continued: false };
   });
+  // Seeding node_modules operates only on the task-private worktree dir, so keep it outside the repo lock.
+  await seedDependencies(root, wt.dir);
+  return wt;
 }
 
 /** Clip to maxBytes of UTF-8 without splitting a character. */
@@ -144,9 +166,9 @@ export async function finishWorktree(root: string, provider: string, task: Task,
       const unchanged = head === wt.baseCommit;
       let diff = '', files = 0, stat = '';
       if (!unchanged) {
-        files = (await git(wt.dir, ['diff', '--name-only', range])).split('\n').filter(Boolean).length;
-        stat = Buffer.from(await git(wt.dir, ['diff', '--stat', range])).subarray(0, 4096).toString('utf8');
-        try { diff = await git(wt.dir, ['diff', range]); } catch { diff = '(diff too large to capture; see the branch)\n'; }
+        files = (await git(wt.dir, ['diff', '--no-ext-diff', '--name-only', range])).split('\n').filter(Boolean).length;
+        stat = Buffer.from(await git(wt.dir, ['diff', '--no-ext-diff', '--stat', range])).subarray(0, 4096).toString('utf8');
+        try { diff = await git(wt.dir, ['diff', '--no-ext-diff', range]); } catch { diff = '(diff too large to capture; see the branch)\n'; }
         // Content plus note must fit what the service will store, so the upload cannot fail on size.
         const limit = Math.min(maxBytes, ARTIFACT_MAX_BYTES);
         if (Buffer.byteLength(diff) > limit) {

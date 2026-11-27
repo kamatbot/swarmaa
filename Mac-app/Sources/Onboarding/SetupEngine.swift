@@ -188,12 +188,20 @@ protocol SetupProcessRunning {
     func run(arguments: [String], root: URL, stdin: Data?,
              onStdout: @escaping (String) -> Void,
              onStderr: @escaping (String) -> Void) throws -> Int32
+    /// Terminates any in-flight setup process (e.g. when the window closes mid-run).
+    func cancel()
+}
+
+extension SetupProcessRunning {
+    func cancel() {}
 }
 
 enum SetupEngineError: LocalizedError, Equatable {
     case invalidPlan([String])
     case failed(code: Int32, detail: String)
     case noOutput
+    case cancelled
+    case timedOut
 
     var errorDescription: String? {
         switch self {
@@ -201,11 +209,22 @@ enum SetupEngineError: LocalizedError, Equatable {
         case .failed(let code, let detail):
             return detail.isEmpty ? "The setup script exited with status \(code)." : detail
         case .noOutput: return "The setup script returned nothing."
+        case .cancelled: return "Setup was cancelled."
+        case .timedOut: return "The setup step timed out."
         }
     }
 }
 
-struct NodeProcessRunner: SetupProcessRunning {
+final class NodeProcessRunner: SetupProcessRunning, @unchecked Sendable {
+    private let stateLock = NSLock()
+    private var activeProcesses: [Process] = []
+    private var cancelled = false
+    let timeout: TimeInterval
+
+    init(timeout: TimeInterval = 180) {
+        self.timeout = timeout
+    }
+
     /// The bundled Node when the root is the app's runtime; else first of Homebrew, /usr/local, else whatever `env` finds.
     static func nodeInvocation(root: URL? = nil, exists: (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) })
         -> (executable: String, prefix: [String]) {
@@ -218,9 +237,24 @@ struct NodeProcessRunner: SetupProcessRunning {
         return ("/usr/bin/env", ["node"])
     }
 
+    func cancel() {
+        stateLock.lock()
+        cancelled = true
+        let running = activeProcesses
+        activeProcesses.removeAll()
+        stateLock.unlock()
+        for proc in running where proc.isRunning {
+            proc.terminate()
+        }
+    }
+
     func run(arguments: [String], root: URL, stdin: Data?,
              onStdout: @escaping (String) -> Void,
              onStderr: @escaping (String) -> Void) throws -> Int32 {
+        stateLock.lock()
+        cancelled = false
+        stateLock.unlock()
+
         let node = Self.nodeInvocation(root: root)
         let process = Process()
         process.executableURL = URL(fileURLWithPath: node.executable)
@@ -254,6 +288,35 @@ struct NodeProcessRunner: SetupProcessRunning {
             lines.forEach(onStderr)
         }
 
+        stateLock.lock()
+        if cancelled {
+            stateLock.unlock()
+            throw SetupEngineError.cancelled
+        }
+        activeProcesses.append(process)
+        stateLock.unlock()
+
+        var didTimeOut = false
+        let timeoutWork = DispatchWorkItem { [weak self, weak process] in
+            guard let process, process.isRunning else { return }
+            didTimeOut = true
+            process.terminate()
+            self?.stateLock.lock()
+            self?.activeProcesses.removeAll { $0 === process }
+            self?.stateLock.unlock()
+        }
+        // The real `--run-json` setup can take ~600 s per step: only detection is time-boxed (cancel() still works).
+        if !arguments.contains("--run-json") {
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeout, execute: timeoutWork)
+        }
+
+        defer {
+            timeoutWork.cancel()
+            stateLock.lock()
+            activeProcesses.removeAll { $0 === process }
+            stateLock.unlock()
+        }
+
         try process.run()
         if let stdin { input.fileHandleForWriting.write(stdin) }
         try? input.fileHandleForWriting.close()
@@ -267,6 +330,12 @@ struct NodeProcessRunner: SetupProcessRunning {
         lock.unlock()
         rest.forEach(onStdout)
         restErr.forEach(onStderr)
+
+        stateLock.lock()
+        let wasCancelled = cancelled
+        stateLock.unlock()
+        if didTimeOut { throw SetupEngineError.timedOut }
+        if wasCancelled { throw SetupEngineError.cancelled }
         return process.terminationStatus
     }
 }
@@ -275,6 +344,10 @@ struct NodeProcessRunner: SetupProcessRunning {
 
 struct SetupEngine {
     var runner: SetupProcessRunning = NodeProcessRunner()
+
+    func cancel() {
+        runner.cancel()
+    }
 
     /// `dist/scripts/setup.js` in the app's runtime, `--import tsx scripts/setup.ts` in a dev checkout.
     static func base(root: URL) -> [String] {

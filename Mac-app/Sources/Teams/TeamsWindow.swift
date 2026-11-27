@@ -57,6 +57,7 @@ final class TeamsWindowController: NSObject, NSWindowDelegate {
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
         positionTrafficLights()
+        model.isWindowOpen = true
         model.isVisible = true
         if let threadID { model.select(threadID: threadID) }
         if connect { Task { await model.refresh() } }
@@ -103,6 +104,7 @@ final class TeamsWindowController: NSObject, NSWindowDelegate {
     func windowDidMiniaturize(_ notification: Notification) { model.isVisible = false }
     func windowDidDeminiaturize(_ notification: Notification) { model.isVisible = true }
     func windowWillClose(_ notification: Notification) {
+        model.isWindowOpen = false
         model.isVisible = false
         model.stopStream()
         // After the close completes, so the window no longer counts as open.
@@ -406,15 +408,18 @@ struct UsagePane: View {
                 Text(verbatim: model.lastUpdated.map { L10n.t("Updated ") + $0.formatted(.relative(presentation: .named)) } ?? "")
                     .font(KS.text()).foregroundStyle(KS.textMuted)
                 Spacer()
-                Button(L10n.t("Routing rules")) { AppDelegate.shared?.openSettings() }.buttonStyle(.ks(.paper))
+                Button(L10n.t("Routing rules")) { AppDelegate.shared?.openRoutingSettings() }.buttonStyle(.ks(.paper))
                 Button(L10n.t("Refresh all")) { Task { await model.refresh() } }.buttonStyle(.ks(.primary))
             }
         }
         // Workers report every pass; without this the pane kept whatever it
         // loaded on opening, an expired-token error included, until clicked.
-        .task {
+        // Stops polling automatically when the Teams window closes.
+        .task(id: model.isWindowOpen) {
+            guard model.isWindowOpen else { return }
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(60))
+                guard !Task.isCancelled else { break }
                 await model.refreshUsage()
             }
         }

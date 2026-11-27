@@ -45,7 +45,7 @@ export interface TaskRow {
   attempt_count:number; max_attempts:number; continuation_count:number; lease_generation:number;
   lease_owner:string|null; lease_hash:string|null; lease_expires_at:Date|null;
   checkpoint:Record<string,unknown>|null; result:Record<string,unknown>|null; artifact_ids:string[];
-  excluded_providers?:string[]; not_before?:Date|null;
+  excluded_providers?:string[]; not_before?:Date|null; last_checkpoint_event_at?:Date|null;
   created_at:Date; updated_at:Date; completed_at:Date|null;
 }
 interface RunRow {
@@ -61,7 +61,10 @@ interface ArtifactRow {
 /** Capabilities some worker can advertise; anything else would sit queued forever. */
 // demo.read is reserved for scripts/demo.ts: no real worker advertises it.
 /** The newest 40 messages (the turn window) hold a photo. ponytail: ignores the 24 KB window trim; over-approximates to claude. */
-const TURN_HAS_PHOTO = `EXISTS (SELECT 1 FROM (SELECT ref FROM messages WHERE thread_id=t.thread_id ORDER BY seq DESC LIMIT 40) m WHERE jsonb_typeof(m.ref->'attachments')='array')`;
+/** Task origins nobody is present for; Antigravity's consumer login never serves them (see bridge assertAntigravityCompliance). */
+const UNATTENDED_INITIATORS: readonly string[] = ['schedule', 'source', 'bot_check'];
+const UNATTENDED_SQL = UNATTENDED_INITIATORS.map(k => `'${k}'`).join(',');
+const TURN_HAS_PHOTO =`EXISTS (SELECT 1 FROM (SELECT has_attachments FROM messages WHERE thread_id=t.thread_id ORDER BY seq DESC LIMIT 40) m WHERE m.has_attachments)`;
 export const VALID_CAPABILITIES = [AUTO_READ,AUTO_PATCH,'claude.read','claude.patch','codex.read','codex.patch','antigravity.read','antigravity.patch','demo.read'] as const;
 const date = (value:Date|null):string|null => value?.toISOString() ?? null;
 const expectedVersion = (value:unknown):number => integer(value, 'expected_version', 1, 2147483647);
@@ -539,7 +542,8 @@ export class TaskService {
       await db.query(`UPDATE tasks t SET required_capability='claude.'||split_part(required_capability,'.',2),
         permission_envelope=CASE WHEN permission_envelope#>>'{runner,provider}'='antigravity'
           THEN jsonb_set(permission_envelope #- '{runner,model}' #- '{runner,effort}','{runner,provider}','"claude"') ELSE permission_envelope END
-        WHERE tenant_id=$1 AND scope=$2 AND kind='turn' AND status='queued' AND required_capability LIKE 'antigravity.%' AND ${TURN_HAS_PHOTO}`,[p.tenantId,scope]);
+        WHERE tenant_id=$1 AND scope=$2 AND status='queued' AND required_capability LIKE 'antigravity.%'
+          AND ((kind='turn' AND ${TURN_HAS_PHOTO}) OR initiator_kind IN (${UNATTENDED_SQL}))`,[p.tenantId,scope]);
       const candidates = await db.query<TaskRow>(`SELECT * FROM tasks WHERE tenant_id=$1 AND scope=$2 AND status='queued'
         AND (not_before IS NULL OR not_before<=clock_timestamp())
         AND attempt_count<max_attempts AND required_capability=ANY($3::text[])
@@ -560,6 +564,9 @@ export class TaskService {
         // Auto turns with a photo never route to antigravity (it throws photo_provider_unsupported).
         if (row.kind==='turn' && row.required_capability.startsWith('auto.') && !(row.excluded_providers ?? []).includes('antigravity')
           && (await db.query(`SELECT 1 FROM tasks t WHERE t.id=$1 AND ${TURN_HAS_PHOTO}`,[row.id])).rowCount) row.excluded_providers = [...(row.excluded_providers ?? []),'antigravity'];
+        // Antigravity runs only work a person started: schedules, webhooks and scheduled checks go to the other providers.
+        if (row.initiator_kind && UNATTENDED_INITIATORS.includes(row.initiator_kind) && !(row.excluded_providers ?? []).includes('antigravity'))
+          row.excluded_providers = [...(row.excluded_providers ?? []),'antigravity'];
         // B2 bot hook: same usage snapshot for eligibility and the execution-bound route.
         const taskPolicy = await taskBotPolicy(db,p.tenantId,row,policy,usage);
         let flowProvider:string|undefined;
@@ -631,11 +638,14 @@ export class TaskService {
           }
         }
         if (next.kind === 'turn' && next.bot_id) {
-          // A coordinator bot sees every other project's bot so it can dispatch to them by name.
+          // A coordinator bot sees other project bots within the worker's permitted scopes so it can dispatch by name.
           const own = (await db.query<{rules:Record<string,unknown>}>('SELECT rules FROM bots WHERE id=$1',[next.bot_id])).rows[0];
           if (own?.rules?.dispatch_all_projects === true) {
+            const [allScopes, grantedScopes] = scopeSql(p);
             const bots = (await db.query<{name:string;scope:string;job:string}>(
-              'SELECT name, scope, job FROM bots WHERE tenant_id=$1 AND id<>$2 AND NOT archived ORDER BY name',[p.tenantId,next.bot_id])).rows;
+              'SELECT name, scope, job FROM bots WHERE tenant_id=$1 AND id<>$2 AND NOT archived AND ($3::boolean OR scope=ANY($4::text[])) ORDER BY name',
+              [p.tenantId, next.bot_id, allScopes, grantedScopes]
+            )).rows;
             claimTask = {...claimTask, project_bots: bots.map(b => ({name:b.name.trim(),scope:b.scope,job:clipUtf8(b.job ?? '',200)}))};
           }
           if (own?.rules?.local_actions === true) claimTask = {...claimTask, local_actions: true};
@@ -723,7 +733,7 @@ export class TaskService {
     const lease = leaseInput(input);
     const seconds = leaseSeconds(input.lease_seconds);
     return transaction(this.pool,async db => {
-      const row = await lockedTask(db,p,lease.taskId);
+      const row = await findTask(db,p,lease.taskId,true);
       await requireLease(db,p,row,lease);
       await touchWorker(db,p);
       const updated = await db.query<TaskRow>(`UPDATE tasks SET
@@ -744,24 +754,25 @@ export class TaskService {
     const lease = leaseInput(input);
     const checkpoint = jsonObject(input.checkpoint,'checkpoint',32768);
     return transaction(this.pool,async db => {
-      const row = await lockedTask(db,p,lease.taskId);
+      const row = await findTask(db,p,lease.taskId,true);
       await requireLease(db,p,row,lease);
       // Streaming text is not a new task version: bumping it on every partial would invalidate the
       // caller's expected_version for the whole turn. Other phases still bump.
       const streamingPhase = checkpoint.phase === 'running';
-      const updated = await db.query<TaskRow>(`UPDATE tasks SET checkpoint=$2::jsonb,
+      const updated = await db.query<TaskRow & { should_emit: boolean }>(`UPDATE tasks SET checkpoint=$2::jsonb,
         version=CASE WHEN $3::boolean THEN version ELSE version+1 END,
-        updated_at=clock_timestamp() WHERE id=$1 AND lease_expires_at>clock_timestamp() RETURNING *`,
-        [row.id,JSON.stringify(checkpoint),streamingPhase]);
+        updated_at=clock_timestamp(),
+        last_checkpoint_event_at=CASE WHEN NOT $3::boolean OR last_checkpoint_event_at IS NULL OR last_checkpoint_event_at<=clock_timestamp()-interval '3 seconds'
+          THEN clock_timestamp() ELSE last_checkpoint_event_at END
+        WHERE id=$1 AND lease_expires_at>clock_timestamp()
+        RETURNING *, (NOT $3::boolean OR $4::timestamptz IS NULL OR $4::timestamptz<=clock_timestamp()-interval '3 seconds') AS should_emit`,
+        [row.id,JSON.stringify(checkpoint),streamingPhase,row.last_checkpoint_event_at ?? null]);
       requireCondition(updated.rows[0],409,'lease_lost','Lease expired before checkpoint.');
       const next = updated.rows[0];
       // Chat UIs refetch the thread (typing text is read from the checkpoint column) on task.updated events, so the
       // event stays; it is throttled to one per 3 s per task for streaming 'running' checkpoints. Other phases
       // (starting, provider_finished, or any client-defined one) always emit. Checkpoints are never audited.
-      const recent = streamingPhase && (await db.query(`SELECT 1 FROM events WHERE tenant_id=$1 AND scope=$2
-        AND subject_id=$3 AND name='task.updated' AND payload->>'action'='checkpointed'
-        AND created_at>clock_timestamp()-interval '3 seconds' LIMIT 1`,[p.tenantId,next.scope,next.id])).rowCount;
-      if (!recent) await taskChanged(db,p,next,'checkpointed',true,false);
+      if (next.should_emit) await taskChanged(db,p,next,'checkpointed',true,false);
       // Steering: a bridge running a turn with an open stdin asks for owner messages posted since it started
       // (or since the last one it took). Text only, oldest first; a photo stops the batch so order is kept
       // and the photo waits for the follow-up turn.
@@ -769,7 +780,7 @@ export class TaskService {
       if (next.kind === 'turn' && next.thread_id && typeof checkpoint.steer_after_seq === 'number' && Number.isSafeInteger(checkpoint.steer_after_seq)) {
         const after = Math.max(checkpoint.steer_after_seq, Number((next.context_versions as {message_seq?:unknown})?.message_seq) || 0);
         const rows = (await db.query<{seq:string;kind:string;body:string;has_photos:boolean}>(`SELECT seq, kind, body,
-            jsonb_typeof(ref->'attachments')='array' AS has_photos
+            has_attachments AS has_photos
           FROM messages WHERE tenant_id=$1 AND thread_id=$2 AND (author->>'kind')='human' AND seq>$3
           ORDER BY seq LIMIT 5`,[p.tenantId,next.thread_id,after])).rows;
         steer = [];
@@ -1101,7 +1112,7 @@ async function finishRequeue(db:PoolClient,p:Principal,c:FinishCtx):Promise<unkn
     case 'quota_exhausted':
       await db.query(`UPDATE provider_usage SET fetched_at=clock_timestamp()-interval '16 minutes', headroom=0
         WHERE tenant_id=$1 AND provider=$2`, [p.tenantId, servedProvider]);
-      return requeueOnOtherProvider(db, p, c, 'quota_exhausted', row.kind);
+      return requeueOnOtherProvider(db, p, c, 'quota_exhausted', effectiveRoutingKind(row));
     case 'provider_error': {
       // One delayed retry per provider; a repeat failure there moves to another provider.
       const priorRuns = await db.query<RunRow>(

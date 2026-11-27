@@ -14,14 +14,16 @@ export function canAccessScope(principal: Principal, scope: string): boolean {
 }
 
 export function requireScope(principal: Principal, scope: string): void {
-  if (!canAccessScope(principal, scope)) throw new AppError(403, 'scope_forbidden', 'This connection does not have access to that scope.');
+  if (!canAccessScope(principal, scope)) {
+    throw new AppError(403, 'scope_forbidden', 'This connection does not have access to that scope. Call swarm_status to check permitted scopes.');
+  }
 }
 
 export const ROLE_PERMISSIONS: Record<Principal['role'], Permission[]> = {
   admin: ['admin'],
-  frontend: ['memory:read', 'memory:write', 'task:read', 'task:submit', 'task:cancel', 'artifact:read', 'events:read', 'agent:manage', 'agent:read', 'thread:read', 'thread:write'],
+  frontend: ['memory:read', 'memory:write', 'task:read', 'task:submit', 'task:cancel', 'artifact:read', 'events:read'],
   worker: ['memory:read', 'memory:write', 'task:read', 'task:claim', 'task:work', 'artifact:read', 'artifact:write', 'events:read'],
 };
 
 /** Permissions the owner can add to or remove from an existing frontend identity (`npm run admin -- grant`). Nobody has them by default. */
-export const GRANTABLE_PERMISSIONS = ['lesson:review', 'routing:manage', 'answer_questions', 'agent:read', 'agent:manage', 'thread:read', 'thread:write'] as const satisfies readonly Permission[];
+export const GRANTABLE_PERMISSIONS = ['lesson:review', 'routing:manage', 'answer_questions', 'agent:read', 'agent:manage', 'thread:read', 'thread:write', 'app:device'] as const satisfies readonly Permission[];

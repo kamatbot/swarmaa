@@ -95,21 +95,20 @@ nothing is pushed.
 `swarm_status` returns live workers, provider headroom with reset times, `routing` (`recommended`/`reason` for review, plus `policy`, `is_default`, `by_kind`), task counts per scope and
 recent tasks. `npm run usage` prints the local readings.
 
-**Coming next:** persistent agents with their own threads, channels and tracked swarms; see [TEAMS.md](TEAMS.md).
+**Teams & Bots:** persistent agents, threads, channels, tracked swarms, and configured bots are documented in [TEAMS.md](TEAMS.md) and [BOTS.md](BOTS.md).
 
 ## /swarm
 
-`/swarm` shows swarm runs from inside Claude Code, Codex and Antigravity through the `swarma` MCP tools (worker chats are
-recorded as `swarm:<task id>` chats, so `session_list {swarm_only:true}` finds them; `session_get {task_id}` reads one).
+`/swarm` shows swarm runs from inside Claude Code, Codex and Antigravity through the `swarma` MCP tools (`swarm_status`, `swarm_list`, `task_list`, `task_get`, `session_get`).
 
 | Input | Does |
 |---|---|
-| `/swarm` | live workers, queued/running, and a table of the last 15 runs here (when, service, project, title, status, branch) |
+| `/swarm` | live workers, active persistent swarms (`swarm_list`), and a table of the last 15 tasks (`task_list`, no per-row `task_get` loop) |
 | `/swarm <task id or prefix>` | request, answers, branch, diff summary, how to continue and review (`git log`/`git diff` on the branch) |
 | `/swarm continue <id> <instruction>` | `task_continue` on the latest version with a fresh idempotency key |
 | `/swarm run <instruction>` | `task_submit` here (`auto.read` for review/research, `auto.patch` for edits; asks if unclear) |
 
-Installed by `npx tsx scripts/hooks-install.ts` (`--dry-run`, `--remove`): `~/.claude/commands/swarm.md`,
+Installed automatically by `npm run setup` and by `npm run hooks:install` (`-- --dry-run`, `-- --remove`): `~/.claude/commands/swarm.md`,
 `~/.codex/skills/swarm/SKILL.md` (type `$swarm`), `~/.gemini/config/skills/swarm/SKILL.md`. Files without the
 `swarma:swarm-command` marker are never overwritten. Source: `clients/commands/swarm.md`.
 
@@ -170,14 +169,14 @@ moving the PostgreSQL-backed service, which is not needed for a personal swarm.
 
 ## Deploying changes
 
-Use Node.js 24 and `npm run deploy:local` to build, drain running bridges with SIGUSR2,
+Use Node.js 24 and `npm run deploy:local` (loads `.env`) to build, drain running bridges with SIGUSR2,
 wait for their replacement PIDs, then restart the service and check its discovery endpoint.
 Never `kickstart -k` a busy bridge: SIGTERM/SIGINT abort its running tasks. A repeated SIGUSR2 is harmless.
-Drain waits indefinitely by default; set `BRIDGE_DRAIN_MAX_SECONDS` in the bridge environment to
+Drain waits up to 300 seconds by default (`--drain-timeout <seconds>` overrides it); set `BRIDGE_DRAIN_MAX_SECONDS` in the bridge environment to
 abort remaining tasks after a deadline. Draining bridges keep heartbeating and report zero slots.
 Use `-- --dry-run` to print the plan without building or signaling, `--only claude|codex|agy` for one
-bridge, or `--no-service` to leave the service running. Set `PORT` for a non-default service port
-(default 8787); an optional `COLLECTIVE_TOKEN` adds scoped running-task counts to PID progress.
+bridge, `--no-service` to leave the service running, or `--relay` to also restart `com.swarma.relay`. Set `PORT` for a non-default service port
+(default 8787); an optional `SWARMAA_TOKEN` (or legacy `COLLECTIVE_TOKEN`) adds scoped running-task counts to PID progress.
 The first rollout requires bridges that already handle SIGUSR2; install this version while idle.
 Before rollout, the database's worker-slots constraint must accept 0 (the original migration accepts 1–16).
 
@@ -198,29 +197,32 @@ Removing a client: `claude mcp remove -s user swarma`, `codex mcp remove swarma`
 ## Inbox notifications between agents
 
 After applying migrations `019_inbox.sql` and `020_inbox_receipts.sql`, setup installs inbox hooks for each connected Claude Code, Codex
-and Antigravity CLI, independently of optional chat sharing. `npx tsx scripts/hooks-install.ts` installs the
-journal, inbox and `/swarm` files; `--remove` removes only these owned entries, and `--dry-run` previews them.
+and Antigravity CLI, independently of optional chat sharing. `npm run hooks:install` (`npx tsx scripts/hooks-install.ts`) installs the
+journal, inbox, memory, and `/swarm` files; `--remove` removes only these owned entries, and `--dry-run` previews them.
 Codex requires one-time review and trust through `/hooks`; the installer never bypasses it.
 
 `clients/hooks/swarmaa-inbox.mjs <claude|codex|agy> <event>` reads the same `.local/<identity>.json` and `.env`
-port as the stdio launcher. Fast hooks have a two-second network budget and stay silent on errors. Bodies
+port as the stdio launcher. To eliminate per-tool-call Node cold starts, `PostToolUse` hooks (Claude non-`task_submit` and Codex)
+are wrapped in a zero-fork POSIX shell guard that checks `~/.swarmaa/inbox-dirty/.active` and `~/.swarmaa/inbox-dirty/<principalId>.flag`
+(maintained by the local server) plus pending local ack/batch files, exiting `0` in under 1 ms when nothing is pending.
+Fast hooks have a two-second network budget, log status words to `.local/logs/inbox.log`, and stay silent on errors (emitting `{}` for Antigravity). Bodies
 are labeled as untrusted data and context is capped below 10,000 characters (four items per fetch).
 
 - Claude's SessionStart, UserPromptSubmit and PostToolUse hooks inject context; its matched `task_submit`
   hook registers the submitting session. Stop runs an async + asyncRewake waiter for up to 30 minutes in
-  25-second chunks. An item goes to stderr with exit 2. One PID lock per session lives under
-  `~/.swarma/inbox/<session hash>`; another Stop leaves a live waiter alone, and normal cancellation releases it.
+  25-second chunks with exponential backoff (`1s → 2s → 4s → 10s`) across transient restarts. An item goes to stderr with exit 2. One PID lock per session lives under
+  `~/.swarma/inbox/<session hash>`; stale acquisition guards (>5 s) are recovered automatically, and stale session directories (>7 days) are pruned opportunistically.
 - Codex's step hooks inject context. Stop only displays an informational message and saves that batch
   privately for the next step: the current Stop contract does not support model-visible additionalContext.
   It never blocks or creates a continuation. No `codex queue` idle-wake path is enabled without live proof.
-- Antigravity PreInvocation returns an ephemeral injected step; Stop continues only when pending data exists.
+- Antigravity PreInvocation returns an ephemeral injected step; Stop continues only when pending data exists and emits `{}` otherwise.
 
 For explicit routing use `message_send`; to watch a task from Codex or Antigravity, call `task_watch` with
 the harness-prefixed session ID. A principal-wide notification is tracked independently for each session of that identity;
 explicit session watchers receive their own item.
 
-Hooks reserve an `offered` receipt before output. The wrapper waits for its output-only child to exit 0 (step)
-or 2 (Claude wake), then sends `inbox_ack` with the stable delivery ID. A small private acceptance journal retains
+Hooks reserve an `offered` receipt before output. The hook writes directly to stdout (step) or stderr (Claude wake)
+and flushes before sending `inbox_ack` with the stable delivery ID. A small private acceptance journal retains
 IDs when the acknowledgment response is lost; later hooks reconcile those IDs before fetching or printing more.
 Codex Stop's informational output is not accepted until the next model-visible step prints its cached batch.
 Before using that cache, the hook rechecks access and receipt state with a read-only lookup; accepted/read or

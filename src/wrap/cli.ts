@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 import { randomUUID } from 'node:crypto';
-import { appendFileSync, mkdirSync, realpathSync } from 'node:fs';
+import { accessSync, appendFileSync, constants, mkdirSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Delivery } from './delivery.js';
 import { connection, installRoot, listen, type Report } from './inbox.js';
@@ -11,6 +11,18 @@ import { Terminal, type Harness } from './terminal.js';
 export const ALIASES="alias codex='swarmaa wrap codex'\nalias agy='swarmaa wrap agy'";
 export function childEnvironment(parent:NodeJS.ProcessEnv,session:string):NodeJS.ProcessEnv {
   return {...Object.fromEntries(Object.entries(parent).filter(([key]) => !/^(COLLECTIVE|SWARMAA|SWARMA)_/.test(key))),SWARMAA_WRAP_SESSION:session};
+}
+
+/** Verify the wrapped CLI exists and is executable on PATH, otherwise throw an actionable error. */
+export function resolveHarnessBinary(harness:Harness,pathEnv=process.env.PATH ?? ''):string {
+  for (const dir of pathEnv.split(delimiter).filter(Boolean)) {
+    const candidate=join(dir,harness);
+    try { accessSync(candidate,constants.X_OK); return candidate; } catch { /* keep searching */ }
+  }
+  const hint=harness==='codex'
+    ? 'Install Codex CLI (e.g. `npm install -g @openai/codex`) or add it to PATH, then retry.'
+    : 'Install the Antigravity CLI (`agy`) or add it to PATH, then retry.';
+  throw new Error(`Could not find '${harness}' on PATH. ${hint}`);
 }
 
 export async function wrap(harness:Harness,args:string[]):Promise<number> {
@@ -28,9 +40,10 @@ export async function wrap(harness:Harness,args:string[]):Promise<number> {
   try { inbox=connection(process.env.SWARMAA_WRAP_ROOT || installRoot(),harness); }
   catch { throw new Error('Wrapper identity unavailable. Run Swarmaa setup for this harness first.'); }
   process.stderr.write(`Swarmaa session: ${session}\nReceipts: ${logFile}\n`);
+  const binary=resolveHarnessBinary(harness);
   const {spawn}=await import('node-pty');
   const terminal=new Terminal(process.stdout.columns||80,process.stdout.rows||24);
-  const child=spawn(harness,args,{cwd:process.cwd(),cols:terminal.cols,rows:terminal.rows,name:process.env.TERM || 'xterm-256color',env:childEnvironment(process.env,session)});
+  const child=spawn(binary,args,{cwd:process.cwd(),cols:terminal.cols,rows:terminal.rows,name:process.env.TERM || 'xterm-256color',env:childEnvironment(process.env,session)});
   const delivery=new Delivery(terminal,harness,data => child.write(data));
   const raw=process.stdin.isRaw;
   let code=1,killTimer:ReturnType<typeof setTimeout>|undefined;

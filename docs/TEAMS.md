@@ -1,6 +1,6 @@
 # Teams: persistent agents, channels and tracked swarms
 
-**Status:** Phases 1 and 2 implemented; phases 3–4 in design. **Date:** 2026-10-27.
+**Status:** Phases 1–3 implemented (including Bots in [BOTS.md](BOTS.md) and the Mac/iOS apps); phase 4 planned.
 **Inspired by:** OpenBot (openbot.run, `nightly-labs/openbot`, source-available under its own licence). Ideas only: no OpenBot code or text is copied.
 
 Today a Swarmaa swarm is a set of one-shot tasks. You submit, a worker runs, a result comes back, and the work is gone from view once you have read it. This design adds the layer people actually work in:
@@ -151,12 +151,13 @@ All new ids are UUIDs with a readable prefix in the UI only.
 
 | Tool | Permission | Input | Notes |
 |---|---|---|---|
-| `thread_post` | `thread:write` | `thread_id, body, idempotency_key, reply_to?` | A human post to an agent thread queues a turn. A channel post queues turns for the `@`mentioned agents, or for the lead. |
-| `thread_read` | `thread:read` | `thread_id, after_seq?, before_seq?, limit≤100` | Messages in order, with resolved `swarm` and `run` card snapshots. |
+| `thread_post` | `thread:write` | `thread_id, body, idempotency_key, reply_to?, attachments?` | A human post to an agent thread queues a turn. A channel post queues turns for the `@`mentioned agents, or for the lead. |
+| `thread_read` | `thread:read` | `thread_id, after_seq?, before_seq?, limit≤100` | Messages in order, with resolved `swarm`, `question`, `task`, and `run` card snapshots plus streaming `typing`. |
+| `message_dismiss` | `thread:write` | `thread_id, seq` | Dismisses (deletes) one system-authored service notice (e.g. "Turn failed") from a thread. |
 | `thread_mark_read` | `thread:read` | `thread_id, seq` | Moves the read cursor. |
-| `thread_list` | `thread:read` | `agent_id? or kind?, include_archived?` | Agent side threads, or channels. |
+| `thread_list` | `thread:read` | `agent_id? or kind?, include_archived?` | Agent side threads, channels, or bot threads. |
 | `channel_create` / `channel_update` | `agent:manage` | `name, scope, members[], lead_agent_id?` | Members are agent ids; the owner is always a member. |
-| `section_set` | `thread:read` | `sections[]` | Per-viewer sidebar layout; replaces the whole list. |
+| `section_set` / `section_list` | `app:device` | `sections[]` | Per-viewer native-app sidebar layout; replaces or lists the sections. |
 
 ### Swarms
 
@@ -175,8 +176,10 @@ All new ids are UUIDs with a readable prefix in the UI only.
 | Tool | Permission | Input | Notes |
 |---|---|---|---|
 | `question_ask` | turn grant only | `prompt ≤ 500, options[] ≤ 8 (each ≤ 80), multi, free_text, expires_in?, action?` | Agents only, from inside a turn. |
-| `question_answer` | `thread:write` + `answer_questions` (owner) | `question_id, choices[], text?, idempotency_key` | Posts the `answer` message and queues the agent's next turn. |
+| `question_answer` | `answer_questions` (+ `thread:read`) | `question_id, choices[], text?, idempotency_key` | Posts the `answer` message and queues the agent's next turn. |
 | `question_list` | `thread:read` | `status?=open` | Everything waiting on you; the main window badge counts these. |
+
+Note: `agent:read`, `agent:manage`, `thread:read`, `thread:write`, `app:device`, and `answer_questions` are grantable native-app permissions (provisioned for `swarmaa-mac` and paired phone identities), not part of the default coding-CLI `frontend` role.
 
 ### Live stream for the UI
 
@@ -214,10 +217,10 @@ That bridges this layer into the CLIs people already use.
 
 ## 6. Phases
 
-1. **Service foundation [Implemented]:** agents, threads, messages, turns (including the turn prompt and the turn grant), read cursors, the SSE stream, migration 024, and tests. Acceptance: create Atlas, post to it, get a reply on two different providers, switch the runner mid-thread with the thread kept, all under tenant isolation.
-2. **Swarms, handoffs and questions [Implemented]:** the tools above; `flow_start` returns a swarm; the Mac app shows open swarms and the question badge. Acceptance: the Friday-launch scenario runs end to end with one question answered, one step reassigned while running, and a restart in the middle.
-3. **Mac app main window:** sidebar sections, agent and channel threads, the four card types, a runner picker that shows quota, and an unread badge. Acceptance: every control is clicked in the real app and its result observed.
-4. **Later:** channels with invited humans (gateway tenants already exist), scheduled agent routines, side threads, Slack and Discord bridges.
+1. **Service foundation [Implemented]:** agents, threads, messages, turns (including the turn prompt and the turn grant), read cursors, the SSE stream, migration 024, and tests.
+2. **Swarms, handoffs, questions, and Bots [Implemented]:** tracked swarms (`swarm_*`), `flow_start` swarm integration, structured questions/approvals, and persistent bots ([BOTS.md](BOTS.md)).
+3. **Native Mac & iOS apps [Implemented]:** main window in `Mac-app/` and companion in `iOS-app/` with sidebar sections, bot/agent/channel threads, live cards, quota rings, runner pickers, and unread badges.
+4. **Later:** channels with invited humans (gateway tenants already exist), side threads, and Slack/Discord bridges.
 
 ## 7. Open choices (defaults chosen)
 

@@ -98,12 +98,12 @@ struct AntigravityActivity: Equatable {
         let source: String?
     }
 
+    private static let plainISO = Date.ISO8601FormatStyle(includingFractionalSeconds: false)
+    private static let fractionalISO = Date.ISO8601FormatStyle(includingFractionalSeconds: true)
+
     static func parse(_ value: String) -> Date? {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime]
-        if let date = formatter.date(from: value) { return date }
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return formatter.date(from: value)
+        if let date = try? plainISO.parse(value) { return date }
+        return try? fractionalISO.parse(value)
     }
 
     /// What the cell says. Deliberately a count with the limit's absence stated,

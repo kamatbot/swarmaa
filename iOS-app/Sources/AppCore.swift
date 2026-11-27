@@ -40,7 +40,18 @@ indirect enum JSON: Codable, Equatable, Hashable, Sendable {
 }
 
 struct Bot: Identifiable, Equatable, Sendable {
-    var raw: JSON
+    var raw: JSON {
+        didSet {
+            activityDate = Self.parseISO(Self.rawActivity(raw))
+        }
+    }
+    private(set) var activityDate: Date
+
+    init(raw: JSON) {
+        self.raw = raw
+        self.activityDate = Self.parseISO(Self.rawActivity(raw))
+    }
+
     var id: String { raw["id"].string }
     var name: String { raw["name"].string }
     var job: String { raw["job"].string }
@@ -53,12 +64,29 @@ struct Bot: Identifiable, Equatable, Sendable {
     var needsYou: Int { raw["badges"]["needs_you"].int }
     var unread: Int { raw["badges"]["unread"].int }
     var line: String { raw["badges"]["latest"]["line"].string }
-    var activity: String { let at = raw["badges"]["latest"]["at"].string; return at.isEmpty ? raw["updated_at"].string : at }
-    private var activityDate: Date {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return formatter.date(from: activity) ?? ISO8601DateFormatter().date(from: activity) ?? .distantPast
+    var activity: String { Self.rawActivity(raw) }
+
+    private static func rawActivity(_ raw: JSON) -> String {
+        let at = raw["badges"]["latest"]["at"].string
+        return at.isEmpty ? raw["updated_at"].string : at
     }
+
+    private static let isoFractional = Date.ISO8601FormatStyle(includingFractionalSeconds: true)
+    private static let isoPlain = Date.ISO8601FormatStyle(includingFractionalSeconds: false)
+
+    static func parseISO(_ value: String) -> Date {
+        guard !value.isEmpty else { return .distantPast }
+        if let d = try? isoFractional.parse(value) { return d }
+        if let d = try? isoPlain.parse(value) { return d }
+        return .distantPast
+    }
+
+    static func parseISOOptional(_ value: String) -> Date? {
+        guard !value.isEmpty else { return nil }
+        if let d = try? isoFractional.parse(value) { return d }
+        return try? isoPlain.parse(value)
+    }
+
     static func sorted(_ bots: [Bot], includeArchived: Bool = false) -> [Bot] {
         bots.filter { includeArchived || !$0.archived }.sorted {
             if ($0.needsYou > 0) != ($1.needsYou > 0) { return $0.needsYou > 0 }
@@ -222,12 +250,10 @@ struct ThreadRow: Identifiable {
     var id: String { messages[0].id }
     var folded: Bool { messages.count > 1 }
     var label: String {
-        func date(_ value: String) -> Date? {
-            let formatter = ISO8601DateFormatter()
-            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-            return formatter.date(from: value) ?? ISO8601DateFormatter().date(from: value)
+        guard let first = Bot.parseISOOptional(messages[0].raw["created_at"].string),
+              let last = Bot.parseISOOptional(messages[messages.count - 1].raw["created_at"].string) else {
+            return "Worked · \(messages.count) steps"
         }
-        guard let first = date(messages[0].raw["created_at"].string), let last = date(messages[messages.count - 1].raw["created_at"].string) else { return "Worked · \(messages.count) steps" }
         let seconds = Int(max(0, last.timeIntervalSince(first)))
         let duration = seconds < 60 ? "\(seconds)s" : "\(seconds / 60)m"
         return "Worked for \(duration) · \(messages.count) steps"
@@ -301,22 +327,69 @@ struct NewBotDraft {
 }
 
 // Pairing URLs carry secrets: reject ambiguous inputs and never include them in errors.
-struct PairingLink {
+struct PairingLink: Equatable, Sendable {
+    struct LocalEndpoint: Equatable, Sendable {
+        let hosts: [String]
+        let port: Int
+        let code: String
+        let name: String?
+    }
+
     let host: String
     let code: String
+    let local: LocalEndpoint?
+
     init(_ url: URL) throws {
         guard let parts = URLComponents(url: url, resolvingAgainstBaseURL: false),
-              parts.scheme == "swarmaa", parts.host == "pair", parts.path.isEmpty,
+              parts.host == "pair", parts.path.isEmpty,
               parts.user == nil, parts.password == nil, parts.port == nil, parts.fragment == nil,
-              let items = parts.queryItems, items.count == 2,
-              items.filter({ $0.name == "host" }).count == 1,
-              items.filter({ $0.name == "code" }).count == 1,
-              let host = items.first(where: { $0.name == "host" })?.value,
-              host.range(of: "^[a-z2-7]{26}$", options: .regularExpression) != nil,
-              let code = items.first(where: { $0.name == "code" })?.value,
-              code.range(of: "^[a-z]+(-[a-z]+){5}$", options: .regularExpression) != nil
+              let items = parts.queryItems, !items.isEmpty
         else { throw AppFailure.invalidPairing }
-        self.host = host; self.code = code.replacingOccurrences(of: "-", with: " ")
+
+        // Reject duplicate query keys upfront.
+        let names = items.map(\.name)
+        guard Set(names).count == names.count else { throw AppFailure.invalidPairing }
+        let map = Dictionary(uniqueKeysWithValues: items.compactMap { item in item.value.map { (item.name, $0) } })
+        guard map.count == items.count else { throw AppFailure.invalidPairing }
+
+        // 1. Unified relay format: swarmaa://pair?host=<26-char>&code=<6-words | 6-digits>
+        if parts.scheme == "swarmaa", items.count == 2,
+           let host = map["host"], let code = map["code"],
+           host.range(of: "^[a-z2-7]{26}$", options: .regularExpression) != nil,
+           (code.range(of: "^[a-z]+(-[a-z]+){5}$", options: .regularExpression) != nil
+            || code.range(of: "^[0-9]{6}$", options: .regularExpression) != nil) {
+            self.host = host
+            self.code = code.replacingOccurrences(of: "-", with: " ")
+            self.local = nil
+            return
+        }
+
+        // 2. Short 6-digit relay code link: swarmaa://pair?code=<6-digits>
+        if parts.scheme == "swarmaa", items.count == 1,
+           let code = map["code"],
+           code.range(of: "^[0-9]{6}$", options: .regularExpression) != nil {
+            self.host = ""
+            self.code = code
+            self.local = nil
+            return
+        }
+
+        // 3. Local PhoneLink v3 format: (swarmaa|codenotch)://pair?v=3&h=<hosts>&p=<port>&c=<32-hex>[&n=<name>]
+        if (parts.scheme == "swarmaa" || parts.scheme == "codenotch"),
+           map["v"] == "3",
+           Set(map.keys).isSubset(of: ["v", "h", "p", "c", "n"]),
+           let rawHosts = map["h"],
+           let rawPort = map["p"], let port = Int(rawPort), (1...65535).contains(port),
+           let code = map["c"], code.range(of: "^[0-9a-fA-F]{32}$", options: .regularExpression) != nil {
+            let hosts = rawHosts.split(separator: ",").map(String.init).filter { !$0.isEmpty }
+            guard !hosts.isEmpty else { throw AppFailure.invalidPairing }
+            self.host = hosts[0]
+            self.code = code
+            self.local = LocalEndpoint(hosts: hosts, port: port, code: code, name: map["n"])
+            return
+        }
+
+        throw AppFailure.invalidPairing
     }
 }
 
@@ -357,11 +430,12 @@ struct ConnectionKeychain: Sendable {
 }
 
 enum AppFailure: LocalizedError {
-    case keychain, invalidPairing, tooManyTries, invalidResponse, unauthorized, offline, timeout, noStar, invalidMessage, service(Int)
+    case keychain, invalidPairing, localPairingNeedsRelay, tooManyTries, invalidResponse, unauthorized, offline, timeout, noStar, invalidMessage, service(Int)
     var errorDescription: String? {
         switch self {
         case .keychain: "Could not access this device’s secure connection. Unlock your phone and try again."
-        case .invalidPairing: "That code is wrong, already used or expired. Run npm run relay:pair on your Mac for a new one."
+        case .invalidPairing: "That code is wrong, already used or expired. Open Connect Phone on your Mac or run npm run relay:pair for a new one."
+        case .localPairingNeedsRelay: "This QR code is for local Wi-Fi pairing. To connect over the Swarmaa relay, use the 6-digit code shown in Connect Phone on your Mac (or run npm run relay:pair)."
         case .tooManyTries: "Too many tries. Wait a few minutes, then use a new code from your Mac."
         case .invalidResponse: "The host returned an unreadable response."
         case .unauthorized: "This connection was revoked. Pair with your Mac again."
@@ -534,7 +608,16 @@ enum PushNotification {
 
 @MainActor @Observable final class AppModel {
     var service: (any HostService)?
-    var bots: [Bot] = []
+    var bots: [Bot] = [] {
+        didSet {
+            sortedBots = Bot.sorted(bots)
+            hiddenBots = bots.filter(\.archived).sorted {
+                $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+            }
+        }
+    }
+    private(set) var sortedBots: [Bot] = []
+    private(set) var hiddenBots: [Bot] = []
     var expandedWorkingNotes: [String: Set<String>] = [:]
     var messages: [Message] = []
     /// Last messages seen per bot, so reopening a thread shows them at once while new ones load.
@@ -619,6 +702,8 @@ enum PushNotification {
     }
     private var streamTask: Task<Void, Never>?
     private var presenceTask: Task<Void, Never>?
+    private var botRefreshTask: Task<Void, Never>?
+    var botRefreshDebounce: Duration = .milliseconds(250)
     private var cursor = "now"
     private var createdLeads: [String: String] = [:]
     private var pendingPosts: [String: (text: String, photos: [ChatPhoto], key: String)] = [:]
@@ -626,9 +711,7 @@ enum PushNotification {
     init(keychain: ConnectionKeychain = ConnectionKeychain()) { self.keychain = keychain }
     /// Whether home's collapsed "Hidden" section is open. Hidden bots never mix into the main list.
     var showHidden = false
-    var sortedBots: [Bot] { Bot.sorted(bots) }
-    var hiddenBots: [Bot] { bots.filter(\.archived).sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending } }
-    var starred: Bot? { Bot.shortcut(bots) }
+    var starred: Bot? { sortedBots.first { $0.starred } }
     var scopes: [String] {
         Array(Set(status["scopes"].array.map { $0["scope"].string } + bots.map(\.scope))).filter { !$0.isEmpty }.sorted()
     }
@@ -640,7 +723,7 @@ enum PushNotification {
         } catch { self.error = safeError(error) }
     }
     func attach(_ service: RelayService) {
-        streamTask?.cancel(); presenceTask?.cancel()
+        streamTask?.cancel(); presenceTask?.cancel(); botRefreshTask?.cancel(); botRefreshTask = nil
         self.service = service; connected = true; didLoadBots = false
         onConnectionChanged?()
         presenceTask = Task { [weak self, transport = service.transport] in
@@ -653,7 +736,14 @@ enum PushNotification {
     }
     func handlePairingURL(_ url: URL, transport: SwarmaRelayTransport? = nil) async throws {
         let link = try PairingLink(url)
-        try await pair(host: link.host, code: link.code, transport: transport)
+        if link.local != nil {
+            throw AppFailure.localPairingNeedsRelay
+        }
+        if link.host.isEmpty {
+            try await pair(code: link.code)
+        } else {
+            try await pair(host: link.host, code: link.code, transport: transport)
+        }
     }
     func replyingAgent(_ typing: JSON) -> (id: String, name: String) {
         let id = typing["agent_id"].string.isEmpty ? typing["author"]["id"].string : typing["agent_id"].string
@@ -821,10 +911,28 @@ enum PushNotification {
             }
         }
         if name.hasPrefix("bot.") || name == "message.created" || name.hasPrefix("question.") {
-            bots = try await allPages(service, "bot_list", ["limit": .number(100), "include_archived": .bool(true)], key: "bots").map { Bot(raw: $0) }
-            clearVisibleUnread()
-            if let id = openBot?.id, let updated = bots.first(where: { $0.id == id }) { openBot = updated }
+            if botRefreshDebounce == .zero {
+                try await refreshBotsNow()
+            } else {
+                scheduleBotRefresh()
+            }
         }
+    }
+    private func scheduleBotRefresh() {
+        botRefreshTask?.cancel()
+        let delay = botRefreshDebounce
+        botRefreshTask = Task { [weak self] in
+            do { try await Task.sleep(for: delay) } catch { return }
+            guard !Task.isCancelled, let self else { return }
+            try? await self.refreshBotsNow()
+            self.botRefreshTask = nil
+        }
+    }
+    private func refreshBotsNow() async throws {
+        guard let service else { return }
+        bots = try await allPages(service, "bot_list", ["limit": .number(100), "include_archived": .bool(true)], key: "bots").map { Bot(raw: $0) }
+        clearVisibleUnread()
+        if let id = openBot?.id, let updated = bots.first(where: { $0.id == id }) { openBot = updated }
     }
     func startStream() {
         guard let service, !isDemo else { return }
@@ -993,7 +1101,7 @@ enum PushNotification {
         try keychain.delete()
         onConnectionChanged?()
         pushToken = nil; activityStartToken = nil; didLoadBots = false; pendingPushBotID = nil; visibleThreadBotID = nil
-        streamTask?.cancel(); presenceTask?.cancel()
+        streamTask?.cancel(); presenceTask?.cancel(); botRefreshTask?.cancel(); botRefreshTask = nil
         if let service = service as? RelayService { await service.transport.disconnect() }
         service = nil; connected = false; online = false; openBot = nil
         expandedWorkingNotes = [:]; pendingPosts = [:]

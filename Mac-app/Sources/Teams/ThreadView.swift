@@ -9,8 +9,7 @@ struct ThreadView: View {
     let threadID: String
 
     @State private var nearBottom = true
-    /// False while a freshly opened (or freshly loaded) thread lays out; it fades in already in place.
-    @State private var settled = false
+    @State private var canLoadOlder = false
     @State private var answeringQuestion: TeamsQuestion?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -64,13 +63,11 @@ struct ThreadView: View {
                         }
                         .padding(.horizontal, 24).padding(.vertical, 20)
                     }
-                    .opacity(settled ? 1 : 0)
-                    // Opening a bot, or its messages first arriving, lays out rows, photos and the bottom anchor
-                    // over a few frames; showing that read as the thread jumping. Reveal it once it has settled.
-                    .task(id: "\(threadID):\(messages.isEmpty)") {
-                        settled = false
-                        try? await Task.sleep(for: .milliseconds(reduceMotion ? 60 : 120))
-                        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.14)) { settled = true }
+                    .task(id: threadID) {
+                        canLoadOlder = false
+                        try? await Task.sleep(for: .milliseconds(150))
+                        guard !Task.isCancelled else { return }
+                        canLoadOlder = true
                     }
                     .defaultScrollAnchor(.bottom, for: .initialOffset)
                     // At the bottom, stay pinned there while messages grow (markdown renders after a
@@ -82,7 +79,7 @@ struct ThreadView: View {
                     .onScrollGeometryChange(for: Bool.self) { geometry in
                         geometry.contentOffset.y < 80 && geometry.contentSize.height > geometry.containerSize.height
                     } action: { _, nearTop in
-                        guard nearTop, settled, model.hasOlder[threadID] == true, let first = messages.first?.id else { return }
+                        guard nearTop, canLoadOlder, model.hasOlder[threadID] == true, let first = messages.first?.id else { return }
                         Task {
                             await model.loadOlder(threadID)
                             proxy.scrollTo(first, anchor: .top) // keep your place above the new page
@@ -1054,13 +1051,14 @@ struct Composer: View {
     let threadID: String
     @FocusState private var editorFocused: Bool
     @StateObject private var dictation = ChatDictation()
+    @State private var localText = ""
+    @State private var draftFlushTask: Task<Void, Never>?
+    @State private var photoThumbnails: [UUID: NSImage] = [:]
     @State private var mediaError: String?
     @State private var preparingPhotos = false
     @State private var startingDictation = false
     @Environment(\.scenePhase) private var scenePhase
-    private var text: Binding<String> {
-        Binding(get: { model.drafts[threadID] ?? "" }, set: { model.drafts[threadID] = $0 })
-    }
+
     private var sending: Bool { model.sendingThreads.contains(threadID) }
     /// An open approval holds the thread until you answer it.
     private var paused: Bool {
@@ -1079,7 +1077,11 @@ struct Composer: View {
                     if model.pendingSends[threadID] != nil {
                         Button("Retry") { send() }
                     }
-                    Button("Edit") { model.discardSend(threadID, edit: true) }
+                    Button("Edit") {
+                        flushDraftNow()
+                        model.discardSend(threadID, edit: true)
+                        localText = model.drafts[threadID] ?? ""
+                    }
                         .disabled(preparingPhotos || startingDictation || dictation.isRecording || pending.photos.count + (model.photoDrafts[threadID]?.count ?? 0) > 2)
                     Button("Discard") { model.discardSend(threadID) }
                 }
@@ -1090,13 +1092,16 @@ struct Composer: View {
                     ForEach(photos) { photo in
                         ZStack(alignment: .topTrailing) {
                             Group {
-                                if let image = NSImage(data: photo.data) { Image(nsImage: image).resizable().scaledToFill() }
+                                if let image = photoThumbnails[photo.id] { Image(nsImage: image).resizable().scaledToFill() }
                                 else { Image(systemName: "photo").foregroundStyle(KS.textMuted) }
                             }
                             .frame(width: 52, height: 52).background(KS.paper).clipped()
                             .clipShape(RoundedRectangle(cornerRadius: 6))
                             .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(KS.hairline, lineWidth: 1))
-                            Button { model.photoDrafts[threadID]?.removeAll { $0.id == photo.id } } label: { Image(systemName: "xmark.circle.fill") }
+                            Button {
+                                model.photoDrafts[threadID]?.removeAll { $0.id == photo.id }
+                                photoThumbnails.removeValue(forKey: photo.id)
+                            } label: { Image(systemName: "xmark.circle.fill") }
                                 .buttonStyle(.plain).accessibilityLabel(L10n.t("Remove photo"))
                                 .foregroundStyle(KS.ink).background(Circle().fill(KS.white))
                                 .offset(x: 5, y: -5)
@@ -1112,10 +1117,10 @@ struct Composer: View {
             Button {
                 if dictation.isRecording { dictation.stop() }
                 else {
-                    let prefix = text.wrappedValue
+                    let prefix = localText
                     startingDictation = true
                     Task {
-                        await dictation.start { transcript in text.wrappedValue = prefix + (prefix.isEmpty ? "" : " ") + transcript }
+                        await dictation.start { transcript in localText = prefix + (prefix.isEmpty ? "" : " ") + transcript }
                         startingDictation = false
                     }
                 }
@@ -1123,13 +1128,13 @@ struct Composer: View {
                 .buttonStyle(KSBarButtonStyle(on: dictation.isRecording)).disabled((paused && !dictation.isRecording) || startingDictation || preparingPhotos).help(L10n.t("Dictation"))
                 .accessibilityLabel(dictation.isRecording ? L10n.t("Stop dictation") : L10n.t("Start dictation"))
             ZStack(alignment: .topLeading) {
-                if text.wrappedValue.isEmpty || paused {
+                if localText.isEmpty || paused {
                     Text(verbatim: paused ? L10n.t("Answer the approval above to continue")
                          : model.bot(threadID: threadID).map { L10n.t("Message \($0.name) · Return to send") } ?? L10n.t("Message · Return to send, Shift-Return for a new line"))
                         .font(KS.text()).foregroundStyle(KS.textMuted).padding(.horizontal, 5).padding(.vertical, 5)
                         .allowsHitTesting(false)
                 }
-                TextEditor(text: text)
+                TextEditor(text: $localText)
                     .focused($editorFocused).accessibilityLabel("Message in this thread")
                     .disabled(paused || startingDictation || dictation.isRecording)
                     .opacity(paused ? 0 : 1)
@@ -1151,7 +1156,7 @@ struct Composer: View {
             }
             Button(action: send) { Image(systemName: "arrow.up").font(KS.glyph(14, .semibold)) }
                 .buttonStyle(KSBarButtonStyle(send: true))
-                .disabled(paused || sending || preparingPhotos || (model.pendingSends[threadID] == nil && text.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && (model.photoDrafts[threadID]?.isEmpty ?? true)))
+                .disabled(paused || sending || preparingPhotos || (model.pendingSends[threadID] == nil && localText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && (model.photoDrafts[threadID]?.isEmpty ?? true)))
                 .padding(.bottom, 5).help(L10n.t("Send")).accessibilityLabel(model.pendingSends[threadID] == nil ? "Send message" : "Retry previous message")
         }
             }
@@ -1160,19 +1165,78 @@ struct Composer: View {
         .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(KS.optionLine, lineWidth: 1))
         .padding(.horizontal, 24).padding(.top, 12).padding(.bottom, 20)
         .background(KS.paper)
-        .onDisappear { dictation.stop() }
-        .onChange(of: scenePhase) { _, phase in if phase != .active { dictation.stop() } }
-        .onChange(of: model.threadIsVisible) { _, visible in if !visible { dictation.stop() } }
+        .onAppear {
+            localText = model.drafts[threadID] ?? ""
+            decodeMissingThumbnails(for: model.photoDrafts[threadID] ?? [])
+        }
+        .onDisappear {
+            dictation.stop()
+            flushDraftNow()
+        }
+        .onChange(of: localText) { _, _ in scheduleDraftFlush() }
+        .onChange(of: model.photoDrafts[threadID]) { _, photos in
+            decodeMissingThumbnails(for: photos ?? [])
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase != .active {
+                dictation.stop()
+                flushDraftNow()
+            }
+        }
+        .onChange(of: model.threadIsVisible) { _, visible in
+            if !visible {
+                dictation.stop()
+                flushDraftNow()
+            }
+        }
+    }
 
+    private func scheduleDraftFlush() {
+        draftFlushTask?.cancel()
+        let current = localText
+        draftFlushTask = Task {
+            try? await Task.sleep(for: .milliseconds(300))
+            guard !Task.isCancelled else { return }
+            if model.drafts[threadID] != current {
+                model.drafts[threadID] = current
+            }
+        }
+    }
+
+    private func flushDraftNow() {
+        draftFlushTask?.cancel()
+        draftFlushTask = nil
+        if model.drafts[threadID] != localText {
+            model.drafts[threadID] = localText
+        }
+    }
+
+    private func decodeMissingThumbnails(for photos: [ChatPhoto]) {
+        let activeIDs = Set(photos.map(\.id))
+        photoThumbnails = photoThumbnails.filter { activeIDs.contains($0.key) }
+        for photo in photos where photoThumbnails[photo.id] == nil {
+            let id = photo.id, data = photo.data
+            Task.detached(priority: .userInitiated) {
+                let image = NSImage(data: data)
+                await MainActor.run {
+                    if let image { photoThumbnails[id] = image }
+                }
+            }
+        }
     }
 
     private func send() {
         guard !sending, !paused else { return }
         dictation.stop()
+        let isRetry = model.pendingSends[threadID] != nil
+        flushDraftNow()
         let target = threadID
+        if !isRetry {
+            localText = ""
+            photoThumbnails = [:]
+        }
         editorFocused = true
         Task { _ = await model.sendDraft(threadID: target) }
-
     }
 
     private func choosePhotos() {
@@ -1191,7 +1255,9 @@ struct Composer: View {
                         return try Data(contentsOf: url, options: .mappedIfSafe)
                     }.value
                     let photo = try await ChatPhoto.prepare(data: data, name: url.lastPathComponent)
+                    let thumb = await Task.detached(priority: .userInitiated) { NSImage(data: photo.data) }.value
                     if (model.photoDrafts[threadID]?.count ?? 0) < 2 {
+                        if let thumb { photoThumbnails[photo.id] = thumb }
                         model.photoDrafts[threadID, default: []].append(photo)
                     }
                 } catch { mediaError = error.localizedDescription }

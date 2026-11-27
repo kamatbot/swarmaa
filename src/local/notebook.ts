@@ -2,7 +2,7 @@
 // no symlink components, one marked block per action id so a retry never duplicates and undo removes exactly that block.
 import { randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
-import { lstat, mkdir, open, rename, unlink } from 'node:fs/promises';
+import { lstat, mkdir, open, realpath, rename, unlink } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
 
@@ -24,15 +24,29 @@ export function notesRoot(env: NodeJS.ProcessEnv = process.env): string {
 }
 
 const uid = () => process.getuid?.();
-// Mirrors `safeDir` in src/core/watch-services.ts: every component a real directory, the notes root and below owner-only.
+// Mirrors `safeDir` in src/core/watch-services.ts: canonicalize parent above root (so macOS /var -> /private/var works),
+// while strictly enforcing lstat (no symlinks) and owner-only modes on root itself and every descendant below root.
 async function safeDir(root: string, dir: string): Promise<void> {
-  const parsed = path.parse(dir); let current = parsed.root;
-  for (const part of dir.slice(parsed.root.length).split(path.sep).filter(Boolean)) {
+  const resolvedRoot = path.resolve(root);
+  const resolvedDir = path.resolve(dir);
+  const rel = path.relative(resolvedRoot, resolvedDir);
+  if (rel.startsWith('..') || path.isAbsolute(rel)) {
+    throw new NotebookError('unsafe', 'Notes path escapes notes root.');
+  }
+  const parent = path.dirname(resolvedRoot);
+  await mkdir(parent, { recursive: true, mode: 0o700 });
+  const realParent = await realpath(parent);
+  const baseName = path.basename(resolvedRoot);
+  const parts = baseName
+    ? [baseName, ...(rel ? rel.split(path.sep).filter(Boolean) : [])]
+    : (rel ? rel.split(path.sep).filter(Boolean) : []);
+  let current = baseName ? realParent : resolvedRoot;
+  for (const part of parts) {
     current = path.join(current, part);
     try { await mkdir(current, { mode: 0o700 }); } catch (e: any) { if (e.code !== 'EEXIST') throw e; }
     const st = await lstat(current);
     if (!st.isDirectory() || st.isSymbolicLink()) throw new NotebookError('unsafe', 'Notes path contains a symlink or non-directory.');
-    if ((current === root || current.startsWith(root + path.sep)) && (st.uid !== uid() || (st.mode & 0o077) !== 0)) throw new NotebookError('unsafe', 'Notes directory must be owner-only.');
+    if (st.uid !== uid() || (st.mode & 0o077) !== 0) throw new NotebookError('unsafe', 'Notes directory must be owner-only.');
   }
 }
 

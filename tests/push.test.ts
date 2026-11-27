@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
-import type { Pool } from 'pg';
+import { EventEmitter } from 'node:events';
+import { mock, test } from 'node:test';
+import pg, { type Pool } from 'pg';
 import { CoreService } from '../src/core/index.js';
 import {
   createAPNsSender,
@@ -20,34 +21,52 @@ import {
 } from '../src/push.js';
 import type { Principal } from '../src/types.js';
 
-const principal:Principal = {id:'11111111-1111-4111-8111-111111111111',tenantId:'tenant-a',name:'phone',role:'frontend',scopes:['project:test'],permissions:['agent:read']};
+const principal:Principal = {id:'11111111-1111-4111-8111-111111111111',tenantId:'tenant-a',name:'phone',role:'frontend',scopes:['project:test'],permissions:['agent:read','app:device']};
 const token = 'ab'.repeat(32);
 const device:Device = {token,tenant_id:principal.tenantId,principal_id:principal.id,environment:'sandbox',updated_at:'2026-10-28 15:20:00.123456+00'};
 const bot = {id:'22222222-2222-4222-8222-222222222222',name:'Helper',avatar:'runner',color:'sky'};
-const base:PushEvent = {name:'question.created',subject_id:'subject',tenant_id:principal.tenantId,scope:'project:test',payload:{thread_id:'thread',prompt:'SECRET message content'}};
+const subjectUuid = '55555555-5555-4555-8555-555555555555';
+const threadUuid = '66666666-6666-4666-8666-666666666666';
+const base:PushEvent = {name:'question.created',subject_id:subjectUuid,tenant_id:principal.tenantId,scope:'project:test',payload:{thread_id:threadUuid,prompt:'SECRET message content'}};
 function fakeDb(rows:unknown[] = []) {
   const calls:{sql:string;args:unknown[]}[] = [];
   return {calls,pool:{async query(sql:string,args:unknown[]=[]) { calls.push({sql,args}); return {rows}; }} as unknown as Pool};
 }
 
-test('push tools are permission filtered and enforce permission before SQL',async () => {
-  const {pool,calls} = fakeDb();
+test('push tools are permission filtered and enforce app:device permission before SQL',async () => {
+  const {pool,calls} = fakeDb([{token}]);
   const core = new CoreService(pool);
   assert.deepEqual(core.listTools(principal).filter(t => t.name.startsWith('push_')).map(t => t.name),['push_register','push_unregister']);
-  const denied = {...principal,permissions:[]};
-  assert.equal(core.listTools(denied).some(t => t.name.startsWith('push_')),false);
-  await assert.rejects(core.call(denied,'push_register',{token,environment:'sandbox'}));
+  for (const denied of [{...principal,permissions:[]} as Principal,{...principal,permissions:['agent:read']} as Principal]) {
+    assert.equal(core.listTools(denied).some(t => t.name.startsWith('push_')),false);
+    await assert.rejects(core.call(denied,'push_register',{token,environment:'sandbox'}),{code:'forbidden',status:403});
+  }
   assert.equal(calls.length,0);
 });
 
-test('register normalizes/upserts ownership and unregister is tenant/principal fenced',async () => {
-  const {pool,calls} = fakeDb();
+test('register normalizes/upserts same-tenant ownership, blocks cross-tenant hijack, and unregister is tenant/principal fenced',async () => {
+  const calls:{sql:string;args:unknown[]}[] = [];
+  const owners = new Map<string,string>();
+  const pool = {
+    async query(sql:string,args:unknown[]=[]) {
+      calls.push({sql,args});
+      if (sql.includes('INSERT INTO push_devices')) {
+        const [tok, tenantId] = args as [string,string];
+        const existing = owners.get(tok);
+        if (existing && existing !== tenantId) return {rows:[]};
+        owners.set(tok, tenantId);
+        return {rows:[{token:tok}]};
+      }
+      return {rows:[]};
+    },
+  } as unknown as Pool;
   const core = new CoreService(pool);
   assert.deepEqual(await core.call(principal,'push_register',{token:token.toUpperCase(),environment:'production'}),{ok:true});
-  assert.match(calls[0]!.sql,/ON CONFLICT \(token\) DO UPDATE SET tenant_id=EXCLUDED.tenant_id,principal_id=EXCLUDED.principal_id/);
+  assert.match(calls[0]!.sql,/ON CONFLICT \(token\) DO UPDATE SET principal_id=EXCLUDED.principal_id/);
+  assert.match(calls[0]!.sql,/WHERE push_devices\.tenant_id=EXCLUDED\.tenant_id/);
   assert.deepEqual(calls[0]!.args,[token,principal.tenantId,principal.id,'production']);
   const other = {...principal,id:'33333333-3333-4333-8333-333333333333',tenantId:'tenant-b'};
-  await core.call(other,'push_register',{token,environment:'sandbox'});
+  await assert.rejects(core.call(other,'push_register',{token,environment:'sandbox'}),{code:'forbidden',status:403});
   assert.deepEqual(calls[1]!.args,[token,other.tenantId,other.id,'sandbox']);
   assert.deepEqual(await core.call(principal,'push_unregister',{token}),{ok:true});
   assert.match(calls[2]!.sql,/WHERE token=\$1 AND tenant_id=\$2 AND principal_id=\$3/);
@@ -103,7 +122,7 @@ test('event mapping preserves null avatar and color when unset',async () => {
   });
 });
 
-test('ignores humans, system notices, question cards, nonterminal and unrelated events',async () => {
+test('ignores humans, system notices, question cards, nonterminal, non-UUID ids and unrelated events',async () => {
   const {pool,calls} = fakeDb([bot]);
   for (const e of [
     {...base,name:'message.created',payload:{kind:'text',author:{kind:'human'}}},
@@ -112,6 +131,8 @@ test('ignores humans, system notices, question cards, nonterminal and unrelated 
     {...base,name:'task.updated',payload:{action:'checkpoint',status:'completed'}},
     {...base,name:'task.updated',payload:{action:'finished',status:'cancelled'}},
     {...base,name:'memory.changed'},
+    {...base,subject_id:'not-a-uuid',payload:{thread_id:'not-a-uuid'}},
+    {...base,name:'task.updated',subject_id:'not-a-uuid',payload:{action:'finished',status:'failed'}},
   ]) assert.equal(await eventPayload(pool,e),null);
   assert.equal(calls.length,0);
   assert.equal(await eventPayload(fakeDb().pool,base),null);
@@ -153,17 +174,25 @@ test('missing any APNs variable logs once, with no key reads, connections or sen
   }
 });
 
-test('worker listens, catches up with fenced cursor, skips stale events and coalesces per bot',async () => {
+test('worker listens on standalone pg.Client, joins principals for scope/perm, commits before APNs send, skips stale events and coalesces per bot',async () => {
   const calls:string[] = [];
+  const timeline:string[] = [];
   const sent:unknown[] = [];
+  const listenQueries:string[] = [];
+  class FakeListenClient extends EventEmitter {
+    async connect() {}
+    async query(sql:string) { listenQueries.push(sql); return {rows:[]}; }
+    async end() {}
+  }
+  const clientMock = mock.method(pg, 'Client', function () { return new FakeListenClient(); } as any);
   const events = [
     {...base,xid:'1',seq:'1',fresh:false},
     {...base,xid:'2',seq:'2',fresh:true},
     {...base,xid:'3',seq:'3',fresh:true},
   ];
   let cooldown = false;
-  let finish!:()=>void;
-  const committed = new Promise<void>(resolve => {finish = resolve;});
+  let allSent!:()=>void;
+  const doneSending = new Promise<void>(resolve => {allSent = resolve;});
   const client = {
     on() {}, release() {},
     async query(sql:string,args:unknown[]=[]) {
@@ -179,23 +208,35 @@ test('worker listens, catches up with fenced cursor, skips stale events and coal
         assert.match(sql,/interval '20 seconds'/);
         const rows = cooldown ? [] : [{bot_id:bot.id}]; cooldown = true; return {rows};
       }
-      if (sql.includes('FROM push_devices')) {assert.deepEqual(args,[principal.tenantId]); return {rows:[device,{...device,token:'cd'.repeat(32)}]};}
-      if (sql === 'COMMIT') finish();
+      if (sql.includes('FROM push_devices')) {
+        assert.match(sql,/JOIN principals p ON p\.id=d\.principal_id/);
+        assert.deepEqual(args,[principal.tenantId,'project:test']);
+        return {rows:[device,{...device,token:'cd'.repeat(32)}]};
+      }
+      if (sql === 'COMMIT') timeline.push('COMMIT');
       return {rows:[]};
     },
   };
-  const worker = new PushWorker({async connect() { return client; }} as unknown as Pool,{
+  const worker = new PushWorker({options:{}, async connect() { return client; }, async query() { return {rows:[]}; }} as unknown as Pool,{
     env:{APNS_KEY_PATH:'unused',APNS_KEY_ID:'unused',APNS_TEAM_ID:'unused',APNS_BUNDLE_ID:'unused'},
-    sender:{async send(d,p) {sent.push({d,p}); return {status:200};},close() {}},
+    sender:{async send(d,p) {timeline.push('SEND'); sent.push({d,p}); if (sent.length === 2) allSent(); return {status:200};},close() {}},
     log(message) {assert.fail(message);},
   });
-  worker.start();
-  await committed;
-  await worker.stop();
-  assert.equal(calls.filter(sql => sql === 'LISTEN swarmaa_events').length,1);
+  try {
+    worker.start();
+    await doneSending;
+    await worker.stop();
+  } finally {
+    clientMock.mock.restore();
+  }
+  assert.equal(listenQueries.filter(sql => sql === 'LISTEN swarmaa_events').length,1);
   assert.equal(calls.filter(sql => sql.includes('UPDATE push_cursor')).length,3);
   assert.equal(sent.length,2); // every device, once per bot; no stale notification
   assert.equal(JSON.stringify(sent).includes('SECRET'),false);
+  // Every APNs send must happen strictly AFTER the DB transaction COMMIT.
+  const commitIdx = timeline.indexOf('COMMIT');
+  assert.ok(commitIdx >= 0);
+  assert.ok(timeline.every((e, i) => e !== 'SEND' || i > commitIdx), `APNs send occurred before COMMIT: ${JSON.stringify(timeline)}`);
 });
 
 test('APNs sender signs ES256, reuses per-host sessions/JWT, refreshes at 50 minutes and retries once',async t => {
@@ -672,7 +713,8 @@ test('PushWorker sweep handles start, update, end and needs_you for live activit
       if (sql.includes('FROM tasks') && sql.includes('bot_id')) return { rows: [{ checkpoint: taskRow.checkpoint, created_at: taskRow.created_at }] };
       if (sql.includes('INSERT INTO push_cooldowns')) return { rows: [{ bot_id: bot.id }] };
       if (sql.includes('FROM push_devices')) {
-        assert.deepEqual(args, [principal.tenantId]);
+        assert.match(sql, /JOIN principals p ON p\.id=d\.principal_id/);
+        assert.deepEqual(args, [principal.tenantId, 'project:test']);
         return { rows: [deviceWithTokens] };
       }
       if (sql.includes('FROM bot_activity_tokens')) return { rows: dbBotActivityTokens };
@@ -689,78 +731,88 @@ test('PushWorker sweep handles start, update, end and needs_you for live activit
     },
     close() {},
   };
-  const worker = new PushWorker({ async connect() { return client; } } as unknown as Pool, {
+  class FakeListenClient extends EventEmitter {
+    async connect() {}
+    async query() { return { rows: [] }; }
+    async end() {}
+  }
+  const clientMock = mock.method(pg, 'Client', function () { return new FakeListenClient(); } as any);
+  const worker = new PushWorker({ options: {}, async connect() { return client; }, async query() { return { rows: [] }; } } as unknown as Pool, {
     env: { APNS_KEY_PATH: 'unused', APNS_KEY_ID: 'unused', APNS_TEAM_ID: 'unused', APNS_BUNDLE_ID: 'unused' },
     sender: senderMock,
     log(m) { assert.fail(m); },
   });
   (worker as any).sender = senderMock;
 
-  // 1. Task goes running, no activity_token -> sends start with push-to-start token
-  await (worker as any).tick();
-  assert.equal(sentPushes.length, 1);
-  assert.equal(sentPushes[0]!.payload.aps.event, 'start');
-  assert.equal(sentPushes[0]!.payload.aps['content-state'].status, 'running');
-  assert.equal(sentPushes[0]!.payload.aps['content-state'].step, 'Refactoring auth');
-  assert.equal(sentPushes[0]!.options.token, startToken);
-  assert.equal(sentPushes[0]!.options.priority, '10');
+  try {
+    // 1. Task goes running, no activity_token -> sends start with push-to-start token
+    await (worker as any).tick();
+    assert.equal(sentPushes.length, 1);
+    assert.equal(sentPushes[0]!.payload.aps.event, 'start');
+    assert.equal(sentPushes[0]!.payload.aps['content-state'].status, 'running');
+    assert.equal(sentPushes[0]!.payload.aps['content-state'].step, 'Refactoring auth');
+    assert.equal(sentPushes[0]!.options.token, startToken);
+    assert.equal(sentPushes[0]!.options.priority, '10');
 
-  // 2. Task running with registered activity_token -> sends update with priority 5
-  sentPushes.length = 0;
-  dbBotActivityTokens = [{ device_id: device.token, token: actToken }];
-  eventToEmit = { ...eventToEmit, xid: '2', seq: '2' };
-  await (worker as any).tick();
-  assert.equal(sentPushes.length, 1);
-  assert.equal(sentPushes[0]!.payload.aps.event, 'update');
-  assert.equal(sentPushes[0]!.payload.aps['content-state'].status, 'running');
-  assert.equal(sentPushes[0]!.options.token, actToken);
-  assert.equal(sentPushes[0]!.options.priority, '5');
+    // 2. Task running with registered activity_token -> sends update with priority 5
+    sentPushes.length = 0;
+    dbBotActivityTokens = [{ device_id: device.token, token: actToken }];
+    eventToEmit = { ...eventToEmit, xid: '2', seq: '2' };
+    await (worker as any).tick();
+    assert.equal(sentPushes.length, 1);
+    assert.equal(sentPushes[0]!.payload.aps.event, 'update');
+    assert.equal(sentPushes[0]!.payload.aps['content-state'].status, 'running');
+    assert.equal(sentPushes[0]!.options.token, actToken);
+    assert.equal(sentPushes[0]!.options.priority, '5');
 
-  // 3. Immediate next tick is throttled (15s window)
-  sentPushes.length = 0;
-  eventToEmit = { ...eventToEmit, xid: '3', seq: '3' };
-  await (worker as any).tick();
-  assert.equal(sentPushes.length, 0); // Throttled
+    // 3. Immediate next tick is throttled (15s window)
+    sentPushes.length = 0;
+    eventToEmit = { ...eventToEmit, xid: '3', seq: '3' };
+    await (worker as any).tick();
+    assert.equal(sentPushes.length, 0); // Throttled
 
-  // 4. Question asked -> updates status to needs_you
-  sentPushes.length = 0;
-  eventToEmit = {
-    name: 'question.created',
-    subject_id: 'q1',
-    tenant_id: principal.tenantId,
-    scope: 'project:test',
-    payload: { thread_id: 'th-1', prompt: 'Choose branch' },
-    xid: '4',
-    seq: '4',
-    fresh: true,
-  };
-  await (worker as any).tick();
-  assert.equal(sentPushes.length, 2); // 1 alert push ('Needs you') + 1 live activity update ('needs_you')
-  const liveUpdate = sentPushes.find(s => s.payload.aps.event === 'update')!;
-  assert.ok(liveUpdate);
-  assert.equal(liveUpdate.payload.aps['content-state'].status, 'needs_you');
-  assert.equal(liveUpdate.options.token, actToken);
+    // 4. Question asked -> updates status to needs_you
+    sentPushes.length = 0;
+    eventToEmit = {
+      name: 'question.created',
+      subject_id: subjectUuid,
+      tenant_id: principal.tenantId,
+      scope: 'project:test',
+      payload: { thread_id: threadUuid, prompt: 'Choose branch' },
+      xid: '4',
+      seq: '4',
+      fresh: true,
+    };
+    await (worker as any).tick();
+    assert.equal(sentPushes.length, 2); // 1 alert push ('Needs you') + 1 live activity update ('needs_you')
+    const liveUpdate = sentPushes.find(s => s.payload.aps.event === 'update')!;
+    assert.ok(liveUpdate);
+    assert.equal(liveUpdate.payload.aps['content-state'].status, 'needs_you');
+    assert.equal(liveUpdate.options.token, actToken);
 
-  // 5. Task completed -> sends end with dismissal-date now+15min
-  sentPushes.length = 0;
-  eventToEmit = {
-    name: 'task.updated',
-    subject_id: taskRow.id,
-    tenant_id: principal.tenantId,
-    scope: 'project:test',
-    payload: { action: 'finished', status: 'completed', result: { head_commit: '123' } },
-    xid: '5',
-    seq: '5',
-    fresh: true,
-  };
-  await (worker as any).tick();
-  assert.equal(sentPushes.length, 2); // 1 alert push ('Ready for review') + 1 live activity end
-  const liveEnd = sentPushes.find(s => s.payload.aps.event === 'end')!;
-  assert.ok(liveEnd);
-  assert.equal(liveEnd.payload.aps['content-state'].status, 'done');
-  assert.equal(liveEnd.options.token, actToken);
-  assert.equal(liveEnd.options.priority, '10');
-  assert.ok(liveEnd.payload.aps['dismissal-date'] > liveEnd.payload.aps['content-state'].startedAt);
+    // 5. Task completed -> sends end with dismissal-date now+15min
+    sentPushes.length = 0;
+    eventToEmit = {
+      name: 'task.updated',
+      subject_id: taskRow.id,
+      tenant_id: principal.tenantId,
+      scope: 'project:test',
+      payload: { action: 'finished', status: 'completed', result: { head_commit: '123' } },
+      xid: '5',
+      seq: '5',
+      fresh: true,
+    };
+    await (worker as any).tick();
+    assert.equal(sentPushes.length, 2); // 1 alert push ('Ready for review') + 1 live activity end
+    const liveEnd = sentPushes.find(s => s.payload.aps.event === 'end')!;
+    assert.ok(liveEnd);
+    assert.equal(liveEnd.payload.aps['content-state'].status, 'done');
+    assert.equal(liveEnd.options.token, actToken);
+    assert.equal(liveEnd.options.priority, '10');
+    assert.ok(liveEnd.payload.aps['dismissal-date'] > liveEnd.payload.aps['content-state'].startedAt);
 
-  await worker.stop();
+    await worker.stop();
+  } finally {
+    clientMock.mock.restore();
+  }
 });

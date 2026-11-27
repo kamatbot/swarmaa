@@ -1,7 +1,7 @@
 /** Authored for a disposable PostgreSQL database. Not executed during source-only delivery. */
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { readFile, readdir } from 'node:fs/promises';
 import { after, before, describe, it } from 'node:test';
 import pg, { type Pool } from 'pg';
 import { CoreService } from '../src/core/index.js';
@@ -22,7 +22,7 @@ describe('core transactional invariants', {skip:!connectionString,concurrency:fa
     control = new pg.Pool({connectionString,max:2});
     await control.query(`CREATE SCHEMA "${schema}"`);
     pool = new pg.Pool({connectionString,max:8,options:`-c search_path=${schema},public`});
-    for (const file of ['001_identity.sql','002_core.sql','005_swarm.sql','006_sessions.sql','008_lessons.sql','010_routing_policy.sql','011_patch_routing.sql','012_session_task.sql','013_worker_slots.sql','016_worker_slots_drain.sql','019_inbox.sql','020_inbox_receipts.sql','021_flows.sql','018_events_xid.sql','023_failure_routing.sql','024_teams.sql','025_teams_swarms.sql','026_agent_names.sql','027_bots.sql']) {
+    for (const file of (await readdir(new URL('../db/migrations/',import.meta.url))).filter(f => f.endsWith('.sql')).sort()) {
       await pool.query(await readFile(new URL(`../db/migrations/${file}`,import.meta.url),'utf8'));
     }
     core = new CoreService(pool);
@@ -146,6 +146,19 @@ describe('core transactional invariants', {skip:!connectionString,concurrency:fa
     await call(f.front,'task_submit',{...submission(),idempotency_key:'agy-patch',kind:'patch',required_capability:'antigravity.patch'});
     await call(f.front,'task_submit',{...submission(),kind:'review',required_capability:'antigravity.read'});
     await rejects(f.front,'task_submit',{...submission(),idempotency_key:'agy-research',required_capability:'antigravity.read'},'kind_not_allowed');
+  });
+
+  it('never lets Antigravity claim scheduled or webhook-sourced work; person-started work still routes to it',async () => {
+    const f = await fixture();
+    const person = (await call(f.front,'task_submit',{...submission(),kind:'review',required_capability:'antigravity.read'})).task;
+    const scheduled = (await call(f.front,'task_submit',{...submission(),kind:'review',required_capability:'antigravity.read'})).task;
+    await pool.query("UPDATE tasks SET initiator_kind='schedule', created_at=created_at-interval '1 minute' WHERE id=$1",[scheduled.id]);
+    const agy = {scope:'project:a',capabilities:['antigravity.read'],kinds:['review'],lease_seconds:30};
+    const claimed = await call(f.worker,'task_claim',agy);
+    assert.equal(claimed.task.id,person.id,'agy takes the person-started review, skipping the older scheduled one');
+    const moved = (await pool.query('SELECT required_capability FROM tasks WHERE id=$1',[scheduled.id])).rows[0];
+    assert.equal(moved.required_capability,'claude.read','the scheduled task pinned to agy moves to claude');
+    assert.equal((await call(f.worker,'task_claim',agy)).task,null);
   });
 
   it('enforces permissions, roles, tenant and exact scope inside CoreService',async () => {
@@ -649,6 +662,7 @@ describe('core transactional invariants', {skip:!connectionString,concurrency:fa
     await cp({phase:'provider_finished'});
     assert.equal(await events(),2);
     await pool.query("UPDATE events SET created_at=created_at-interval '4 seconds' WHERE subject_id=$1",[id]);
+    await pool.query("UPDATE tasks SET last_checkpoint_event_at=last_checkpoint_event_at-interval '4 seconds' WHERE id=$1",[id]);
     const last = await cp({phase:'running',partial_text:'abc'});
     assert.equal(await events(),3);
     assert.equal(await audits(),0);

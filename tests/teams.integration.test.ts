@@ -151,7 +151,9 @@ describe('teams phase 1 service foundation', { skip: !connectionString, concurre
       name,
       role,
       scopes,
-      permissions: [...ROLE_PERMISSIONS[role]]
+      permissions: role === 'frontend'
+        ? [...ROLE_PERMISSIONS.frontend, 'agent:read', 'agent:manage', 'thread:read', 'thread:write', 'app:device']
+        : [...ROLE_PERMISSIONS[role]]
     };
     const token = newToken();
     await pool.query(

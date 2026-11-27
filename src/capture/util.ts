@@ -112,17 +112,6 @@ function parseLines(buf: Buffer): Obj[] {
   }
   return out;
 }
-function countNewlines(fd: number, upTo: number): number {
-  let n = 0;
-  for (let pos = 0; pos < upTo;) {
-    const b = readAt(fd, pos, Math.min(1 << 20, upTo - pos));
-    if (!b.length) break;
-    for (let i = 0; i < b.length; i++) if (b[i] === 10) n++;
-    pos += b.length;
-  }
-  return n;
-}
-
 /**
  * The newest complete lines of a JSONL file (up to ~9 MiB) plus its first lines. A trailing line without a newline is a
  * write in progress: it is not parsed and `offset` stops before it, so the next run sees it once it is finished.
@@ -144,7 +133,7 @@ export function readWindow(path: string, st: Stats): Window {
       const nl = h.lastIndexOf(10);
       head = nl > 0 ? parseLines(h.subarray(0, nl)) : [];
     }
-    return { size: st.size, mtimeMs: Math.floor(st.mtimeMs), offset, lastLine: countNewlines(fd, offset), objs, head };
+    return { size: st.size, mtimeMs: Math.floor(st.mtimeMs), offset, lastLine: 0, objs, head };
   } finally { closeSync(fd); }
 }
 

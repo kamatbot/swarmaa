@@ -350,9 +350,10 @@ export function createHttpHandler(dependencies: HttpDependencies): (request: Inc
     const origin = oneHeader(request, 'origin');
     // Cookie pages (consent, account) accept only their own origins. Bearer/PKCE endpoints carry no ambient
     // credentials (CORS never allows credentials here), so browser-based clients may call them cross-origin.
-    const cookieRoute = (request.url ?? '').startsWith('/oauth/authorize') || (request.url ?? '').startsWith('/account');
+    const cookieRoute = path === '/oauth/authorize' || path.startsWith('/oauth/authorize/')
+      || path === '/account' || path.startsWith('/account/');
     if (origin !== undefined && !allowedOrigins.has(origin) && cookieRoute) {
-      console.error(JSON.stringify({ event: 'origin_rejected', origin: origin.slice(0, 200), path: (request.url ?? '').split('?', 1)[0]!.slice(0, 100) }));
+      console.error(JSON.stringify({ event: 'origin_rejected', origin: origin.slice(0, 200), path: path.slice(0, 100) }));
       throw new AppError(403, 'invalid_origin', 'Origin is not allowed.');
     }
     if (origin) {
@@ -500,6 +501,7 @@ export function createHttpHandler(dependencies: HttpDependencies): (request: Inc
     if (path === '/api/inbox/wait') {
       onlyMethod(request, response, ['GET']);
       const principal = await authenticate(request, response, false);
+      const bearerToken = oneHeader(request, 'authorization')?.match(/^Bearer ([A-Za-z0-9._~+\/-]+=*)$/iu)?.[1] ?? '';
       if ([...url.searchParams.keys()].some(k => !['session','timeout'].includes(k) || url.searchParams.getAll(k).length!==1)) {
         throw new AppError(400,'invalid_arguments','Only one session and timeout may be supplied.');
       }
@@ -511,8 +513,13 @@ export function createHttpHandler(dependencies: HttpDependencies): (request: Inc
       inboxWaiters++;
       principalWaiters.set(principal.id,count+1);
       try {
+        // Re-check credentials via principalFor without double-charging the per-principal rate limiter.
         const result = await waitForInbox(dependencies.pool,dependencies.core,principal,url.searchParams.get('session'),
-          Number(url.searchParams.get('timeout') ?? '25'),abort.signal,() => authenticate(request,response,false));
+          Number(url.searchParams.get('timeout') ?? '25'),abort.signal,async () => {
+            const refreshed = await principalFor(bearerToken, false);
+            if (!refreshed) throw new AppError(401, 'unauthorized', 'A valid connection token is required.');
+            return refreshed;
+          });
         if (!response.destroyed) json(response,200,{result});
       } finally {
         response.off('close',closed);
@@ -559,145 +566,171 @@ export function createHttpHandler(dependencies: HttpDependencies): (request: Inc
       if (hasPermission(principal, 'memory:read')) names.push('memory.changed');
 
       // Counted only once every check has passed, so a rejected request cannot leak a slot.
+      if (response.destroyed) return;
       const count = principalStreams.get(principal.id) ?? 0;
       if (count >= 4) throw new AppError(429, 'too_many_streams', 'Too many concurrent streams for this principal.');
       principalStreams.set(principal.id, count + 1);
-      request.socket.setNoDelay(true);
-      response.statusCode = 200;
-      response.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
-      response.setHeader('Cache-Control', 'no-cache, no-transform');
-      response.setHeader('Connection', 'keep-alive');
-      response.setHeader('X-Accel-Buffering', 'no');
-      response.flushHeaders?.();
-
-      if (isNow) {
-        const xminRes = await dependencies.pool.query<{ xmin: string }>('SELECT pg_snapshot_xmin(pg_current_snapshot())::text AS xmin');
-        const xmin = xminRes.rows[0]?.xmin ?? '0';
-        curXid = xmin;
-        curSeq = '0';
-        const cursorStr = `${xmin}.0`;
-        response.write(`id: ${cursorStr}\nevent: cursor\ndata: ${JSON.stringify({ cursor: cursorStr })}\n\n`);
-      }
 
       let active = true;
       let pollTimer: NodeJS.Timeout | undefined;
+      let heartbeatTimer: NodeJS.Timeout | undefined;
+      let maxDurationTimer: NodeJS.Timeout | undefined;
       let polling = false;
       let pending = false;
       let unsubscribe: (() => void) | undefined;
-      const heartbeatTimer = setInterval(async () => {
-        if (!active || response.destroyed) return;
-        try {
-          // Re-check without spending the request rate limit: revoked tokens, lost permission or lost scopes end the stream.
-          // Same lookup as the opening request, so an OAuth stream is re-checked as OAuth.
-          const fresh = await principalFor(oneHeader(request, 'authorization')?.match(/^Bearer (\S+)$/iu)?.[1] ?? '', true);
-          if (!fresh || !hasPermission(fresh, 'events:read')
-            || (allScopes ? !(fresh.role === 'admin' && fresh.scopes.includes('*')) : !scopes.every(s => canAccessScope(fresh, s)))) {
-            cleanup();
-            response.end();
-            return;
-          }
-        } catch {
-          cleanup();
-          response.end();
-          return;
-        }
-        if (active && !response.destroyed) response.write(': heartbeat\n\n');
-      }, dependencies.streamHeartbeatMs ?? 15_000);
-
-      const maxDurationTimer = setTimeout(() => {
-        cleanup();
-        if (!response.destroyed) response.end();
-      }, dependencies.streamMaxDurationMs ?? 3600_000);
 
       const cleanup = () => {
+        if (unsubscribe) {
+          const fn = unsubscribe;
+          unsubscribe = undefined;
+          fn();
+        }
         if (!active) return;
         active = false;
-        unsubscribe?.();
-        clearInterval(heartbeatTimer);
-        clearTimeout(maxDurationTimer);
+        if (heartbeatTimer) clearInterval(heartbeatTimer);
+        if (maxDurationTimer) clearTimeout(maxDurationTimer);
         if (pollTimer) clearTimeout(pollTimer);
         response.off('close', cleanup);
         const remaining = (principalStreams.get(principal.id) ?? 1) - 1;
         if (remaining) principalStreams.set(principal.id, remaining);
         else principalStreams.delete(principal.id);
       };
+      // Register cleanup immediately so early disconnects or async errors never leak stream slots or timers.
       response.on('close', cleanup);
 
-      const wake = () => {
-        if (!active || response.destroyed) return;
-        if (polling) { pending = true; return; }
-        clearTimeout(pollTimer);
-        void poll();
-      };
-      const poll = async () => {
-        if (!active || response.destroyed) return;
-        polling = true;
-        pending = false;
-        try {
-          if (names.length === 0) {
+      try {
+        request.socket.setNoDelay(true);
+        response.statusCode = 200;
+        response.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+        response.setHeader('Cache-Control', 'no-cache, no-transform');
+        response.setHeader('Connection', 'keep-alive');
+        response.setHeader('X-Accel-Buffering', 'no');
+        response.flushHeaders?.();
+
+        if (isNow) {
+          const xminRes = await dependencies.pool.query<{ xmin: string }>('SELECT pg_snapshot_xmin(pg_current_snapshot())::text AS xmin');
+          if (!active || response.destroyed) { cleanup(); return; }
+          const xmin = xminRes.rows[0]?.xmin ?? '0';
+          curXid = xmin;
+          curSeq = '0';
+          const cursorStr = `${xmin}.0`;
+          response.write(`id: ${cursorStr}\nevent: cursor\ndata: ${JSON.stringify({ cursor: cursorStr })}\n\n`);
+        }
+
+        if (!active || response.destroyed) { cleanup(); return; }
+
+        heartbeatTimer = setInterval(async () => {
+          if (!active || response.destroyed) { cleanup(); return; }
+          try {
+            // Re-check without spending the request rate limit: revoked tokens, lost permission or lost scopes end the stream.
+            // Same lookup as the opening request, so an OAuth stream is re-checked as OAuth.
+            const fresh = await principalFor(oneHeader(request, 'authorization')?.match(/^Bearer (\S+)$/iu)?.[1] ?? '', true);
+            if (!fresh || !hasPermission(fresh, 'events:read')
+              || (allScopes ? !(fresh.role === 'admin' && fresh.scopes.includes('*')) : !scopes.every(s => canAccessScope(fresh, s)))) {
+              cleanup();
+              if (!response.destroyed) response.end();
+              return;
+            }
+          } catch {
+            cleanup();
+            if (!response.destroyed) response.end();
             return;
           }
-          const sql = legacy
-            ? `SELECT id, xid::text || '.' || seq::text AS cursor, xid::text AS xid_str, seq, scope, name, subject_id, payload, created_at
-               FROM events
-               WHERE tenant_id = $1
-                 AND ($2::boolean OR scope = ANY($3::text[]))
-                 AND seq > $4::bigint
-                 AND name = ANY($5::text[])
-                 AND xid < pg_snapshot_xmin(pg_current_snapshot())
-               ORDER BY xid, seq LIMIT 50`
-            : `SELECT id, xid::text || '.' || seq::text AS cursor, xid::text AS xid_str, seq, scope, name, subject_id, payload, created_at
-               FROM events
-               WHERE tenant_id = $1
-                 AND ($2::boolean OR scope = ANY($3::text[]))
-                 AND (xid, seq) > ($4::xid8, $5::bigint)
-                 AND name = ANY($6::text[])
-                 AND xid < pg_snapshot_xmin(pg_current_snapshot())
-               ORDER BY xid, seq LIMIT 50`;
+          if (active && !response.destroyed) response.write(': heartbeat\n\n');
+        }, dependencies.streamHeartbeatMs ?? 15_000);
+        heartbeatTimer.unref?.();
 
-          const queryParams = legacy
-            ? [principal.tenantId, allScopes, scopes, curSeq, names]
-            : [principal.tenantId, allScopes, scopes, curXid, curSeq, names];
+        maxDurationTimer = setTimeout(() => {
+          cleanup();
+          if (!response.destroyed) response.end();
+        }, dependencies.streamMaxDurationMs ?? 3600_000);
+        maxDurationTimer.unref?.();
 
-          const result = await dependencies.pool.query<{
-            id: string; cursor: string; xid_str: string; seq: string; scope: string; name: string;
-            subject_id: string; payload: Record<string, unknown>; created_at: Date;
-          }>(sql, queryParams);
+        const wakeup = eventWakeup(dependencies.pool);
 
+        const wake = () => {
           if (!active || response.destroyed) return;
+          if (polling) { pending = true; return; }
+          clearTimeout(pollTimer);
+          void poll();
+        };
+        const poll = async () => {
+          if (!active || response.destroyed) return;
+          polling = true;
+          pending = false;
+          try {
+            if (names.length === 0) {
+              return;
+            }
+            const sql = legacy
+              ? `SELECT id, xid::text || '.' || seq::text AS cursor, xid::text AS xid_str, seq, scope, name, subject_id, payload, created_at
+                 FROM events
+                 WHERE tenant_id = $1
+                   AND ($2::boolean OR scope = ANY($3::text[]))
+                   AND seq > $4::bigint
+                   AND name = ANY($5::text[])
+                   AND xid < pg_snapshot_xmin(pg_current_snapshot())
+                 ORDER BY xid, seq LIMIT 50`
+              : `SELECT id, xid::text || '.' || seq::text AS cursor, xid::text AS xid_str, seq, scope, name, subject_id, payload, created_at
+                 FROM events
+                 WHERE tenant_id = $1
+                   AND ($2::boolean OR scope = ANY($3::text[]))
+                   AND (xid, seq) > ($4::xid8, $5::bigint)
+                   AND name = ANY($6::text[])
+                   AND xid < pg_snapshot_xmin(pg_current_snapshot())
+                 ORDER BY xid, seq LIMIT 50`;
 
-          for (const row of result.rows) {
-            const data = JSON.stringify({
-              id: row.id,
-              cursor: row.cursor,
-              scope: row.scope,
-              name: row.name,
-              subject_id: row.subject_id,
-              payload: row.payload,
-              created_at: row.created_at.toISOString()
-            });
-            response.write(`id: ${row.cursor}\nevent: ${row.name}\ndata: ${data}\n\n`);
-            legacy = false;
-            curXid = row.xid_str;
-            curSeq = row.seq;
+            const queryParams = legacy
+              ? [principal.tenantId, allScopes, scopes, curSeq, names]
+              : [principal.tenantId, allScopes, scopes, curXid, curSeq, names];
+
+            const result = await dependencies.pool.query<{
+              id: string; cursor: string; xid_str: string; seq: string; scope: string; name: string;
+              subject_id: string; payload: Record<string, unknown>; created_at: Date;
+            }>(sql, queryParams);
+
+            if (!active || response.destroyed) return;
+
+            for (const row of result.rows) {
+              const data = JSON.stringify({
+                id: row.id,
+                cursor: row.cursor,
+                scope: row.scope,
+                name: row.name,
+                subject_id: row.subject_id,
+                payload: row.payload,
+                created_at: row.created_at.toISOString()
+              });
+              response.write(`id: ${row.cursor}\nevent: ${row.name}\ndata: ${data}\n\n`);
+              legacy = false;
+              curXid = row.xid_str;
+              curSeq = row.seq;
+            }
+
+            if (result.rows.length === 50) pending = true;
+          } catch {
+            // The safety poll also recovers from transient read failures.
+          } finally {
+            polling = false;
+            if (active && !response.destroyed) {
+              if (pending) void poll();
+              else {
+                pollTimer = setTimeout(wake, 2_000);
+                pollTimer.unref?.();
+              }
+            }
           }
+        };
 
-          if (result.rows.length === 50) pending = true;
-        } catch {
-          // The safety poll also recovers from transient read failures.
-        } finally {
-          polling = false;
-          if (active && !response.destroyed) {
-            if (pending) void poll();
-            else pollTimer = setTimeout(wake, 2000);
-          }
-        }
-      };
-
-      const subscription = eventWakeup(dependencies.pool).subscribe(wake, principal.tenantId);
-      wake(); // Poll independently while LISTEN connects (or reconnects).
-      unsubscribe = await subscription;
-      if (!active || response.destroyed) unsubscribe();
+        const subscription = wakeup.subscribe(wake, principal.tenantId);
+        wake(); // Poll independently while LISTEN connects (or reconnects).
+        unsubscribe = await subscription;
+        if (!active || response.destroyed) { cleanup(); return; }
+        wake(); // Catch any event committed before LISTEN finished binding.
+      } catch (error) {
+        cleanup();
+        throw error;
+      }
       return;
     }
     const toolMatch = path.match(/^\/api\/tools\/([a-z][a-z0-9_]{0,127})$/u);

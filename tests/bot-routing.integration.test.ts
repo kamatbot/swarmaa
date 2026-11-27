@@ -23,7 +23,7 @@ describe('B2 bot routing', {skip:!connectionString,concurrency:false}, () => {
   const call = async(p:Principal,name:string,args:Record<string,unknown>={}) => core.call(p,name,args) as Promise<any>;
   async function fixture(rules:Record<string,unknown>={},routing:Record<string,unknown>={}) {
     const tenantId = randomUUID();
-    const make = (name:string,role:Principal['role']):Principal => ({id:randomUUID(),tenantId,name,role,scopes:['project:a'],permissions:[...ROLE_PERMISSIONS[role],'task:patch',...(role==='frontend' ? ['routing:manage' as const] : [])]});
+    const make = (name:string,role:Principal['role']):Principal => ({id:randomUUID(),tenantId,name,role,scopes:['project:a'],permissions:[...ROLE_PERMISSIONS[role],'task:patch',...(role==='frontend' ? ['routing:manage' as const,'agent:read' as const,'agent:manage' as const,'thread:read' as const,'thread:write' as const] : [])]});
     const user = make('owner','frontend'), worker = make('worker','worker');
     for (const p of [user,worker]) await pool.query('INSERT INTO principals(id,tenant_id,name,role,scopes,permissions,token_hash,last_seen_at,worker_slots) VALUES($1,$2,$3,$4,$5,$6,$7,clock_timestamp(),10)',[p.id,p.tenantId,p.name,p.role,p.scopes,p.permissions,randomUUID()]);
     const agent = randomUUID(),thread = randomUUID(),bot = randomUUID();
