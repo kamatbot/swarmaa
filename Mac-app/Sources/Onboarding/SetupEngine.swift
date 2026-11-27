@@ -305,7 +305,10 @@ final class NodeProcessRunner: SetupProcessRunning, @unchecked Sendable {
             self?.activeProcesses.removeAll { $0 === process }
             self?.stateLock.unlock()
         }
-        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeout, execute: timeoutWork)
+        // The real `--run-json` setup can take ~600 s per step: only detection is time-boxed (cancel() still works).
+        if !arguments.contains("--run-json") {
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeout, execute: timeoutWork)
+        }
 
         defer {
             timeoutWork.cancel()

@@ -370,7 +370,7 @@ struct BotWorkspace: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .keyboardShortcut(KeyEquivalent(Character("\(index + 1)")), modifiers: .command)
+                .keyboardShortcut(KeyEquivalent(Character("\(index + 1)")), modifiers: [.command, .option])
                 .accessibilityAddTraits(on ? [.isSelected, .isButton] : .isButton)
             }
             Spacer()

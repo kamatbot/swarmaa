@@ -1228,10 +1228,13 @@ struct Composer: View {
     private func send() {
         guard !sending, !paused else { return }
         dictation.stop()
+        let isRetry = model.pendingSends[threadID] != nil
         flushDraftNow()
         let target = threadID
-        localText = ""
-        photoThumbnails = [:]
+        if !isRetry {
+            localText = ""
+            photoThumbnails = [:]
+        }
         editorFocused = true
         Task { _ = await model.sendDraft(threadID: target) }
     }

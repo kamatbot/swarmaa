@@ -16,6 +16,7 @@ enum RelayPairingCodeGenerator {
             return "\(code.prefix(3)) \(code.suffix(3))"
         }
         var pairURL: String {
+            // The iPhone app takes the 6-digit relay link only as swarmaa:// (PhoneLinkWire's scheme is for LAN v3 links).
             "swarmaa://pair?code=\(code)"
         }
     }
@@ -79,6 +80,8 @@ struct PhoneLinkPairingView: View {
     @State private var copiedCode = false
     @State private var qrImage: NSImage?
     @State private var qrLink: String = ""
+    @State private var relayQR: NSImage?
+    @State private var now = Date()
     @Environment(\.accessibilityReduceMotion) var reduceMotion
 
     private static let ciContext = CIContext()
@@ -93,24 +96,50 @@ struct PhoneLinkPairingView: View {
         let name = PhoneLinkNetwork.getComputerName()
         let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_.~"))
         let encodedName = name.addingPercentEncoding(withAllowedCharacters: allowed) ?? name
-        return "swarmaa://pair?v=3&h=\(hosts)&p=\(String(advertisedPort))&c=\(pairing.currentCode ?? "")&n=\(encodedName)"
+        return "\(PhoneLinkWire.pairScheme)?v=3&h=\(hosts)&p=\(String(advertisedPort))&c=\(pairing.currentCode ?? "")&n=\(encodedName)"
     }
 
-    var link: String {
-        if let relayCode, Date() < relayCode.expiresAt {
-            return relayCode.pairURL
+    var link: String { lanLink }
+
+    private var activeExpiresAt: Date? { pairing.expiresAt }
+
+    private var displayCode: String? { pairing.currentCode }
+
+    /// Separate from the LAN QR: a relay code is only written when the user asks for one (the relay
+    /// agent needs PUBLIC_URL, which the app can't observe). Expiry follows the `now` timer.
+    @ViewBuilder private var relaySection: some View {
+        if let relay = relayCode, now < relay.expiresAt {
+            VStack(spacing: 8) {
+                if let relayQR {
+                    Image(nsImage: relayQR)
+                        .interpolation(.none)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 160, height: 160)
+                        .padding(10)
+                        .background(Color.white)
+                        .cornerRadius(12)
+                }
+                HStack(spacing: 10) {
+                    Text(relay.formatted)
+                        .font(.system(.title2, design: .monospaced).weight(.semibold))
+                        .lineLimit(1)
+                        .textSelection(.enabled)
+                    Button(copiedCode ? L10n.t("Copied ✓") : L10n.t("Copy Code")) {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(relay.code, forType: .string)
+                        copiedCode = true
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copiedCode = false }
+                    }
+                }
+                let diff = max(0, Int(relay.expiresAt.timeIntervalSince(now)))
+                Text(L10n.t("Relay code expires in \(String(format: "%d:%02d", diff / 60, diff % 60))"))
+                    .font(.system(.body, design: .monospaced))
+                    .foregroundColor(.secondary)
+            }
+        } else {
+            Button(L10n.t("Show relay code")) { showRelayCode() }
         }
-        return lanLink
-    }
-
-    private var activeExpiresAt: Date? {
-        if let relayCode, Date() < relayCode.expiresAt { return relayCode.expiresAt }
-        return pairing.expiresAt
-    }
-
-    private var displayCode: String? {
-        if let relayCode, Date() < relayCode.expiresAt { return relayCode.formatted }
-        return pairing.currentCode
     }
 
     var body: some View {
@@ -138,9 +167,8 @@ struct PhoneLinkPairingView: View {
             } else {
                 let hosts = PhoneLinkNetwork.getHosts()
                 let hasIP = hosts.first(where: { PhoneLinkNetwork.isPrivateIPv4($0) }) != nil
-                let hasRelay = relayCode.map { Date() < $0.expiresAt } ?? false
 
-                if !hasRelay && (!hasIP || serverStatus.state == .off || isFailed(serverStatus.state)) {
+                if (!hasIP || serverStatus.state == .off || isFailed(serverStatus.state)) {
                     Text(L10n.t("Connect your phone"))
                         .font(.headline)
                     Text(L10n.t("This Mac isn't on a local network"))
@@ -154,7 +182,7 @@ struct PhoneLinkPairingView: View {
                     Button(L10n.t("Retry")) {
                         refreshCodes()
                     }
-                } else if !hasRelay && !pairing.isOpen {
+                } else if !pairing.isOpen {
                     Text(L10n.t("Pairing code expired"))
                         .font(.headline)
                     Button(L10n.t("Generate a new code")) {
@@ -185,14 +213,14 @@ struct PhoneLinkPairingView: View {
                     if let displayCode {
                         HStack(spacing: 10) {
                             Text(displayCode)
-                                .font(.system(relayCode != nil ? .title2 : .caption, design: .monospaced).weight(.semibold))
+                                .font(.system(.caption, design: .monospaced).weight(.semibold))
                                 .lineLimit(1)
                                 .truncationMode(.middle)
                                 .textSelection(.enabled)
 
                             Button(copiedCode ? L10n.t("Copied ✓") : L10n.t("Copy Code")) {
                                 NSPasteboard.general.clearContents()
-                                NSPasteboard.general.setString(relayCode?.code ?? displayCode, forType: .string)
+                                NSPasteboard.general.setString(displayCode, forType: .string)
                                 copiedCode = true
                                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copiedCode = false }
                             }
@@ -240,15 +268,20 @@ struct PhoneLinkPairingView: View {
                             .multilineTextAlignment(.center)
                     }
                 }
+                relaySection
             }
         }
         .padding()
         .frame(width: 400)
         .onAppear {
-            if relayCode == nil {
-                relayCode = RelayPairingCodeGenerator.generate()
-            }
             updateQR()
+        }
+        .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { tick in
+            now = tick
+            if let relay = relayCode, tick >= relay.expiresAt {
+                relayCode = nil
+                relayQR = nil
+            }
         }
         .onChange(of: link) { _, _ in
             updateQR()
@@ -257,8 +290,13 @@ struct PhoneLinkPairingView: View {
 
     private func refreshCodes() {
         pairing.openWindow()
-        relayCode = RelayPairingCodeGenerator.generate()
         updateQR()
+    }
+
+    private func showRelayCode() {
+        guard relayCode.map({ now >= $0.expiresAt }) ?? true else { return }
+        relayCode = RelayPairingCodeGenerator.generate()
+        relayQR = relayCode.map { Self.generateQRCode(from: $0.pairURL) }
     }
 
     private func updateQR() {
