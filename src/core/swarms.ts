@@ -1175,7 +1175,7 @@ export class SwarmsService {
          WHERE tenant_id=$1 AND status='open'
            AND ($2::boolean OR scope = ANY($3::text[]))
            AND ($4::text IS NULL OR scope = $4)
-           AND ($5::timestamptz IS NULL OR (created_at, id) < ($5::timestamptz, $6::uuid))
+           AND ($5::timestamptz IS NULL OR (date_trunc('milliseconds', created_at), id) < ($5::timestamptz, $6::uuid))
          ORDER BY created_at DESC, id DESC LIMIT $7`,
         [p.tenantId, all, grantedScopes, scope, cursorTs, cursorId, limit + 1]
       ),
@@ -1190,7 +1190,7 @@ export class SwarmsService {
            AND result->>'head_commit' IS NOT NULL
            AND ($2::boolean OR scope = ANY($3::text[]))
            AND ($4::text IS NULL OR scope = $4)
-           AND ($5::timestamptz IS NULL OR (updated_at, id) < ($5::timestamptz, $6::uuid))
+           AND ($5::timestamptz IS NULL OR (date_trunc('milliseconds', updated_at), id) < ($5::timestamptz, $6::uuid))
          ORDER BY updated_at DESC, id DESC LIMIT $7`,
         [p.tenantId, all, grantedScopes, scope, cursorTs, cursorId, limit + 1]
       ),
@@ -1202,7 +1202,7 @@ export class SwarmsService {
          WHERE tenant_id=$1 AND status='failed' AND resolved_at IS NULL
            AND ($2::boolean OR scope = ANY($3::text[]))
            AND ($4::text IS NULL OR scope = $4)
-           AND ($5::timestamptz IS NULL OR (updated_at, id) < ($5::timestamptz, $6::uuid))
+           AND ($5::timestamptz IS NULL OR (date_trunc('milliseconds', updated_at), id) < ($5::timestamptz, $6::uuid))
          ORDER BY updated_at DESC, id DESC LIMIT $7`,
         [p.tenantId, all, grantedScopes, scope, cursorTs, cursorId, limit + 1]
       ),
@@ -1211,7 +1211,7 @@ export class SwarmsService {
          WHERE tenant_id=$1 AND status IN ('waiting_on_you', 'blocked')
            AND ($2::boolean OR scope = ANY($3::text[]))
            AND ($4::text IS NULL OR scope = $4)
-           AND ($5::timestamptz IS NULL OR (updated_at, id) < ($5::timestamptz, $6::uuid))
+           AND ($5::timestamptz IS NULL OR (date_trunc('milliseconds', updated_at), id) < ($5::timestamptz, $6::uuid))
          ORDER BY updated_at DESC, id DESC LIMIT $7`,
         [p.tenantId, all, grantedScopes, scope, cursorTs, cursorId, limit + 1]
       ),

@@ -8,6 +8,7 @@ import pg, { type Pool } from 'pg';
 import { CoreService } from '../src/core/index.js';
 import {
   clearInboxDirtyFlag,
+  INBOX_FLAG_QUIET_MS,
   initInboxDirtyDir,
   touchInboxDirtyFlag,
 } from '../src/core/inbox.js';
@@ -144,8 +145,11 @@ test('inbox dirty flag lifecycle creates .active, touches/clears flag, and toler
     touchInboxDirtyFlag(pid);
     assert.equal(existsSync(join(dirtyDir, `${pid}.flag`)), true);
 
+    // A flag touched recently may belong to a write that has not committed yet: it stays.
     clearInboxDirtyFlag(pid);
-    assert.equal(existsSync(join(dirtyDir, `${pid}.flag`)), false);
+    assert.equal(existsSync(join(dirtyDir, `${pid}.flag`)), true, 'recently touched flag is kept');
+    clearInboxDirtyFlag(pid, dirtyDir, Date.now() + INBOX_FLAG_QUIET_MS + 1000);
+    assert.equal(existsSync(join(dirtyDir, `${pid}.flag`)), false, 'quiet flag is cleared');
     // Clearing again when absent is a no-op
     clearInboxDirtyFlag(pid);
 

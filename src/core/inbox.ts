@@ -1,4 +1,4 @@
-import { mkdirSync, unlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import type { Pool, PoolClient } from 'pg';
@@ -37,11 +37,18 @@ export function touchInboxDirtyFlag(principalId: string, baseDir = inboxDirtyDir
   } catch { /* best effort; never fail DB operations */ }
 }
 
-/** Best-effort removal of `~/.swarmaa/inbox-dirty/<principalId>.flag` once zero undelivered items remain. */
-export function clearInboxDirtyFlag(principalId: string, baseDir = inboxDirtyDir()): void {
+/** Writers touch the flag inside their transaction, before COMMIT, so a poll can briefly see nothing although an
+ *  item is on its way. The flag is only cleared once nothing has touched it for this long (longer than any transaction). */
+export const INBOX_FLAG_QUIET_MS = 10 * 60_000;
+
+/** Best-effort removal of `~/.swarmaa/inbox-dirty/<principalId>.flag` once zero undelivered items remain and no write
+ *  touched it within INBOX_FLAG_QUIET_MS. */
+export function clearInboxDirtyFlag(principalId: string, baseDir = inboxDirtyDir(), now = Date.now()): void {
   if (!SAFE_PRINCIPAL_UUID.test(principalId)) return;
   try {
-    unlinkSync(path.join(baseDir, `${principalId}.flag`));
+    const file = path.join(baseDir, `${principalId}.flag`);
+    if (now - statSync(file).mtimeMs < INBOX_FLAG_QUIET_MS) return;
+    unlinkSync(file);
   } catch { /* best effort; never fail DB operations */ }
 }
 export function inboxSession(value:unknown):string {
@@ -214,6 +221,8 @@ export class InboxService {
              AND (
                i.delivered_at IS NULL
                OR ((i.recipient_session IS NULL OR i.recipient_session=$5) AND (r.state IS NULL OR (r.state='unconfirmed' AND r.offers<3)))
+               -- another session of this identity still has an offered item to confirm: keep its hook polling
+               OR EXISTS (SELECT 1 FROM inbox_receipts o WHERE o.delivery_id=i.delivery_id AND o.session<>$5 AND o.state='unconfirmed' AND o.offers<3)
              )
            LIMIT 1`,
           args

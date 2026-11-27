@@ -278,13 +278,20 @@ test('Google ToS compliance boundary: interactive turns use ACP, unattended OAut
     (err: any) => err.code === 'antigravity_unattended_oauth_disallowed'
   );
 
-  // 3. Unattended background review task without API/enterprise auth: fails closed
-  const bgReview = makeTask({ kind: 'review', required_capability: 'antigravity.read' });
-  assert.equal(isInteractiveAntigravityTask(bgReview), false);
-  assert.throws(
-    () => buildInvocation(agent, project, bgReview, {}, cfg, new AbortController().signal, { HOME: '/h' }),
-    (err: any) => err.code === 'antigravity_unattended_oauth_disallowed'
-  );
+  // 3. A review a person submitted runs on the user's own agy login (CLI path, not ACP)...
+  const bgReview = makeTask({ kind: 'review', required_capability: 'antigravity.read', initiator_kind: 'person' } as any);
+  assert.equal(isInteractiveAntigravityTask(bgReview), true);
+  const personReq = buildInvocation(agent, project, bgReview, {}, cfg, new AbortController().signal, { HOME: '/h' });
+  assert.ok(!personReq.acp, 'non-turn work uses the print-mode CLI, not ACP');
+  // ...but a scheduled bot run or webhook-sourced task without API/enterprise auth fails closed.
+  for (const initiator_kind of ['schedule', 'source', 'bot_check']) {
+    const unattended = makeTask({ kind: 'review', required_capability: 'antigravity.read', initiator_kind } as any);
+    assert.equal(isInteractiveAntigravityTask(unattended), false);
+    assert.throws(
+      () => buildInvocation(agent, project, unattended, {}, cfg, new AbortController().signal, { HOME: '/h' }),
+      (err: any) => err.code === 'antigravity_unattended_oauth_disallowed'
+    );
+  }
 
   // 4. Unattended background task WITH GEMINI_API_KEY or auth_mode: uses stream-json over stdin + --effort
   assert.equal(hasAntigravityEnterpriseAuth(agent, { GEMINI_API_KEY: 'key' }), true);
@@ -313,7 +320,7 @@ test('BridgeWorker finishes unattended consumer-OAuth Antigravity task as blocke
     agents: [{ id: 'antigravity', provider: 'antigravity', binary: '/bin/agy' }],
     projects: [{ scope: 'project:demo', root: '/tmp', agents: ['antigravity'] }],
   });
-  const bgTask = makeTask({ kind: 'review', required_capability: 'antigravity.read' });
+  const bgTask = makeTask({ kind: 'review', required_capability: 'antigravity.read', initiator_kind: 'schedule' } as any);
   let finishArgs: Record<string, unknown> | undefined;
   const client: ToolClient = {
     async call<T>(name: string, args: Record<string, unknown>): Promise<T> {

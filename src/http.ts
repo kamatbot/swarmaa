@@ -647,10 +647,6 @@ export function createHttpHandler(dependencies: HttpDependencies): (request: Inc
         maxDurationTimer.unref?.();
 
         const wakeup = eventWakeup(dependencies.pool);
-        const wakeupConnected = (): boolean => {
-          const state = wakeup as unknown as { client?: unknown; connecting?: unknown };
-          return Boolean(state.client && !state.connecting);
-        };
 
         const wake = () => {
           if (!active || response.destroyed) return;
@@ -719,7 +715,7 @@ export function createHttpHandler(dependencies: HttpDependencies): (request: Inc
             if (active && !response.destroyed) {
               if (pending) void poll();
               else {
-                pollTimer = setTimeout(wake, wakeupConnected() ? 15_000 : 2_000);
+                pollTimer = setTimeout(wake, 2_000);
                 pollTimer.unref?.();
               }
             }

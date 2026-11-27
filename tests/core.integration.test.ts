@@ -148,6 +148,19 @@ describe('core transactional invariants', {skip:!connectionString,concurrency:fa
     await rejects(f.front,'task_submit',{...submission(),idempotency_key:'agy-research',required_capability:'antigravity.read'},'kind_not_allowed');
   });
 
+  it('never lets Antigravity claim scheduled or webhook-sourced work; person-started work still routes to it',async () => {
+    const f = await fixture();
+    const person = (await call(f.front,'task_submit',{...submission(),kind:'review',required_capability:'antigravity.read'})).task;
+    const scheduled = (await call(f.front,'task_submit',{...submission(),kind:'review',required_capability:'antigravity.read'})).task;
+    await pool.query("UPDATE tasks SET initiator_kind='schedule', created_at=created_at-interval '1 minute' WHERE id=$1",[scheduled.id]);
+    const agy = {scope:'project:a',capabilities:['antigravity.read'],kinds:['review'],lease_seconds:30};
+    const claimed = await call(f.worker,'task_claim',agy);
+    assert.equal(claimed.task.id,person.id,'agy takes the person-started review, skipping the older scheduled one');
+    const moved = (await pool.query('SELECT required_capability FROM tasks WHERE id=$1',[scheduled.id])).rows[0];
+    assert.equal(moved.required_capability,'claude.read','the scheduled task pinned to agy moves to claude');
+    assert.equal((await call(f.worker,'task_claim',agy)).task,null);
+  });
+
   it('enforces permissions, roles, tenant and exact scope inside CoreService',async () => {
     const f = await fixture();
     assert.ok(!core.listTools(f.front).some(t => t.name === 'task_claim' || t.name === 'memory_promote'));

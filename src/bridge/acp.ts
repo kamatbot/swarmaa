@@ -29,6 +29,13 @@ export interface AcpArgsOptions {
   agent?: string;
 }
 
+const AGY_LEVELS = ['low', 'medium', 'high', 'xhigh'] as const;
+/** Split an agy model id into its family and optional thought level: gemini-3.8-flash-high -> gemini-3.8-flash + high. */
+export function splitAgyModel(model: string): { family: string; level?: string } {
+  const m = /^(.+)-(low|medium|high|xhigh)$/u.exec(model);
+  return m && (AGY_LEVELS as readonly string[]).includes(m[2]!) ? { family: m[1]!, level: m[2]! } : { family: model };
+}
+
 /** Build verified `agy acp` CLI arguments (no prompt in argv, no private endpoints). */
 export function buildAcpArgs(opts: AcpArgsOptions = {}): string[] {
   const args = ['acp', '--stdio'];
@@ -286,7 +293,10 @@ export async function runAcpSession(request: ProcessRequest, callbacks?: AcpCall
         const options = Array.isArray(params.options) ? params.options.map(asObj).filter((x): x is Record<string, unknown> => !!x) : [];
         const toolCall = asObj(params.toolCall);
         const toolLabel = String(toolCall?.title ?? toolCall?.kind ?? toolCall?.toolName ?? params.title ?? 'permission');
-        const allow = Boolean(acp.patch || acp.dangerously_skip_permissions);
+        // Read-only turns may read, search, fetch and run commands (the Seatbelt profile denies writes to the project,
+        // as on the print-mode path); only file edits, deletes and moves are refused.
+        const toolKind = String(toolCall?.kind ?? '');
+        const allow = Boolean(acp.patch || acp.dangerously_skip_permissions) || !['edit', 'delete', 'move'].includes(toolKind);
         if (allow) {
           const picked = options.find(o => typeof o.kind === 'string' && o.kind.startsWith('allow')) ?? options[0];
           const optionId = typeof picked?.optionId === 'string' ? picked.optionId : undefined;
@@ -471,22 +481,23 @@ export async function runAcpSession(request: ProcessRequest, callbacks?: AcpCall
         const sessionModel = extractModelFromObj(sessionRes);
         if (sessionModel) servedModel = sessionModel;
 
-        if (acp.model) {
+        // agy exposes the model as a family config option plus a separate thought_level; a suffixed id such as
+        // gemini-3.8-flash-high means family gemini-3.8-flash at level high. session/set_model is accepted but ignored.
+        const split = acp.model ? splitAgyModel(acp.model) : undefined;
+        const level = acp.effort ?? split?.level;
+        if (split) {
           try {
-            const setRes = await sendRpc('session/set_model', { sessionId, modelId: acp.model });
-            const nextModel = extractModelFromObj(setRes);
-            if (nextModel) servedModel = nextModel;
-            else servedModel ??= acp.model;
+            await sendRpc('session/set_config_option', { sessionId, configId: 'model', value: split.family });
+            servedModel = acp.model;
           } catch {
-            // Optional ACP capability; ignore if server does not implement session/set_model.
+            // Unknown model for this agy version: the session keeps its default, reported from session/new.
           }
         }
-
-        if (acp.effort) {
+        if (level) {
           try {
-            await sendRpc('session/set_config_option', { sessionId, configId: 'effort', value: acp.effort });
+            await sendRpc('session/set_config_option', { sessionId, configId: 'thought_level', value: level });
           } catch {
-            // Optional ACP capability; ignore if unsupported.
+            // Optional; ignore if this agy version has no thought_level option.
           }
         }
 
@@ -520,7 +531,8 @@ export async function runAcpSession(request: ProcessRequest, callbacks?: AcpCall
           });
         }
 
-        const ok = !stopReason && promptStopReason !== 'cancelled' && fullText.trim() !== '' && deniedActions.length === 0;
+        // A refused edit only fails the turn when nothing came back; otherwise the answer stands (and says what it could not do).
+        const ok = !stopReason && promptStopReason !== 'cancelled' && fullText.trim() !== '';
         if (!ok && !protocolError) {
           protocolError = deniedActions.length
             ? `Denied actions: ${deniedActions.join(', ')}`

@@ -80,8 +80,12 @@ export const CREDENTIAL_PATHS = [
 function providerRuntimeDirs(provider: Provider, home: string): string[] {
   if (provider === 'claude') return [join(home, '.claude')];
   if (provider === 'codex') return [join(home, '.codex')];
-  return [join(home, '.gemini', 'antigravity-cli')];
+  return [join(home, '.gemini')];
 }
+
+/** Build tool caches and state the CLIs and the builds they run write to (xcodebuild, simulators, npm, SwiftPM, pip).
+ *  Without them every task that builds or tests fails, so they stay writable for all tasks. */
+export const TOOLCHAIN_WRITE_PATHS = ['Library/Caches', 'Library/Developer', 'Library/Logs', 'Library/org.swift.swiftpm', '.npm', '.cache', '.swiftpm', '.cargo', '.gradle', '.bun', '.pnpm-store'];
 
 /**
  * Hardened macOS Seatbelt profile:
@@ -102,7 +106,8 @@ export function buildProfile(o: SandboxOptions): string {
   const worktreesDir = join(swarmaDir, 'worktrees');
   const projectInWorktrees = isWithin(projectRoot, worktreesDir) && projectRoot !== worktreesDir;
 
-  const writeSubpaths = new Set<string>([tmp, '/tmp', '/private/tmp', ...providerRuntimeDirs(o.provider, home).map(real)]);
+  const writeSubpaths = new Set<string>([tmp, '/tmp', '/private/tmp', ...providerRuntimeDirs(o.provider, home).map(real),
+    ...TOOLCHAIN_WRITE_PATHS.map(d => real(join(home, d)))]);
   if (o.patch) {
     writeSubpaths.add(projectRoot);
     if (gitDir) writeSubpaths.add(gitDir);
@@ -115,6 +120,8 @@ export function buildProfile(o: SandboxOptions): string {
     '(deny file-write*)',
     `(allow file-write* ${lit('/dev/null')} ${lit('/dev/tty')} ${[...writeSubpaths].map(sub).join(' ')})`,
   ];
+  // Claude keeps its settings in ~/.claude.json and rewrites it (plus backup/temp siblings) on every run.
+  if (o.provider === 'claude') lines.push(`(allow file-write* (regex ${sbplString(`^${home.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/\\.claude\\.json`)}))`);
 
   // For Claude patch tasks with a dedicated project transcript dir, deny writes to sibling project transcripts.
   if (o.provider === 'claude' && ownHistoryDir) {

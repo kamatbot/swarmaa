@@ -421,7 +421,7 @@ export class PushWorker {
   private wake = ():void => {};
   private async tick():Promise<void> {
     if (!this.listener) {
-      const client = new pg.Client({ ...this.pool.options, connectionTimeoutMillis: 5000 });
+      const client = new pg.Client({ ...this.pool.options, connectionTimeoutMillis: 30_000 });
       this.listener = client;
       const lost = () => {
         if (this.listener === client) {

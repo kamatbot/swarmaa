@@ -11,7 +11,7 @@ async function subscribe(pool:Pool,listener:Listener):Promise<()=>void> {
   let hub = hubs.get(pool);
   if (!hub) {
     const listeners = new Set<Listener>();
-    const client = new pg.Client({ ...pool.options, connectionTimeoutMillis: 5000 });
+    const client = new pg.Client({ ...pool.options, connectionTimeoutMillis: 30_000 });
     let closed = false;
     const evict = (failed: boolean) => {
       if (closed) return;

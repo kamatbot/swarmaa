@@ -672,6 +672,9 @@ export class BridgeWorker {
             }
             Object.assign(request.env, secrets);
             request.on_progress = value => {
+              // ACP's tail is answer text, not CLI JSON lines: its text and activity arrive via onPartialText/onActivity,
+              // so scanning it would turn JSON-looking answer lines into fake partial text or activity rows.
+              if (request.acp && this.runner === runBoundedProcess) { progress = { ...value, stdout_tail: '' }; return; }
               progress = images.length ? { ...value, stdout_tail: "" } : { ...value, stdout_tail: scrubSecrets(value.stdout_tail, secrets) };
               updatePartialText(progress.stdout_tail, value.stdout_bytes ?? value.output_bytes);
             };

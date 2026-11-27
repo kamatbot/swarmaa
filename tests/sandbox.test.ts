@@ -68,6 +68,14 @@ test('read-only profile denies writes to projectRoot, home, LaunchAgents and den
     assert.equal(sh(`echo ok > "${tmp}/out.txt"`).status, 0, 'tmp writable');
     assert.equal(sh(`echo ok > /dev/null`).status, 0, '/dev/null writable');
     assert.equal(sh(`echo ok > "${home}/.claude/cache.tmp"`).status, 0, 'provider runtime dir writable');
+
+    // Builds and the CLI's own settings file keep working: xcodebuild, simulators, npm, ~/.claude.json
+    for (const d of ['Library/Developer/Xcode/DerivedData', 'Library/Caches', '.npm']) {
+      mkdirSync(join(home, d), { recursive: true });
+      assert.equal(sh(`echo ok > "${home}/${d}/x"`).status, 0, `${d} writable`);
+    }
+    assert.equal(sh(`echo {} > "${home}/.claude.json"`).status, 0, '~/.claude.json writable');
+    assert.equal(sh(`echo {} > "${home}/.claude.json.backup"`).status, 0, '~/.claude.json siblings writable');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

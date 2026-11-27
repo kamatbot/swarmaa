@@ -10,20 +10,22 @@ import { claudeWorkerDir, type NativePlan } from './native-session.js';
 import { wrapCommand } from './sandbox.js';
 import type { AgentConfig, BridgeConfig, ProcessRequest, ProcessResult, ProjectConfig, Task } from './types.js';
 
-/** True when an Antigravity task is interactive (human-initiated turn or explicitly marked interactive), not scheduled/background. */
+/** Task origins nobody is present for: bot schedules, webhook sources and scheduled bot checks. */
+export const UNATTENDED_INITIATORS = ['schedule', 'source', 'bot_check'] as const;
+
+/** True when a person started this Antigravity task (a chat turn, or work they submitted), not a schedule or webhook. */
 export function isInteractiveAntigravityTask(task: Task): boolean {
   const envelope = (task as any).permission_envelope ?? (task as any).envelope;
-  const scheduled = Boolean(
+  const unattended = Boolean(
     (task as any).scheduled === true
     || (task as any).source_id
+    || (UNATTENDED_INITIATORS as readonly string[]).includes((task as any).initiator_kind)
     || envelope?.scheduled === true
     || envelope?.automated === true
     || envelope?.trigger === 'schedule'
     || envelope?.trigger === 'cron'
   );
-  if (scheduled) return false;
-  if (envelope?.interactive === true) return true;
-  return task.kind === 'turn';
+  return !unattended;
 }
 
 /** True when explicit API or enterprise credentials/auth mode are configured for unattended Antigravity runs. */
@@ -32,7 +34,8 @@ export function hasAntigravityEnterpriseAuth(agent: AgentConfig, env: NodeJS.Pro
   return Boolean(env.GEMINI_API_KEY?.trim() || env.GOOGLE_API_KEY?.trim() || env.GOOGLE_APPLICATION_CREDENTIALS?.trim());
 }
 
-/** Fail closed when an unattended/background Antigravity task would run on consumer OAuth without API/Enterprise auth. */
+/** Backstop for the service's routing: an unattended Antigravity task (schedule, webhook, scheduled check) never runs on
+ *  the user's consumer login; only API or Enterprise auth may run it. Person-started work runs as usual. */
 export function assertAntigravityCompliance(agent: AgentConfig, task: Task, env: NodeJS.ProcessEnv): void {
   if (agent.provider !== 'antigravity') return;
   if (isInteractiveAntigravityTask(task)) return;
@@ -339,7 +342,7 @@ export function buildInvocation(agent: AgentConfig, project: ProjectConfig, task
   }
 
   const lightChat = isNonEditTurn && envelope?.runner?.delegated !== true;
-  const agyInteractiveAcp = agent.provider === 'antigravity' && isInteractiveAntigravityTask(task);
+  const agyInteractiveAcp = agent.provider === 'antigravity' && isTurn && isInteractiveAntigravityTask(task);
   let args: string[];
   if (agent.provider === 'claude') {
     // The real CLIs as the user runs them (their config, MCP servers, skills, models, login), headless with
