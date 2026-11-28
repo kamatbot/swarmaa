@@ -4,7 +4,7 @@ import vm from 'node:vm';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import type { ChildProcess } from 'node:child_process';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createLocalActionRunner, ExecTimeout, normalizeAction, type LocalRunnerOptions } from '../src/local/actions.js';
@@ -205,7 +205,7 @@ test('disabled and non-darwin', async () => {
 });
 
 test('non-darwin still appends notes', async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), 'swarmaa-la-'));
+  const dir = await mkdtemp(path.join(await realpath(tmpdir()), 'swarmaa-la-')); // macOS: /var is a symlink to /private/var
   try {
     const r = runner({ platform: 'linux', env: { SWARMAA_NOTES_DIR: path.join(dir, 'notes') } });
     const n = await r.run(ID, { type: 'note.append', text: 'Buy filters' });

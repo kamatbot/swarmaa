@@ -104,6 +104,22 @@ describe('routing policy', {skip:!connectionString,concurrency:false}, () => {
     assert.equal((await claim(codex,['codex.read','auto.read'])).task.id,task.id);
   });
 
+  it('exclude_providers hands auto work to another agent even when the excluded one has the most headroom', async () => {
+    const {front,claude,codex} = await fixture();
+    await call(claude,'usage_report',report('claude',5,5));
+    await call(codex,'usage_report',report('codex',50,50));
+    const task = (await call(front,'task_submit',{...submit('ex-1'),exclude_providers:['claude','claude']})).task;
+    assert.deepEqual(task.excluded_providers,['claude']);
+    assert.equal((await claim(claude,['claude.read','auto.read'])).task,null);
+    assert.equal((await claim(codex,['codex.read','auto.read'])).task.id,task.id);
+    // Same key and same exclusion is a replay; a different exclusion is a different request.
+    assert.equal((await call(front,'task_submit',{...submit('ex-1'),exclude_providers:['claude']})).replayed,true);
+    await assert.rejects(() => call(front,'task_submit',submit('ex-1')),code('idempotency_conflict'));
+    await assert.rejects(() => call(front,'task_submit',{...submit('ex-2','review','codex.read'),exclude_providers:['claude']}),code('invalid_arguments'));
+    await assert.rejects(() => call(front,'task_submit',{...submit('ex-3'),exclude_providers:['Claude!']}),code('invalid_arguments'));
+    await assert.rejects(() => call(front,'task_submit',{...submit('ex-4','research'),exclude_providers:['claude','codex']}),code('no_provider'));
+  });
+
   it('walks providers in priority order using the 5-hour and weekly ceilings', async () => {
     const {front,claude,codex} = await fixture();
     await call(codex,'usage_report',report('codex',12,3));

@@ -262,7 +262,7 @@ export class TaskService {
   }
 
   async submit(p:Principal,input:Record<string,unknown>):Promise<unknown> {
-    noExtraKeys(input,['scope','kind','objective','idempotency_key','required_capability','resource_key','base_ref','constraints','acceptance_criteria','context_refs','max_attempts','model','effort']);
+    noExtraKeys(input,['scope','kind','objective','idempotency_key','required_capability','resource_key','base_ref','constraints','acceptance_criteria','context_refs','max_attempts','model','effort','exclude_providers']);
     const scope = scopeName(input.scope);
     assertKnownScope(p,scope);
     const kind = enumValue(input.kind,'kind',TASK_KINDS);
@@ -286,10 +286,13 @@ export class TaskService {
     const model = optionalString(input.model,'model',80) ?? null;
     requireCondition(model === null || /^[A-Za-z0-9._:\/-]+$/u.test(model),400,'invalid_arguments','model must be a model name such as gpt-6-astra.');
     const effort = input.effort === undefined ? null : enumValue(input.effort,'effort',['minimal','low','medium','high','xhigh','max'] as const);
+    const exclude = input.exclude_providers === undefined ? [] : [...new Set(strings(input.exclude_providers,'exclude_providers',8,40))].sort();
+    requireCondition(exclude.every(x => /^[a-z][a-z0-9-]{0,39}$/u.test(x)),400,'invalid_arguments','exclude_providers holds provider names such as claude, codex or antigravity.');
+    requireCondition(!exclude.length || capability === AUTO_READ || capability === AUTO_PATCH,400,'invalid_arguments','exclude_providers applies to auto.read and auto.patch only; a named provider already picks who runs it.');
     const runner = model || effort ? { runner:{ ...(model ? {model} : {}), ...(effort ? {effort} : {}) } } : {};
     const envelope = { read_project:true, local_patch:kind === 'patch', external_side_effects:false,
       deploy:false, publish:false, send_messages:false, purchase:false, permission_changes:false, ...runner };
-    const requestHash = sha256(canonicalJson({scope,kind,objective,capability,resource,constraints,base_ref:baseRef,acceptance,refs,max_attempts:attempts,model,effort}));
+    const requestHash = sha256(canonicalJson({scope,kind,objective,capability,resource,constraints,base_ref:baseRef,acceptance,refs,max_attempts:attempts,model,effort,...(exclude.length ? {exclude} : {})}));
     return transaction(this.pool,async db => {
       // The idempotency namespace spans scopes so moving a retry cannot duplicate work.
       await scopeLock(db,'submission',p,'',`${p.id}:${idempotency}`);
@@ -307,6 +310,11 @@ export class TaskService {
           ? 'Antigravity takes review and in-project edit tasks, not research (it cannot reach outside the project). Use auto.read or codex.read for research.'
           : `${provider} does not take ${kind} tasks under the owner's routing policy. Use ${kind === 'patch' ? 'auto.patch' : 'auto.read'} or another provider.`);
       }
+      if (exclude.length) {
+        const {policy} = await getPolicy(db,p.tenantId);
+        requireCondition(policy.providers.some(x => x.enabled && (x.kinds as string[]).includes(kind) && !exclude.includes(x.provider)),400,'no_provider',
+          `Every provider that takes ${kind} tasks is excluded or disabled, so this task could never run.`);
+      }
       await scopeLock(db,'tasks',p,scope);
       const count = await db.query<{count:string}>(`SELECT count(*)::text AS count FROM tasks
         WHERE tenant_id=$1 AND scope=$2 AND status IN ('queued','running','blocked')`,[p.tenantId,scope]);
@@ -318,10 +326,10 @@ export class TaskService {
       const versions = Object.fromEntries(memories.rows.map(m => [m.id,m.version]));
       const result = await db.query<TaskRow>(`INSERT INTO tasks
         (id,tenant_id,scope,kind,objective,constraints,acceptance_criteria,permission_envelope,required_capability,
-         resource_key,base_ref,context_refs,context_versions,status,created_by,idempotency_key,request_hash,max_attempts)
-        VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb,$8::jsonb,$9,$10,$17,$11::uuid[],$12::jsonb,'queued',$13,$14,$15,$16) RETURNING *`,
+         resource_key,base_ref,context_refs,context_versions,status,created_by,idempotency_key,request_hash,max_attempts,excluded_providers)
+        VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb,$8::jsonb,$9,$10,$17,$11::uuid[],$12::jsonb,'queued',$13,$14,$15,$16,$18::text[]) RETURNING *`,
       [newId(),p.tenantId,scope,kind,objective,JSON.stringify(constraints),JSON.stringify(acceptance),JSON.stringify(envelope),
-        capability,resource,refs,JSON.stringify(versions),p.id,idempotency,requestHash,attempts,baseRef]);
+        capability,resource,refs,JSON.stringify(versions),p.id,idempotency,requestHash,attempts,baseRef,exclude]);
       const row = result.rows[0]!;
       await taskChanged(db,p,row,'submitted');
       // Say so now rather than let the task sit unclaimed: no live worker serves this project.

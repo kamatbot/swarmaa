@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { chmod, lstat, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { chmod, lstat, mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { appendNote, NotebookError, notesRoot, removeNote } from '../src/local/notebook.js';
@@ -10,7 +10,8 @@ const NOW = new Date('2026-11-22T23:30:00Z');
 const A = '11111111-1111-4111-8111-111111111111', B = '22222222-2222-4222-8222-222222222222';
 
 async function withDir(fn: (root: string, base: string) => Promise<void>) {
-  const base = await mkdtemp(path.join(tmpdir(), 'swarmaa-nb-'));
+  // macOS tmpdir() sits under /var, a symlink to /private/var, which the notes path check rightly rejects.
+  const base = await mkdtemp(path.join(await realpath(tmpdir()), 'swarmaa-nb-'));
   try { await fn(path.join(base, 'notes'), base); } finally { await rm(base, { recursive: true, force: true }); }
 }
 
