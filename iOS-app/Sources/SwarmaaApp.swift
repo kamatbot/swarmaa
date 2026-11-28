@@ -1680,12 +1680,6 @@ private struct ComposerModelSheet: View {
                 CloseButton(action: close)
                 Text("Next reply model").font(KS.title()).foregroundStyle(KS.strong)
                 Spacer()
-                if model.messageRunnerOverrides[threadID] != nil {
-                    Button("Reset") {
-                        model.messageRunnerOverrides[threadID] = nil
-                    }
-                    .font(KS.body(.semibold)).foregroundStyle(KS.signal)
-                }
             }
             VStack(alignment: .leading, spacing: 8) {
                 Eyebrow("This message only")
@@ -1731,7 +1725,15 @@ private struct ComposerModelSheet: View {
                 }.padding(14).card()
             }
             if let error { Text(error).font(KS.body()).foregroundStyle(KS.failedText) }
-            Button("Done", action: close).buttonStyle(Pill(fill: KS.signal, primary: true))
+            HStack(spacing: 12) {
+                if model.messageRunnerOverrides[threadID] != nil {
+                    Button("Reset") {
+                        model.messageRunnerOverrides[threadID] = nil
+                    }
+                    .font(KS.body(.semibold)).foregroundStyle(KS.signal)
+                }
+                Button("Done", action: close).buttonStyle(Pill(fill: KS.signal, primary: true))
+            }
         }
     }
 }

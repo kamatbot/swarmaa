@@ -376,7 +376,8 @@ enum ModelCatalog {
         var seen = Set<String>()
         func add(_ raw: String) {
             let p = raw.lowercased()
-            guard !p.isEmpty, seen.insert(p).inserted else { return }
+            // The server's parseRunner only accepts these; anything else is a 400.
+            guard defaultOrder.contains(p), seen.insert(p).inserted else { return }
             ordered.append(p)
         }
         let cat = catalogMap(status: status)
@@ -712,13 +713,24 @@ func safeError(_ error: Error) -> String {
     }
     /// Bounds a single relay request by `sid`, cancelling only that stream on timeout or cancellation
     /// so the shared WebSocket and live SSE stream stay intact.
+    private final class TimedOutFlag: @unchecked Sendable {
+        private let lock = NSLock(); private var flag = false
+        var value: Bool { get { lock.lock(); defer { lock.unlock() }; return flag }
+                          set { lock.lock(); flag = newValue; lock.unlock() } }
+    }
     nonisolated static func bounded<T: Sendable>(transport: SwarmaRelayTransport, sid: String, seconds: Double,
                                                 operation: @escaping @Sendable () async throws -> T) async throws -> T {
         try await withTaskCancellationHandler {
-            try await withThrowingTaskGroup(of: T.self) { group in
-                group.addTask { try Task.checkCancellation(); return try await operation() }
+            let timedOut = TimedOutFlag()
+            return try await withThrowingTaskGroup(of: T.self) { group in
+                group.addTask {
+                    try Task.checkCancellation()
+                    do { return try await operation() }
+                    catch is CancellationError where timedOut.value { throw AppFailure.timeout }
+                }
                 group.addTask {
                     try await Task.sleep(for: .seconds(seconds))
+                    timedOut.value = true // Set before cancelStream so the operation's CancellationError maps to timeout.
                     await transport.cancelStream(sid: sid)
                     throw AppFailure.timeout
                 }
@@ -1170,6 +1182,8 @@ enum PushNotification {
                     // Patch cached task state directly from event fields without an extra task_get round trip.
                     tasks[index]["status"] = .string(statusStr)
                     if value("version") != .null { tasks[index]["version"] = value("version") }
+                    // Attempts/claimant/progress/summary aren't in the event: one coalesced task_get refreshes them.
+                    scheduleTaskGet(id)
                 } else if taskGetDebounce == .zero {
                     let task = try await service.call("task_get", ["task_id": .string(id)])["task"]
                     if let index = tasks.firstIndex(where: { $0["id"].string == id }) { tasks[index] = task }
@@ -1201,7 +1215,7 @@ enum PushNotification {
     private func scheduleTaskGet(_ id: String) {
         pendingTaskGetIDs.insert(id)
         guard taskGetTask == nil else { return }
-        let delay = taskGetDebounce
+        let delay = max(taskGetDebounce, .milliseconds(250)) // Never zero: bursts of running events must coalesce.
         taskGetTask = Task { [weak self] in
             do { try await Task.sleep(for: delay) } catch { return }
             guard !Task.isCancelled, let self else { return }

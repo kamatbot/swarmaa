@@ -295,6 +295,14 @@ struct PhoneLinkPairingView: View {
         .onChange(of: link) { _, _ in
             updateQR()
         }
+        // A window opened while Wi-Fi was down must pick the address up once the network returns.
+        .task {
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(10))
+                let hosts = PhoneLinkNetwork.getHosts()
+                if hosts != cachedHosts { cachedHosts = hosts }
+            }
+        }
     }
 
     private func refreshNetworkInfo() {

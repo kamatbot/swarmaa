@@ -369,7 +369,8 @@ enum SwarmaModelCatalog {
         var seen = Set<String>()
         func add(_ raw: String) {
             let p = raw.lowercased()
-            guard !p.isEmpty, seen.insert(p).inserted else { return }
+            // The server's parseRunner only accepts these; anything else is a 400.
+            guard defaultOrder.contains(p), seen.insert(p).inserted else { return }
             ordered.append(p)
         }
         if let policy = status?.routing?.policy {
@@ -719,6 +720,7 @@ actor SwarmaClient {
     func routingSet(_ policy: RoutingPolicy) async throws -> RoutingSetResult {
         let result = try await call("routing_set", body: policy.requestBody(), as: RoutingSetResult.self)
         cached = nil   // by_kind changed
+        routingInFlight = nil // a get started before the save would return the pre-save policy
         return result
     }
 

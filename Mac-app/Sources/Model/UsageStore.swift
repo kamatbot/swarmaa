@@ -9,6 +9,9 @@ final class UsageStore: ObservableObject {
     @Published private(set) var snapshots: [ProviderSnapshot] = [] {
         didSet { updateUsageSnapshots() }
     }
+    /// Fires on every poll result, even an identical one, so time-derived observers
+    /// (daily pace, "available again") keep running when the values did not change.
+    let polled = PassthroughSubject<Void, Never>()
     /// Settings and every display share the same ordered, visible model cells.
     @Published private(set) var usageSnapshots: [ProviderSnapshot] = []
     /// Providers with a fetch in flight, so the cell can show it happening.
@@ -744,6 +747,7 @@ final class UsageStore: ObservableObject {
 
     private func publish(_ snapshot: ProviderSnapshot) {
         guard !disconnected.contains(snapshot.id) else { return }
+        defer { polled.send() }
         var current = Dictionary(uniqueKeysWithValues: snapshots.map { ($0.id, $0) })
         current[snapshot.id] = named(snapshot).blockingSpentWeek()
         let next = orderedProviders.compactMap { disconnected.contains($0.id) ? nil : current[$0.id] }

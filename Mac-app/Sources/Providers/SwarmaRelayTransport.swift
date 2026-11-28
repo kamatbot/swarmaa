@@ -833,6 +833,7 @@ public final class SwarmaRelayTransport: @unchecked Sendable {
     /// just this request via `cancelStream(sid:)` without tearing down the shared WebSocket.
     public func send(_ request: URLRequest, sid: String) async throws -> (Data, HTTPURLResponse) {
         try await ensureConnected()
+        try Task.checkCancellation() // A cancel that landed while connecting must not send.
         let headers = filterHeaders(request)
         let body = extractBody(request)
         let path = extractPath(request)
@@ -869,6 +870,11 @@ public final class SwarmaRelayTransport: @unchecked Sendable {
             (inFlightSend.removeValue(forKey: sid),
              inFlightStream.removeValue(forKey: sid),
              inFlightLiveStream.removeValue(forKey: sid))
+        }
+        if send == nil && stream == nil && live == nil {
+            // Nothing registered yet: a send may still be connecting. Abort only that pending connect.
+            if withLock({ connectionTask != nil }) { await closeSocket(intentional: true) }
+            return
         }
         send?.continuation.resume(throwing: CancellationError())
         stream?.finish(throwing: CancellationError())

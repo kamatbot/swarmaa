@@ -1188,6 +1188,12 @@ actor SwarmaTeamsClient {
             let task = session.dataTask(with: request)
             return try await withTaskCancellationHandler {
                 try await withCheckedThrowingContinuation { responseContinuation in
+                    // onCancel may have run before this entry existed; nothing would resume the continuation.
+                    if Task.isCancelled {
+                        task.cancel()
+                        responseContinuation.resume(throwing: CancellationError())
+                        return
+                    }
                     let entry = Entry()
                     entry.responseContinuation = responseContinuation
                     var holder: AsyncThrowingStream<String, Error>.Continuation?
