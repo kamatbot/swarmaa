@@ -292,6 +292,24 @@ export function guardedPostToolUseCommand(harness: Harness, root: string, baseCm
   return `if [ -f "$HOME/.swarmaa/inbox-dirty/.active" ] && [ -r ${tokenPath} ]; then id=''; while IFS= read -r l; do case "$l" in *'"id"'*) id=\${l#*'"id"'}; id=\${id#*'"'}; id=\${id%%'"'*}; break ;; esac; done < ${tokenPath}; if [ -n "$id" ] && [ ! -f "$HOME/.swarmaa/inbox-dirty/$id.flag" ]; then ${pendingCheck}; fi; fi; exec ${baseCmd}`;
 }
 
+/**
+ * Wraps per-turn hooks (UserPromptSubmit, Stop) in a fast POSIX shell guard:
+ * when no ~/.swarma/turn/<sha>/state.json exists, Stop exits immediately with zero forks,
+ * and UserPromptSubmit skips spawning Node unless stdin contains /swarm, $swarm, or the swarm command marker.
+ * For Antigravity (agy), skipped paths still emit `{}` on stdout to honor its hook JSON contract.
+ */
+export function guardedTurnCommand(harness: Harness, event: string, baseCmd: string): string {
+  const skip = harness === 'agy' ? "{ printf '{}\\n'; exit 0; }" : 'exit 0';
+  const stateCheck = 's=0; for f in "$HOME/.swarma/turn"/*/state.json; do [ -f "$f" ] && s=1 && break; done';
+  if (event === 'Stop') {
+    return `${stateCheck}; [ "$s" = 0 ] && ${skip}; exec ${baseCmd}`;
+  }
+  if (event === 'UserPromptSubmit') {
+    return `${stateCheck}; if [ "$s" = 0 ]; then in=$(cat); case "$in" in */[Ss][Ww][Aa][Rr][Mm]*|*'$'[Ss][Ww][Aa][Rr][Mm]*|*'\\/'[Ss][Ww][Aa][Rr][Mm]*|*swarma:swarm-command*) printf '%s\\n' "$in" | ${baseCmd}; exit $? ;; *) ${skip} ;; esac; fi; exec ${baseCmd}`;
+  }
+  return baseCmd;
+}
+
 /** A Homebrew Cellar path dies on every `brew upgrade node`; use the stable bin/opt symlink that resolves to the same binary. */
 export function stableNode(exec = process.execPath): string {
   if (!exec.includes('/Cellar/')) return exec;
@@ -354,7 +372,7 @@ async function inboxHooks(harness: Harness, install: boolean, o: Opts): Promise<
   mem.changed.forEach(p => changed.add(p));
   // Per-turn hooks: /swarm review (a second agent reviews each turn's diff) and /swarm handoff (continue with another agent when out of usage).
   // Inert until the user types one of those commands; StopFailure (Claude Code only) just notes a usage-limit error for the next prompt.
-  const turnCmd = (event: string) => `${shellQuote(o.node ?? stableNode())} ${shellQuote(join(o.root,TURN_MARKER))} ${harness} ${event}`;
+  const turnCmd = (event: string) => guardedTurnCommand(harness, event, `${shellQuote(o.node ?? stableNode())} ${shellQuote(join(o.root,TURN_MARKER))} ${harness} ${event}`);
   const ownsTurn = (c: unknown) => typeof c === 'string' && c.includes(TURN_MARKER);
   const turnEvents: [string, number, string?][] = [['UserPromptSubmit',10],['Stop',10]];
   if (harness==='claude') turnEvents.push(['StopFailure',5,'rate_limit|billing_error']);

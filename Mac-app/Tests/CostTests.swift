@@ -44,4 +44,25 @@ final class CostTests: XCTestCase {
         XCTAssertNotEqual(model.range, .allTime)
         UserDefaults.standard.removeObject(forKey: "costRange")
     }
+
+    func testOpenRouterIncludesGoogleAndDefaultsContainNewModels() {
+        let payload = """
+        {"data":[
+          {"id":"anthropic/claude-haiku-5.5","pricing":{"prompt":"0.000001","completion":"0.000005"}},
+          {"id":"google/gemini-3.8-pro","pricing":{"prompt":"0.00000125","completion":"0.00001"}},
+          {"id":"google/gemini-3.8-flash","pricing":{"prompt":"0.00000015","completion":"0.0000006"}},
+          {"id":"openai/gpt-6-astra","pricing":{"prompt":"0.00001","completion":"0.00005"}}
+        ]}
+        """
+        let parsed = PriceTable.parseOpenRouter(Data(payload.utf8))
+        XCTAssertTrue(parsed.contains { $0.model == "gemini-3.8-pro" && abs($0.input - 1.25) < 0.01 })
+        XCTAssertTrue(parsed.contains { $0.model == "gemini-3.8-flash" && abs($0.output - 0.6) < 0.01 })
+        XCTAssertTrue(parsed.contains { $0.model == "claude-haiku-5-5" })
+        XCTAssertTrue(parsed.contains { $0.model == "gpt-6-astra" })
+
+        let bundledNames = Set(PriceTable.defaults.map(\.model))
+        for expected in ["claude-haiku-5", "gemini-3.8-pro", "gemini-3.8-flash", "gpt-6-astra"] {
+            XCTAssertTrue(bundledNames.contains(expected), "prices-default.json missing \(expected)")
+        }
+    }
 }

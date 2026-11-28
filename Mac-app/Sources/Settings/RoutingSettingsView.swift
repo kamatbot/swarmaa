@@ -104,6 +104,9 @@ struct RoutingSettingsView: View {
                             count: model.draft.providers.count,
                             fiveHourUsed: model.usedPercent(rule.provider, .fiveHour),
                             weeklyUsed: model.usedPercent(rule.provider, .weekly),
+                            defaultModel: model.defaultModel(for: rule.provider),
+                            turnModel: model.turnModel(for: rule.provider),
+                            status: model.status,
                             move: { model.draft.move(index, by: $0) })
                         .padding(.horizontal, 14)
                         .padding(.vertical, 8)
@@ -154,6 +157,9 @@ private struct RuleRow: View {
     let count: Int
     let fiveHourUsed: Double?
     let weeklyUsed: Double?
+    let defaultModel: String?
+    let turnModel: String?
+    let status: SwarmaStatus?
     let move: (Int) -> Void
 
     private var name: String { SwarmaCells.vendorName(rule.provider) }
@@ -165,6 +171,26 @@ private struct RuleRow: View {
                     .accessibilityHidden(true)
                 ProviderGlyphView(glyph: SwarmaCells.glyph(forProvider: rule.provider), size: 18)
                 Text(verbatim: name).font(.headline)
+                if let defaultModel {
+                    let label = SwarmaModelCatalog.modelLabel(defaultModel, provider: rule.provider, status: status)
+                    Text(verbatim: label)
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 5))
+                        .help(L10n.t("Default worker model: \(defaultModel)"))
+                }
+                if let turnModel, turnModel != defaultModel {
+                    let label = SwarmaModelCatalog.modelLabel(turnModel, provider: rule.provider, status: status)
+                    Text(verbatim: L10n.t("turn") + ": " + label)
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 5))
+                        .help(L10n.t("Turn model: \(turnModel)"))
+                }
                 Spacer()
                 Toggle(L10n.t("Enabled"), isOn: $rule.enabled)
                     .toggleStyle(.switch).controlSize(.small)

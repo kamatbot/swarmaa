@@ -378,6 +378,7 @@ struct BotSettingsPane: View {
     @State private var schedule = ""
     @State private var adding = false
     @State private var deleting = false
+    @State private var editingAgentID: String? = nil
 
     private var scopeAgents: [TeamsAgent] { model.agents.filter { $0.scope == bot.scope || bot.scope.isEmpty } }
 
@@ -471,19 +472,40 @@ struct BotSettingsPane: View {
 
     // 02 — The crew
     private var crewSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        let crewIDs = [leadID] + members.filter { $0 != leadID }
+        let hasCrew = crewIDs.count > 1
+        return VStack(alignment: .leading, spacing: 12) {
             KSLabel(L10n.t("02 — The crew"))
             VStack(spacing: 0) {
-                ForEach(Array(([leadID] + members.filter { $0 != leadID }).enumerated()), id: \.element) { i, id in
+                ForEach(Array(crewIDs.enumerated()), id: \.element) { i, id in
                     let a = model.agent(id: id)
                     HStack(spacing: 12) {
                         KSMoji(seed: a?.avatar ?? id, size: 34)
                         VStack(alignment: .leading, spacing: 1) {
-                            Text(verbatim: a?.name ?? L10n.t("Unknown agent")).font(KS.section())
+                            HStack(spacing: 6) {
+                                Text(verbatim: a?.name ?? L10n.t("Unknown agent")).font(KS.section())
+                                if let a {
+                                    Text(verbatim: a.runner.displayLabel(status: model.status))
+                                        .font(KS.meta()).foregroundStyle(KS.textSoft)
+                                        .padding(.horizontal, 6).padding(.vertical, 2)
+                                        .background(RoundedRectangle(cornerRadius: 5).fill(KS.chip))
+                                }
+                            }
                             Text(verbatim: [a?.role, a?.edits == true ? L10n.t("edits in its own branch, never pushes") : L10n.t("reads only")]
                                 .compactMap { $0 }.joined(separator: " · ")).font(KS.text()).foregroundStyle(KS.textMuted)
                         }
                         Spacer()
+                        if let a {
+                            Button(L10n.t("Edit")) { editingAgentID = a.id }
+                                .buttonStyle(.ks(.paper, compact: true))
+                                .disabled(model.savingRunners.contains(a.id))
+                                .popover(isPresented: Binding(
+                                    get: { editingAgentID == a.id },
+                                    set: { if !$0 && editingAgentID == a.id { editingAgentID = nil } }
+                                ), arrowEdge: .trailing) {
+                                    CrewAgentEditorPopover(model: model, agent: a) { editingAgentID = nil }
+                                }
+                        }
                         if id == leadID { KSChip(L10n.t("Lead")) }
                         else {
                             Button(L10n.t("Make lead")) { members.append(leadID); leadID = id; members.removeAll { $0 == id } }
@@ -493,7 +515,29 @@ struct BotSettingsPane: View {
                         }
                     }
                     .padding(.horizontal, 16).padding(.vertical, 12)
-                    .overlay(alignment: .bottom) { if i < members.filter({ $0 != leadID }).count { Rectangle().fill(KS.hairline).frame(height: 1) } }
+                    .overlay(alignment: .bottom) { if i < crewIDs.count - 1 { Rectangle().fill(KS.hairline).frame(height: 1) } }
+                }
+                if hasCrew {
+                    Rectangle().fill(KS.hairline).frame(height: 1)
+                    ruleContent(
+                        L10n.t("Lead mode"),
+                        (rules.leadMode ?? "default") == "router"
+                            ? L10n.t("Router: lead focuses on delegating tasks to the crew")
+                            : L10n.t("Direct: lead answers directly and delegates when needed")
+                    ) {
+                        Picker("", selection: Binding(
+                            get: { rules.leadMode ?? "default" },
+                            set: { rules.leadMode = $0 }
+                        )) {
+                            Text(verbatim: L10n.t("Direct")).tag("default")
+                            Text(verbatim: L10n.t("Router")).tag("router")
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                        .fixedSize()
+                        .accessibilityLabel(L10n.t("Lead mode"))
+                    }
+                    .padding(.horizontal, 16).padding(.vertical, 12)
                 }
             }
             .ksCard(radius: 12)
@@ -512,7 +556,7 @@ struct BotSettingsPane: View {
             KSLabel(L10n.t("03 — Which provider does what"))
             VStack(spacing: 0) {
                 ForEach(Array(TeamsBotRouting.Kind.allCases.enumerated()), id: \.element) { i, kind in
-                    HStack(spacing: 16) {
+                    HStack(alignment: .top, spacing: 16) {
                         VStack(alignment: .leading, spacing: 1) {
                             Text(verbatim: kind.title).font(KS.section())
                             Text(verbatim: kind.detail).font(KS.text()).foregroundStyle(KS.textMuted)
@@ -522,7 +566,18 @@ struct BotSettingsPane: View {
                             }
                         }
                         Spacer(minLength: 8)
-                        runnerMenu(kind)
+                        RunnerControl(
+                            providers: model.runnerProviders,
+                            status: model.status,
+                            runner: Binding(
+                                get: { routing[kind] ?? .auto },
+                                set: { next in routing[kind] = next.isAuto ? nil : next }
+                            ),
+                            allowDifferentFromAuthor: kind == .review,
+                            differentFromAuthor: kind == .review ? $routing.reviewDifferentFromAuthor : nil,
+                            autoLabel: L10n.t("Auto · most quota left"),
+                            compact: true
+                        )
                     }
                     .padding(.horizontal, 16).padding(.vertical, 12)
                     .overlay(alignment: .bottom) { if i < 3 { Rectangle().fill(KS.hairline).frame(height: 1) } }
@@ -530,32 +585,6 @@ struct BotSettingsPane: View {
             }
             .ksCard(radius: 12, shadow: true)
         }
-    }
-
-    private func runnerTitle(_ kind: TeamsBotRouting.Kind) -> String {
-        if kind == .review, routing.review == nil, routing.reviewDifferentFromAuthor { return L10n.t("A different provider than the author") }
-        guard let r = routing[kind] else { return L10n.t("Auto · most quota left") }
-        return r.label
-    }
-
-    private func runnerMenu(_ kind: TeamsBotRouting.Kind) -> some View {
-        Menu {
-            Button(L10n.t("Auto · most quota left")) { routing[kind] = nil; if kind == .review { routing.reviewDifferentFromAuthor = false } }
-            if kind == .review {
-                Button(L10n.t("A different provider than the author")) { routing.review = nil; routing.reviewDifferentFromAuthor = true }
-            }
-            Divider()
-            ForEach(model.runnerProviders, id: \.provider) { p in
-                Menu(RunnerPicker.providerTitle(p)) {
-                    ForEach(RunnerPicker.efforts, id: \.self) { effort in
-                        let r = TeamsRunner(provider: p.provider, model: routing[kind]?.provider == p.provider ? routing[kind]?.model : nil, effort: effort)
-                        Button(r.label) { routing[kind] = r }
-                    }
-                }
-            }
-        } label: { Text(verbatim: runnerTitle(kind)).lineLimit(1) }
-            .menuStyle(.button).buttonStyle(.ks(.paper)).fixedSize()
-            .accessibilityLabel(kind.title + ": " + runnerTitle(kind))
     }
 
     // 04 — Rules
@@ -622,6 +651,68 @@ struct BotSettingsPane: View {
     }
 }
 
+/// Popover editor for a crew/lead agent's runner (Provider/Model/Effort) and `Can edit` toggle.
+private struct CrewAgentEditorPopover: View {
+    @ObservedObject var model: TeamsModel
+    let agent: TeamsAgent
+    let onClose: () -> Void
+
+    @State private var runner: TeamsRunner
+    @State private var edits: Bool
+
+    init(model: TeamsModel, agent: TeamsAgent, onClose: @escaping () -> Void) {
+        self.model = model
+        self.agent = agent
+        self.onClose = onClose
+        _runner = State(initialValue: agent.runner)
+        _edits = State(initialValue: agent.edits)
+    }
+
+    private var dirty: Bool { runner != agent.runner || edits != agent.edits }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 10) {
+                KSMoji(seed: agent.avatar ?? agent.id, size: 28)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(verbatim: agent.name).font(KS.section()).foregroundStyle(KS.strong)
+                    if let role = agent.role, !role.isEmpty {
+                        Text(verbatim: role).font(KS.secondary()).foregroundStyle(KS.textMuted)
+                    }
+                }
+            }
+            Divider().overlay(KS.hairline)
+            VStack(alignment: .leading, spacing: 6) {
+                Text(verbatim: L10n.t("Model & effort")).font(KS.text(.semibold)).foregroundStyle(KS.strong)
+                RunnerControl(providers: model.runnerProviders, status: model.status, runner: $runner, compact: true)
+            }
+            Toggle(isOn: $edits) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(verbatim: L10n.t("Can edit")).font(KS.text(.semibold))
+                    Text(verbatim: L10n.t("Edits in its own branch, never pushes")).font(KS.secondary()).foregroundStyle(KS.textMuted)
+                }
+            }
+            .toggleStyle(.switch)
+            HStack {
+                Spacer()
+                Button(L10n.t("Cancel"), action: onClose).buttonStyle(.ks(.paper, compact: true))
+                Button(L10n.t("Save")) {
+                    Task {
+                        let ok = await model.updateAgent(agent, runner: runner, edits: edits)
+                        if ok { onClose() }
+                    }
+                }
+                .buttonStyle(.ks(.primary, compact: true))
+                .disabled(!dirty || model.savingRunners.contains(agent.id))
+            }
+        }
+        .padding(16)
+        .frame(width: 340)
+        .background(KS.paper)
+        .environment(\.colorScheme, .dark)
+    }
+}
+
 /// Deleting a visible bot hides it first: the service deletes only hidden bots.
 private struct DeleteBotSheet: View {
     @ObservedObject var model: TeamsModel
@@ -668,6 +759,8 @@ struct NewBotSheet: View {
     @State private var job = ""
     @State private var scope = ""
     @State private var leadID = ""
+    @State private var leadRunner = TeamsRunner.auto
+    @State private var firstReply = TeamsBotRules.defaultFirstReply
 
     private var scopes: [String] { (model.status?.scopes ?? []).map(\.scope) }
     private var agents: [TeamsAgent] { model.agents.filter { $0.scope == scope } }
@@ -701,6 +794,22 @@ struct NewBotSheet: View {
                     }.labelsHidden()
                 }
             }
+            HStack(alignment: .top, spacing: 16) {
+                if leadID.isEmpty {
+                    labeled(L10n.t("Lead model")) {
+                        RunnerControl(providers: model.runnerProviders, status: model.status, runner: $leadRunner, compact: true)
+                    }
+                }
+                labeled(L10n.t("Chat replies")) {
+                    Picker("", selection: $firstReply) {
+                        ForEach(TeamsBotRules.firstReplyChoices, id: \.id) { choice in
+                            Text(verbatim: choice.title).tag(choice.id)
+                        }
+                    }
+                    .labelsHidden()
+                    .accessibilityLabel(L10n.t("Chat replies"))
+                }
+            }
             if let message = model.botError ?? missing {
                 Text(verbatim: message).font(KS.text())
                     .foregroundStyle(model.botError != nil ? KS.coral : KS.textMuted)
@@ -715,6 +824,7 @@ struct NewBotSheet: View {
                         let ok = await model.createBot(name: name.trimmingCharacters(in: .whitespaces),
                                                        job: String(job.prefix(8192)), scope: scope,
                                                        leadAgentID: leadID.isEmpty ? nil : leadID, memberAgentIDs: [],
+                                                       leadRunner: leadRunner, firstReply: firstReply,
                                                        onLeadCreated: { leadID = $0 })
                         if ok { dismiss() }
                     }
@@ -722,7 +832,7 @@ struct NewBotSheet: View {
                 .buttonStyle(.ks(.primary)).keyboardShortcut(.defaultAction).disabled(!ready)
             }
         }
-        .padding(24).frame(width: 520).fixedSize(horizontal: false, vertical: true)
+        .padding(24).frame(width: 560).fixedSize(horizontal: false, vertical: true)
         .background(KS.paper).environment(\.colorScheme, .dark)
         .onAppear { model.botError = nil; if scope.isEmpty { scope = scopes.first ?? "" } }
         .onChange(of: scope) { _, _ in leadID = "" }
@@ -746,10 +856,23 @@ struct NewTaskSheet: View {
     @State private var goal = ""
     @State private var scope = ""
     @State private var provider = ""   // "" = Auto
+    @State private var selectedModel = ""
+    @State private var effort = ""
     @State private var kind = "research"
 
     private var scopes: [String] { (model.status?.scopes ?? []).map(\.scope) }
-    private var providers: [String] { model.workerProviders }
+    private var providers: [String] {
+        let merged = model.runnerProviders.map(\.provider)
+        return merged.isEmpty ? model.workerProviders : merged
+    }
+    private var availableModels: [SwarmaStatus.ModelCatalogEntry.Model] {
+        provider.isEmpty ? [] : SwarmaModelCatalog.models(for: provider, status: model.status)
+    }
+    private var availableEfforts: [String] {
+        provider.isEmpty
+            ? ["low", "medium", "high", "xhigh", "max"]
+            : SwarmaModelCatalog.efforts(for: provider, model: selectedModel.isEmpty ? nil : selectedModel, status: model.status)
+    }
     private var ready: Bool { !goal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !scope.isEmpty && !model.savingTask }
 
     var body: some View {
@@ -779,6 +902,26 @@ struct NewTaskSheet: View {
                     }.labelsHidden()
                 }
             }
+            HStack(spacing: 16) {
+                if !provider.isEmpty {
+                    labeled(L10n.t("Model")) {
+                        Picker("", selection: $selectedModel) {
+                            Text(verbatim: L10n.t("Worker default")).tag("")
+                            ForEach(availableModels) { m in
+                                Text(verbatim: m.label).tag(m.id)
+                            }
+                        }.labelsHidden()
+                    }
+                }
+                labeled(L10n.t("Effort")) {
+                    Picker("", selection: $effort) {
+                        Text(verbatim: L10n.t("Default")).tag("")
+                        ForEach(availableEfforts, id: \.self) { e in
+                            Text(verbatim: SwarmaModelCatalog.effortLabel(e)).tag(e)
+                        }
+                    }.labelsHidden()
+                }
+            }
             if let message = model.taskError {
                 Text(verbatim: message).font(KS.text()).foregroundStyle(KS.coral).fixedSize(horizontal: false, vertical: true)
             }
@@ -789,7 +932,9 @@ struct NewTaskSheet: View {
                 Button(L10n.t("Start task")) {
                     Task {
                         let ok = await model.submitTask(scope: scope, kind: kind, objective: String(goal.prefix(16_000)),
-                                                        provider: provider.isEmpty ? nil : provider)
+                                                        provider: provider.isEmpty ? nil : provider,
+                                                        model: selectedModel.isEmpty ? nil : selectedModel,
+                                                        effort: effort.isEmpty ? nil : effort)
                         if ok { dismiss() }
                     }
                 }
@@ -799,6 +944,10 @@ struct NewTaskSheet: View {
         .padding(24).frame(width: 620).fixedSize(horizontal: false, vertical: true)
         .background(KS.paper).environment(\.colorScheme, .dark)
         .onAppear { model.taskError = nil; if scope.isEmpty { scope = scopes.first(where: { $0 == "project:swarma" }) ?? scopes.first ?? "" } }
+        .onChange(of: provider) { _, _ in
+            selectedModel = ""
+            if !effort.isEmpty && !availableEfforts.contains(effort) { effort = "" }
+        }
     }
 
     private func labeled<C: View>(_ title: String, @ViewBuilder _ content: () -> C) -> some View {

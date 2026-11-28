@@ -226,8 +226,128 @@ struct ThreadHeader: View {
     }
 }
 
-/// "Claude Opus 5.5 · High": Auto, or a routed provider at an effort. Shows
-/// each provider's quota left beside it.
+/// Reusable Provider → Model → Effort control backed by `SwarmaModelCatalog`.
+struct RunnerControl: View {
+    let providers: [SwarmaStatus.Routing.Provider]
+    let status: SwarmaStatus?
+    @Binding var runner: TeamsRunner
+    var allowDifferentFromAuthor: Bool = false
+    var differentFromAuthor: Binding<Bool>? = nil
+    var autoLabel: String = L10n.t("Auto")
+    var compact: Bool = false
+
+    private static let autoTag = "__auto__"
+    private static let diffTag = "__diff__"
+
+    private var providerSelection: Binding<String> {
+        Binding(
+            get: {
+                if allowDifferentFromAuthor, differentFromAuthor?.wrappedValue == true, runner.isAuto {
+                    return Self.diffTag
+                }
+                return runner.provider ?? Self.autoTag
+            },
+            set: { next in
+                if next == Self.diffTag {
+                    differentFromAuthor?.wrappedValue = true
+                    runner = .auto
+                } else if next == Self.autoTag {
+                    differentFromAuthor?.wrappedValue = false
+                    runner = .auto
+                } else {
+                    differentFromAuthor?.wrappedValue = false
+                    let keptModel = runner.provider == next ? runner.model : nil
+                    let supportedEfforts = SwarmaModelCatalog.efforts(for: next, model: keptModel, status: status)
+                    let keptEffort = runner.effort.flatMap { supportedEfforts.contains($0) ? $0 : nil }
+                    runner = TeamsRunner(provider: next, model: keptModel, effort: keptEffort)
+                }
+            }
+        )
+    }
+
+    private var modelSelection: Binding<String> {
+        Binding(
+            get: { runner.model ?? "" },
+            set: { next in
+                guard let p = runner.provider else { return }
+                let nextModel = next.isEmpty ? nil : next
+                let supportedEfforts = SwarmaModelCatalog.efforts(for: p, model: nextModel, status: status)
+                let keptEffort = runner.effort.flatMap { supportedEfforts.contains($0) ? $0 : nil }
+                runner = TeamsRunner(provider: p, model: nextModel, effort: keptEffort)
+            }
+        )
+    }
+
+    private var effortSelection: Binding<String> {
+        Binding(
+            get: { runner.effort ?? "" },
+            set: { next in
+                guard let p = runner.provider else { return }
+                runner = TeamsRunner(provider: p, model: runner.model, effort: next.isEmpty ? nil : next)
+            }
+        )
+    }
+
+    var body: some View {
+        let currentProvider = runner.provider
+        let models = currentProvider.map { SwarmaModelCatalog.models(for: $0, status: status) } ?? []
+        let efforts = currentProvider.map { SwarmaModelCatalog.efforts(for: $0, model: runner.model, status: status) } ?? []
+        let workerDefault = currentProvider.flatMap { SwarmaModelCatalog.defaultModel(for: $0, status: status) }
+        let defaultModelText = workerDefault.map {
+            L10n.t("Worker default") + " (" + SwarmaModelCatalog.modelLabel($0, provider: currentProvider, status: status) + ")"
+        } ?? L10n.t("Worker default")
+
+        VStack(alignment: .trailing, spacing: compact ? 6 : 8) {
+            Picker("", selection: providerSelection) {
+                Text(verbatim: autoLabel).tag(Self.autoTag)
+                if allowDifferentFromAuthor {
+                    Text(verbatim: L10n.t("A different provider than the author")).tag(Self.diffTag)
+                }
+                ForEach(providers, id: \.provider) { p in
+                    Text(verbatim: RunnerPicker.providerTitle(p)).tag(p.provider)
+                }
+                if let p = currentProvider, !providers.contains(where: { $0.provider == p }) {
+                    Text(verbatim: SwarmaCells.vendorName(p)).tag(p)
+                }
+            }
+            .labelsHidden()
+            .controlSize(compact ? .small : .regular)
+            .accessibilityLabel(L10n.t("Provider"))
+
+            if currentProvider != nil {
+                HStack(spacing: 6) {
+                    Picker("", selection: modelSelection) {
+                        Text(verbatim: defaultModelText).tag("")
+                        ForEach(models) { m in
+                            Text(verbatim: m.label).tag(m.id)
+                        }
+                        if let m = runner.model, !m.isEmpty, !models.contains(where: { $0.id == m }) {
+                            Text(verbatim: m).tag(m)
+                        }
+                    }
+                    .labelsHidden()
+                    .controlSize(compact ? .small : .regular)
+                    .accessibilityLabel(L10n.t("Model"))
+
+                    Picker("", selection: effortSelection) {
+                        Text(verbatim: L10n.t("Default effort")).tag("")
+                        ForEach(efforts, id: \.self) { effort in
+                            Text(verbatim: SwarmaModelCatalog.effortLabel(effort)).tag(effort)
+                        }
+                        if let e = runner.effort, !e.isEmpty, !efforts.contains(e) {
+                            Text(verbatim: SwarmaModelCatalog.effortLabel(e)).tag(e)
+                        }
+                    }
+                    .labelsHidden()
+                    .controlSize(compact ? .small : .regular)
+                    .accessibilityLabel(L10n.t("Effort"))
+                }
+            }
+        }
+    }
+}
+
+/// "Claude Opus 5.5 · High": Auto, or a routed provider with dynamic models & efforts.
 struct RunnerPicker: View {
     @ObservedObject var model: TeamsModel
     let agent: TeamsAgent
@@ -238,21 +358,38 @@ struct RunnerPicker: View {
             Button { set(.auto) } label: { check(agent.runner.isAuto, L10n.t("Auto")) }
             Divider()
             ForEach(model.runnerProviders, id: \.provider) { p in
+                let models = SwarmaModelCatalog.models(for: p.provider, status: model.status)
+                let efforts = SwarmaModelCatalog.efforts(for: p.provider, model: agent.runner.provider == p.provider ? agent.runner.model : nil, status: model.status)
                 Menu(Self.providerTitle(p)) {
-                    ForEach(Array(Set(model.agents.filter { $0.runner.provider == p.provider }.compactMap { $0.runner.model })).sorted(), id: \.self) { name in
-                        Button(name) { set(TeamsRunner(provider: p.provider, model: name, effort: agent.runner.effort)) }
+                    Button {
+                        set(TeamsRunner(provider: p.provider, model: nil, effort: agent.runner.provider == p.provider ? agent.runner.effort : nil))
+                    } label: {
+                        check(agent.runner.provider == p.provider && agent.runner.model == nil, L10n.t("Worker default"))
                     }
-                    ForEach(Self.efforts, id: \.self) { effort in
+                    ForEach(models) { m in
+                        Button {
+                            let keptEffort = agent.runner.effort.flatMap { m.efforts.isEmpty || m.efforts.contains($0) ? $0 : nil }
+                            set(TeamsRunner(provider: p.provider, model: m.id, effort: keptEffort))
+                        } label: {
+                            check(agent.runner.provider == p.provider && agent.runner.model == m.id, m.label)
+                        }
+                    }
+                    Divider()
+                    Button {
+                        set(TeamsRunner(provider: p.provider, model: agent.runner.provider == p.provider ? agent.runner.model : nil, effort: nil))
+                    } label: {
+                        check(agent.runner.provider == p.provider && agent.runner.effort == nil, L10n.t("Default effort"))
+                    }
+                    ForEach(efforts, id: \.self) { effort in
                         let runner = agent.runner.changing(provider: p.provider, effort: effort)
                         Button { set(runner) } label: {
-                            check(agent.runner.provider == p.provider && agent.runner.effort == effort, runner.label)
+                            check(agent.runner.provider == p.provider && agent.runner.effort == effort, SwarmaModelCatalog.effortLabel(effort))
                         }
                     }
                 }
-                .disabled(!p.liveWorker)
             }
         } label: {
-            Text(verbatim: agent.runner.label)
+            Text(verbatim: agent.runner.displayLabel(status: model.status))
         }
         .menuStyle(.borderlessButton).fixedSize()
         .disabled(model.savingRunners.contains(agent.id))
@@ -1148,11 +1285,9 @@ struct Composer: View {
                         return .handled
                     }
             }
-            if let runner = model.bot(threadID: threadID).flatMap({ model.agent(id: $0.leadAgentID)?.runner }) {
-                Text(verbatim: runner.label.lowercased()).font(KS.meta()).foregroundStyle(KS.textSoft)
-                    .padding(.horizontal, 8).padding(.vertical, 3)
-                    .background(RoundedRectangle(cornerRadius: 6).fill(KS.chip))
-                    .fixedSize().padding(.bottom, 12)
+            if let bot = model.bot(threadID: threadID) {
+                ComposerRunnerPill(model: model, bot: bot, threadID: threadID)
+                    .padding(.bottom, 10)
             }
             Button(action: send) { Image(systemName: "arrow.up").font(KS.glyph(14, .semibold)) }
                 .buttonStyle(KSBarButtonStyle(send: true))
@@ -1262,6 +1397,108 @@ struct Composer: View {
                     }
                 } catch { mediaError = error.localizedDescription }
             }
+        }
+    }
+}
+
+/// Interactive composer pill showing what will actually answer the next message,
+/// with quick controls for one-off per-message overrides and standing `first_reply`.
+struct ComposerRunnerPill: View {
+    @ObservedObject var model: TeamsModel
+    let bot: TeamsBot
+    let threadID: String
+    @State private var open = false
+
+    private var override: TeamsRunner? { model.messageRunnerOverrides[threadID] }
+    private var leadRunner: TeamsRunner { model.agent(id: bot.leadAgentID)?.runner ?? .auto }
+
+    private var pillLabel: String {
+        if let override {
+            return override.displayLabel(status: model.status) + " · " + L10n.t("once")
+        }
+        if bot.rules.firstReply != "off" && !bot.rules.firstReply.isEmpty {
+            let name = SwarmaModelCatalog.modelLabel(bot.rules.firstReply, status: model.status)
+            return name + " (" + L10n.t("fast") + ")"
+        }
+        return leadRunner.displayLabel(status: model.status)
+    }
+
+    var body: some View {
+        let hasOverride = override != nil
+        Button { open.toggle() } label: {
+            HStack(spacing: 4) {
+                Text(verbatim: pillLabel).font(KS.meta()).lineLimit(1)
+                Image(systemName: "chevron.up.chevron.down").font(KS.glyph(8, .semibold))
+            }
+            .foregroundStyle(hasOverride ? KS.signal : KS.textSoft)
+            .padding(.horizontal, 8).padding(.vertical, 4)
+            .background(RoundedRectangle(cornerRadius: 6).fill(hasOverride ? KS.signal.opacity(0.16) : KS.chip))
+            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(hasOverride ? KS.signal.opacity(0.45) : .clear, lineWidth: 1))
+            .fixedSize()
+        }
+        .buttonStyle(.plain)
+        .help(L10n.t("Choose which model answers next"))
+        .accessibilityLabel(L10n.t("Next reply model") + ": " + pillLabel)
+        .popover(isPresented: $open, arrowEdge: .top) {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        KSLabel(L10n.t("Next reply"))
+                        Text(verbatim: pillLabel).font(KS.section()).foregroundStyle(KS.strong)
+                    }
+                    Spacer()
+                    if hasOverride {
+                        Button(L10n.t("Reset")) {
+                            model.messageRunnerOverrides[threadID] = nil
+                        }
+                        .buttonStyle(.ks(.paper, compact: true))
+                    }
+                }
+                Divider().overlay(KS.hairline)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(verbatim: L10n.t("This message only")).font(KS.text(.semibold)).foregroundStyle(KS.strong)
+                    Text(verbatim: L10n.t("Overrides the model and effort for your next message only."))
+                        .font(KS.secondary()).foregroundStyle(KS.textMuted)
+                    RunnerControl(
+                        providers: model.runnerProviders,
+                        status: model.status,
+                        runner: Binding(
+                            get: { model.messageRunnerOverrides[threadID] ?? .auto },
+                            set: { next in
+                                model.messageRunnerOverrides[threadID] = next.isAuto ? nil : next
+                            }
+                        ),
+                        autoLabel: L10n.t("Use bot default"),
+                        compact: true
+                    )
+                }
+                if !bot.isLegacyAgent {
+                    Divider().overlay(KS.hairline)
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(verbatim: L10n.t("Standing chat replies")).font(KS.text(.semibold)).foregroundStyle(KS.strong)
+                        Picker("", selection: Binding(
+                            get: { bot.rules.firstReply },
+                            set: { next in
+                                guard next != bot.rules.firstReply else { return }
+                                Task { await model.setFirstReply(next, for: bot) }
+                            }
+                        )) {
+                            ForEach(TeamsBotRules.firstReplyChoices, id: \.id) { choice in
+                                Text(verbatim: choice.title).tag(choice.id)
+                            }
+                        }
+                        .labelsHidden()
+                        .disabled(model.savingBot)
+                        if let detail = TeamsBotRules.firstReplyChoices.first(where: { $0.id == bot.rules.firstReply })?.detail {
+                            Text(verbatim: detail).font(KS.secondary()).foregroundStyle(KS.textMuted)
+                        }
+                    }
+                }
+            }
+            .padding(16)
+            .frame(width: 320)
+            .background(KS.paper)
+            .environment(\.colorScheme, .dark)
         }
     }
 }

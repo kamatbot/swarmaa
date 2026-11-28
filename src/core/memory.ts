@@ -232,8 +232,8 @@ export class MemoryService {
     });
   }
 
-  /** Called inside context_get's transaction; memory/task scope has already been checked. */
-  async contextMemories(db: PoolClient, p: Principal, scope: string, query: string|null, includeProposed: boolean,
+  /** Read-only context packet query; memory/task scope has already been checked. */
+  async contextMemories(db: Db, p: Principal, scope: string, query: string|null, includeProposed: boolean,
     limit: number, refs: string[], versions: Record<string, number>): Promise<{memories:Record<string,unknown>[];omitted:Record<string,unknown>[];conflicts:Record<string,unknown>[]}> {
     const terms = orTerms(query);
     const records = await db.query<MemoryRow>(`SELECT * FROM memories WHERE tenant_id=$1 AND scope=$2
@@ -245,7 +245,7 @@ export class MemoryService {
         (CASE WHEN $4::text IS NULL THEN 1 ELSE ts_rank(search_vector,to_tsquery('simple',$4)) END)
           * (CASE WHEN status='active' AND reviewed_by IS NOT NULL THEN 1.5 WHEN status='proposed' THEN 0.5 ELSE 1 END)
           * (CASE WHEN kind='decision' THEN 1.25 ELSE 1 END) DESC,
-        updated_at DESC,id DESC LIMIT $6 FOR SHARE`, [p.tenantId, scope, includeProposed, terms, refs, limit]);
+        updated_at DESC,id DESC LIMIT $6`, [p.tenantId, scope, includeProposed, terms, refs, limit]);
     let remaining = 20000;
     const memories: Record<string, unknown>[] = [];
     const omitted: Record<string, unknown>[] = [];

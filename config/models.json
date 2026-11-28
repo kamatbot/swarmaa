@@ -1,0 +1,46 @@
+{
+  "providers": {
+    "claude": {
+      "default_model": "claude-sonnet-5-5",
+      "models": [
+        "claude-opus-5-5",
+        "claude-sonnet-5-5",
+        "claude-haiku-5-5"
+      ],
+      "efforts": [
+        "low",
+        "medium",
+        "high",
+        "max"
+      ]
+    },
+    "codex": {
+      "default_model": "gpt-5.4",
+      "models": [
+        "gpt-6-astra",
+        "gpt-5.4",
+        "gpt-5.4-mini"
+      ],
+      "efforts": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ]
+    },
+    "antigravity": {
+      "default_model": "gemini-3.8-pro",
+      "models": [
+        "gemini-3.8-pro",
+        "gemini-3.8-flash"
+      ],
+      "efforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ]
+    }
+  }
+}

@@ -40,8 +40,22 @@ export interface UsageCostResult {
   has_unpriced: boolean;
 }
 
-/** Default price table is shipped empty; populated only by owner override via SWARMAA_PRICING_FILE. */
-export const DEFAULT_PRICES: Record<string, ModelPricing> = {};
+/** Default USD per million tokens pricing (overridable via SWARMAA_PRICING_FILE). */
+export const DEFAULT_PRICES: Record<string, ModelPricing> = {
+  'claude-haiku-5': { input: 1.0, cached_input: 0.1, output: 5.0 },
+  'claude-haiku-5-5': { input: 1.0, cached_input: 0.1, output: 5.0 },
+  'claude-sonnet-5': { input: 3.0, cached_input: 0.3, output: 15.0 },
+  'claude-sonnet-5-5': { input: 3.0, cached_input: 0.3, output: 15.0 },
+  'claude-opus-5': { input: 15.0, cached_input: 1.5, output: 75.0 },
+  'claude-opus-5-5': { input: 15.0, cached_input: 1.5, output: 75.0 },
+  'gpt-5': { input: 2.5, cached_input: 0.25, output: 15.0 },
+  'gpt-5.4': { input: 2.5, cached_input: 0.25, output: 15.0 },
+  'gpt-5.4-mini': { input: 0.4, cached_input: 0.04, output: 1.6 },
+  'gpt-6': { input: 5.0, cached_input: 0.5, output: 25.0 },
+  'gpt-6-astra': { input: 5.0, cached_input: 0.5, output: 25.0 },
+  'gemini-3.8-pro': { input: 2.0, cached_input: 0.2, output: 12.0 },
+  'gemini-3.8-flash': { input: 0.3, cached_input: 0.03, output: 1.5 },
+};
 
 let priceCache: { file: string; mtimeMs: number; prices: Record<string, ModelPricing> } | undefined;
 

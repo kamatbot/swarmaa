@@ -43,9 +43,11 @@ It is set once, at insert, and never changed.
 - `review` tasks are `review`, and the research kind is `research`.
 
 **Resolution, when a bot task is created.** A missing kind means `{"mode":"auto"}`.
+- **Per-message override:** `thread_post` accepts an optional `runner` (`{mode?: 'auto', provider?, model?, effort?}`) that overrides the bot's saved runner for that single turn without changing bot settings.
 - **A provider runner** sets `required_capability = <provider>.<read|patch>`. A model or effort the runner names is passed to the bridge as today's agent runner is.
 - **`auto`** maps to `auto.read` or `auto.patch`. The existing quota-aware router chooses the provider, under the bot's rules.
 - **`different_from_author`** applies to reviews only. The provider that served the reviewed task goes into `excluded_providers`, then auto routing runs; this is the flows rule `different_provider_than`. With no other provider left, the review waits with a notice instead of reviewing itself.
+- **Model catalog:** Worker `usage_report` payloads advertise `default_model`, `turn_model`, and `models[]` per provider, surfaced in `swarm_status.model_catalog` so bot settings and thread model pickers stay in sync with installed CLIs without hardcoded aliases.
 
 **`rules.quota_floor_pct`** (0–50, default 0):
 - **Auto routing:** auto never picks a provider whose most-used window has less than this much left. `0` means a service may be run to empty, the owner's choice for Codex.
@@ -64,7 +66,7 @@ It is set once, at insert, and never changed.
 | `schedule_paused` | false | Pauses the bot's cron schedule without clearing `schedule`. |
 | `quiet_schedule` | false | Suppresses idle "Scheduled run" notices when a scheduled check finds nothing to report. |
 | `first_reply` | provider default / `'off'` | Selects a fast model for initial chat replies that may delegate heavier work (`DELEGATE:`), or `'off'`. |
-| `lead_mode` | `'default'` | `'default'` or `'router'`. In router mode, the bot lead's turns are always read-only, run on `routing.summary`, and may only emit dispatch actions (`swarm_start`, `handoff`, `question_ask`, `bot_appearance`). Self-delegation via `DELEGATE:` is suppressed. Note that `swarm_update` is excluded from router mode for v1. |
+| `lead_mode` | `'default'` | `'default'` or `'router'`. In router mode, the bot lead's turns are always read-only, run on `routing.summary`, and may only emit dispatch actions (`swarm_start`, `handoff`, `question_ask`, `bot_appearance`). Self-delegation via `DELEGATE:` is suppressed. `handoff` accepts structured provenance fields (`base_ref`, `branch`, `artifact_ids`, `reply_to_thread`); when a turn fans out multiple `reply_to_thread` handoffs, a `dispatch_group` collects every sibling outcome and queues one fan-in synthesis turn for the lead once all finish. Note that `swarm_update` is excluded from router mode for v1. |
 | `local_actions` | false | Allows the bot lead to emit closed Mac/iPhone `local_action` actions (reminders, calendar events, notes, timers). |
 
 A bot's `starred` boolean is returned by create, update, get and list. At most one live bot per tenant can be starred, across all scopes (migration 028). Setting `starred: true` on create or update atomically clears the previous star and emits `bot.updated` for both bots; clearing the previous star also increments its version. The caller must have access to both scopes or the entire write fails. Setting `starred: false` clears the star; archiving also clears it. Create retries with the same idempotency key do not move the star again.

@@ -26,19 +26,28 @@ export interface ServedStamp {
 }
 
 const VERSION_SUFFIX_RE = /^(-(\d{2,}|v\d+|preview|latest))+$/;
+const CLAUDE_SHORT_ALIASES = new Set(['sonnet', 'opus', 'haiku']);
+const GEMINI_THOUGHT_SUFFIX_RE = /-(?:low|medium|high|xhigh)$/;
 
 /**
  * Whether a served model id names the model asked for.
- * Drops vendor prefix (anthropic/claude-fable-5 is claude-fable-5) and provider dated/versioned suffix
- * (claude-haiku-4-5-20251001, gemini-3.5-flash-001). A different family, number, or tier word
- * (such as -lite) is another model. Verbatim rule from HarnessRouter's samemodel.py.
+ * Drops vendor prefix (anthropic/claude-fable-5 is claude-fable-5), provider dated/versioned suffix
+ * (claude-haiku-4-5-20251001, gemini-3.5-flash-001), Antigravity thought-level suffix (-low/-medium/-high/-xhigh),
+ * and recognizes Claude short aliases (sonnet/opus/haiku). A different family, number, or tier word
+ * (such as -lite) is another model.
  */
 export function sameModel(asked: string, served: string): boolean {
-  const norm = (m: string) => (m || '').trim().toLowerCase().split('/').pop()!.replace(/\./g, '-');
+  const norm = (m: string) => {
+    let v = (m || '').trim().toLowerCase().split('/').pop()!.replace(/\./g, '-');
+    if (v.startsWith('gemini-')) v = v.replace(GEMINI_THOUGHT_SUFFIX_RE, '');
+    return v;
+  };
   const a = norm(asked);
   const s = norm(served);
   if (!a || !s) return false;
   if (a === s) return true;
+  if (CLAUDE_SHORT_ALIASES.has(a) && (s === `claude-${a}` || s.startsWith(`claude-${a}-`))) return true;
+  if (CLAUDE_SHORT_ALIASES.has(s) && (a === `claude-${s}` || a.startsWith(`claude-${s}-`))) return true;
   if (s === 'deepseek-flash' && a === 'deepseek-v4-1-flash') return true;
   const [long, short] = s.length > a.length ? [s, a] : [a, s];
   return long.startsWith(short + '-') && VERSION_SUFFIX_RE.test(long.slice(short.length));

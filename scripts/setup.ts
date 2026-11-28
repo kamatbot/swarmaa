@@ -38,7 +38,7 @@ const LA = join(HOME, 'Library/LaunchAgents');
 const PGENV = { LC_ALL: 'en_US.UTF-8' };
 
 const META: Record<HarnessKey, { label: string; ident: string; stem: string; model?: string; /** worker agent id (default: the harness key) */ agent?: string }> = {
-  claude: { label: 'Claude Code', ident: 'claude-interactive', stem: 'claude', model: 'sonnet' },
+  claude: { label: 'Claude Code', ident: 'claude-interactive', stem: 'claude' },
   codex: { label: 'Codex', ident: 'codex-interactive', stem: 'codex' },
   agy: { label: 'Antigravity', ident: 'antigravity-interactive', stem: 'antigravity', agent: 'antigravity' },
   grok: { label: 'Grok', ident: 'grok', stem: 'grok' },

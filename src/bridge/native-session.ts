@@ -17,7 +17,7 @@ export interface NativePlan {
   /** Codex: per-task CODEX_HOME holding only a link to auth.json. */
   codexHome?: string;
 }
-export interface NativeSession { harness: 'claude' | 'codex'; id: string; resume: string }
+export interface NativeSession { harness: 'claude' | 'codex' | 'antigravity'; id: string; resume: string }
 
 function real(p: string): string { try { return realpathSync(p); } catch { return p; } }
 /** Claude's project-dir name: realpath with every non-alphanumeric character turned into '-'. */

@@ -10,6 +10,7 @@ import { assertKnownScope, audit, canonicalJson, event, newId, noExtraKeys, requ
 import { runnerCapability, type RunnerConfig } from '../bridge/adapters.js';
 import { sectionView, swarmView, type SwarmRow, type SwarmStepRow, type QuestionRow, type SectionRow } from './swarms.js';
 import { firstReplyRunner, leadTurnProfile } from './bots.js';
+import { mergeDispatchedFrom, resolveTurnRunner, validateModelAndEffort, type DispatchedFromEntry } from './model-catalog.js';
 import type { TaskRow } from './tasks.js';
 import { MAX_THREAD_PHOTOS, MESSAGE_METADATA_COLUMNS, parseThreadPhotos, photoMetadata, samePhotos, storedThreadPhotos, type ThreadPhoto } from './thread-attachments.js';
 
@@ -168,11 +169,12 @@ export interface MessageRow {
   edited_at: Date | null;
 }
 
-function parseRunner(raw: unknown): RunnerConfig {
+export function parseRunner(raw: unknown): RunnerConfig {
   const obj = object(raw);
   noExtraKeys(obj, ['mode', 'provider', 'model', 'effort']);
   if (obj.mode !== undefined) {
     requireCondition(obj.mode === 'auto', 400, 'invalid_arguments', 'mode must be auto');
+    requireCondition(obj.provider === undefined && obj.model === undefined && obj.effort === undefined, 400, 'invalid_arguments', 'runner with mode cannot specify provider, model or effort');
     return { mode: 'auto' };
   }
   const provider = string(obj.provider, 'runner.provider', 32);
@@ -180,7 +182,20 @@ function parseRunner(raw: unknown): RunnerConfig {
   const res: RunnerConfig = { provider };
   if (obj.model !== undefined) res.model = string(obj.model, 'runner.model', 100);
   if (obj.effort !== undefined) res.effort = string(obj.effort, 'runner.effort', 40);
+  validateModelAndEffort(provider, res.model, res.effort, 'runner.');
   return res;
+}
+
+/** Parses @Name, @api.bot, and @"Agent Name" mentions into lowercase agent names. */
+export function extractMentions(body: string): Set<string> {
+  const names = new Set<string>();
+  const re = /@"([^"\n]{1,64})"|@([a-zA-Z0-9_.-]+)/g;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(body)) !== null) {
+    const raw = match[1] ?? match[2]?.replace(/[.,:;!?]+$/, '');
+    if (raw) names.add(raw.toLowerCase());
+  }
+  return names;
 }
 
 function runnerDisplayName(runner: RunnerConfig): string {
@@ -211,52 +226,74 @@ export async function enqueueAgentTurn(
     agent: AgentRow;
     bot?: { id?: string; lead_agent_id: string; rules: Record<string, unknown>; routing: Record<string, unknown> } | null;
     seq: number | bigint;
-    initiatorKind: 'person' | 'handoff' | 'swarm' | 'answer' | 'flow' | 'schedule' | 'bot_check' | 'source';
+    initiatorKind: 'person' | 'agent' | 'handoff' | 'swarm' | 'answer' | 'flow' | 'schedule' | 'bot_check' | 'source';
     hopDepth?: number;
     objective?: string;
     /** The person named an agent for this turn ("use agy to …"): it runs there, whatever the bot's runner. */
     provider?: 'claude' | 'codex' | 'antigravity' | null;
+    /** Explicit per-message runner override from thread_post.runner. */
+    runnerOverride?: RunnerConfig | null;
     /** A coordinator bot sent this request: the reply is copied back to its thread. */
-    dispatchedFrom?: { thread_id: string; scope: string; bot_id: string };
+    dispatchedFrom?: DispatchedFromEntry | DispatchedFromEntry[];
   }
 ): Promise<string> {
-  const { thread, agent, bot, seq, initiatorKind, hopDepth = 0, objective, provider, dispatchedFrom } = opts;
+  const { thread, agent, bot, seq, initiatorKind, hopDepth = 0, objective, provider, runnerOverride, dispatchedFrom } = opts;
+  const effectiveOverride = runnerOverride ?? (provider ? { provider } : null);
   const queuedTurn = (await db.query<{ id: string; context_versions: Record<string, unknown> }>(
     "SELECT id, context_versions FROM tasks WHERE tenant_id=$1 AND agent_id=$2 AND thread_id=$3 AND kind='turn' AND status='queued' ORDER BY id ASC LIMIT 1 FOR UPDATE",
     [p.tenantId, agent.id, thread.id]
   )).rows[0];
 
   if (queuedTurn) {
-    const updatedVersions = { ...(queuedTurn.context_versions ?? {}), message_seq: Number(seq), ...(dispatchedFrom ? { dispatched_from: dispatchedFrom } : {}) };
+    const mergedDispatched = mergeDispatchedFrom(queuedTurn.context_versions?.dispatched_from, dispatchedFrom);
+    const updatedVersions = {
+      ...(queuedTurn.context_versions ?? {}),
+      message_seq: Number(seq),
+      ...(mergedDispatched.length > 0 ? { dispatched_from: mergedDispatched } : {}),
+    };
     await db.query(
       'UPDATE tasks SET context_versions=$1::jsonb, updated_at=clock_timestamp() WHERE id=$2',
       [JSON.stringify(updatedVersions), queuedTurn.id]
     );
-    // A newer message that names an agent moves the still-queued turn there.
-    if (provider) {
-      const editsQueued = bot ? (leadTurnProfile(bot, agent)?.edits ?? agent.edits) : agent.edits;
+    // A newer message with an explicit runner or named provider moves the still-queued turn there.
+    if (effectiveOverride) {
+      const resolved = resolveTurnRunner({ bot, agent, override: effectiveOverride, noFast: true });
       await db.query(`UPDATE tasks SET required_capability=$1,
         permission_envelope=jsonb_set(permission_envelope, '{runner}', $2::jsonb) WHERE id=$3`,
-        [`${provider}.${editsQueued ? 'patch' : 'read'}`, JSON.stringify({ provider, fast: false }), queuedTurn.id]);
+        [resolved.capability, JSON.stringify(resolved.runner ?? { fast: false }), queuedTurn.id]);
     }
     return queuedTurn.id;
   }
 
   const botId = bot?.id ?? null;
+  const isHandoff = initiatorKind === 'handoff';
   const profile = bot ? leadTurnProfile(bot, agent) : null;
-  const first = (bot && !profile?.router) ? firstReplyRunner(bot.rules, agent.edits) : null;
-  const edits = profile ? profile.edits : agent.edits;
-  const requiredCap = provider ? `${provider}.${edits ? 'patch' : 'read'}`
-    : first?.capability ?? (profile ? profile.capability : runnerCapability(agent.runner, agent.edits));
+  // Skip Haiku first-reply placeholder whenever a bot dispatches to another bot (initiatorKind === 'handoff').
+  const first = (bot && !profile?.router && !isHandoff) ? firstReplyRunner(bot.rules, agent.edits) : null;
+  const resolved = resolveTurnRunner({
+    bot,
+    agent,
+    override: effectiveOverride,
+    firstReply: first,
+    noFast: isHandoff,
+  });
   const taskId = newId();
   const turnObjective = objective || `Turn for agent ${agent.name} in ${thread.kind === 'bot' ? (thread.title ?? 'bot') : '#' + (thread.title ?? 'channel')}`;
-  const runnerObj = provider ? { provider, fast: false } : profile?.runner ?? first?.runner;
   const envelope = {
-    deploy: false, publish: false, purchase: false, local_patch: edits,
+    deploy: false, publish: false, purchase: false, local_patch: resolved.edits,
     read_project: true, send_messages: false, permission_changes: false, external_side_effects: false,
-    ...(runnerObj ? { runner: runnerObj } : {})
+    ...(resolved.runner ? { runner: resolved.runner } : {})
   };
-  const contextVersions = { message_seq: Number(seq), hop_depth: hopDepth, ...(dispatchedFrom ? { dispatched_from: dispatchedFrom } : {}) };
+  const mergedDispatched = mergeDispatchedFrom(undefined, dispatchedFrom);
+  // Keep single-object shape for direct human voice delegations until coalesced, while always using arrays for handoffs / dispatch groups / multi-dispatch.
+  const storedDispatched = mergedDispatched.length === 1 && !isHandoff && !mergedDispatched[0]!.dispatch_group_id && !Array.isArray(dispatchedFrom)
+    ? mergedDispatched[0]
+    : (mergedDispatched.length > 0 ? mergedDispatched : undefined);
+  const contextVersions = {
+    message_seq: Number(seq),
+    hop_depth: hopDepth,
+    ...(storedDispatched !== undefined ? { dispatched_from: storedDispatched } : {}),
+  };
   const reqHash = sha256(canonicalJson({
     kind: 'turn', scope: agent.scope, agent_id: agent.id, thread_id: thread.id, seq: Number(seq)
   }));
@@ -268,11 +305,11 @@ export async function enqueueAgentTurn(
         idempotency_key, request_hash, max_attempts)
      VALUES ($1, $2, $3, 'turn', $4, $5, $6, $7, $8, '[]'::jsonb, '[]'::jsonb, $9::jsonb, $10, $11, $12::jsonb, 'queued', $13, $14, $15, 3)`,
     [taskId, p.tenantId, agent.scope, agent.id, thread.id, botId, initiatorKind, turnObjective, JSON.stringify(envelope),
-     requiredCap, `agent:${agent.id}`, JSON.stringify(contextVersions), p.id, newId(), reqHash]
+     resolved.capability, `agent:${agent.id}`, JSON.stringify(contextVersions), p.id, newId(), reqHash]
   );
 
-  await audit(db, p, agent.scope, 'task.submitted', taskId, { kind: 'turn', agent_id: agent.id, thread_id: thread.id });
-  await event(db, p, agent.scope, 'task.updated', taskId, { task_id: taskId, kind: 'turn', thread_id: thread.id, status: 'queued', action: 'submitted' });
+  await audit(db, p, agent.scope, 'task.submitted', taskId, { kind: 'turn', agent_id: agent.id, thread_id: thread.id, required_capability: resolved.capability });
+  await event(db, p, agent.scope, 'task.updated', taskId, { task_id: taskId, kind: 'turn', thread_id: thread.id, required_capability: resolved.capability, status: 'queued', action: 'submitted' });
   return taskId;
 }
 
@@ -564,7 +601,7 @@ export class TeamService {
   }
 
   async threadPost(p: Principal, input: Record<string, unknown>): Promise<unknown> {
-    noExtraKeys(input, ['thread_id', 'body', 'idempotency_key', 'reply_to', 'attachments']);
+    noExtraKeys(input, ['thread_id', 'body', 'idempotency_key', 'reply_to', 'attachments', 'runner']);
     requirePermission(p, 'thread:write');
     const threadId = uuid(input.thread_id, 'thread_id');
     const photos = parseThreadPhotos(input.attachments);
@@ -573,6 +610,7 @@ export class TeamService {
     const body = clipUtf8(redactSecrets(rawBody), 16384);
     const idempotency = string(input.idempotency_key, 'idempotency_key', 200);
     const replyTo = input.reply_to !== undefined ? uuid(input.reply_to, 'reply_to') : null;
+    const explicitRunner = input.runner !== undefined ? parseRunner(input.runner) : null;
 
     return transaction(this.pool, async db => {
       await teamsLock(db, p.tenantId);
@@ -622,12 +660,17 @@ export class TeamService {
           )).rows[0];
 
           if (!activeTurn) {
-            const requiredCap = runnerCapability(agent.runner, agent.edits);
+            const namedProvider = explicitRunner ? null : requestedProvider(body);
+            const resolved = resolveTurnRunner({
+              agent,
+              override: explicitRunner ?? (namedProvider ? { provider: namedProvider } : null),
+            });
             const taskId = newId();
             const turnObjective = `Turn for agent ${agent.name}`;
             const envelope = {
-              deploy: false, publish: false, purchase: false, local_patch: agent.edits,
-              read_project: true, send_messages: false, permission_changes: false, external_side_effects: false
+              deploy: false, publish: false, purchase: false, local_patch: resolved.edits,
+              read_project: true, send_messages: false, permission_changes: false, external_side_effects: false,
+              ...(resolved.runner ? { runner: resolved.runner } : {})
             };
             const contextVersions = { message_seq: Number(nextSeq) };
             const reqHash = sha256(canonicalJson({
@@ -641,11 +684,11 @@ export class TeamService {
                   idempotency_key, request_hash, max_attempts)
                VALUES ($1, $2, $3, 'turn', $4, $5, $6, '[]'::jsonb, '[]'::jsonb, $7::jsonb, $8, $9, $10::jsonb, 'queued', $11, $12, $13, 3)`,
               [taskId, p.tenantId, agent.scope, agent.id, threadId, turnObjective, JSON.stringify(envelope),
-               requiredCap, `agent:${agent.id}`, JSON.stringify(contextVersions), p.id, newId(), reqHash]
+               resolved.capability, `agent:${agent.id}`, JSON.stringify(contextVersions), p.id, newId(), reqHash]
             );
 
-            await audit(db, p, agent.scope, 'task.submitted', taskId, { kind: 'turn', agent_id: agent.id, thread_id: threadId });
-            await event(db, p, agent.scope, 'task.updated', taskId, { task_id: taskId, kind: 'turn', thread_id: threadId, status: 'queued', action: 'submitted' });
+            await audit(db, p, agent.scope, 'task.submitted', taskId, { kind: 'turn', agent_id: agent.id, thread_id: threadId, required_capability: resolved.capability });
+            await event(db, p, agent.scope, 'task.updated', taskId, { task_id: taskId, kind: 'turn', thread_id: threadId, required_capability: resolved.capability, status: 'queued', action: 'submitted' });
           }
         }
       }
@@ -667,12 +710,7 @@ export class TeamService {
           [threadId]
         )).rows;
 
-        const mentionRegex = /@([a-zA-Z0-9_-]+)/g;
-        const mentionedNames = new Set<string>();
-        let match: RegExpExecArray | null;
-        while ((match = mentionRegex.exec(body)) !== null) {
-          if (match[1]) mentionedNames.add(match[1].toLowerCase());
-        }
+        const mentionedNames = extractMentions(body);
 
         const targetAgents: string[] = [];
         if (mentionedNames.size > 0) {
@@ -685,7 +723,7 @@ export class TeamService {
           targetAgents.push(thread.lead_agent_id);
         }
 
-        const cleanBody = clipUtf8(redactSecrets(body).replace(/@[a-zA-Z0-9_-]+\s*/g, '').trim(), 256);
+        const cleanBody = clipUtf8(redactSecrets(body).replace(/@"[^"\n]{1,64}"\s*|@[a-zA-Z0-9_.-]+\s*/g, '').trim(), 256);
         for (const agentId of targetAgents) {
           const agent = (await db.query<AgentRow>('SELECT * FROM agents WHERE id=$1 FOR UPDATE', [agentId])).rows[0];
           if (!agent || agent.archived) continue;
@@ -696,7 +734,8 @@ export class TeamService {
             seq: nextSeq,
             initiatorKind: 'person',
             objective: cleanBody,
-            provider: requestedProvider(body)
+            provider: explicitRunner ? null : requestedProvider(body),
+            runnerOverride: explicitRunner,
           });
         }
       }
@@ -793,11 +832,20 @@ export class TeamService {
           ).then(r => r.rows)
         : Promise.resolve([] as (SwarmStepRow & { card: SwarmRow })[]),
       taskCardIds.length
-        ? this.pool.query<TaskRow>(
-            'SELECT * FROM tasks WHERE id=ANY($1::uuid[]) AND tenant_id=$2 AND scope=$3',
+        ? this.pool.query<Pick<TaskRow, 'id' | 'objective' | 'kind' | 'status' | 'resolved_at' | 'result'>>(
+            `SELECT id, objective, kind, status, resolved_at,
+               CASE WHEN result IS NULL THEN NULL ELSE jsonb_strip_nulls(jsonb_build_object(
+                 'branch', result->'branch',
+                 'changed_files', result->'changed_files',
+                 'served', result->'served',
+                 'provider', result->'provider',
+                 'model', result->'model',
+                 'failure', result->'failure'
+               )) END AS result
+             FROM tasks WHERE id=ANY($1::uuid[]) AND tenant_id=$2 AND scope=$3`,
             [taskCardIds, p.tenantId, thread.scope]
           ).then(r => r.rows)
-        : Promise.resolve([] as TaskRow[]),
+        : Promise.resolve([] as Pick<TaskRow, 'id' | 'objective' | 'kind' | 'status' | 'resolved_at' | 'result'>[]),
       this.pool.query<{ task_id: string; agent_id: string; text: unknown; activity: unknown; updated_at: Date }>(
         `SELECT id AS task_id, agent_id, checkpoint->>'partial_text' AS text, checkpoint->'activity' AS activity, updated_at
          FROM tasks WHERE tenant_id=$1 AND scope=$2 AND thread_id=$3 AND kind='turn' AND status='running'

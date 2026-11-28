@@ -1,9 +1,10 @@
 import type { Pool } from 'pg';
 import { requireCondition } from '../errors.js';
 import type { Principal } from '../types.js';
-import { object, optionalString, scopeName, string } from '../validation.js';
+import { object, optionalString, scopeName, string, strings } from '../validation.js';
 import { inboxStatus } from './inbox-status.js';
 import { LessonService } from './lessons.js';
+import { mergeModelCatalog, type WorkerProviderModelReport } from './model-catalog.js';
 import { decideAll, getPolicy, type RoutingPolicy, type UsageRow } from './routing.js';
 import { SessionService } from './sessions.js';
 import { assertKnownScope, noExtraKeys, scopeSql, type Db } from './shared.js';
@@ -54,7 +55,7 @@ export class SwarmService {
     requireCondition(Array.isArray(input.reports) && input.reports.length <= 10 && (input.reports.length >= 1 || input.slots !== undefined), 400, 'invalid_arguments', 'reports needs 1–10 entries (or none with slots).');
     const rows = input.reports.map(value => {
       const r = object(value);
-      noExtraKeys(r, ['provider', 'ok', 'windows', 'fetched_at', 'plan', 'error']);
+      noExtraKeys(r, ['provider', 'ok', 'windows', 'fetched_at', 'plan', 'error', 'default_model', 'turn_model', 'models']);
       const provider = string(r.provider, 'provider', 50);
       requireCondition(PROVIDER.test(provider), 400, 'invalid_arguments', 'provider must be a lowercase identifier.');
       requireCondition(typeof r.ok === 'boolean', 400, 'invalid_arguments', 'ok must be a boolean.');
@@ -70,8 +71,16 @@ export class SwarmService {
       });
       const fetched = string(r.fetched_at, 'fetched_at', 40);
       requireCondition(!Number.isNaN(Date.parse(fetched)), 400, 'invalid_arguments', 'fetched_at must be a date-time.');
-      return { provider, ok: r.ok as boolean, windows, fetched, plan: optionalString(r.plan, 'plan', 80) ?? null, error: optionalString(r.error, 'error', 200) ?? null };
+      const defaultModel = r.default_model === null || r.default_model === undefined ? undefined : string(r.default_model, 'default_model', 100);
+      const turnModel = r.turn_model === null || r.turn_model === undefined ? undefined : string(r.turn_model, 'turn_model', 100);
+      const models = r.models === undefined ? undefined : [...new Set(strings(r.models, 'models', 50, 100))];
+      return {
+        provider, ok: r.ok as boolean, windows, fetched,
+        plan: optionalString(r.plan, 'plan', 80) ?? null, error: optionalString(r.error, 'error', 200) ?? null,
+        defaultModel, turnModel, models,
+      };
     });
+    const catalogPatch: Record<string, WorkerProviderModelReport> = {};
     for (const r of rows) {
       // Clamp future timestamps so a skewed worker clock cannot keep a reading fresh forever.
       await this.pool.query(`INSERT INTO provider_usage (tenant_id,provider,reporter_id,ok,headroom,windows,fetched_at)
@@ -79,6 +88,20 @@ export class SwarmService {
         ON CONFLICT (tenant_id,provider) DO UPDATE SET reporter_id=EXCLUDED.reporter_id,ok=EXCLUDED.ok,headroom=EXCLUDED.headroom,
           windows=EXCLUDED.windows,fetched_at=EXCLUDED.fetched_at,updated_at=clock_timestamp()`,
         [p.tenantId, r.provider, p.id, r.ok, headroom(r.windows, r.ok), JSON.stringify({ windows: r.windows, plan: r.plan, error: r.error }), r.fetched]);
+      if (r.defaultModel !== undefined || r.turnModel !== undefined || r.models !== undefined) {
+        catalogPatch[r.provider] = {
+          ...(r.defaultModel !== undefined ? { default_model: r.defaultModel } : {}),
+          ...(r.turnModel !== undefined ? { turn_model: r.turnModel } : {}),
+          ...(r.models !== undefined ? { models: r.models } : {}),
+          reported_at: r.fetched,
+        };
+      }
+    }
+    if (Object.keys(catalogPatch).length > 0) {
+      await this.pool.query(
+        `UPDATE principals SET model_catalog = COALESCE(model_catalog, '{}'::jsonb) || $2::jsonb WHERE id=$1`,
+        [p.id, JSON.stringify(catalogPatch)]
+      );
     }
     if (input.slots !== undefined) await this.pool.query('UPDATE principals SET worker_slots=$2 WHERE id=$1', [p.id, input.slots]);
     await touchWorker(this.pool, p);
@@ -96,6 +119,7 @@ export class SwarmService {
     }
     const [workers, usage, openCounts, recentCounts, recent, sessions, lessonsPending, policy, inbox] = await Promise.all([
       this.pool.query(`SELECT w.name,w.last_seen_at,coalesce(w.last_seen_at>clock_timestamp()-interval '60 seconds',false) AS live,coalesce(w.worker_slots,1) AS slots,
+          coalesce(w.model_catalog,'{}'::jsonb) AS model_catalog,
           (SELECT coalesce(json_agg(json_build_object('task_id',t.id,'scope',t.scope,'kind',t.kind,'objective',left(t.objective,140),'required_capability',t.required_capability,'started_at',coalesce((SELECT r.started_at FROM task_runs r WHERE r.task_id=t.id AND r.generation=t.lease_generation),t.updated_at))),'[]') FROM tasks t
             WHERE t.lease_owner=w.id AND t.status='running' AND ($2::boolean OR t.scope=ANY($3::text[]))) AS running,
           (SELECT coalesce(json_agg(u.provider ORDER BY u.provider),'[]') FROM provider_usage u WHERE u.reporter_id=w.id) AS providers
@@ -140,8 +164,28 @@ export class SwarmService {
       byScope.set(r.scope, existing);
     }
     if (!all) for (const scope of scopes) if (!byScope.has(scope)) byScope.set(scope, { scope, ...zero });
+    const liveWorkerCatalogs = workers.rows
+      .filter(w => w.live)
+      .map(w => w.model_catalog as Record<string, WorkerProviderModelReport> | null | undefined);
+    const mergedCatalog = mergeModelCatalog(liveWorkerCatalogs);
+    const workerViews = workers.rows.map(w => {
+      const { model_catalog: rawCat, ...rest } = w;
+      const defaultModels: Record<string, string> = {};
+      if (rawCat && typeof rawCat === 'object') {
+        for (const [prov, entry] of Object.entries(rawCat as Record<string, WorkerProviderModelReport>)) {
+          if (entry && typeof entry.default_model === 'string' && entry.default_model.trim()) {
+            defaultModels[prov] = entry.default_model.trim();
+          }
+        }
+      }
+      return {
+        ...rest,
+        free_slots: w.live ? Math.max(0, w.slots - (w.running as unknown[]).length) : 0,
+        default_models: defaultModels,
+      };
+    });
     return {
-      workers: workers.rows.map(w => ({ ...w, free_slots: w.live ? Math.max(0, w.slots - (w.running as unknown[]).length) : 0 })), usage: usageView, routing: routing(usageView, live, policy.policy, policy.is_default), sessions,
+      workers: workerViews, usage: usageView, routing: routing(usageView, live, policy.policy, policy.is_default), model_catalog: mergedCatalog, sessions,
       scopes: [...byScope.values()].sort((a, b) => String(a.scope).localeCompare(String(b.scope))),
       recent: recent.rows, inbox, lessons_pending: lessonsPending, generated_at: new Date().toISOString(),
     };

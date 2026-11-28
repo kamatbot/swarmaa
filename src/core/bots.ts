@@ -12,6 +12,7 @@ import { cancelTask, type TaskRow } from './tasks.js';
 import { AUTO_PATCH, AUTO_READ } from './swarm.js';
 import type { RunnerConfig } from '../bridge/adapters.js';
 import { nextCronRun, routingNow, syncScheduleCard, type BotRoutingRow } from './bot-routing.js';
+import { validateModelAndEffort } from './model-catalog.js';
 
 export const BOT_AVATARS = ['lead', 'runner', 'scout', 'navigator', 'clerk', 'scribe', 'badge-sun', 'badge-peri', 'badge-peach'] as const;
 export const BOT_COLORS = ['blue', 'butter', 'peach', 'lilac', 'pink', 'lime', 'sky', 'orchid'] as const;
@@ -151,8 +152,11 @@ export function validateRouting(raw: unknown): Record<string, unknown> {
         `${kind}.runner.provider must be claude, codex or antigravity`
       );
       const runnerObj: Record<string, unknown> = { provider };
-      if (runner.model !== undefined) runnerObj.model = string(runner.model, `${kind}.runner.model`, 100);
-      if (runner.effort !== undefined) runnerObj.effort = string(runner.effort, `${kind}.runner.effort`, 40);
+      const model = runner.model !== undefined ? string(runner.model, `${kind}.runner.model`, 100) : undefined;
+      const effort = runner.effort !== undefined ? string(runner.effort, `${kind}.runner.effort`, 40) : undefined;
+      validateModelAndEffort(provider, model, effort, `${kind}.runner.`);
+      if (model !== undefined) runnerObj.model = model;
+      if (effort !== undefined) runnerObj.effort = effort;
       result[kind] = runnerObj;
     }
   }

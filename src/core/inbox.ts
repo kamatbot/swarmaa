@@ -3,7 +3,7 @@ import { homedir } from 'node:os';
 import path from 'node:path';
 import type { Pool, PoolClient } from 'pg';
 import { principalFromRow } from '../auth.js';
-import { transaction } from '../db.js';
+import { onCommit, transaction } from '../db.js';
 import { requireCondition } from '../errors.js';
 import { canAccessScope, hasPermission, requirePermission } from '../policy.js';
 import { redactSecrets } from '../safety/redact.js';
@@ -38,9 +38,8 @@ export function touchInboxDirtyFlag(principalId: string, baseDir = inboxDirtyDir
   } catch { /* best effort; never fail DB operations */ }
 }
 
-/** Writers touch the flag inside their transaction, before COMMIT, so a poll can briefly see nothing although an
- *  item is on its way. The flag is only cleared once nothing has touched it for this long (longer than any transaction). */
-export const INBOX_FLAG_QUIET_MS = 10 * 60_000;
+/** Writers touch the flag strictly post-commit (via onCommit); keep a short 2 s grace window for racing polls. */
+export const INBOX_FLAG_QUIET_MS = 2_000;
 
 /** Best-effort removal of `~/.swarmaa/inbox-dirty/<principalId>.flag` once zero undelivered items remain and no write
  *  touched it within INBOX_FLAG_QUIET_MS. */
@@ -58,7 +57,7 @@ export function inboxSession(value:unknown):string {
   return session;
 }
 
-async function bindSession(db:PoolClient,p:Principal,session:string):Promise<void> {
+export async function bindSession(db:PoolClient,p:Principal,session:string):Promise<void> {
   const row = await db.query(`INSERT INTO inbox_sessions(tenant_id,session,principal_id) VALUES($1,$2,$3)
     ON CONFLICT(tenant_id,session) DO UPDATE SET session=EXCLUDED.session
     WHERE inbox_sessions.principal_id=EXCLUDED.principal_id RETURNING session`,[p.tenantId,session,p.id]);
@@ -96,7 +95,8 @@ export async function taskFinished(db:PoolClient,p:Principal,row:TaskRow):Promis
     WHERE ($2=ANY(r.scopes) OR (r.role='admin' AND '*'=ANY(r.scopes)))
       AND ('admin'=ANY(r.permissions) OR ('events:read'=ANY(r.permissions) AND 'task:read'=ANY(r.permissions)))
     ON CONFLICT DO NOTHING RETURNING recipient_principal`,[row.tenant_id,row.scope,row.id,row.version,p.id,body,row.created_by,sessionOnly(row)]);
-  for (const recipient of new Set(inserted.rows.map(r => r.recipient_principal))) touchInboxDirtyFlag(recipient);
+  const recipients = [...new Set(inserted.rows.map(r => r.recipient_principal))];
+  if (recipients.length) onCommit(db, () => { for (const recipient of recipients) touchInboxDirtyFlag(recipient); });
 }
 
 export async function taskReroutedNotice(db:PoolClient,p:Principal,row:TaskRow,fromProvider:string,toProvider:string,code:string):Promise<void> {
@@ -108,7 +108,8 @@ export async function taskReroutedNotice(db:PoolClient,p:Principal,row:TaskRow,f
     WHERE ($2=ANY(r.scopes) OR (r.role='admin' AND '*'=ANY(r.scopes)))
       AND ('admin'=ANY(r.permissions) OR ('events:read'=ANY(r.permissions) AND 'task:read'=ANY(r.permissions)))
     ON CONFLICT DO NOTHING RETURNING recipient_principal`,[row.tenant_id,row.scope,row.id,row.version,p.id,body,row.created_by,sessionOnly(row)]);
-  for (const recipient of new Set(inserted.rows.map(r => r.recipient_principal))) touchInboxDirtyFlag(recipient);
+  const recipients = [...new Set(inserted.rows.map(r => r.recipient_principal))];
+  if (recipients.length) onCommit(db, () => { for (const recipient of recipients) touchInboxDirtyFlag(recipient); });
 }
 
 /** Approval notices use the durable owner inbox and its existing notification trigger. */
@@ -116,7 +117,8 @@ export async function flowApprovalNotice(db:PoolClient,p:Principal,task:TaskRow,
   const body = redactSecrets(`Flow ${title} needs your approval: ${task.objective.replace(/^Flow .*? needs your approval: /,'').slice(0,1000)}. flow_approve {flow_id: ${flowId}, step_id: ${task.flow!.step_id}, approve: true|false}`).slice(0,2000);
   const inserted = await db.query<{ recipient_principal: string }>(`INSERT INTO inbox(id,tenant_id,recipient_principal,kind,scope,task_id,from_principal,body)
     VALUES($1,$2,$3,'flow_approval',$4,$5,$6,$7) ON CONFLICT DO NOTHING RETURNING recipient_principal`,[newId(),p.tenantId,ownerId,task.scope,task.id,p.id,body]);
-  for (const recipient of new Set(inserted.rows.map(r => r.recipient_principal))) touchInboxDirtyFlag(recipient);
+  const recipients = [...new Set(inserted.rows.map(r => r.recipient_principal))];
+  if (recipients.length) onCommit(db, () => { for (const recipient of recipients) touchInboxDirtyFlag(recipient); });
 }
 
 export class InboxService {
@@ -170,7 +172,7 @@ export class InboxService {
       const id = newId();
       await db.query(`INSERT INTO inbox(id,tenant_id,recipient_principal,recipient_session,kind,scope,task_id,from_principal,body)
         VALUES($1,$2,$3,$4,'message',$5,$6,$7,$8)`,[id,p.tenantId,recipient,session,scope,related,p.id,body]);
-      touchInboxDirtyFlag(recipient);
+      onCommit(db, () => touchInboxDirtyFlag(recipient));
       return {id,sent:true};
     });
   }
@@ -228,9 +230,9 @@ export class InboxService {
              AND (i.task_id IS NULL OR $6::boolean)
              AND (
                i.delivered_at IS NULL
-               OR ((i.recipient_session IS NULL OR i.recipient_session=$5) AND (r.state IS NULL OR (r.state='unconfirmed' AND r.offers<3)))
-               -- another session of this identity still has an offered item to confirm: keep its hook polling
-               OR EXISTS (SELECT 1 FROM inbox_receipts o WHERE o.delivery_id=i.delivery_id AND o.session<>$5 AND o.state='unconfirmed' AND o.offers<3)
+               OR ((i.recipient_session IS NULL OR i.recipient_session=$5) AND (r.state IS NULL OR r.state='offered' OR (r.state='unconfirmed' AND r.offers<3)))
+               -- another session of this identity still has an offered/unconfirmed item to confirm: keep its hook polling
+               OR EXISTS (SELECT 1 FROM inbox_receipts o WHERE o.delivery_id=i.delivery_id AND o.session<>$5 AND o.state IN ('offered','unconfirmed') AND o.offers<3)
              )
            LIMIT 1`,
           args

@@ -7,7 +7,7 @@ import { homedir, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import test from 'node:test';
 import { codingCliToolNames } from '../src/core/tools.js';
-import { guardedPostToolUseCommand, installInboxHooks, installJournalHooks } from '../scripts/hooks-install.js';
+import { guardedPostToolUseCommand, guardedTurnCommand, installInboxHooks, installJournalHooks } from '../scripts/hooks-install.js';
 import { deployLocal, type DeployIO } from '../scripts/deploy-local.js';
 import { checkNodeVersion, createOnboarding, runSetup, type Detected, type SetupSummary } from '../scripts/setup.js';
 import { AGY_TOOLS, NATIVE_APP_PERMISSIONS, validatePlan } from '../scripts/setup-lib.js';
@@ -178,6 +178,57 @@ test('PostToolUse dirty-flag POSIX guard skips node cold start when clean and fa
   mkdirSync(join(home, '.swarma', 'inbox', 'sesshash'), { recursive: true });
   writeFileSync(join(home, '.swarma', 'inbox', 'sesshash', 'accepted.json'), '["d1"]');
   assert.equal(runGuard(), true);
+});
+
+test('turn hook POSIX fast-path guard skips node when no state.json exists, passes /swarm and $swarm prompts, and emits {} for agy', t => {
+  const root = temp('turn-guard-root'), home = temp('turn-guard-home');
+  t.after(() => { rmSync(root, { recursive: true, force: true }); rmSync(home, { recursive: true, force: true }); });
+  const captured = join(root, 'captured-stdin');
+  const fakeNode = join(root, 'fake-node.sh');
+  writeFileSync(fakeNode, `#!/bin/sh\ncat > "${captured}"\nprintf '{"ok":true}\\n'\n`, { mode: 0o755 });
+
+  const runCmd = (cmd: string, input: string) => {
+    rmSync(captured, { force: true });
+    const r = spawnSync('/bin/sh', ['-c', cmd], { input, env: { HOME: home, PATH: '/usr/bin:/bin' }, encoding: 'utf8' });
+    assert.equal(r.status, 0, r.stderr);
+    return { ran: existsSync(captured), stdin: existsSync(captured) ? readFileSync(captured, 'utf8').trim() : '', stdout: r.stdout };
+  };
+
+  const stopClaude = guardedTurnCommand('claude', 'Stop', `'${fakeNode}' claude Stop`);
+  const stopAgy = guardedTurnCommand('agy', 'Stop', `'${fakeNode}' agy Stop`);
+  const promptClaude = guardedTurnCommand('claude', 'UserPromptSubmit', `'${fakeNode}' claude UserPromptSubmit`);
+  const promptAgy = guardedTurnCommand('agy', 'UserPromptSubmit', `'${fakeNode}' agy UserPromptSubmit`);
+
+  // 1. No state.json -> Stop skips node (and agy emits {})
+  assert.deepEqual(runCmd(stopClaude, '{"session_id":"s1"}'), { ran: false, stdin: '', stdout: '' });
+  assert.deepEqual(runCmd(stopAgy, '{"conversationId":"c1"}'), { ran: false, stdin: '', stdout: '{}\n' });
+
+  // 2. No state.json + normal prompt -> UserPromptSubmit skips node (and agy emits {})
+  assert.deepEqual(runCmd(promptClaude, '{"session_id":"s1","prompt":"explain this function"}'), { ran: false, stdin: '', stdout: '' });
+  assert.deepEqual(runCmd(promptAgy, '{"conversationId":"c1","prompt":"hello"}'), { ran: false, stdin: '', stdout: '{}\n' });
+
+  // 3. No state.json + /swarm, $swarm, JSON-escaped \/swarm, or expanded command marker -> runs node with intact stdin
+  for (const payload of [
+    '{"session_id":"s1","prompt":"/swarm review on"}',
+    '{"session_id":"s1","prompt":"$swarm handoff"}',
+    '{"session_id":"s1","prompt":"\\/swarm review on"}',
+    '{"session_id":"s1","prompt":"<!-- swarma:swarm-command -->\\nARGS: review off"}',
+  ]) {
+    const res = runCmd(promptClaude, payload);
+    assert.equal(res.ran, true, `should run for ${payload}`);
+    assert.equal(res.stdin, payload);
+    assert.equal(res.stdout, '{"ok":true}\n');
+  }
+
+  // 4. Active state.json exists -> both Stop and UserPromptSubmit run node directly with intact stdin
+  mkdirSync(join(home, '.swarma', 'turn', 'abc123'), { recursive: true });
+  writeFileSync(join(home, '.swarma', 'turn', 'abc123', 'state.json'), '{"review":{"on":true}}');
+  const stopRes = runCmd(stopClaude, '{"session_id":"s1"}');
+  assert.equal(stopRes.ran, true);
+  assert.equal(stopRes.stdin, '{"session_id":"s1"}');
+  const promptRes = runCmd(promptClaude, '{"session_id":"s1","prompt":"normal message"}');
+  assert.equal(promptRes.ran, true);
+  assert.equal(promptRes.stdin, '{"session_id":"s1","prompt":"normal message"}');
 });
 
 test('installJournalHooks accepts explicit node path and installInboxHooks leaves task_submit unguarded', async t => {

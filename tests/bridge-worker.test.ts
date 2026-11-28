@@ -30,7 +30,10 @@ test('successful worker stores provenance, transcript and explicit unverified ac
   const finish = calls.find(call=>call.name==='task_finish')!;
   assert.equal(finish.args.outcome,'completed');
   assert.equal((finish.args.result as Record<string,unknown>).acceptance_criteria_verified,false);
-  assert.equal(calls.filter(call=>call.name==='artifact_put').length,1);
+  assert.equal(calls.filter(call=>call.name==='artifact_put').length,0);
+  const inline = finish.args.inline_artifacts as Array<{name:string;media_type:string;content:string}>;
+  assert.equal(inline.length,1);
+  assert.equal(inline[0]!.name,'claude-transcript.txt');
   assert.deepEqual((calls[0]!.args.projects as {kinds:string[]}[])[0]!.kinds,['research','review']);
 });
 

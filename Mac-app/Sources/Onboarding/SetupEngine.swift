@@ -305,10 +305,10 @@ final class NodeProcessRunner: SetupProcessRunning, @unchecked Sendable {
             self?.activeProcesses.removeAll { $0 === process }
             self?.stateLock.unlock()
         }
-        // The real `--run-json` setup can take ~600 s per step: only detection is time-boxed (cancel() still works).
-        if !arguments.contains("--run-json") {
-            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeout, execute: timeoutWork)
-        }
+        // `--run-json` can run multi-minute setup steps, so give it a generous 30-minute safety ceiling
+        // rather than letting a wedged process hang forever. Detection keeps the shorter timeout.
+        let effectiveTimeout: TimeInterval = arguments.contains("--run-json") ? max(timeout, 1800) : timeout
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + effectiveTimeout, execute: timeoutWork)
 
         defer {
             timeoutWork.cancel()

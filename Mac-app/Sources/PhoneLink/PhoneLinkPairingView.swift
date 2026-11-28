@@ -77,10 +77,13 @@ struct PhoneLinkPairingView: View {
 
     @State private var relayCode: RelayPairingCodeGenerator.Generated?
     @State private var copiedLink = false
-    @State private var copiedCode = false
+    @State private var copiedLanCode = false
+    @State private var copiedRelayCode = false
     @State private var qrImage: NSImage?
     @State private var qrLink: String = ""
     @State private var relayQR: NSImage?
+    @State private var cachedHosts: [String] = []
+    @State private var cachedComputerName: String = ""
     @State private var now = Date()
     @Environment(\.accessibilityReduceMotion) var reduceMotion
 
@@ -92,8 +95,8 @@ struct PhoneLinkPairingView: View {
     }
 
     private var lanLink: String {
-        let hosts = PhoneLinkNetwork.getHosts().joined(separator: ",")
-        let name = PhoneLinkNetwork.getComputerName()
+        let hosts = cachedHosts.joined(separator: ",")
+        let name = cachedComputerName
         let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_.~"))
         let encodedName = name.addingPercentEncoding(withAllowedCharacters: allowed) ?? name
         return "\(PhoneLinkWire.pairScheme)?v=3&h=\(hosts)&p=\(String(advertisedPort))&c=\(pairing.currentCode ?? "")&n=\(encodedName)"
@@ -106,7 +109,7 @@ struct PhoneLinkPairingView: View {
     private var displayCode: String? { pairing.currentCode }
 
     /// Separate from the LAN QR: a relay code is only written when the user asks for one (the relay
-    /// agent needs PUBLIC_URL, which the app can't observe). Expiry follows the `now` timer.
+    /// agent needs PUBLIC_URL, which the app can't observe). Expiry follows the `now` timer only while active.
     @ViewBuilder private var relaySection: some View {
         if let relay = relayCode, now < relay.expiresAt {
             VStack(spacing: 8) {
@@ -125,11 +128,11 @@ struct PhoneLinkPairingView: View {
                         .font(.system(.title2, design: .monospaced).weight(.semibold))
                         .lineLimit(1)
                         .textSelection(.enabled)
-                    Button(copiedCode ? L10n.t("Copied ✓") : L10n.t("Copy Code")) {
+                    Button(copiedRelayCode ? L10n.t("Copied ✓") : L10n.t("Copy Code")) {
                         NSPasteboard.general.clearContents()
                         NSPasteboard.general.setString(relay.code, forType: .string)
-                        copiedCode = true
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copiedCode = false }
+                        copiedRelayCode = true
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copiedRelayCode = false }
                     }
                 }
                 let diff = max(0, Int(relay.expiresAt.timeIntervalSince(now)))
@@ -165,8 +168,7 @@ struct PhoneLinkPairingView: View {
                 }
                 .buttonStyle(.link)
             } else {
-                let hosts = PhoneLinkNetwork.getHosts()
-                let hasIP = hosts.first(where: { PhoneLinkNetwork.isPrivateIPv4($0) }) != nil
+                let hasIP = cachedHosts.first(where: { PhoneLinkNetwork.isPrivateIPv4($0) }) != nil
 
                 if (!hasIP || serverStatus.state == .off || isFailed(serverStatus.state)) {
                     Text(L10n.t("Connect your phone"))
@@ -218,11 +220,11 @@ struct PhoneLinkPairingView: View {
                                 .truncationMode(.middle)
                                 .textSelection(.enabled)
 
-                            Button(copiedCode ? L10n.t("Copied ✓") : L10n.t("Copy Code")) {
+                            Button(copiedLanCode ? L10n.t("Copied ✓") : L10n.t("Copy Code")) {
                                 NSPasteboard.general.clearContents()
                                 NSPasteboard.general.setString(displayCode, forType: .string)
-                                copiedCode = true
-                                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copiedCode = false }
+                                copiedLanCode = true
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copiedLanCode = false }
                             }
                         }
                         .padding(.horizontal)
@@ -274,13 +276,20 @@ struct PhoneLinkPairingView: View {
         .padding()
         .frame(width: 400)
         .onAppear {
+            refreshNetworkInfo()
             updateQR()
         }
-        .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { tick in
-            now = tick
-            if let relay = relayCode, tick >= relay.expiresAt {
-                relayCode = nil
-                relayQR = nil
+        .task(id: relayCode?.code) {
+            guard relayCode != nil else { return }
+            while !Task.isCancelled, let relay = relayCode {
+                let tick = Date()
+                now = tick
+                if tick >= relay.expiresAt {
+                    relayCode = nil
+                    relayQR = nil
+                    break
+                }
+                try? await Task.sleep(for: .seconds(1))
             }
         }
         .onChange(of: link) { _, _ in
@@ -288,14 +297,22 @@ struct PhoneLinkPairingView: View {
         }
     }
 
+    private func refreshNetworkInfo() {
+        cachedHosts = PhoneLinkNetwork.getHosts()
+        cachedComputerName = PhoneLinkNetwork.getComputerName()
+    }
+
     private func refreshCodes() {
+        refreshNetworkInfo()
         pairing.openWindow()
         updateQR()
     }
 
     private func showRelayCode() {
-        guard relayCode.map({ now >= $0.expiresAt }) ?? true else { return }
-        relayCode = RelayPairingCodeGenerator.generate()
+        let currentNow = Date()
+        now = currentNow
+        guard relayCode.map({ currentNow >= $0.expiresAt }) ?? true else { return }
+        relayCode = RelayPairingCodeGenerator.generate(now: currentNow)
         relayQR = relayCode.map { Self.generateQRCode(from: $0.pairURL) }
     }
 

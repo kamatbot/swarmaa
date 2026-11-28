@@ -658,6 +658,7 @@ export function createHttpHandler(dependencies: HttpDependencies): (request: Inc
           if (!active || response.destroyed) return;
           polling = true;
           pending = false;
+          let hasHidden = false;
           try {
             if (names.length === 0) {
               return;
@@ -707,7 +708,29 @@ export function createHttpHandler(dependencies: HttpDependencies): (request: Inc
               curSeq = row.seq;
             }
 
-            if (result.rows.length === 50) pending = true;
+            if (result.rows.length === 50) {
+              pending = true;
+            } else if (result.rows.length === 0) {
+              // If an event was committed by a newer xid while an older transaction is still open,
+              // xid < pg_snapshot_xmin hides it transiently; detect and retry in 30 ms instead of sleeping 15 s.
+              const hiddenSql = legacy
+                ? `SELECT EXISTS (
+                     SELECT 1 FROM events
+                     WHERE tenant_id = $1
+                       AND ($2::boolean OR scope = ANY($3::text[]))
+                       AND seq > $4::bigint
+                       AND name = ANY($5::text[])
+                   ) AS hidden`
+                : `SELECT EXISTS (
+                     SELECT 1 FROM events
+                     WHERE tenant_id = $1
+                       AND ($2::boolean OR scope = ANY($3::text[]))
+                       AND (xid, seq) > ($4::xid8, $5::bigint)
+                       AND name = ANY($6::text[])
+                   ) AS hidden`;
+              const hiddenRes = await dependencies.pool.query<{ hidden: boolean }>(hiddenSql, queryParams);
+              hasHidden = Boolean(hiddenRes.rows[0]?.hidden);
+            }
           } catch {
             // The safety poll also recovers from transient read failures.
           } finally {
@@ -715,14 +738,15 @@ export function createHttpHandler(dependencies: HttpDependencies): (request: Inc
             if (active && !response.destroyed) {
               if (pending) void poll();
               else {
-                pollTimer = setTimeout(wake, 2_000);
+                const nextDelay = hasHidden ? 30 : (wakeup.isConnected() ? 15_000 : 2_000);
+                pollTimer = setTimeout(wake, nextDelay);
                 pollTimer.unref?.();
               }
             }
           }
         };
 
-        const subscription = wakeup.subscribe(wake, principal.tenantId);
+        const subscription = wakeup.subscribe(wake, principal.tenantId, allScopes ? null : scopes);
         wake(); // Poll independently while LISTEN connects (or reconnects).
         unsubscribe = await subscription;
         if (!active || response.destroyed) { cleanup(); return; }

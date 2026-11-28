@@ -9,7 +9,7 @@ import { decide, getPolicy, scopeUsage, type RoutingKind, type RoutingPolicy, ty
 import { assertKnownScope, event, newId, noExtraKeys, requireFound, scopeLock, scopeSql, sha256, teamsLock, type Db } from './shared.js';
 import { assignThreadSeq, clipUtf8 } from './teams.js';
 import { taskChanged, type TaskRow } from './tasks.js';
-import { leadTurnProfile } from './bots.js';
+import { resolveTurnRunner } from './model-catalog.js';
 
 export interface BotRoutingRow {
   id:string; tenant_id:string; scope:string; thread_id:string; lead_agent_id:string; created_by:string;
@@ -85,10 +85,11 @@ export async function botTaskFinished(db:PoolClient,p:Principal,row:TaskRow):Pro
     return;
   }
   const result = row.result ?? {};
-  if (bot.archived || row.status!=='completed' || !(row.kind==='patch' || row.kind==='turn' && row.required_capability.endsWith('.patch')) || typeof result.head_commit!=='string' || !COMMIT.test(result.head_commit)) return;
+  // Skip intermediate auto-review/checks on swarm steps (wait for swarm completion / explicit review).
+  if (bot.archived || row.swarm_step_id || row.status!=='completed' || !(row.kind==='patch' || row.kind==='turn' && row.required_capability.endsWith('.patch')) || typeof result.head_commit!=='string' || !COMMIT.test(result.head_commit)) return;
   const branch = typeof result.branch==='string' ? result.branch : null;
   if (!branch) { await notice(db,p,bot,'Cannot queue bot checks: edit has no branch.'); return; }
-  const enqueue = async(kind:'review'|'check',capability:string,exclusions:string[]=[]) => {
+  const enqueue = async(kind:'review'|'check',capability:string,exclusions:string[]=[],reviewRunner?:Record<string,unknown>) => {
     const key = `bot-${kind}:${row.id}`;
     if ((await db.query('SELECT 1 FROM tasks WHERE tenant_id=$1 AND created_by=$2 AND idempotency_key=$3',[p.tenantId,row.created_by,key])).rowCount) return;
     let flowId:string|null = null, flow:Record<string,unknown>|null = null;
@@ -100,8 +101,21 @@ export async function botTaskFinished(db:PoolClient,p:Principal,row:TaskRow):Pro
       flow = {step_id:'tests',needs:[],ready:true,commit:result.head_commit,diff_base:result.base_commit,provider:'bridge',check:{type:'tests_pass'}};
     }
     const objective = clipUtf8(`${kind==='review' ? 'Review' : 'Run project tests on'} branch ${branch}. Original objective: ${row.objective}`,16000);
+    // Strip runner from parent envelope to prevent cross-provider model/effort poisoning.
+    const { runner: _strippedRunner, ...baseEnvelope } = row.permission_envelope ?? {};
+    const envelope = {
+      ...baseEnvelope,
+      local_patch: kind==='check',
+      deploy: false,
+      publish: false,
+      purchase: false,
+      send_messages: false,
+      permission_changes: false,
+      external_side_effects: false,
+      ...(kind==='review' && reviewRunner ? { runner: reviewRunner } : {}),
+    };
     const task = (await db.query<TaskRow>(`INSERT INTO tasks(id,tenant_id,scope,kind,objective,required_capability,base_ref,resource_key,permission_envelope,created_by,idempotency_key,request_hash,bot_id,thread_id,initiator_kind,initiator_id,excluded_providers,flow_id,flow,status)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'bot_check',$15,$16,$17,$18,'queued') RETURNING *`,[newId(),p.tenantId,row.scope,kind,objective,capability,kind==='check' ? result.head_commit : branch,kind==='check' ? null : row.resource_key,JSON.stringify({...row.permission_envelope,local_patch:kind==='check',deploy:false,publish:false,purchase:false,send_messages:false,permission_changes:false,external_side_effects:false}),row.created_by,key,sha256(key),bot.id,bot.thread_id,row.id,exclusions,flowId,flow && JSON.stringify(flow)])).rows[0]!;
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'bot_check',$15,$16,$17,$18,'queued') RETURNING *`,[newId(),p.tenantId,row.scope,kind,objective,capability,kind==='check' ? result.head_commit : branch,kind==='check' ? null : row.resource_key,JSON.stringify(envelope),row.created_by,key,sha256(key),bot.id,bot.thread_id,row.id,exclusions,flowId,flow && JSON.stringify(flow)])).rows[0]!;
     await taskChanged(db,p,task,'submitted',false);
   };
   if (bot.rules.review_edits!==false) {
@@ -110,7 +124,12 @@ export async function botTaskFinished(db:PoolClient,p:Principal,row:TaskRow):Pro
     const different = 'mode' in runner && runner.mode==='different_from_author';
     const {policy} = await getPolicy(db,p.tenantId);
     if (different && (!author || !policy.providers.some(x => x.enabled && x.kinds.includes('review') && x.provider!==author))) await notice(db,p,bot,'Review waiting: no different provider is enabled for reviews.');
-    else await enqueue('review',different ? 'auto.read' : runnerCapability(runner as RunnerConfig,false),different ? [author!] : []);
+    else {
+      const namedReviewRunner = ('provider' in runner && runner.provider)
+        ? { provider: runner.provider, ...(runner.model ? { model: runner.model } : {}), ...(runner.effort ? { effort: runner.effort } : {}) }
+        : undefined;
+      await enqueue('review',different ? 'auto.read' : runnerCapability(runner as RunnerConfig,false),different ? [author!] : [],namedReviewRunner);
+    }
   }
   if (bot.rules.require_tests) await enqueue('check','bridge.check');
 }
@@ -238,7 +257,7 @@ async function fireSchedule(pool:Pool,candidate:BotRoutingRow):Promise<void> {
     await db.query('UPDATE bots SET next_run_at=$2,updated_at=clock_timestamp() WHERE id=$1',[bot.id,next]);
     await syncScheduleCard(db,p,bot,now);
     if (!bot.next_run_at) return;
-    const agent = (await db.query<{id:string;edits:boolean;archived:boolean}>('SELECT id,edits,archived FROM agents WHERE id=$1 AND tenant_id=$2 AND scope=$3',[bot.lead_agent_id,p.tenantId,bot.scope])).rows[0];
+    const agent = (await db.query<{id:string;edits:boolean;archived:boolean;runner:RunnerConfig|null}>('SELECT id,edits,archived,runner FROM agents WHERE id=$1 AND tenant_id=$2 AND scope=$3',[bot.lead_agent_id,p.tenantId,bot.scope])).rows[0];
     if (!agent || agent.archived || (await db.query(`SELECT 1 FROM tasks WHERE tenant_id=$1 AND agent_id=$2 AND kind='turn' AND status IN ('queued','running')`,[p.tenantId,agent.id])).rowCount) return;
     if (bot.rules.quiet_schedule!==false) {
       // A failed SELECT aborts a PostgreSQL transaction until rolled back to its savepoint.
@@ -268,21 +287,21 @@ async function fireSchedule(pool:Pool,candidate:BotRoutingRow):Promise<void> {
       if (!changed) return;
     }
     await db.query('UPDATE bots SET last_scheduled_run_at=$2 WHERE id=$1',[bot.id,watermark]);
-    const profile = leadTurnProfile(bot as any, agent);
+    const resolved = resolveTurnRunner({ bot: bot as any, agent, noFast: true });
     const key = `bot-schedule:${bot.id}:${bot.next_run_at.toISOString()}`;
     const envelope = {
       read_project: true,
-      local_patch: profile.edits,
+      local_patch: resolved.edits,
       deploy: false,
       publish: false,
       purchase: false,
       send_messages: false,
       permission_changes: false,
       external_side_effects: false,
-      ...(profile.runner ? { runner: profile.runner } : {})
+      ...(resolved.runner ? { runner: resolved.runner } : {})
     };
     const task = (await db.query<TaskRow>(`INSERT INTO tasks(id,tenant_id,scope,kind,objective,agent_id,thread_id,bot_id,initiator_kind,required_capability,resource_key,permission_envelope,created_by,idempotency_key,request_hash,status)
-      VALUES($1,$2,$3,'turn',$4,$5,$6,$7,'schedule',$8,$9,$10,$11,$12,$13,'queued') RETURNING *`,[newId(),p.tenantId,bot.scope,clipUtf8(`Scheduled run: ${bot.job}\nIf you have nothing worth reporting, reply with exactly {"quiet":true} as your whole answer.`,16000),agent.id,bot.thread_id,bot.id,profile.capability,`agent:${agent.id}`,JSON.stringify(envelope),bot.created_by,key,sha256(key)])).rows[0]!;
+      VALUES($1,$2,$3,'turn',$4,$5,$6,$7,'schedule',$8,$9,$10,$11,$12,$13,'queued') RETURNING *`,[newId(),p.tenantId,bot.scope,clipUtf8(`Scheduled run: ${bot.job}\nIf you have nothing worth reporting, reply with exactly {"quiet":true} as your whole answer.`,16000),agent.id,bot.thread_id,bot.id,resolved.capability,`agent:${agent.id}`,JSON.stringify(envelope),bot.created_by,key,sha256(key)])).rows[0]!;
     await taskChanged(db,p,task,'submitted',false);
   });
 }

@@ -231,6 +231,8 @@ actor IOSRelaySocket: SwarmaRelayTransport.SwarmaWebSocket {
     func testStreamEventsRefreshOpenThreadTypingAndOneTask() async throws {
         let (service, socket) = service()
         let model = AppModel(keychain: ConnectionKeychain(service: "app.swarmaa.ios.tests." + UUID().uuidString))
+        model.turnRefreshDebounce = .zero
+        model.taskGetDebounce = .zero
         model.service = service
         model.openBot = Bot(raw: await socket.bot)
         model.tasks = [.object(["id": .string("keep"), "status": .string("running")])]
@@ -241,12 +243,23 @@ actor IOSRelaySocket: SwarmaRelayTransport.SwarmaWebSocket {
         XCTAssertEqual(ToolActivity.list(from: model.typing.first?["activity"] ?? .null), [], "typing JSON without an activity key still decodes to empty activity")
         try await model.post("Plan launch")
         XCTAssertEqual(model.messages.first?.text, "The launch is ready.")
-        try await model.handle(try JSON.parse("{\"name\":\"task.updated\",\"subject_id\":\"changed\",\"payload\":{\"kind\":\"turn\"}}"))
+        // Matching thread_id refreshes; unrelated thread_id is ignored!
+        try await model.handle(try JSON.parse("{\"name\":\"task.updated\",\"subject_id\":\"other-turn\",\"payload\":{\"kind\":\"turn\",\"thread_id\":\"other-thread\"}}"))
+        let readsAfterOther = await socket.calls("thread_read").count
+        XCTAssertEqual(readsAfterOther, 2, "turn event for another bot must not refetch open thread")
+        try await model.handle(try JSON.parse("{\"name\":\"task.updated\",\"subject_id\":\"changed\",\"payload\":{\"kind\":\"turn\",\"thread_id\":\"thread\"}}"))
         reads = await socket.calls("thread_read")
         XCTAssertEqual(reads.count, 3)
-        XCTAssertEqual(model.tasks.count, 2)
+        XCTAssertNotNil(reads.last?["after_seq"].number, "turn refresh uses incremental tail read")
+        XCTAssertEqual(model.tasks.count, 3)
         XCTAssertEqual(model.tasks[0]["id"].string, "keep")
-        XCTAssertEqual(model.tasks[1]["status"].string, "completed")
+        XCTAssertEqual(model.tasks.last?["status"].string, "completed")
+        // Cached running task status patches directly from payload without an extra task_get.
+        let taskGetsBefore = await socket.calls("task_get").count
+        try await model.handle(try JSON.parse("{\"name\":\"task.updated\",\"subject_id\":\"keep\",\"payload\":{\"status\":\"running\",\"action\":\"checkpointed\",\"version\":2}}"))
+        let taskGetsAfter = await socket.calls("task_get").count
+        XCTAssertEqual(taskGetsBefore, taskGetsAfter, "running task checkpoint patches in place")
+        XCTAssertEqual(model.tasks[0]["version"].int, 2)
         let before = reads.count
         try await model.handle(try JSON.parse("{\"name\":\"message.created\",\"payload\":{\"thread_id\":\"other\"}}"))
         let after = await socket.calls("thread_read").count
@@ -349,7 +362,7 @@ actor IOSRelaySocket: SwarmaRelayTransport.SwarmaWebSocket {
         XCTAssertEqual(calls.count, 1)
         await service.transport.disconnect()
     }
-    func testCancellationUnblocksRelayRequest() async throws {
+    func testCancellationUnblocksRelayRequestWithoutKillingSharedSocket() async throws {
         let (service, socket) = service()
         await socket.hang("blocked")
         let task = Task { try await service.call("blocked", [:]) }
@@ -361,6 +374,54 @@ actor IOSRelaySocket: SwarmaRelayTransport.SwarmaWebSocket {
         task.cancel()
         do { _ = try await task.value; XCTFail("Cancelled request returned success") } catch {}
         XCTAssertLessThan(start.duration(to: .now), .seconds(1))
+        // The shared WebSocket must remain open for subsequent requests!
+        let closed = await socket.closed
+        XCTAssertFalse(closed, "cancelling a single request must not tear down the shared WebSocket")
+        _ = try await service.call("swarm_status", [:])
+        await service.transport.disconnect()
+    }
+
+    func testRoutingPreservesModelAndEffortForSameProviderAndClearsOnSwitch() throws {
+        let existing: JSON = .object(["provider": .string("claude"), "model": .string("claude-opus-5-5"), "effort": .string("max")])
+        let same = ModelCatalog.updatingRouting(existing, providerOrMode: "claude")
+        XCTAssertEqual(same["provider"].string, "claude")
+        XCTAssertEqual(same["model"].string, "claude-opus-5-5")
+        XCTAssertEqual(same["effort"].string, "max")
+
+        let switched = ModelCatalog.updatingRouting(existing, providerOrMode: "codex")
+        XCTAssertEqual(switched["provider"].string, "codex")
+        XCTAssertEqual(switched["model"], .null, "switching provider clears incompatible model")
+        XCTAssertEqual(switched["effort"], .null, "max effort is not supported by codex")
+
+        let highClaude: JSON = .object(["provider": .string("claude"), "model": .string("claude-opus-5-5"), "effort": .string("high")])
+        let switchedHigh = ModelCatalog.updatingRouting(highClaude, providerOrMode: "codex")
+        XCTAssertEqual(switchedHigh["effort"].string, "high", "supported effort survives provider switch")
+
+        let auto = ModelCatalog.updatingRouting(existing, providerOrMode: "auto")
+        XCTAssertEqual(auto["mode"].string, "auto")
+        XCTAssertEqual(auto["provider"], .null)
+
+        // Dynamic wrapped `model_catalog.providers` shape from `src/core/model-catalog.ts`
+        let status = try JSON.parse("""
+        {"model_catalog":{"providers":{"codex":{"default_model":"gpt-5.4","models":["gpt-6-astra","gpt-5.4"],"efforts":["minimal","low","medium","high","xhigh"]}}}}
+        """)
+        XCTAssertEqual(ModelCatalog.defaultModel(for: "codex", status: status), "gpt-5.4")
+        XCTAssertEqual(ModelCatalog.models(for: "codex", status: status).map(\.id), ["gpt-6-astra", "gpt-5.4"])
+        XCTAssertEqual(ModelCatalog.efforts(for: "codex", model: "gpt-6-astra", status: status), ["minimal", "low", "medium", "high", "xhigh"])
+    }
+
+    func testPostForwardsAndClearsOneOffRunnerOverride() async throws {
+        let (service, socket) = service()
+        let model = AppModel(keychain: ConnectionKeychain(service: "app.swarmaa.ios.tests." + UUID().uuidString))
+        model.service = service
+        model.openBot = Bot(raw: await socket.bot)
+        model.messageRunnerOverrides["thread"] = .object(["provider": .string("codex"), "model": .string("gpt-6-astra"), "effort": .string("xhigh")])
+        try await model.post("Deep check")
+        XCTAssertNil(model.messageRunnerOverrides["thread"], "one-off override clears after send")
+        let posts = await socket.calls("thread_post")
+        XCTAssertEqual(posts.last?["runner"]["provider"].string, "codex")
+        XCTAssertEqual(posts.last?["runner"]["model"].string, "gpt-6-astra")
+        XCTAssertEqual(posts.last?["runner"]["effort"].string, "xhigh")
         await service.transport.disconnect()
     }
     func testAskRejectsBlankMessageBeforePosting() async throws {
@@ -426,7 +487,7 @@ actor IOSRelaySocket: SwarmaRelayTransport.SwarmaWebSocket {
         var calls = await socket.calls("push_register")
         XCTAssertEqual(calls.count, 1)
         XCTAssertEqual(calls.first?["token"].string, String(repeating: "01", count: 32))
-        XCTAssertNil(calls.first?["activity_start_token"].string)
+        XCTAssertEqual(calls.first?["activity_start_token"], .null)
 
         // 2. Activity start token updates
         let startToken = Data(repeating: 0x02, count: 32)

@@ -4,8 +4,12 @@
     { "model": "claude-fable-5",  "input": 10,   "output": 50, "cacheRead": 1,     "cacheWrite": 12.5 },
     { "model": "claude-opus-5",   "input": 5,    "output": 25, "cacheRead": 0.5,   "cacheWrite": 6.25 },
     { "model": "claude-sonnet-5", "input": 2,    "output": 10, "cacheRead": 0.2,   "cacheWrite": 2.5 },
+    { "model": "claude-haiku-5",  "input": 1,    "output": 5,  "cacheRead": 0.1,   "cacheWrite": 1.25 },
     { "model": "claude-haiku-4",  "input": 1,    "output": 5,  "cacheRead": 0.1,   "cacheWrite": 1.25 },
+    { "model": "gpt-6-astra",     "input": 10,   "output": 50, "cacheRead": 1,     "cacheWrite": 12.5 },
     { "model": "gpt-6",           "input": 10,   "output": 50, "cacheRead": 1,     "cacheWrite": 12.5 },
-    { "model": "gpt-5",           "input": 1.25, "output": 10, "cacheRead": 0.125, "cacheWrite": 1.25 }
+    { "model": "gpt-5",           "input": 1.25, "output": 10, "cacheRead": 0.125, "cacheWrite": 1.25 },
+    { "model": "gemini-3.8-pro",  "input": 1.25, "output": 10, "cacheRead": 0.125, "cacheWrite": 0 },
+    { "model": "gemini-3.8-flash","input": 0.15, "output": 0.6,"cacheRead": 0.015, "cacheWrite": 0 }
   ]
 }

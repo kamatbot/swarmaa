@@ -31,12 +31,15 @@ export function parseReview(answer: unknown): ParsedReview {
   for (const raw of text.split(/\r?\n/)) {
     const q = raw.match(/^\s*(?:\*\*)?QUESTION(?:\*\*)?\s*:\s*(.+)$/i);
     if (q) { question ??= oneLine(q[1]!, 400); continue; }
-    const f = raw.match(/^\s*(?:[-*•]|\d+[.)])\s*\[(important|worth fixing|small detail|note)\]\s*(.+)$/i);
+    const f = raw.match(/^\s*(?:[-*•]|\d+[.)])\s*(?:\*\*)?\[(blocking|important|worth fixing|small detail|note)\](?:\*\*)?\s*:?\s*(.+)$/i);
     if (!f) continue;
-    const tag = f[1]!.toLowerCase(), body = oneLine(f[2]!, 400);
+    const rawTag = f[1]!.toLowerCase(), body = oneLine(f[2]!, 400);
     if (!body) continue;
-    if (tag === 'note') notes.push(body);
-    else findings.push({ severity: SEVERITIES.find(s => s.toLowerCase() === tag)!, text: body });
+    if (rawTag === 'note') notes.push(body);
+    else {
+      const normalizedTag = rawTag === 'blocking' ? 'important' : rawTag;
+      findings.push({ severity: SEVERITIES.find(s => s.toLowerCase() === normalizedTag)!, text: body });
+    }
   }
   let verdict = m[1]!.toLowerCase() as ReviewVerdict;
   // The label must match what the owner sees: "fix" with no findings is not a list of things to fix.

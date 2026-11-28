@@ -81,3 +81,51 @@ test('unsubscribe during reconnect then subscribe establishes a fresh live liste
     assert.equal(wakes, 1);
   } finally { stop?.(); replacement.mock.restore(); }
 });
+
+test('event wake-up filters by subscribed scope, keeps tenant-only fallback, and reports isConnected + 30s connect timeout', { timeout: 2000 }, async () => {
+  const clients: FakeClient[] = [];
+  const clientOpts: any[] = [];
+  class FakeClient extends EventEmitter {
+    ended = false;
+    constructor(opts: any) { super(); clientOpts.push(opts); clients.push(this); }
+    async connect() {}
+    async query(sql: string) { assert.equal(sql, 'LISTEN swarmaa_events'); }
+    async end() { this.ended = true; this.emit('end'); }
+  }
+  const replacement = mock.method(pg, 'Client', function (opts: any) { return new FakeClient(opts); } as any);
+  let stopA: (() => void) | undefined, stopB: (() => void) | undefined, stopAll: (() => void) | undefined;
+  try {
+    const hub = eventWakeup({ options: {} } as Pool);
+    assert.equal(hub.isConnected(), false);
+    let a = 0, b = 0, all = 0;
+    [stopA, stopB, stopAll] = await Promise.all([
+      hub.subscribe(() => a++, 'tenant-1', ['project:a']),
+      hub.subscribe(() => b++, 'tenant-1', ['project:b']),
+      hub.subscribe(() => all++, 'tenant-1', null),
+    ]);
+    assert.equal(clientOpts[0]?.connectionTimeoutMillis, 30_000);
+    assert.equal(hub.isConnected(), true);
+    a = b = all = 0;
+
+    // Scoped notification wakes only matching scope and wildcard
+    clients[0]!.emit('notification', { channel: 'swarmaa_events', payload: 'tenant-1\tproject:a' });
+    assert.equal(a, 1);
+    assert.equal(b, 0);
+    assert.equal(all, 1);
+
+    // Tenant-only notification (no tab) falls back to waking every subscriber of that tenant
+    clients[0]!.emit('notification', { channel: 'swarmaa_events', payload: 'tenant-1' });
+    assert.equal(a, 2);
+    assert.equal(b, 1);
+    assert.equal(all, 2);
+
+    // Other tenant wakes nobody
+    clients[0]!.emit('notification', { channel: 'swarmaa_events', payload: 'tenant-2\tproject:a' });
+    assert.equal(a, 2);
+    assert.equal(b, 1);
+    assert.equal(all, 2);
+
+    stopA(); stopB(); stopAll();
+    assert.equal(hub.isConnected(), false);
+  } finally { stopA?.(); stopB?.(); stopAll?.(); replacement.mock.restore(); }
+});

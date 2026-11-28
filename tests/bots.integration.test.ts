@@ -1324,6 +1324,8 @@ describe('bots core service (Brief B1)', { skip: !connectionString, concurrency:
     assert.equal(schedTask.required_capability.endsWith('.read'), true);
     assert.equal(schedTask.permission_envelope.local_patch, false);
     assert.equal(schedTask.permission_envelope.runner?.router, true);
+    // Cancel the scheduled task so the defense-in-depth claim below picks up leadTurn4 instead.
+    await call(user, 'task_cancel', { task_id: schedTask.id, expected_version: schedTask.version });
 
     // 6. swarm_start assigning a patch step to the router lead -> 400 router_lead_cannot_edit
     await assert.rejects(
@@ -1406,13 +1408,21 @@ describe('bots core service (Brief B1)', { skip: !connectionString, concurrency:
     const queued = (await pool.query("SELECT required_capability, context_versions FROM tasks WHERE thread_id=$1 AND status='queued'", [retire.thread.id])).rows;
     assert.equal(queued.length, 1);
     assert.equal(queued[0].required_capability, 'antigravity.read');
-    assert.equal(queued[0].context_versions.dispatched_from.thread_id, assistant.thread.id);
+    assert.ok(Array.isArray(queued[0].context_versions.dispatched_from));
+    assert.equal(queued[0].context_versions.dispatched_from[0].thread_id, assistant.thread.id);
+    assert.ok(queued[0].context_versions.dispatched_from[0].dispatch_group_id);
 
     await turn('', 'project:b', ['antigravity.read'], 'Audit: 3 findings');
     const back = (await bodies(assistant.thread.id)).at(-1)!;
     assert.equal(back.body, '**Retire:** Audit: 3 findings');
     assert.equal(back.author.kind, 'agent');
-    // The copied reply is an agent post, so the coordinator does not answer itself in a loop.
+    // Dispatch group reaches total=1 -> queues ONE read-only batched synthesis turn on the coordinator (which cannot loop).
+    const synthTasks = (await pool.query("SELECT permission_envelope, context_versions FROM tasks WHERE thread_id=$1 AND status='queued'", [assistant.thread.id])).rows;
+    assert.equal(synthTasks.length, 1);
+    assert.equal(synthTasks[0].permission_envelope.local_patch, false);
+    assert.equal(synthTasks[0].permission_envelope.runner.summary, true);
+    assert.equal(synthTasks[0].context_versions.summary, true);
+    await turn('', 'project:a', ['codex.read'], 'Summary: Retire found 3 items.');
     assert.equal((await pool.query("SELECT 1 FROM tasks WHERE thread_id=$1 AND status='queued'", [assistant.thread.id])).rowCount, 0);
   });
 });

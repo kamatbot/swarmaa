@@ -233,7 +233,7 @@ Task completion means a worker submitted an outcome. The core does not independe
 }
 ```
 
-Required: `scope`, `kind`, `objective`, `required_capability`, `idempotency_key`. Optional: `resource_key`, `constraints`, `acceptance_criteria`, `context_refs`, `max_attempts`, `exclude_providers`. `exclude_providers` (up to 8 provider names, `auto.read`/`auto.patch` only) keeps those providers from ever claiming the task, whatever their headroom; it is part of the idempotent request, and a list that leaves no enabled provider for the kind is rejected with `no_provider`. Tasks whose `resource_key` starts with `peer-review:` or `handoff:` notify only their watching sessions, not every session of the submitter. Objective is at most 16,000 characters and 32 KiB UTF-8. Constraints/criteria each allow 30 strings of 1,000 characters. Context refs allow 32 UUIDs, all in the same tenant/scope and unretracted; their current versions are captured. Capability is at most 128 characters; idempotency key 200; resource key 240. Attempts default to 3, permitted range 1–10. New submissions and terminal-task continuations cannot exceed 1,000 queued/running/blocked tasks in one scope.
+Required: `scope`, `kind`, `objective`, `required_capability`, `idempotency_key`. Optional: `resource_key`, `constraints`, `acceptance_criteria`, `context_refs`, `max_attempts`, `exclude_providers`, `watch_session`. `exclude_providers` (up to 8 provider names, `auto.read`/`auto.patch` only) keeps those providers from ever claiming the task, whatever their headroom; it is part of the idempotent request, and a list that leaves no enabled provider for the kind is rejected with `no_provider`. `watch_session` (same session key format as `task_watch`, e.g. `claude:<id>`, `codex:<id>`, `agy:<id>`, `wrap:<harness>:<uuid>`) atomically binds the submitting session as a watcher inside the same transaction as submission (requires `events:read`), eliminating the submit-to-watch race and saving one HTTP round-trip. Tasks whose `resource_key` starts with `peer-review:` or `handoff:` notify only their watching sessions, not every session of the submitter. Objective is at most 16,000 characters and 32 KiB UTF-8. Constraints/criteria each allow 30 strings of 1,000 characters. Context refs allow 32 UUIDs, all in the same tenant/scope and unretracted; their current versions are captured. Capability is at most 128 characters; idempotency key 200; resource key 240. Attempts default to 3, permitted range 1–10. New submissions and terminal-task continuations cannot exceed 1,000 queued/running/blocked tasks in one scope.
 
 Patch work must include a stable resource key, for example `repo:demo-main-worktree`. It requests only local patch work. This API does not accept caller-defined permission envelopes or deploy/publish/payment/message task types. Worker configuration must still authorize the local project and adapter mode.
 
@@ -274,12 +274,12 @@ Result:
 
 ### `task_claim`
 
-Arguments: either `{scope, capabilities: string[], kinds?, lease_seconds?}` or `{projects: [{scope, capabilities: string[], kinds?}], lease_seconds?}`. Give exactly one form; `projects` contains 1–64 entries, tried in order until one task is claimed. All entries are validated before any claim; each visited scope keeps its own transaction and expired-lease sweep. Capabilities and patch opt-in apply only to their entry. Bridges split longer project lists into chunks of 64 and make one claim call per slot attempt per chunk. Identities can hold up to 512 scopes. At least one and at most 30 capability strings; kinds default to `['research','review']`. Patch requires both `kinds` opt-in and the provisioned `task:patch` permission. Leases default to 120 seconds, bounded 30–300 seconds.
+Arguments: either `{scope, capabilities: string[], kinds?, lease_seconds?, limit?}` or `{projects: [{scope, capabilities: string[], kinds?}], lease_seconds?, limit?}`. Give exactly one form; `projects` contains 1–64 entries, tried in order until tasks are claimed. Optional `limit` (integer `1..16`, default `1`) lets a bridge with multiple free slots claim up to `limit` eligible tasks in a single round-trip. All entries are validated before any claim; each visited scope keeps its own transaction and expired-lease sweep. Capabilities and patch opt-in apply only to their entry. Bridges split longer project lists into chunks of 64 and request up to their available slot count per claim call. Identities can hold up to 512 scopes. At least one and at most 30 capability strings; kinds default to `['research','review']`. Patch requires both `kinds` opt-in and the provisioned `task:patch` permission. Leases default to 120 seconds, bounded 30–300 seconds.
 
-If no eligible task exists: `{task: null}`. Otherwise:
+If no eligible task exists: `{task: null}` (and `tasks: []` when batch claiming). Otherwise:
 
 ```ts
-{ task: Task; lease_token: string; lease_generation: number }
+{ task: Task; lease_token: string; lease_generation: number; tasks?: Array<{ task: Task; lease_token: string; lease_generation: number }> }
 ```
 
 The token is random, returned only at claim, and stored only as a hash. Every mutation must use the authenticated claiming principal, token and generation. Never include lease tokens in memory, artifacts, event payloads or model prompts. Claiming another worker identity in arguments is not supported.
@@ -298,7 +298,7 @@ Arguments: `{task_id, lease_token, lease_generation, checkpoint: object}`. Check
 
 ### `task_finish`
 
-Arguments: `{task_id, lease_token, lease_generation, outcome, result: object, artifact_ids?}`. Outcome is `completed`, `failed` or `blocked`. Result JSON is at most 64 KiB, nesting depth 16; artifact IDs are at most 32 and must belong to this same task **and execution generation**.
+Arguments: `{task_id, lease_token, lease_generation, outcome, result: object, artifact_ids?, inline_artifacts?}`. Outcome is `completed`, `failed` or `blocked`. Result JSON is at most 64 KiB, nesting depth 16; `artifact_ids` are at most 32 and must belong to this same task **and execution generation**. Optional `inline_artifacts` (`Array<{ name: string; media_type: string; content: string }>`) atomically validates and stores bounded text artifacts inside the `task_finish` transaction (subject to the same filename, media-type, size, and per-task artifact limits as `artifact_put`, and requiring `artifact:write`), eliminating separate `artifact_put` round-trips before finishing a task.
 
 Result: `{task, replayed: boolean}`. A completed `turn` with a non-empty string `result.delegate.objective` posts its reply as usual and queues one follow-up turn for the same agent/thread through the existing pending-message path, in the same transaction. The objective is redacted and clipped to 500 characters. The follow-up envelope carries `runner.model` (the agent runner model, otherwise `DELEGATE_MODEL = "claude-opus-5-5"`) and `runner.delegated: true`. Delegated turns ignore further delegation requests. Pending human messages batch into this one follow-up; the service posts a system notice: "<agent> handed this to <model> for a fuller answer". Completion retries do not duplicate either the turn or notice.
 
@@ -435,7 +435,7 @@ Acceptance proves transport output, not that a model read it. `inbox_get` or `ta
 separate `read` signal. A lost explicit agent-read response stays read; automatic retries belong to the hook
 transport, where uncertain delivery is represented honestly.
 
-`swarm_status` includes `inbox: {counts, items}` for the caller's permitted receipts. Counts are `offered`,
+`swarm_status` includes `inbox: {counts, items}` for the caller's permitted receipts and `model_catalog` aggregated from live worker `usage_report` payloads (`default_model`, `turn_model`, and available `models[]` per provider). Counts are `offered`,
 `accepted`, `unconfirmed`, `read`, and `stuck`; items are at most 50 metadata records, stuck first. No inbox
 body appears in dashboard/Mac app status. Generic terminal-task sinks include only `inbox_receipts` counts for
 the subscriber's receipts for that task, never bodies, session IDs, or per-item details. Neither surface grants
@@ -473,7 +473,7 @@ Persistent agents, conversation threads, turn execution, read cursors and real-t
   - `role` (string, 1-80 chars)
   - `instructions` (string, 1-8,192 chars)
   - `scope` (valid scope string, e.g. `project:demo`)
-  - `runner` (object: `{mode: 'auto'}` or `{provider: 'claude'|'codex'|'antigravity'|'grok', model?: string, effort?: string}`)
+  - `runner` (object: `{mode: 'auto'}` or `{provider: 'claude'|'codex'|'antigravity', model?: string, effort?: string}`)
   - `edits` (boolean): whether turn tasks allow patch execution
   - `avatar` (optional string, 1-64 chars)
   - `idempotency_key` (string, 1-128 chars)
@@ -509,6 +509,7 @@ Persistent agents, conversation threads, turn execution, read cursors and real-t
   - `body` (string, up to 16,384 UTF-8 bytes, run through secret redaction; may be empty with photos)
   - `idempotency_key` (string, 1-200 chars)
   - `reply_to?` (message UUID)
+  - `runner?` (object: `{ mode?: 'auto'; provider?: 'claude'|'codex'|'antigravity'; model?: string; effort?: string }`): optional per-message runner override for the queued turn without changing the agent's or bot's saved default runner.
   - `attachments?` (up to two `{name, media_type: "image/jpeg", data_base64}` objects). Each JPEG must be canonical base64, at most 160 KiB decoded and at most 2048 pixels per side. Native apps normalize orientation, strip source metadata and resize to at most 1600 pixels before sending. The existing 512 KiB HTTP request limit still applies.
 - **Output:** `{ message }`. Inserts the message with the next sequential `seq` in the thread under an advisory lock. Emits a `message.created` event.
   - When posted by a human caller to an `agent_main` thread, automatically queues a `turn` task for the agent.
@@ -690,11 +691,12 @@ Agent turns do not use a separate MCP server in worker CLIs. Instead:
   ```
   ````
 - The actions array supports up to 10 actions:
-  - `handoff`: `{ type: 'handoff', to_agent: UUID, body: string, swarm_step_id?: UUID }`
+  - `handoff`: `{ type: 'handoff', to_agent: UUID, body: string, swarm_step_id?: UUID, base_ref?: string, branch?: string, artifact_ids?: UUID[], reply_to_thread?: boolean }`. Optional `base_ref` and `branch` carry git ref/branch provenance directly into the receiving agent's turn; `artifact_ids` forwards scoped artifact UUIDs as structured evidence; `reply_to_thread` routes the delegated agent's completion back to the originating thread.
   - `swarm_start`: `{ type: 'swarm_start', title: string, goal: string, steps: StepInput[] }`
   - `swarm_update`: `{ type: 'swarm_update', swarm_id: UUID, ops: SwarmOp[] }`
   - `question_ask`: `{ type: 'question_ask', prompt: string, options: string[], multi?: boolean, free_text?: boolean, swarm_step_id?: UUID, expires_in?: number, action?: { kind: 'command'|'publish'|'send'|'deploy'|'purchase'|'other', summary: string ≤ 200, detail: string ≤ 2000, where?: string ≤ 300 } }`. A question with `action` is an approval: empty `options` become `["Approve", "Deny"]`; the action is redacted and returned as `action` (or null) in every question view
   - `channel_post`: `{ type: 'channel_post', channel_id: UUID, body: string }`
+- **Fan-in synthesis (`dispatch_groups`):** When one turn fans out multiple `handoff` actions with `reply_to_thread` enabled, the service groups the delegated tasks under a `dispatch_group`. As each delegated turn finishes, its outcome is recorded against the group; once every sibling handoff completes, the service queues a single synthesis turn for the originating agent/lead with all sibling results rather than waking it separately on each intermediate reply.
 - **Turn grant enforcement:** In `task_finish`, the block is parsed, stripped from the message text, and validated against the agent's turn grant (only member channels, only same scope, only owned swarms or assigned steps). Valid actions apply atomically; invalid actions post a explanatory `notice` message.
 
 ### Live SSE stream: `GET /api/stream`
@@ -909,7 +911,7 @@ Financial tools additionally require the explicit host principal allowlist and R
 
 - **`routing_get`** (`memory:read`): `{}` → `{ policy, is_default, default_policy, updated_at }`. Returns the tenant's provider priority order, 5-hour/weekly quota ceilings, allowed task kinds per provider, and fallback rule (`most_headroom` or `none`).
 - **`routing_set`** (`routing:manage`): `{ policy: { providers: [{ provider: 'claude'|'codex'|'antigravity', enabled, max_five_hour_pct (1..100), max_weekly_pct (1..100), kinds: ('review'|'research'|'patch')[] }] (length 3, each provider once), fallback: 'most_headroom'|'none' } }` → `{ policy, updated_at }`. Replaces the tenant routing policy and writes an audit log entry.
-- **`usage_report`** (`task:claim`): `{ reports: [{ provider, ok, windows: [{ name, used_percent, resets_at }], fetched_at, plan?, error? }] (0..10), slots? (0..16) }` → `{ ok: true, recorded }`. Called periodically by worker bridges to publish local provider quota windows and live worker slot capacity (0 while draining) for `swarm_status` and quota-aware routing.
+- **`usage_report`** (`task:claim`): `{ reports: [{ provider, ok, windows: [{ name, used_percent, resets_at }], fetched_at, plan?, error?, default_model?, turn_model?, models? }] (0..10), slots? (0..16) }` → `{ ok: true, recorded }`. Called periodically by worker bridges to publish local provider quota windows, live worker slot capacity (0 while draining), and discovered model metadata (`default_model`, `turn_model`, `models[]`) surfaced in `swarm_status.model_catalog` and used by quota-aware routing.
 
 ### Device push notifications (migrations 029, 042)
 

@@ -130,9 +130,14 @@ starting a persistent worker.
 The default read capabilities are `claude.read`, `codex.read`, `antigravity.read`, and quota-routed
 `auto.read`; opt-in edit capabilities add `claude.patch`, `codex.patch`, `antigravity.patch`, and
 `auto.patch`. `research` and `review` tasks are eligible by default (Antigravity takes `review` and
-in-project `patch`, never `research`). Each bridge process runs up to `max_concurrent` tasks (default
-10, bounded 1–16) across configured projects in parallel. Multiple machines can compete for the same
-queue using different worker identities.
+in-project `patch`, never `research`). Default Claude worker setup omits a hardcoded `model` alias so
+the Claude CLI selects its own default model without triggering false `served.substituted: true` flags.
+Each bridge process runs up to `max_concurrent` tasks (default 10, bounded 1–16) across configured
+projects in parallel, claiming up to its free slot count per request via `task_claim.limit` (up to 16),
+reporting provider quota windows and model metadata (`default_model`, `turn_model`, `models[]`) to
+`swarm_status.model_catalog` via `usage_report`, and submitting bounded artifacts atomically inside
+`task_finish.inline_artifacts`. Multiple machines can compete for the same queue using different worker
+identities.
 
 The bridge claims a 120-second database lease and renews it every 20 seconds by default. It
 saves an initial checkpoint and bounded partial output on renewals. Completion stores a
@@ -173,7 +178,8 @@ All three providers run inside the macOS Seatbelt sandbox (`src/bridge/sandbox.t
 
 - **Claude Code:** Runs headless with `--print` and `--permission-mode bypassPermissions`. Non-edit chat turns use `--setting-sources project --strict-mcp-config` for fast replies; patch and full task runs keep the project setup inside the Seatbelt profile. Native transcripts are persisted back to `~/.claude/projects/<project slug>/` after patch runs so the user can resume locally with `claude --resume <id>`.
 - **Codex CLI:** Runs headless via `codex --search exec --json` (and `exec resume <id>` when resuming a checkpointed `native_session`) inside the outer macOS Seatbelt sandbox (Codex's own sandbox cannot nest inside Seatbelt). Supports both read tasks and opt-in worktree patch tasks.
-- **Antigravity (`agy`):** Uses the verified ACP stdio protocol (`agy acp --stdio` in `src/bridge/acp.ts`), passing prompts over JSON-RPC stdin rather than argv, streaming activity/usage/model metadata, and never probing private endpoints. Requires `sandbox: true` in bridge config so Seatbelt enforces workspace boundaries and hides `~/.gemini/config/mcp_config.json` and unrelated conversations. Optional `auth_mode` (`oauth`, `api_key`, `enterprise`, `agent_platform`) is configurable per agent. Antigravity serves review and in-project edits (`antigravity.read` / `antigravity.patch`), never research, and does not accept photo inputs (`photo_provider_unsupported`).
+- **Antigravity (`agy`):** Uses the verified ACP stdio protocol (`agy acp --stdio` in `src/bridge/acp.ts`), passing prompts over JSON-RPC stdin rather than argv, streaming activity/usage/model metadata, and never probing private endpoints. All person-started Antigravity work runs over `agy acp --stdio` inside mandatory Seatbelt (`sandbox: true`), which enforces workspace boundaries and hides `~/.gemini/config/mcp_config.json` and unrelated conversations. Optional `auth_mode` (`oauth`, `api_key`, `enterprise`, `agent_platform`) is configurable per agent. Antigravity serves review and in-project edits (`antigravity.read` / `antigravity.patch`), never research, and does not accept photo inputs (`photo_provider_unsupported`).
+- **Warm resident provider sessions:** Bridges may keep warm resident provider sessions alive across consecutive turns to cut CLI cold-start latency while preserving Seatbelt isolation, per-task lease fencing, and teardown on idle timeout, cancellation, or error. For Antigravity, warm resident sessions stay on the same `agy acp --stdio` JSON-RPC transport.
 
 **Patch mode contract:** Read tasks run as `<provider>.read` or `auto.read`; edit tasks run as `<provider>.patch` or `auto.patch`. Edits are an explicit per-install opt-in (setup's "Allow edits", default read-only) that provisions all three requirements together (and reconciles them on re-run, revoking `task:patch` when switching back to read-only):
 

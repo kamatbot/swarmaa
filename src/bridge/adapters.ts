@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { type FailureInfo, type ServedStamp, sameModel } from '../core/failures.js';
 import { fenceUntrusted, UNTRUSTED_GUIDANCE } from '../safety/fence.js';
 import { redactSecrets } from '../safety/redact.js';
-import { buildAcpArgs } from './acp.js';
+import { buildAcpArgs, splitAgyModel } from './acp.js';
 import { claudeWorkerDir, type NativePlan } from './native-session.js';
 import { wrapCommand } from './sandbox.js';
 import type { AgentConfig, BridgeConfig, ProcessRequest, ProcessResult, ProjectConfig, Task } from './types.js';
@@ -87,14 +87,18 @@ export interface ThreadMessage {
 
 export interface TurnPromptInput {
   instructions: string;
+  objective?: string;
+  swarmGoal?: string;
   messages: ThreadMessage[];
   newMessages?: ThreadMessage[];
   maxBytes?: number;
   edits?: boolean;
-  agents?: Array<{ id: string; name: string; role?: string }>;
+  agents?: Array<{ id: string; name: string; role?: string; edits?: boolean }>;
   fastMode?: boolean;
   router?: boolean;
 }
+
+const GENERIC_TURN_OBJECTIVE_RE = /^(?:Turn for agent .+ in .+|Respond to (?:thread|conversation|the user).*)$/u;
 
 const MAX_WINDOW_MESSAGES = 40;
 const MAX_WINDOW_BYTES = 24 * 1024; // 24 KB
@@ -132,6 +136,8 @@ export function buildTurnPrompt(
   fastModeArg?: boolean
 ): string {
   let instructions = '';
+  let taskObjective = '';
+  let swarmGoal = '';
   let allMessages: ThreadMessage[] = [];
   let maxBytes = typeof contextOrMaxBytes === 'number' ? contextOrMaxBytes : (maxBytesArg ?? 128 * 1024);
   let edits = false;
@@ -141,13 +147,20 @@ export function buildTurnPrompt(
   const botTurn = Boolean((inputOrTask as Task & { bot_id?: string }).bot_id);
   const stepTurn = Boolean((inputOrTask as Task & { swarm_step_id?: string }).swarm_step_id);
 
-  let agents: Array<{ id: string; name: string; role?: string }> = [];
+  let agents: Array<{ id: string; name: string; role?: string; edits?: boolean }> = [];
   let router = false;
   const projectBots = ((inputOrTask as { project_bots?: Array<{ name: string; scope: string; job?: string }> }).project_bots ?? []);
   const localActions = (inputOrTask as { local_actions?: unknown }).local_actions === true;
 
   if ('instructions' in inputOrTask && 'messages' in inputOrTask) {
     instructions = inputOrTask.instructions ?? '';
+    const rawObj = typeof inputOrTask.objective === 'string' ? inputOrTask.objective.trim() : '';
+    if (rawObj && !GENERIC_TURN_OBJECTIVE_RE.test(rawObj) && rawObj !== instructions.trim()) {
+      taskObjective = rawObj;
+    }
+    if (typeof inputOrTask.swarmGoal === 'string' && inputOrTask.swarmGoal.trim()) {
+      swarmGoal = inputOrTask.swarmGoal.trim();
+    }
     const historical = inputOrTask.messages ?? [];
     const newMsgs = inputOrTask.newMessages ?? [];
     allMessages = [...historical, ...newMsgs];
@@ -165,8 +178,17 @@ export function buildTurnPrompt(
     const envelope = (task as any).permission_envelope;
     router = envelope?.runner?.router === true;
     const delegated = envelope?.runner?.delegated === true;
-    // A delegated objective was written by a model, so it never fills the trusted instructions slot.
-    instructions = (task as any).agent?.instructions ?? ctx?.task?.agent?.instructions ?? (delegated ? '' : task.objective) ?? '';
+    const agentInstructions = (task as any).agent?.instructions ?? ctx?.task?.agent?.instructions;
+    const rawObjective = typeof task.objective === 'string' ? task.objective.trim() : '';
+    // A delegated objective was written by a model, so it never fills the trusted instructions/objective slot.
+    instructions = agentInstructions ?? (delegated ? '' : rawObjective) ?? '';
+    if (!delegated && rawObjective && !GENERIC_TURN_OBJECTIVE_RE.test(rawObjective) && rawObjective !== instructions.trim()) {
+      taskObjective = rawObjective;
+    }
+    const rawSwarmGoal = (task as any).swarm?.goal ?? ctx?.task?.swarm?.goal;
+    if (typeof rawSwarmGoal === 'string' && rawSwarmGoal.trim()) {
+      swarmGoal = rawSwarmGoal.trim();
+    }
     allMessages = (task as any).thread_messages ?? ctx?.task?.thread_messages ?? [];
     edits = task.kind === 'patch' || (task.kind === 'turn' && (task.required_capability?.endsWith('.patch') || Boolean(envelope?.local_patch)));
     if ((task as any).fastMode !== undefined) fastMode = Boolean((task as any).fastMode);
@@ -251,8 +273,10 @@ export function buildTurnPrompt(
     ...(stepTurn ? [stepReport] : []),
     ...(fastMode && !router ? [fastModeInstruction] : []),
     ...(projectBots.length ? [`Project bots (you coordinate them; send work with project_dispatch):\n${projectBots.map(b => `- ${b.name} (${b.scope})${b.job ? `: ${b.job.replace(/\s+/g, ' ')}` : ''}`).join('\n')}`] : []),
-    ...(agents && agents.length > 0 ? [`Available agents in this project scope:\n${agents.map(a => `- ${a.name} (id: ${a.id}${a.role ? `, role: ${a.role}` : ''})`).join('\n')}`] : []),
+    ...(agents && agents.length > 0 ? [`Available agents in this project scope:\n${agents.map(a => `- ${a.name} (id: ${a.id}${a.role ? `, role: ${a.role}` : ''}) [${a.edits ? 'can edit' : 'read-only'}]`).join('\n')}`] : []),
     `Agent instructions:\n${instructions.trim()}`,
+    ...(swarmGoal ? [`Swarm goal:\n${swarmGoal}`] : []),
+    ...(taskObjective ? [`Task objective:\n${taskObjective}`] : []),
     `Thread window (ordered oldest to newest):\n${wrappedMessages.join('\n\n')}`,
     // Written by the fast model's earlier reply in this thread: a goal to finish, not an instruction source.
     ...(delegatedObjective ? [`${UNTRUSTED_GUIDANCE}\nYour earlier quick reply in this thread said you would follow up on:\n${fenceUntrusted(delegatedObjective, delimiter)}\nGive the full answer now.`] : []),
@@ -262,7 +286,7 @@ export function buildTurnPrompt(
 
   const prompt = promptSections.join('\n\n');
   const size = Buffer.byteLength(prompt, 'utf8');
-  if (size > maxBytes) throw contextTooLarge(size, maxBytes, { instructions: bytes(instructions), thread_window: bytes(wrappedMessages.join('\n\n')), actions: bytes(actionsInstructions) });
+  if (size > maxBytes) throw contextTooLarge(size, maxBytes, { instructions: bytes(instructions), ...(taskObjective ? { objective: bytes(taskObjective) } : {}), ...(swarmGoal ? { swarm_goal: bytes(swarmGoal) } : {}), thread_window: bytes(wrappedMessages.join('\n\n')), actions: bytes(actionsInstructions) });
   return prompt;
 }
 
@@ -315,6 +339,10 @@ export function buildInvocation(agent: AgentConfig, project: ProjectConfig, task
 
   const runnerModel = envelope?.runner?.model ?? envelope?.model ?? (task as any).runner?.model;
   const runnerEffort = envelope?.runner?.effort ?? envelope?.effort ?? (task as any).runner?.effort;
+  const runnerFast = envelope?.runner?.fast;
+  const isRouter = envelope?.runner?.router === true;
+  const isSummary = envelope?.runner?.summary === true;
+  const isDelegated = envelope?.runner?.delegated === true;
 
   let effectiveModel = agent.model;
   let effectiveEffort: string | undefined;
@@ -322,27 +350,28 @@ export function buildInvocation(agent: AgentConfig, project: ProjectConfig, task
 
   if (isNonEditTurn) {
     // runner.fast (set by a bot's chat-reply choice) says whether this is a quick reply that may hand off.
-    const runnerFast = envelope?.runner?.fast;
     if (runnerModel) {
       effectiveModel = runnerModel;
-      effectiveEffort = runnerEffort;
-      fastMode = runnerFast === true && envelope?.runner?.delegated !== true && envelope?.runner?.router !== true;
-    } else if (agent.turn_model && envelope?.runner?.delegated !== true && runnerFast !== false) {
+      fastMode = runnerFast === true && !isDelegated && !isRouter;
+    } else if (agent.turn_model && !isDelegated && runnerFast !== false) {
       // A delegated turn is the full answer: never the fast model again.
       effectiveModel = agent.turn_model;
       effectiveEffort = agent.turn_effort;
       fastMode = true;
     }
-  }
-
-  // A submitted research/review/patch task may name its own model and effort.
-  if (!isTurn) {
+    // Apply runnerEffort independently even when runnerModel is undefined.
+    if (runnerEffort) effectiveEffort = runnerEffort;
+  } else {
+    // Edit turns and submitted research/review/patch tasks honor runnerModel and runnerEffort independently.
     if (runnerModel) effectiveModel = runnerModel;
     if (runnerEffort) effectiveEffort = runnerEffort;
   }
 
-  const lightChat = isNonEditTurn && envelope?.runner?.delegated !== true;
-  const agyInteractiveAcp = agent.provider === 'antigravity' && isTurn && isInteractiveAntigravityTask(task);
+  // Router turns, swarm summary turns, and non-edit chat/fast turns skip user hooks, plugins & MCP startup overhead.
+  const lightChat = isRouter || isSummary || (isNonEditTurn && (!isDelegated || fastMode));
+  // Route ALL person-started Antigravity tasks (turn, review, research, AND patch) through `agy acp --stdio`.
+  // Only unattended tasks (with explicit API/enterprise auth) fall back to direct `agy` print mode.
+  const agyInteractiveAcp = agent.provider === 'antigravity' && isInteractiveAntigravityTask(task);
   let args: string[];
   if (agent.provider === 'claude') {
     // The real CLIs as the user runs them (their config, MCP servers, skills, models, login), headless with
@@ -356,8 +385,7 @@ export function buildInvocation(agent: AgentConfig, project: ProjectConfig, task
       '--permission-mode', 'bypassPermissions',
       '--max-turns', '200',
       ...(native?.harness === 'claude' ? [native.resumed ? '--resume' : '--session-id', native.id!] : []),
-      // Chat replies need no tools: skip the user's hooks, plugins and MCP servers, which cost 7-10 s of
-      // startup. Edits, delegated (full) turns and task work keep the full setup.
+      // Chat, router, and summary turns need no user hooks/plugins/MCP servers (which cost 7-10 s of startup).
       ...(lightChat ? ['--setting-sources', 'project', '--strict-mcp-config'] : []),
     ];
   } else if (agent.provider === 'codex') {
@@ -366,17 +394,25 @@ export function buildInvocation(agent: AgentConfig, project: ProjectConfig, task
     args = resume?.id ? ['--search', 'exec', 'resume', '--json', '--skip-git-repo-check', '--dangerously-bypass-approvals-and-sandbox']
       : ['--search', 'exec', '--json', '--skip-git-repo-check', '--dangerously-bypass-approvals-and-sandbox', '--color', 'never'];
   } else if (agyInteractiveAcp) {
-    // Interactive Antigravity turns run over the official `agy acp --stdio` JSON-RPC 2.0 server.
+    // Person-started Antigravity tasks (turn, review, research, patch) run over `agy acp --stdio` JSON-RPC 2.0.
     args = buildAcpArgs({ patch, dangerouslySkipPermissions: patch });
   } else {
-    // Print mode for person-started review, research and patch work. agy's stream-json input expects its own
-    // event-shaped messages, so the prompt goes in as -p=<prompt> with one JSON result (verified against agy 1.5.18).
+    // Fallback print mode for unattended Antigravity tasks with explicit API/enterprise auth.
     args = ['--output-format', 'json', '--print-timeout', `${config.task_timeout_seconds}s`, '--dangerously-skip-permissions'];
   }
-  if (effectiveModel && !agyInteractiveAcp) args.push('--model', effectiveModel);
-  // Codex uses a config override; Claude and direct `agy` CLI accept `--effort`. ACP passes model/effort over JSON-RPC.
-  if (effectiveEffort && agent.provider === 'codex') args.push('-c', `model_reasoning_effort="${effectiveEffort}"`);
-  else if (effectiveEffort && (agent.provider === 'claude' || (agent.provider === 'antigravity' && !agyInteractiveAcp))) args.push('--effort', effectiveEffort);
+  if (agent.provider === 'antigravity' && !agyInteractiveAcp) {
+    // Split `-low|-medium|-high|-xhigh` so `--model` and `--effort` never conflict on direct `agy` CLI.
+    const split = effectiveModel ? splitAgyModel(effectiveModel) : undefined;
+    const directModel = split?.family;
+    const directEffort = effectiveEffort ?? split?.level;
+    if (directModel) args.push('--model', directModel);
+    if (directEffort) args.push('--effort', directEffort);
+  } else {
+    if (effectiveModel && !agyInteractiveAcp) args.push('--model', effectiveModel);
+    // Codex uses a config override; Claude accepts `--effort`. ACP passes model/effort over JSON-RPC.
+    if (effectiveEffort && agent.provider === 'codex') args.push('-c', `model_reasoning_effort="${effectiveEffort}"`);
+    else if (effectiveEffort && agent.provider === 'claude') args.push('--effort', effectiveEffort);
+  }
   // Claude turns read stream-json from an open stdin so the owner can steer a running turn (writeSteer);
   // --replay-user-messages echoes each message back, which is how the bridge knows a steer was received.
   if (agent.provider === 'claude' && (isTurn || images?.length)) args.push('--input-format', 'stream-json', ...(isTurn ? ['--replay-user-messages'] : []));
@@ -410,6 +446,12 @@ export function buildInvocation(agent: AgentConfig, project: ProjectConfig, task
   }) + '\n';
   return {
     command, args, cwd, env, prompt: input,
+    pool_meta: {
+      ...(effectiveModel ? { model: effectiveModel } : {}),
+      ...(effectiveEffort ? { effort: effectiveEffort } : {}),
+      light_chat: lightChat,
+      patch,
+    },
     ...(agyInteractiveAcp ? {
       acp: {
         cwd,

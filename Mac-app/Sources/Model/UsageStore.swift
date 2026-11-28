@@ -215,6 +215,9 @@ final class UsageStore: ObservableObject {
     private var lastGood: [String: (snapshot: ProviderSnapshot, fetchedAt: Date)] = [:]
     private var timer: Timer?
     private var localTimer: Timer?
+    private var localTimerInterval: TimeInterval = 0
+    /// Backoff cadence for local runtime probing when no local runtime (Ollama/LMStudio/oMLX) is running.
+    static let idleLocalRefreshInterval: TimeInterval = 12
     /// Menu-bar-only: one pass every `lightweightInterval`, local runtimes
     /// included, and nothing in between. Switched on while the app is off.
     var isLightweight = false {
@@ -318,8 +321,11 @@ final class UsageStore: ObservableObject {
 
     private func updateUsageSnapshots() {
         let cells = ProviderOrder.cells(from: snapshots, keeping: usageSnapshots)
-        usageSnapshots = ProviderOrder.arrange(cells, by: order, id: \.id)
+        let next = ProviderOrder.arrange(cells, by: order, id: \.id)
             .filter { !disconnected.contains($0.id) }
+        if next != usageSnapshots {
+            usageSnapshots = next
+        }
     }
 
     /// Model discovery does not need to re-read any cloud account's credential.
@@ -397,10 +403,15 @@ final class UsageStore: ObservableObject {
         }
     }
 
+    private var hasRunningLocalRuntime: Bool {
+        snapshots.contains { $0.kind == .localRuntime && $0.status == .ok }
+    }
+
     private func scheduleTimers() {
         timer?.invalidate()
         localTimer?.invalidate()
         localTimer = nil
+        localTimerInterval = 0
         let interval = isLightweight ? Self.lightweightInterval : refreshInterval
         let timer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.tick() }
@@ -408,13 +419,32 @@ final class UsageStore: ObservableObject {
         timer.tolerance = interval / 10
         RunLoop.main.add(timer, forMode: .common)
         self.timer = timer
-        // Lightweight, local runtimes ride the one tick instead of their own 1s timer.
+        // Lightweight, local runtimes ride the one tick instead of their own timer.
         guard !isLightweight else { return }
-        let localTimer = Timer(timeInterval: localRefreshInterval, repeats: true) { [weak self] _ in
+        scheduleLocalTimer(interval: effectiveLocalRefreshInterval)
+    }
+
+    private var effectiveLocalRefreshInterval: TimeInterval {
+        hasRunningLocalRuntime ? localRefreshInterval : max(localRefreshInterval, Self.idleLocalRefreshInterval)
+    }
+
+    private func scheduleLocalTimer(interval: TimeInterval) {
+        localTimer?.invalidate()
+        localTimerInterval = interval
+        let localTimer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.refreshLocalRuntimes() }
         }
+        localTimer.tolerance = interval / 5
         RunLoop.main.add(localTimer, forMode: .common)
         self.localTimer = localTimer
+    }
+
+    private func updateLocalTimerIfNeeded() {
+        guard !isLightweight, timer != nil else { return }
+        let desired = effectiveLocalRefreshInterval
+        if desired != localTimerInterval {
+            scheduleLocalTimer(interval: desired)
+        }
     }
 
     /// Decides whether this tick is worth a request at all.
@@ -716,7 +746,13 @@ final class UsageStore: ObservableObject {
         guard !disconnected.contains(snapshot.id) else { return }
         var current = Dictionary(uniqueKeysWithValues: snapshots.map { ($0.id, $0) })
         current[snapshot.id] = named(snapshot).blockingSpentWeek()
-        snapshots = orderedProviders.compactMap { disconnected.contains($0.id) ? nil : current[$0.id] }
+        let next = orderedProviders.compactMap { disconnected.contains($0.id) ? nil : current[$0.id] }
+        if next != snapshots {
+            snapshots = next
+        }
+        if snapshot.kind == .localRuntime {
+            updateLocalTimerIfNeeded()
+        }
     }
 
     /// Sign out of one provider: discard anything of its account that this app

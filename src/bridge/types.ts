@@ -56,7 +56,18 @@ export interface Task {
   checkpoint: Record<string, unknown> | null;
   context_refs: string[];
   instructions?: unknown[];
+  /** Optional provider session id populated from agent_provider_sessions on turn claim. */
+  native_session_id?: string | null;
+  /** Optional swarm metadata populated on swarm step/summary turns. */
+  swarm?: { id?: string; title?: string; goal?: string } | null;
   version: number;
+}
+export interface ProviderModelInfo {
+  id: string;
+  label: string;
+  efforts?: string[];
+  fast?: boolean;
+  default?: boolean;
 }
 export interface Claim {
   task: Task | null;
@@ -64,6 +75,8 @@ export interface Claim {
   lease_generation?: number;
   /** Router decision for auto.* tasks: the provider to run (null = any allowed) and the providers the policy enables. */
   route?: { provider: string | null; allowed: string[] };
+  /** Present when task_claim is called with limit > 1 on a batch-capable service. */
+  claims?: Claim[];
 }
 export interface Lease {
   task_id: string;
@@ -100,6 +113,8 @@ export interface ProcessRequest {
   prompt?: string;
   /** When set, run this request over the official Agent Client Protocol (ACP) JSON-RPC 2.0 stdio transport. */
   acp?: AcpRequestConfig;
+  /** Pool key metadata computed by buildInvocation for warm resident provider processes; runners ignore it. */
+  pool_meta?: { model?: string; effort?: string; light_chat?: boolean; patch?: boolean };
   timeout_ms: number;
   max_output_bytes: number;
   signal?: AbortSignal;

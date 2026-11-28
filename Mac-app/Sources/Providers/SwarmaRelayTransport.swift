@@ -825,8 +825,14 @@ public final class SwarmaRelayTransport: @unchecked Sendable {
     /// Sends a request over the relay, turning it into a `req` frame and collecting
     /// `res`, `chunk` and `end` frames into Data and an `HTTPURLResponse`.
     public func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
-        try await ensureConnected()
         let sid = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
+        return try await send(request, sid: sid)
+    }
+
+    /// Sends a request over the relay with an explicit stream ID so the caller can cancel
+    /// just this request via `cancelStream(sid:)` without tearing down the shared WebSocket.
+    public func send(_ request: URLRequest, sid: String) async throws -> (Data, HTTPURLResponse) {
+        try await ensureConnected()
         let headers = filterHeaders(request)
         let body = extractBody(request)
         let path = extractPath(request)
@@ -848,10 +854,31 @@ public final class SwarmaRelayTransport: @unchecked Sendable {
                     let json = try frame.encode()
                     try await self.sendRaw(json)
                 } catch {
-                    // Whoever removes the pending send resumes it: a disconnect may already have.
+                    // Whoever removes the pending send resumes it: a disconnect or cancelStream may already have.
                     let pending = self.withLock { self.inFlightSend.removeValue(forKey: sid) }
                     pending?.continuation.resume(throwing: error)
                 }
+            }
+        }
+    }
+
+    /// Cancels a single in-flight request or stream by its stream ID without closing the shared
+    /// WebSocket or disrupting other concurrent requests / SSE streams.
+    public func cancelStream(sid: String) async {
+        let (send, stream, live) = withLock {
+            (inFlightSend.removeValue(forKey: sid),
+             inFlightStream.removeValue(forKey: sid),
+             inFlightLiveStream.removeValue(forKey: sid))
+        }
+        send?.continuation.resume(throwing: CancellationError())
+        stream?.finish(throwing: CancellationError())
+        if let live {
+            live.headersContinuation?.resume(throwing: CancellationError())
+            live.streamContinuation.finish(throwing: CancellationError())
+        }
+        if send != nil || stream != nil || live != nil {
+            if let json = try? RelayFrame.end(sid: sid, error: "cancelled").encode() {
+                try? await sendRaw(json)
             }
         }
     }

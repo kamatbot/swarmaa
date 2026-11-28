@@ -2,7 +2,9 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFileSync } from 'node:fs';
 import { BridgeWorker, cleanText } from '../src/bridge/worker.js';
+import { RemoteError } from '../src/bridge/client.js';
 import { parseBridgeConfig } from '../src/bridge/config.js';
+import { WarmProviderPool } from '../src/bridge/warm-pool.js';
 import {
   buildInvocation,
   buildTurnPrompt,
@@ -435,7 +437,7 @@ test('stream-json parsing yields partial_text and an unchanged final answer', as
   assert.equal(finishResult.answer, 'Chunk 1 Chunk 2');
 });
 
-test('fake stream wakes at most once per 200 ms under a flood of events', { timeout: 3000 }, async () => {
+test('fake stream wakes immediately when idle and coalesces mid-claim bursts over ~15 ms', { timeout: 3000 }, async () => {
   const cfg = baseConfig();
   cfg.poll_seconds = 10;
   cfg.usage_seconds = 0;
@@ -472,23 +474,23 @@ test('fake stream wakes at most once per 200 ms under a flood of events', { time
     await firstClaim.promise;
     await new Promise(r => setTimeout(r, 50));
 
-    // Flood with 5 events over 10 ms
+    const sentAt = performance.now();
+    // Flood with 5 events in one burst
     for (let i = 0; i < 5; i++) {
       streamController.enqueue(Buffer.from('event: task.submitted\ndata: {"scope":"project:demo"}\n\n'));
     }
 
-    // Wait 350 ms for any throttled wakes to finish
-    await new Promise(r => setTimeout(r, 350));
+    await new Promise(r => setTimeout(r, 120));
 
     // Claims:
     // 1st claim: initial claim
-    // 2nd claim: immediate wake from event 1
-    // 3rd claim: coalesced wake at ~200 ms
-    // No 4th or 5th claims within this window!
+    // 2nd claim: immediate (0 ms) wake from event 1
+    // 3rd claim: single coalesced wake (~15 ms) for events 2..5
     assert.ok(claimTimes.length >= 2 && claimTimes.length <= 3, `Expected 2 or 3 claims, got ${claimTimes.length}`);
+    assert.ok(claimTimes[1]! - sentAt < 50, `Idle wake should be immediate (<50 ms), was ${claimTimes[1]! - sentAt} ms`);
     if (claimTimes.length >= 3) {
       const interval = claimTimes[2]! - claimTimes[1]!;
-      assert.ok(interval >= 180, `Wake interval between consecutive stream claims must be >= 180 ms, was ${interval} ms`);
+      assert.ok(interval >= 10 && interval < 150, `Coalesced mid-claim wake should be ~15 ms, was ${interval} ms`);
     }
   } finally {
     worker.drain();
@@ -601,29 +603,32 @@ test('Claude streaming deltas are never duplicated when stderr is written or a l
   };
   const d1 = '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"Alpha"}}}\n';
   const d2 = '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":" Beta"}}}\n';
-  const worker = new BridgeWorker(cfg, client, () => {}, async request => {
+  const cfgHeartbeat = baseConfig();
+  cfgHeartbeat.heartbeat_seconds = 0.04;
+  const worker = new BridgeWorker(cfgHeartbeat, client, () => {}, async request => {
     // Chunk 1: stdout has d1, stderr adds 500 bytes (output_bytes > stdout_bytes)
     request.on_progress?.({ output_bytes: d1.length + 500, stdout_bytes: d1.length, stdout_tail: d1 });
     await new Promise(r => setTimeout(r, 10));
     // More stderr only (stdout_bytes unchanged, stdout_tail unchanged) -> must NOT duplicate "Alpha"
     request.on_progress?.({ output_bytes: d1.length + 1200, stdout_bytes: d1.length, stdout_tail: d1 });
     await new Promise(r => setTimeout(r, 10));
-    // Chunk 2: d2 arrives
+    // Chunk 2: d2 arrives; wait one short heartbeat so a running checkpoint captures the accumulated partial_text
     const total = d1 + d2;
     request.on_progress?.({ output_bytes: total.length + 1200, stdout_bytes: total.length, stdout_tail: total });
-    await new Promise(r => setTimeout(r, 10));
+    await new Promise(r => setTimeout(r, 60));
     return {
       exit_code: 0,
       signal: null,
       stdout: total + '{"type":"result","subtype":"success","result":"Alpha Beta"}\n',
       stderr: 'x'.repeat(1200),
-      duration_ms: 30,
+      duration_ms: 80,
       stop_reason: null
     };
   });
-  await worker.claimAndRun(cfg.projects, new AbortController().signal);
-  const lastPartial = checkpoints.filter(c => typeof c.partial_text === 'string').at(-1)?.partial_text;
-  assert.equal(lastPartial, 'Alpha Beta', 'stderr bytes must not cause duplicate deltas');
+  await worker.claimAndRun(cfgHeartbeat.projects, new AbortController().signal);
+  const partials = checkpoints.filter(c => typeof c.partial_text === 'string' && c.partial_text.length > 0).map(c => c.partial_text);
+  assert.ok(!partials.some(p => p.includes('AlphaAlpha')), 'stderr bytes must not cause duplicate deltas');
+  assert.equal(partials.at(-1), 'Alpha Beta', 'stderr bytes must not cause duplicate deltas');
 });
 
 test('SSE stream buffer cap at 1 MiB triggers reconnect without unbounded memory growth', { timeout: 3000 }, async () => {
@@ -722,4 +727,324 @@ test('inflight slot is released before slow recordSession finishes while drain s
     stop.abort();
     await runPromise;
   }
+});
+
+test('SSE required_capability filtering ignores mismatched providers and wakes on matching/auto capabilities', { timeout: 3000 }, async () => {
+  const cfg = parseBridgeConfig({
+    service_url: 'http://127.0.0.1:8080',
+    poll_seconds: 10,
+    usage_seconds: 0,
+    agents: [{ id: 'claude', provider: 'claude', binary: '/bin/claude', enable_patch: false, sandbox: false }],
+    projects: [{ scope: 'project:demo', root: '/projects/demo', agents: ['claude'], allow_patch: false }]
+  });
+
+  let claims = 0;
+  const firstClaim = deferred();
+  const secondClaim = deferred();
+  const thirdClaim = deferred();
+  let streamController!: ReadableStreamDefaultController<Uint8Array>;
+  const stream = new ReadableStream<Uint8Array>({ start(c) { streamController = c; } });
+  const fakeFetch: typeof fetch = async () => new Response(stream, { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+
+  const client: ToolClient = {
+    async call<T>(name: string): Promise<T> {
+      if (name === 'task_claim') {
+        claims++;
+        if (claims === 1) firstClaim.resolve();
+        if (claims === 2) secondClaim.resolve();
+        if (claims === 3) thirdClaim.resolve();
+        return { task: null } as T;
+      }
+      return {} as T;
+    }
+  };
+
+  const stop = new AbortController();
+  const worker = new BridgeWorker(cfg, client, () => {}, undefined, undefined, fakeFetch);
+  const runPromise = worker.run(stop.signal);
+  try {
+    await firstClaim.promise;
+    await new Promise(r => setTimeout(r, 40));
+
+    // Unmatched capabilities (different provider & patch when read-only) must NOT wake this worker!
+    streamController.enqueue(Buffer.from('event: task.submitted\ndata: {"scope":"project:demo","payload":{"required_capability":"codex.read"}}\n\n'));
+    streamController.enqueue(Buffer.from('event: task.submitted\ndata: {"scope":"project:demo","payload":{"required_capability":"claude.patch"}}\n\n'));
+    streamController.enqueue(Buffer.from('event: task.submitted\ndata: {"scope":"project:demo","payload":{"required_capability":"auto.patch"}}\n\n'));
+    await new Promise(r => setTimeout(r, 60));
+    assert.equal(claims, 1, 'mismatched required_capability must not trigger claim stampede');
+
+    // Matching capability wakes immediately!
+    streamController.enqueue(Buffer.from('event: task.submitted\ndata: {"scope":"project:demo","payload":{"required_capability":"claude.read"}}\n\n'));
+    await secondClaim.promise;
+    await new Promise(r => setTimeout(r, 40));
+
+    // auto.read also matches this worker!
+    streamController.enqueue(Buffer.from('event: task.updated\ndata: {"scope":"project:demo","payload":{"status":"queued","required_capability":"auto.read"}}\n\n'));
+    await thirdClaim.promise;
+    assert.equal(claims, 3);
+  } finally {
+    worker.drain();
+    stop.abort();
+    try { streamController.close(); } catch {}
+    await runPromise;
+  }
+});
+
+test('batch task_claim requests limit and claims fan-out burst in 1 HTTP RTT', { timeout: 3000 }, async () => {
+  const cfg = baseConfig();
+  cfg.max_concurrent = 4;
+  cfg.usage_seconds = 0;
+  cfg.poll_seconds = 10;
+
+  const claimArgs: Record<string, unknown>[] = [];
+  const finishedIds: string[] = [];
+  const allDone = deferred();
+
+  const batch = ['11111111-1111-4111-8111-11111111111a', '11111111-1111-4111-8111-11111111111b', '11111111-1111-4111-8111-11111111111c'].map(id => ({
+    task: makeTurnTask({ id, kind: 'turn', required_capability: 'claude.read' }),
+    lease_token: `tok-${id}`,
+    lease_generation: 1
+  }));
+
+  const client: ToolClient = {
+    async call<T>(name: string, args: Record<string, unknown>): Promise<T> {
+      if (name === 'task_claim') {
+        claimArgs.push(args);
+        if (claimArgs.length === 1) return { claims: batch, ...batch[0] } as T;
+        return { claims: [], task: null } as T;
+      }
+      if (name === 'task_finish') {
+        finishedIds.push(String(args.task_id));
+        if (finishedIds.length === 3) allDone.resolve();
+        return {} as T;
+      }
+      if (name === 'session_list') return { sessions: [] } as T;
+      return {} as T;
+    }
+  };
+
+  const stop = new AbortController();
+  const worker = new BridgeWorker(cfg, client, () => {}, async () => ({
+    exit_code: 0, signal: null,
+    stdout: JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: 'ok', model: 'claude-haiku-5-5' }),
+    stderr: '', duration_ms: 5, stop_reason: null
+  }));
+  const runPromise = worker.run(stop.signal);
+  try {
+    await allDone.promise;
+    assert.equal(claimArgs[0]!.limit, 4, 'requests limit = min(16, max_concurrent - inflight)');
+    assert.equal(finishedIds.length, 3);
+    assert.equal(claimArgs.length, 1, 'batch response with fewer claims than limit stops polling in 1 RTT');
+  } finally {
+    worker.drain();
+    stop.abort();
+    await runPromise;
+  }
+});
+
+test('1-RTT post-finish: skips provider_finished checkpoint, skips renew when >=30s remain, skips context_get on turns, falls back to artifact_put on 400 invalid_arguments', async () => {
+  const cfg = baseConfig();
+  cfg.lease_seconds = 120;
+  const calls: Array<{ name: string; args: Record<string, unknown> }> = [];
+  const client: ToolClient = {
+    async call<T>(name: string, args: Record<string, unknown>): Promise<T> {
+      calls.push({ name, args });
+      if (name === 'task_claim') {
+        return { task: makeTurnTask({ kind: 'turn', required_capability: 'claude.read' }), lease_token: 'l1', lease_generation: 1 } as T;
+      }
+      if (name === 'session_list') return { sessions: [] } as T;
+      return {} as T;
+    }
+  };
+
+  const worker = new BridgeWorker(cfg, client, () => {}, async () => ({
+    exit_code: 0, signal: null,
+    stdout: JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: 'done', model: 'claude-haiku-5-5' }),
+    stderr: '', duration_ms: 5, stop_reason: null
+  }));
+  await worker.claimAndRun(cfg.projects, new AbortController().signal);
+
+  assert.equal(calls.filter(c => c.name === 'context_get').length, 0, 'turns skip wasted context_get');
+  assert.equal(calls.filter(c => c.name === 'artifact_put').length, 0, 'modern server uses inline_artifacts on task_finish');
+  assert.equal(calls.filter(c => c.name === 'task_heartbeat').length, 0, 'skips pre-finish renew when >=30s lease remains');
+  assert.ok(!calls.some(c => c.name === 'task_checkpoint' && (c.args.checkpoint as any)?.phase === 'provider_finished'), 'removes redundant provider_finished checkpoint');
+  const finishCall = calls.find(c => c.name === 'task_finish')!;
+  assert.ok(Array.isArray(finishCall.args.inline_artifacts) && (finishCall.args.inline_artifacts as unknown[]).length === 1);
+
+  // Backwards-compatibility fallback: older server rejects inline_artifacts with 400 invalid_arguments -> falls back to artifact_put
+  const legacyCalls: Array<{ name: string; args: Record<string, unknown> }> = [];
+  const legacyClient: ToolClient = {
+    async call<T>(name: string, args: Record<string, unknown>): Promise<T> {
+      legacyCalls.push({ name, args });
+      if (name === 'task_claim') {
+        return { task: makeTurnTask({ kind: 'turn', required_capability: 'claude.read' }), lease_token: 'l2', lease_generation: 1 } as T;
+      }
+      if (name === 'task_finish' && args.inline_artifacts) {
+        throw new RemoteError(400, 'invalid_arguments');
+      }
+      if (name === 'artifact_put') return { artifact: { id: 'legacy-art-1' } } as T;
+      if (name === 'session_list') return { sessions: [] } as T;
+      return {} as T;
+    }
+  };
+  // Also test conditional renew when remaining lease < 30_000 ms (lease_seconds = 10 -> remaining ~10s < 30s)
+  const shortCfg = baseConfig();
+  shortCfg.lease_seconds = 10;
+  shortCfg.heartbeat_seconds = 5;
+  const legacyWorker = new BridgeWorker(shortCfg, legacyClient, () => {}, async () => ({
+    exit_code: 0, signal: null,
+    stdout: JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: 'legacy ok', model: 'claude-haiku-5-5' }),
+    stderr: '', duration_ms: 5, stop_reason: null
+  }));
+  await legacyWorker.claimAndRun(shortCfg.projects, new AbortController().signal);
+  assert.equal(legacyCalls.filter(c => c.name === 'task_heartbeat').length, 1, 'renews before finish when <30s lease remains');
+  assert.equal(legacyCalls.filter(c => c.name === 'artifact_put').length, 1, 'falls back to artifact_put on 400 invalid_arguments');
+  const finalFinish = legacyCalls.filter(c => c.name === 'task_finish').at(-1)!;
+  assert.deepEqual(finalFinish.args.artifact_ids, ['legacy-art-1']);
+  assert.equal(finalFinish.args.inline_artifacts, undefined);
+});
+
+test('askedModel honors runner.model on non-turn task_submit and edit turns without false substitution', async () => {
+  const cfg = baseConfig();
+  let finishResult: Record<string, unknown> | undefined;
+  const client: ToolClient = {
+    async call<T>(name: string, args: Record<string, unknown>): Promise<T> {
+      if (name === 'task_claim') {
+        return {
+          task: makeTurnTask({
+            kind: 'review',
+            required_capability: 'claude.read',
+            permission_envelope: { runner: { model: 'claude-sonnet-4-6' } }
+          } as any),
+          lease_token: 'l1',
+          lease_generation: 1
+        } as T;
+      }
+      if (name === 'context_get') return { scope: 'project:demo', memories: [], conflicts: [] } as T;
+      if (name === 'session_list') return { sessions: [] } as T;
+      if (name === 'task_finish') finishResult = args.result as Record<string, unknown>;
+      return {} as T;
+    }
+  };
+  const worker = new BridgeWorker(cfg, client, () => {}, async () => ({
+    exit_code: 0, signal: null,
+    stdout: JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: 'reviewed', model: 'claude-sonnet-4-6' }),
+    stderr: '', duration_ms: 5, stop_reason: null
+  }));
+  await worker.claimAndRun(cfg.projects, new AbortController().signal);
+  assert.deepEqual(finishResult?.served, { provider: 'claude', model: 'claude-sonnet-4-6' });
+});
+
+test('reportUsage reports default_model, turn_model, and live cached ACP models', async () => {
+  const cfg = parseBridgeConfig({
+    service_url: 'http://127.0.0.1:8080',
+    agents: [
+      { id: 'claude', provider: 'claude', binary: '/bin/claude', model: 'claude-opus-5-5', turn_model: 'claude-haiku-5-5', sandbox: false },
+      { id: 'antigravity', provider: 'antigravity', binary: '/bin/agy', model: 'gemini-3.8-pro', turn_model: 'gemini-3.8-flash', sandbox: true }
+    ],
+    projects: [{ scope: 'project:demo', root: '/projects/demo', agents: ['claude', 'antigravity'] }]
+  });
+  const pool = new WarmProviderPool();
+  pool.setCachedModels('antigravity', [
+    { id: 'gemini-3.8-pro', label: 'Gemini 3.8 Pro', efforts: ['low', 'medium', 'high'], default: true },
+    { id: 'gemini-3.8-flash', label: 'Gemini 3.8 Flash', efforts: ['low', 'medium', 'high'], fast: true }
+  ]);
+  let reported: Record<string, unknown> | undefined;
+  const client: ToolClient = {
+    async call<T>(name: string, args: Record<string, unknown>): Promise<T> {
+      if (name === 'usage_report') reported = args;
+      return {} as T;
+    }
+  };
+  const now = new Date().toISOString();
+  const worker = new BridgeWorker(cfg, client, () => {}, undefined, async () => [
+    { provider: 'claude', ok: true, windows: [], fetched_at: now },
+    { provider: 'antigravity', ok: false, windows: [], fetched_at: now, error: 'not exposed' }
+  ], { warmPool: pool });
+  await worker.reportUsage(new AbortController().signal);
+  const reports = reported?.reports as Array<Record<string, unknown>>;
+  assert.equal(reports.length, 2);
+  assert.equal(reports[0]!.default_model, 'claude-opus-5-5');
+  assert.equal(reports[0]!.turn_model, 'claude-haiku-5-5');
+  assert.equal(reports[1]!.default_model, 'gemini-3.8-pro');
+  assert.equal(reports[1]!.turn_model, 'gemini-3.8-flash');
+  assert.equal((reports[1]!.models as Array<{ id: string }>).length, 2);
+});
+
+test('buildTurnPrompt preserves Agent instructions AND renders Task objective, Swarm goal, and crew [can edit]/[read-only]', () => {
+  const prompt = buildTurnPrompt(makeTurnTask({
+    objective: 'Scheduled run: audit flaky tests and summarize failures',
+    agent: { instructions: 'You are the QA lead.' },
+    swarm: { goal: 'Keep CI green on main' },
+    agents: [
+      { id: 'a1', name: 'Coder', role: 'engineer', edits: true },
+      { id: 'a2', name: 'Scout', role: 'researcher', edits: false },
+      { id: 'a3', name: 'Reviewer' }
+    ]
+  } as any), {});
+
+  assert.ok(prompt.includes('Agent instructions:\nYou are the QA lead.'));
+  assert.ok(prompt.includes('Swarm goal:\nKeep CI green on main'));
+  assert.ok(prompt.includes('Task objective:\nScheduled run: audit flaky tests and summarize failures'));
+  assert.ok(prompt.includes('- Coder (id: a1, role: engineer) [can edit]'));
+  assert.ok(prompt.includes('- Scout (id: a2, role: researcher) [read-only]'));
+  assert.ok(prompt.includes('- Reviewer (id: a3) [read-only]'));
+
+  // Generic boilerplate turn headers are NOT redundantly rendered as Task objective:
+  const generic = buildTurnPrompt(makeTurnTask({
+    objective: 'Turn for agent QA Lead in #general',
+    agent: { instructions: 'You are the QA lead.' }
+  } as any), {});
+  assert.ok(generic.includes('Agent instructions:\nYou are the QA lead.'));
+  assert.ok(!generic.includes('Task objective:'));
+});
+
+test('buildInvocation propagates runnerModel & runnerEffort on edit turns, independent runnerEffort, and extends lightChat to router & summary turns', () => {
+  const cfg = baseConfig();
+  const agent = cfg.agents[0]!;
+  const project = cfg.projects[0]!;
+  const isLight = (a: string[]) => a.includes('--strict-mcp-config') && a[a.indexOf('--setting-sources') + 1] === 'project';
+
+  // 1. Edit turn honors both runner.model and runner.effort
+  const editWithRunner = buildInvocation(agent, project, makeTurnTask({
+    kind: 'turn',
+    required_capability: 'claude.patch',
+    permission_envelope: { local_patch: true, runner: { model: 'claude-sonnet-4-6', effort: 'high' } }
+  } as any), {}, cfg, new AbortController().signal);
+  assert.equal(editWithRunner.args[editWithRunner.args.indexOf('--model') + 1], 'claude-sonnet-4-6');
+  assert.equal(editWithRunner.args[editWithRunner.args.indexOf('--effort') + 1], 'high');
+  assert.ok(!isLight(editWithRunner.args), 'ordinary edit turn keeps full MCP/plugin setup');
+
+  // 2. Edit turn honors runner.effort independently even when runner.model is undefined
+  const editEffortOnly = buildInvocation(agent, project, makeTurnTask({
+    kind: 'turn',
+    required_capability: 'claude.patch',
+    permission_envelope: { local_patch: true, runner: { effort: 'max' } }
+  } as any), {}, cfg, new AbortController().signal);
+  assert.equal(editEffortOnly.args[editEffortOnly.args.indexOf('--model') + 1], 'claude-opus-5-5');
+  assert.equal(editEffortOnly.args[editEffortOnly.args.indexOf('--effort') + 1], 'max');
+
+  // 3. Non-edit turn honors runner.effort independently when runner.model is undefined
+  const readEffortOnly = buildInvocation(agent, project, makeTurnTask({
+    kind: 'turn',
+    required_capability: 'claude.read',
+    permission_envelope: { local_patch: false, runner: { effort: 'high' } }
+  } as any), {}, cfg, new AbortController().signal);
+  assert.equal(readEffortOnly.args[readEffortOnly.args.indexOf('--model') + 1], 'claude-haiku-5-5');
+  assert.equal(readEffortOnly.args[readEffortOnly.args.indexOf('--effort') + 1], 'high');
+
+  // 4. Router turns and swarm summary turns (even on edit-capable leads) get lightChat flags
+  const routerTurn = buildInvocation(agent, project, makeTurnTask({
+    kind: 'turn',
+    required_capability: 'claude.read',
+    permission_envelope: { local_patch: false, runner: { router: true, delegated: true } }
+  } as any), {}, cfg, new AbortController().signal);
+  assert.ok(isLight(routerTurn.args), 'router turn uses lightChat');
+
+  const summaryTurn = buildInvocation(agent, project, makeTurnTask({
+    kind: 'turn',
+    required_capability: 'claude.patch',
+    permission_envelope: { local_patch: true, runner: { summary: true } }
+  } as any), {}, cfg, new AbortController().signal);
+  assert.ok(isLight(summaryTurn.args), 'swarm summary turn uses lightChat even on edit-capable lead');
 });

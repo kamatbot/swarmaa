@@ -7,10 +7,9 @@ import type { Principal } from '../types.js';
 import { integer, object, optionalString, scopeName, string, uuid } from '../validation.js';
 import { booleanOption } from './memory.js';
 import { assertKnownScope, audit, canonicalJson, event, newId, noExtraKeys, requireFound, scopeLock, scopeSql, sha256, teamsLock, type Db } from './shared.js';
-import { assignThreadSeq, clipUtf8, enqueueAgentTurn, requestedProvider, type AgentRow, type ThreadRow, type MessageRow } from './teams.js';
-import { runnerCapability } from '../bridge/adapters.js';
+import { assignThreadSeq, clipUtf8, enqueueAgentTurn, extractMentions, requestedProvider, type AgentRow, type ThreadRow, type MessageRow } from './teams.js';
 import { cancelTask, taskView, type TaskRow } from './tasks.js';
-import { botCapability, leadTurnProfile, memberCapability } from './bots.js';
+import { mergeDispatchedFrom, normalizeDispatchedFrom, resolveTurnRunner, type DispatchedFromEntry } from './model-catalog.js';
 import type { QuestionAction, TurnAction, TurnGrantContext, SwarmStartStepInput } from './actions.js';
 import { isBaseRef } from './actions.js';
 import { queueLocalAction } from './voice.js';
@@ -18,7 +17,7 @@ import { queueLocalAction } from './voice.js';
 // Teams writes take teamsLock first.
 
 export const MAX_TURNS_PER_FINISH = 20;
-export const MAX_HANDOFF_HOPS = 3;
+export const MAX_HANDOFF_HOPS = 6;
 
 /** Turns one task_finish may still queue, the hop depth they inherit, and where refusals are noticed. */
 export interface TurnBudget {
@@ -77,6 +76,8 @@ export interface SwarmRow {
   created_by: string;
   idempotency_key: string | null;
   request_hash: string | null;
+  base_ref?: string | null;
+  dispatched_from?: DispatchedFromEntry[] | null;
   created_at: Date;
   updated_at: Date;
   closed_at: Date | null;
@@ -312,6 +313,7 @@ export class SwarmsService {
       flow_id?: string | null;
       idempotency_key?: string | null;
       base_ref?: string | null;
+      dispatched_from?: DispatchedFromEntry[] | null;
     },
     budget?: TurnBudget
   ): Promise<Record<string, unknown>> {
@@ -412,11 +414,13 @@ export class SwarmsService {
     }
 
     const swarmId = newId();
+    const dispatchedFromArr = normalizeDispatchedFrom(input.dispatched_from);
 
     await db.query(
-      `INSERT INTO swarms (id, tenant_id, scope, title, goal, owner_agent_id, thread_id, status, flow_id, created_by, idempotency_key, request_hash, base_ref)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, 'running', $8, $9, $10, $11, $12)`,
-      [swarmId, p.tenantId, scope, title, goal, swarmOwner, threadId, flowId, p.id, idempotency, reqHash, input.base_ref ?? null]
+      `INSERT INTO swarms (id, tenant_id, scope, title, goal, owner_agent_id, thread_id, status, flow_id, created_by, idempotency_key, request_hash, base_ref, dispatched_from)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, 'running', $8, $9, $10, $11, $12, $13::jsonb)`,
+      [swarmId, p.tenantId, scope, title, goal, swarmOwner, threadId, flowId, p.id, idempotency, reqHash, input.base_ref ?? null,
+       dispatchedFromArr.length > 0 ? JSON.stringify(dispatchedFromArr) : null]
     );
 
     // Create step UUID mapping
@@ -996,27 +1000,19 @@ export class SwarmsService {
       });
 
       // Queue the agent's next turn with initiator answer
-      let botId: string | null = null;
-      let requiredCap = runnerCapability(agent.runner, agent.edits);
-      let localPatch = agent.edits;
-      let runnerObj: Record<string, unknown> | undefined;
+      let bot: { id: string; routing: Record<string, unknown>; rules: Record<string, unknown>; lead_agent_id: string } | undefined;
       if (q.thread_id) {
-        const bot = (await db.query<{ id: string; routing: Record<string, unknown>; rules: Record<string, unknown>; lead_agent_id: string }>(
+        bot = (await db.query<{ id: string; routing: Record<string, unknown>; rules: Record<string, unknown>; lead_agent_id: string }>(
           'SELECT id, routing, rules, lead_agent_id FROM bots WHERE thread_id=$1', [q.thread_id]
         )).rows[0];
-        if (bot) {
-          botId = bot.id;
-          const profile = leadTurnProfile(bot, agent);
-          requiredCap = profile.capability;
-          localPatch = profile.edits;
-          if (profile.runner) runnerObj = profile.runner;
-        }
       }
+      const botId = bot?.id ?? null;
+      const resolved = resolveTurnRunner({ bot, agent, noFast: true });
       const taskId = newId();
       const envelope = {
-        deploy: false, publish: false, purchase: false, local_patch: localPatch,
+        deploy: false, publish: false, purchase: false, local_patch: resolved.edits,
         read_project: true, send_messages: false, permission_changes: false, external_side_effects: false,
-        ...(runnerObj ? { runner: runnerObj } : {})
+        ...(resolved.runner ? { runner: resolved.runner } : {})
       };
       const contextVersions = { message_seq: Number(nextSeq), hop_depth: 0 };
       const reqHash = sha256(canonicalJson({
@@ -1030,11 +1026,11 @@ export class SwarmsService {
             idempotency_key, request_hash, max_attempts, initiator_kind, initiator_id)
          VALUES ($1, $2, $3, 'turn', $4, $5, $6, $7, $8, '[]'::jsonb, '[]'::jsonb, $9::jsonb, $10, $11, $12::jsonb, 'queued', $13, $14, $15, 3, 'answer', $16)`,
         [taskId, p.tenantId, agent.scope, agent.id, q.thread_id, botId, q.swarm_step_id, `Answer to: ${q.prompt}`,
-         JSON.stringify(envelope), requiredCap, `agent:${agent.id}`, JSON.stringify(contextVersions), p.id, newId(), reqHash, questionId]
+         JSON.stringify(envelope), resolved.capability, `agent:${agent.id}`, JSON.stringify(contextVersions), p.id, newId(), reqHash, questionId]
       );
 
-      await audit(db, p, agent.scope, 'task.submitted', taskId, { kind: 'turn', agent_id: agent.id, initiator_kind: 'answer' });
-      await event(db, p, agent.scope, 'task.updated', taskId, { task_id: taskId, status: 'queued', action: 'submitted' });
+      await audit(db, p, agent.scope, 'task.submitted', taskId, { kind: 'turn', agent_id: agent.id, initiator_kind: 'answer', required_capability: resolved.capability });
+      await event(db, p, agent.scope, 'task.updated', taskId, { task_id: taskId, kind: 'turn', thread_id: q.thread_id, required_capability: resolved.capability, status: 'queued', action: 'submitted' });
 
       if (q.swarm_step_id) {
         await db.query('UPDATE swarm_steps SET task_id=$1, updated_at=clock_timestamp() WHERE id=$2', [taskId, q.swarm_step_id]);
@@ -1137,7 +1133,7 @@ export class SwarmsService {
     const limit = input.limit !== undefined ? integer(input.limit, 'limit', 1, 100) : 50;
     const after = input.after !== undefined ? string(input.after, 'after', 100) : null;
 
-    let cursorTs: Date | null = null;
+    let cursorTs: string | null = null;
     let cursorId: string | null = null;
     if (after) {
       const pipeIdx = after.indexOf('|');
@@ -1145,14 +1141,14 @@ export class SwarmsService {
         const tsPart = after.slice(0, pipeIdx);
         const idPart = after.slice(pipeIdx + 1);
         const parsedTs = new Date(tsPart);
-        requireCondition(!Number.isNaN(parsedTs.getTime()), 400, 'invalid_arguments', 'Invalid attention cursor timestamp.');
-        cursorTs = parsedTs;
+        requireCondition(!Number.isNaN(parsedTs.getTime()) && /T.*(?:Z|[+-]\d\d:\d\d)$/.test(tsPart), 400, 'invalid_arguments', 'Invalid attention cursor timestamp.');
+        cursorTs = tsPart;
         cursorId = uuid(idPart, 'after');
       } else {
-        // Legacy UUID-only cursor: resolve its (at, id) from the underlying tables.
+        // Legacy UUID-only cursor: resolve its full-microsecond (at_us, id) from the underlying tables.
         const legacyId = uuid(after, 'after');
-        const resolved = (await this.pool.query<{ at: Date; id: string }>(
-          `SELECT at, id FROM (
+        const resolved = (await this.pool.query<{ at_us: string; id: string }>(
+          `SELECT to_char(at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS at_us, id FROM (
              SELECT created_at AS at, id FROM questions WHERE tenant_id=$1 AND id=$2
              UNION ALL
              SELECT updated_at AS at, id FROM tasks WHERE tenant_id=$1 AND id=$2
@@ -1162,27 +1158,28 @@ export class SwarmsService {
           [p.tenantId, legacyId]
         )).rows[0];
         if (resolved) {
-          cursorTs = new Date(resolved.at);
+          cursorTs = resolved.at_us;
           cursorId = resolved.id;
         }
       }
     }
 
-    // Fetch all 4 attention categories in parallel using the same SQL (ts, id) cursor.
+    // Fetch all 4 attention categories in parallel using raw (ts, id) cursor without date_trunc (preserving indexes & microseconds).
     const [qRes, reviewRes, failedRes, swarmsRes] = await Promise.all([
-      this.pool.query<QuestionRow>(
-        `SELECT * FROM questions
+      this.pool.query<QuestionRow & { at_us: string }>(
+        `SELECT *, to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS at_us FROM questions
          WHERE tenant_id=$1 AND status='open'
            AND ($2::boolean OR scope = ANY($3::text[]))
            AND ($4::text IS NULL OR scope = $4)
-           AND ($5::timestamptz IS NULL OR (date_trunc('milliseconds', created_at), id) < ($5::timestamptz, $6::uuid))
+           AND ($5::timestamptz IS NULL OR (created_at, id) < ($5::timestamptz, $6::uuid))
          ORDER BY created_at DESC, id DESC LIMIT $7`,
         [p.tenantId, all, grantedScopes, scope, cursorTs, cursorId, limit + 1]
       ),
       this.pool.query<{
-        id: string; objective: string; scope: string; kind: string; updated_at: Date; result: Record<string, unknown> | null;
+        id: string; objective: string; scope: string; kind: string; updated_at: Date; at_us: string; result: Record<string, unknown> | null;
       }>(
-        `SELECT id, objective, scope, kind, updated_at, result
+        `SELECT id, objective, scope, kind, updated_at,
+                to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS at_us, result
          FROM tasks
          WHERE tenant_id=$1 AND status='completed' AND resolved_at IS NULL
            AND kind IN ('patch', 'turn')
@@ -1190,28 +1187,29 @@ export class SwarmsService {
            AND result->>'head_commit' IS NOT NULL
            AND ($2::boolean OR scope = ANY($3::text[]))
            AND ($4::text IS NULL OR scope = $4)
-           AND ($5::timestamptz IS NULL OR (date_trunc('milliseconds', updated_at), id) < ($5::timestamptz, $6::uuid))
+           AND ($5::timestamptz IS NULL OR (updated_at, id) < ($5::timestamptz, $6::uuid))
          ORDER BY updated_at DESC, id DESC LIMIT $7`,
         [p.tenantId, all, grantedScopes, scope, cursorTs, cursorId, limit + 1]
       ),
       this.pool.query<{
-        id: string; objective: string; scope: string; updated_at: Date; result: Record<string, unknown> | null;
+        id: string; objective: string; scope: string; updated_at: Date; at_us: string; result: Record<string, unknown> | null;
       }>(
-        `SELECT id, objective, scope, updated_at, result
+        `SELECT id, objective, scope, updated_at,
+                to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS at_us, result
          FROM tasks
          WHERE tenant_id=$1 AND status='failed' AND resolved_at IS NULL
            AND ($2::boolean OR scope = ANY($3::text[]))
            AND ($4::text IS NULL OR scope = $4)
-           AND ($5::timestamptz IS NULL OR (date_trunc('milliseconds', updated_at), id) < ($5::timestamptz, $6::uuid))
+           AND ($5::timestamptz IS NULL OR (updated_at, id) < ($5::timestamptz, $6::uuid))
          ORDER BY updated_at DESC, id DESC LIMIT $7`,
         [p.tenantId, all, grantedScopes, scope, cursorTs, cursorId, limit + 1]
       ),
-      this.pool.query<SwarmRow>(
-        `SELECT * FROM swarms
+      this.pool.query<SwarmRow & { at_us: string }>(
+        `SELECT *, to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS at_us FROM swarms
          WHERE tenant_id=$1 AND status IN ('waiting_on_you', 'blocked')
            AND ($2::boolean OR scope = ANY($3::text[]))
            AND ($4::text IS NULL OR scope = $4)
-           AND ($5::timestamptz IS NULL OR (date_trunc('milliseconds', updated_at), id) < ($5::timestamptz, $6::uuid))
+           AND ($5::timestamptz IS NULL OR (updated_at, id) < ($5::timestamptz, $6::uuid))
          ORDER BY updated_at DESC, id DESC LIMIT $7`,
         [p.tenantId, all, grantedScopes, scope, cursorTs, cursorId, limit + 1]
       ),
@@ -1233,18 +1231,21 @@ export class SwarmsService {
       action?: QuestionAction | null;
     }
 
-    const items: AttentionItem[] = [];
+    const items: Array<{ item: AttentionItem; at_us: string }> = [];
 
     for (const q of qRows) {
       items.push({
-        kind: 'question',
-        id: q.id,
-        title: q.prompt,
-        state: 'open',
-        next_step: 'Needs input · answer the question',
-        at: q.created_at.toISOString(),
-        thread_id: q.thread_id,
-        action: q.action ?? null
+        at_us: q.at_us,
+        item: {
+          kind: 'question',
+          id: q.id,
+          title: q.prompt,
+          state: 'open',
+          next_step: 'Needs input · answer the question',
+          at: q.created_at.toISOString(),
+          thread_id: q.thread_id,
+          action: q.action ?? null
+        }
       });
     }
 
@@ -1258,12 +1259,15 @@ export class SwarmsService {
       if (diffstat) parts.push(diffstat);
 
       items.push({
-        kind: 'task',
-        id: t.id,
-        title: oneLine(t.objective),
-        state: 'completed',
-        next_step: parts.join(' · '),
-        at: t.updated_at.toISOString()
+        at_us: t.at_us,
+        item: {
+          kind: 'task',
+          id: t.id,
+          title: oneLine(t.objective),
+          state: 'completed',
+          next_step: parts.join(' · '),
+          at: t.updated_at.toISOString()
+        }
       });
     }
 
@@ -1271,38 +1275,44 @@ export class SwarmsService {
       const fail = (f.result as any)?.failure ?? {};
       const code = fail.code || 'failure';
       items.push({
-        kind: 'task',
-        id: f.id,
-        title: oneLine(f.objective),
-        state: 'failed',
-        next_step: `Failed · ${code} · retry`,
-        at: f.updated_at.toISOString()
+        at_us: f.at_us,
+        item: {
+          kind: 'task',
+          id: f.id,
+          title: oneLine(f.objective),
+          state: 'failed',
+          next_step: `Failed · ${code} · retry`,
+          at: f.updated_at.toISOString()
+        }
       });
     }
 
     for (const sw of swarms) {
       items.push({
-        kind: 'swarm',
-        id: sw.id,
-        title: sw.title,
-        state: sw.status,
-        next_step: sw.status === 'waiting_on_you' ? 'Needs input · answer the question' : 'Blocked · inspect step failures',
-        at: sw.updated_at.toISOString(),
-        ...(sw.thread_id ? { thread_id: sw.thread_id } : {})
+        at_us: sw.at_us,
+        item: {
+          kind: 'swarm',
+          id: sw.id,
+          title: sw.title,
+          state: sw.status,
+          next_step: sw.status === 'waiting_on_you' ? 'Needs input · answer the question' : 'Blocked · inspect step failures',
+          at: sw.updated_at.toISOString(),
+          ...(sw.thread_id ? { thread_id: sw.thread_id } : {})
+        }
       });
     }
 
-    // Sort newest first with deterministic id tiebreaker matching the SQL cursor.
-    items.sort((a, b) => (Date.parse(b.at) - Date.parse(a.at)) || b.id.localeCompare(a.id));
+    // Sort newest first by full-microsecond UTC timestamp string, with deterministic id tiebreaker matching SQL.
+    items.sort((a, b) => (a.at_us === b.at_us ? b.item.id.localeCompare(a.item.id) : (b.at_us < a.at_us ? -1 : 1)));
 
     const hasMore = items.length > limit;
     const paged = items.slice(0, limit);
     const last = paged.at(-1);
 
     return {
-      items: paged,
+      items: paged.map(entry => entry.item),
       has_more: hasMore,
-      next_cursor: hasMore && last ? `${last.at}|${last.id}` : null
+      next_cursor: hasMore && last ? `${last.at_us}|${last.item.id}` : null
     };
   }
 
@@ -1482,26 +1492,33 @@ export class SwarmsService {
                WHERE s.swarm_id=$1 ORDER BY s.order_index`, [swarm.id])).rows;
             await this.postNotice(db, p, swarm.scope, swarm.thread_id, `"${swarm.title}" is done. Step results:\n\n`
               + results.map((r, n) => `${n + 1}. ${r.title} (${r.name ?? 'unassigned'}): ${(r.body ?? '(no reply)').slice(0, 2000)}`).join('\n\n'));
-            let botId: string | null = null;
-            let requiredCap = runnerCapability(ownerAgent.runner, ownerAgent.edits);
-            let localPatch = ownerAgent.edits;
-            let runnerObj: Record<string, unknown> | undefined;
+            let bot: { id: string; routing: Record<string, unknown>; rules: Record<string, unknown>; lead_agent_id: string } | undefined;
             if (swarm.thread_id) {
-              const bot = (await db.query<{ id: string; routing: Record<string, unknown>; rules: Record<string, unknown>; lead_agent_id: string }>(
+              bot = (await db.query<{ id: string; routing: Record<string, unknown>; rules: Record<string, unknown>; lead_agent_id: string }>(
                 'SELECT id, routing, rules, lead_agent_id FROM bots WHERE thread_id=$1', [swarm.thread_id]
               )).rows[0];
-              if (bot) {
-                botId = bot.id;
-                const profile = leadTurnProfile(bot, ownerAgent);
-                requiredCap = profile.capability;
-                localPatch = profile.edits;
-                if (profile.runner) runnerObj = profile.runner;
-              }
             }
+            const botId = bot?.id ?? null;
+            // Swarm summary turns are strictly read-only (.read / auto.read, local_patch: false, runner.summary: true)
+            // even when the lead agent has edits: true (no pointless git worktree).
+            const resolved = resolveTurnRunner({
+              bot,
+              agent: ownerAgent,
+              routeKind: 'summary',
+              forceReadOnly: true,
+              summary: true,
+            });
             const envelope = {
-              deploy: false, publish: false, purchase: false, local_patch: localPatch,
+              deploy: false, publish: false, purchase: false, local_patch: false,
               read_project: true, send_messages: false, permission_changes: false, external_side_effects: false,
-              ...(runnerObj ? { runner: runnerObj } : {})
+              runner: { ...(resolved.runner ?? {}), summary: true, fast: false },
+            };
+            const swarmDispatched = normalizeDispatchedFrom(swarm.dispatched_from);
+            const summaryCtxVersions = {
+              // Do not increment hop_depth on swarm summary turns.
+              hop_depth: budget ? budget.hop : 0,
+              summary: true,
+              ...(swarmDispatched.length > 0 ? { dispatched_from: swarmDispatched } : {}),
             };
             const reqHash = sha256(canonicalJson({
               kind: 'turn', scope: ownerAgent.scope, agent_id: ownerAgent.id, swarm_id: swarm.id, summary: true
@@ -1515,12 +1532,12 @@ export class SwarmsService {
                VALUES ($1, $2, $3, 'turn', $4, $5, $6, $7, '[]'::jsonb, '[]'::jsonb, $8::jsonb, $9, $10, $11::jsonb, 'queued', $12, $13, $14, 3, 'swarm', $15)`,
               [followUpId, p.tenantId, ownerAgent.scope, ownerAgent.id, swarm.thread_id, botId,
                `Summarise the results of "${swarm.title}" for the user. Reply only; start no new work.`, JSON.stringify(envelope),
-               requiredCap, `agent:${ownerAgent.id}`, JSON.stringify({ hop_depth: budget ? budget.hop + 1 : 0, summary: true }),
+               resolved.capability, `agent:${ownerAgent.id}`, JSON.stringify(summaryCtxVersions),
                p.id, `swarm:summary:${swarm.id}`, reqHash, swarm.id]
             );
 
-            await audit(db, p, ownerAgent.scope, 'task.submitted', followUpId, { kind: 'turn', agent_id: ownerAgent.id, initiator_kind: 'swarm' });
-            await event(db, p, ownerAgent.scope, 'task.updated', followUpId, { task_id: followUpId, status: 'queued', action: 'submitted' });
+            await audit(db, p, ownerAgent.scope, 'task.submitted', followUpId, { kind: 'turn', agent_id: ownerAgent.id, initiator_kind: 'swarm', required_capability: resolved.capability });
+            await event(db, p, ownerAgent.scope, 'task.updated', followUpId, { task_id: followUpId, kind: 'turn', ...(swarm.thread_id ? { thread_id: swarm.thread_id } : {}), required_capability: resolved.capability, status: 'queued', action: 'submitted' });
           }
         }
       }
@@ -1544,17 +1561,38 @@ export class SwarmsService {
     ctx: TurnGrantContext,
     actions: TurnAction[],
     budget: TurnBudget
-  ): Promise<void> {
+  ): Promise<{ startedSwarm: boolean }> {
     if (budget.summary) {
       await this.postNotice(db, p, ctx.scope, ctx.thread.id, `A summary turn can only reply; its ${actions.length} action(s) were ignored.`);
-      return;
+      return { startedSwarm: false };
     }
+    const hasProjectDispatch = actions.some(a => a.type === 'project_dispatch');
+    const dispatchGroupId = hasProjectDispatch ? newId() : undefined;
+    let dispatchedCount = 0;
+    let startedSwarm = false;
+    // Cache own bot row once per applyTurnActions call (for handoff runner resolution).
+    let cachedBotLoaded = false;
+    let cachedBot: { id: string; routing: Record<string, unknown>; rules: Record<string, unknown>; lead_agent_id: string } | undefined;
+    const getOwnBot = async () => {
+      if (!cachedBotLoaded) {
+        cachedBotLoaded = true;
+        if (ctx.botId) {
+          cachedBot = (await db.query<{ id: string; routing: Record<string, unknown>; rules: Record<string, unknown>; lead_agent_id: string }>(
+            'SELECT id, routing, rules, lead_agent_id FROM bots WHERE id=$1', [ctx.botId]
+          )).rows[0];
+        }
+      }
+      return cachedBot;
+    };
+
     for (const [i, act] of actions.entries()) {
       const queued = budget.queued;
       await db.query(`SAVEPOINT act_${i}`);
       try {
-        await this.applyTurnAction(db, p, ctx, act, budget);
+        const res = await this.applyTurnAction(db, p, ctx, act, budget, { dispatchGroupId, getOwnBot });
         await db.query(`RELEASE SAVEPOINT act_${i}`);
+        if (res.dispatched) dispatchedCount++;
+        if (res.startedSwarm) startedSwarm = true;
       } catch (err) {
         if (!isActionError(err)) throw err;
         await db.query(`ROLLBACK TO SAVEPOINT act_${i}`);
@@ -1562,22 +1600,51 @@ export class SwarmsService {
         await this.postNotice(db, p, ctx.scope, ctx.thread.id, `Action ${i + 1} (${act.type}) failed: ${(err as Error).message}`);
       }
     }
+
+    if (dispatchGroupId && dispatchedCount > 0) {
+      await db.query(
+        `INSERT INTO dispatch_groups
+           (id, tenant_id, coordinator_scope, coordinator_thread_id, coordinator_agent_id, coordinator_bot_id, total)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        [dispatchGroupId, ctx.tenantId, ctx.scope, ctx.thread.id, ctx.agent.id, ctx.botId ?? null, dispatchedCount]
+      );
+    }
+
+    return { startedSwarm };
   }
 
-  private async applyTurnAction(db: Db, p: Principal, ctx: TurnGrantContext, act: TurnAction, budget: TurnBudget): Promise<void> {
+  private async applyTurnAction(
+    db: Db,
+    p: Principal,
+    ctx: TurnGrantContext,
+    act: TurnAction,
+    budget: TurnBudget,
+    helpers?: {
+      dispatchGroupId?: string;
+      getOwnBot?: () => Promise<{ id: string; routing: Record<string, unknown>; rules: Record<string, unknown>; lead_agent_id: string } | undefined>;
+    }
+  ): Promise<{ dispatched?: boolean; startedSwarm?: boolean }> {
     if (act.type === 'handoff') {
       const targetAgent = (await db.query<AgentRow>('SELECT * FROM agents WHERE id=$1', [act.to_agent])).rows[0]!;
+      const handoffRef = {
+        from_agent_id: ctx.agent.id,
+        to_agent_id: targetAgent.id,
+        ...(act.swarm_step_id ? { swarm_step_id: act.swarm_step_id } : {}),
+        ...(act.base_ref ? { base_ref: act.base_ref } : {}),
+        ...(act.branch ? { branch: act.branch } : {}),
+        ...(act.artifact_ids?.length ? { artifact_ids: act.artifact_ids } : {}),
+        ...(act.reply_to_thread ? { reply_to_thread: act.reply_to_thread } : {}),
+      };
 
       // 1. Post handoff line into sending agent's thread (Low 4: author is sending agent)
       const senderSeq = await assignThreadSeq(db, ctx.tenantId, ctx.thread.id);
       const senderHandoffMsgId = newId();
-      const handoffText = `${ctx.agent.name} handed off to ${targetAgent.name}: ${act.body}`;
+      const handoffText = clipUtf8(`${ctx.agent.name} handed off to ${targetAgent.name}: ${act.body}`, 16384);
       await db.query(
         `INSERT INTO messages (id, tenant_id, scope, thread_id, seq, author, kind, body, ref)
          VALUES ($1, $2, $3, $4, $5, $6::jsonb, 'handoff', $7, $8::jsonb)`,
         [senderHandoffMsgId, ctx.tenantId, ctx.scope, ctx.thread.id, senderSeq,
-         JSON.stringify({ kind: 'agent', id: ctx.agent.id }), handoffText,
-         JSON.stringify({ from_agent_id: ctx.agent.id, to_agent_id: targetAgent.id, ...(act.swarm_step_id ? { swarm_step_id: act.swarm_step_id } : {}) })]
+         JSON.stringify({ kind: 'agent', id: ctx.agent.id }), handoffText, JSON.stringify(handoffRef)]
       );
       await event(db, p, ctx.scope, 'message.created', senderHandoffMsgId, {
         thread_id: ctx.thread.id,
@@ -1591,13 +1658,20 @@ export class SwarmsService {
       const targetThreadId = targetAgent.main_thread_id!;
       const targetSeq = await assignThreadSeq(db, ctx.tenantId, targetThreadId);
       const targetHandoffMsgId = newId();
-      const targetHandoffText = `${ctx.agent.name} gave you: ${act.body}`;
+      const metaLines = [
+        ...(act.branch ? [`Branch: ${act.branch}`] : []),
+        ...(act.base_ref ? [`Base ref: ${act.base_ref}`] : []),
+        ...(act.artifact_ids?.length ? [`Artifacts: ${act.artifact_ids.join(', ')}`] : []),
+      ];
+      const targetHandoffText = clipUtf8(
+        metaLines.length ? `${ctx.agent.name} gave you: ${act.body}\n\n${metaLines.join('\n')}` : `${ctx.agent.name} gave you: ${act.body}`,
+        16384
+      );
       await db.query(
         `INSERT INTO messages (id, tenant_id, scope, thread_id, seq, author, kind, body, ref)
          VALUES ($1, $2, $3, $4, $5, $6::jsonb, 'handoff', $7, $8::jsonb)`,
         [targetHandoffMsgId, ctx.tenantId, ctx.scope, targetThreadId, targetSeq,
-         JSON.stringify({ kind: 'agent', id: ctx.agent.id }), targetHandoffText,
-         JSON.stringify({ from_agent_id: ctx.agent.id, to_agent_id: targetAgent.id, ...(act.swarm_step_id ? { swarm_step_id: act.swarm_step_id } : {}) })]
+         JSON.stringify({ kind: 'agent', id: ctx.agent.id }), targetHandoffText, JSON.stringify(handoffRef)]
       );
       await event(db, p, ctx.scope, 'message.created', targetHandoffMsgId, {
         thread_id: targetThreadId,
@@ -1608,42 +1682,41 @@ export class SwarmsService {
       });
 
       // 3. Queue turn task for target agent with initiator handoff, within the hop limit and fan-out cap
-      if (!(await this.takeTurn(db, p, budget, targetAgent.name))) return;
-      let botId: string | null = ctx.botId ?? null;
-      let requiredCap = runnerCapability(targetAgent.runner, targetAgent.edits);
-      let localPatch = targetAgent.edits;
-      let runnerObj: Record<string, unknown> | undefined;
-      if (botId) {
-        const bot = (await db.query<{ id: string; routing: Record<string, unknown>; rules: Record<string, unknown>; lead_agent_id: string }>(
-          'SELECT id, routing, rules, lead_agent_id FROM bots WHERE id=$1', [botId]
-        )).rows[0];
-        if (bot) {
-          const profile = leadTurnProfile(bot, targetAgent);
-          requiredCap = profile.capability;
-          localPatch = profile.edits;
-          if (profile.runner) runnerObj = profile.runner;
-        }
-      }
+      if (!(await this.takeTurn(db, p, budget, targetAgent.name))) return {};
+      const botId: string | null = ctx.botId ?? null;
+      const bot = helpers?.getOwnBot
+        ? await helpers.getOwnBot()
+        : (botId ? (await db.query<{ id: string; routing: Record<string, unknown>; rules: Record<string, unknown>; lead_agent_id: string }>(
+            'SELECT id, routing, rules, lead_agent_id FROM bots WHERE id=$1', [botId]
+          )).rows[0] : undefined);
+      const resolved = resolveTurnRunner({ bot, agent: targetAgent, noFast: true });
       const taskId = newId();
       const envelope = {
-        deploy: false, publish: false, purchase: false, local_patch: localPatch,
+        deploy: false, publish: false, purchase: false, local_patch: resolved.edits,
         read_project: true, send_messages: false, permission_changes: false, external_side_effects: false,
-        ...(runnerObj ? { runner: runnerObj } : {})
+        ...(resolved.runner ? { runner: resolved.runner } : {})
       };
-      const ctxVersions = { message_seq: Number(targetSeq), hop_depth: budget.hop + 1 };
+      const ctxVersions = {
+        message_seq: Number(targetSeq),
+        hop_depth: budget.hop + 1,
+        ...(act.artifact_ids?.length ? { artifact_ids: act.artifact_ids } : {}),
+        ...(act.reply_to_thread ? { reply_to_thread: act.reply_to_thread } : {}),
+        ...(act.branch ? { branch: act.branch } : {}),
+      };
       const reqHash = sha256(canonicalJson({
         kind: 'turn', scope: targetAgent.scope, agent_id: targetAgent.id, thread_id: targetThreadId, seq: Number(targetSeq)
       }));
 
       await db.query(
         `INSERT INTO tasks
-           (id, tenant_id, scope, kind, agent_id, thread_id, bot_id, swarm_step_id, objective, constraints, acceptance_criteria,
+           (id, tenant_id, scope, kind, agent_id, thread_id, bot_id, swarm_step_id, base_ref, objective, constraints, acceptance_criteria,
             permission_envelope, required_capability, resource_key, context_versions, status, created_by,
             idempotency_key, request_hash, max_attempts, initiator_kind, initiator_id)
-         VALUES ($1, $2, $3, 'turn', $4, $5, $6, $7, $8, '[]'::jsonb, '[]'::jsonb, $9::jsonb, $10, $11, $12::jsonb, 'queued', $13, $14, $15, 3, 'handoff', $16)`,
+         VALUES ($1, $2, $3, 'turn', $4, $5, $6, $7, $8, $9, '[]'::jsonb, '[]'::jsonb, $10::jsonb, $11, $12, $13::jsonb, 'queued', $14, $15, $16, 3, 'handoff', $17)`,
         [taskId, ctx.tenantId, targetAgent.scope, targetAgent.id, targetThreadId, botId, act.swarm_step_id ?? null,
-         `Handoff from ${ctx.agent.name}: ${act.body}`, JSON.stringify(envelope),
-         requiredCap, `agent:${targetAgent.id}`, JSON.stringify(ctxVersions), p.id, newId(), reqHash, ctx.agent.id]
+         act.base_ref ?? act.branch ?? null,
+         clipUtf8(`Handoff from ${ctx.agent.name}: ${act.body}`, 16000), JSON.stringify(envelope),
+         resolved.capability, `agent:${targetAgent.id}`, JSON.stringify(ctxVersions), p.id, newId(), reqHash, ctx.agent.id]
       );
 
       if (act.swarm_step_id) {
@@ -1653,8 +1726,9 @@ export class SwarmsService {
         );
       }
 
-      await audit(db, p, targetAgent.scope, 'task.submitted', taskId, { kind: 'turn', agent_id: targetAgent.id, initiator_kind: 'handoff' });
-      await event(db, p, targetAgent.scope, 'task.updated', taskId, { task_id: taskId, status: 'queued', action: 'submitted' });
+      await audit(db, p, targetAgent.scope, 'task.submitted', taskId, { kind: 'turn', agent_id: targetAgent.id, initiator_kind: 'handoff', required_capability: resolved.capability });
+      await event(db, p, targetAgent.scope, 'task.updated', taskId, { task_id: taskId, kind: 'turn', thread_id: targetThreadId, required_capability: resolved.capability, status: 'queued', action: 'submitted' });
+      return {};
     } else if (act.type === 'swarm_start') {
       requireCondition(budget.hop < MAX_HANDOFF_HOPS, 409, 'hop_limit', `the hop depth limit of ${MAX_HANDOFF_HOPS} is reached`);
       await this.internalSwarmStart(db, p, {
@@ -1664,13 +1738,16 @@ export class SwarmsService {
         thread_id: ctx.thread.id,
         steps: act.steps,
         owner_agent_id: ctx.agent.id,
-        base_ref: act.base_ref ?? null
+        base_ref: act.base_ref ?? null,
+        dispatched_from: ctx.dispatchedFrom ?? null,
       }, budget);
+      return { startedSwarm: true };
     } else if (act.type === 'swarm_update') {
       await this.internalSwarmUpdate(db, p, {
         swarm_id: act.swarm_id,
         ops: act.ops
       }, budget);
+      return {};
     } else if (act.type === 'question_ask') {
       const questionId = newId();
 
@@ -1715,19 +1792,28 @@ export class SwarmsService {
         )).rows[0];
         if (step) await this.refreshSwarmStatus(db, p, step.swarm_id);
       }
+      return {};
     } else if (act.type === 'project_dispatch') {
       // validateTurnGrant resolved act.bot to an id and checked this bot may dispatch.
       const sent = await dispatchToBot(db, p, {
         botId: act.bot, body: act.body, author: { kind: 'agent', id: ctx.agent.id }, initiatorKind: 'handoff', hopDepth: budget.hop + 1,
-        from: { thread_id: ctx.thread.id, scope: ctx.scope, bot_id: ctx.botId! },
+        from: {
+          thread_id: ctx.thread.id,
+          scope: ctx.scope,
+          bot_id: ctx.botId!,
+          ...(helpers?.dispatchGroupId ? { dispatch_group_id: helpers.dispatchGroupId } : {}),
+          hop_depth: budget.hop,
+        },
         beforePost: name => this.takeTurn(db, p, budget, name)
       });
-      if (!sent) return;
+      if (!sent) return {};
       await this.postNotice(db, p, ctx.scope, ctx.thread.id, `Sent to ${sent.name}: ${clipUtf8(act.body, 200)}`);
+      return { dispatched: true };
     } else if (act.type === 'local_action') {
       // validateTurnGrant checked rules.local_actions; the action runs after commit (voice.ts runOriginActions).
       requireCondition(ctx.taskId, 409, 'invalid_state', 'local_action requires a turn task');
       await queueLocalAction(db, p, { scope: ctx.scope, threadId: ctx.thread.id, originKind: 'turn', originId: ctx.taskId!, action: act.action });
+      return {};
     } else if (act.type === 'channel_post') {
       const chanSeq = await assignThreadSeq(db, ctx.tenantId, act.channel_id);
       const chanMsgId = newId();
@@ -1747,7 +1833,9 @@ export class SwarmsService {
       });
 
       await this.routeChannelPost(db, p, ctx, act.channel_id, act.body, Number(chanSeq), budget);
+      return {};
     }
+    return {};
   }
 
   async routeChannelPost(
@@ -1773,12 +1861,7 @@ export class SwarmsService {
       [channelId]
     )).rows;
 
-    const mentionRegex = /@([a-zA-Z0-9_-]+)/g;
-    const mentionedNames = new Set<string>();
-    let match: RegExpExecArray | null;
-    while ((match = mentionRegex.exec(body)) !== null) {
-      if (match[1]) mentionedNames.add(match[1].toLowerCase());
-    }
+    const mentionedNames = extractMentions(body);
 
     const targetAgents: string[] = [];
     if (mentionedNames.size > 0) {
@@ -1809,11 +1892,12 @@ export class SwarmsService {
         if (!agent) continue;
         if (!(await this.takeTurn(db, p, budget, agent.name))) continue;
 
-        const requiredCap = runnerCapability(agent.runner, agent.edits);
+        const resolved = resolveTurnRunner({ agent, noFast: true });
         const taskId = newId();
         const envelope = {
-          deploy: false, publish: false, purchase: false, local_patch: agent.edits,
-          read_project: true, send_messages: false, permission_changes: false, external_side_effects: false
+          deploy: false, publish: false, purchase: false, local_patch: resolved.edits,
+          read_project: true, send_messages: false, permission_changes: false, external_side_effects: false,
+          ...(resolved.runner ? { runner: resolved.runner } : {})
         };
         const ctxVersions = { message_seq: msgSeq, hop_depth: budget.hop + 1 };
         const reqHash = sha256(canonicalJson({
@@ -1825,13 +1909,13 @@ export class SwarmsService {
              (id, tenant_id, scope, kind, agent_id, thread_id, objective, constraints, acceptance_criteria,
               permission_envelope, required_capability, resource_key, context_versions, status, created_by,
               idempotency_key, request_hash, max_attempts, initiator_kind, initiator_id)
-           VALUES ($1, $2, $3, 'turn', $4, $5, $6, '[]'::jsonb, '[]'::jsonb, $7::jsonb, $8, $9, $10::jsonb, 'queued', $11, $12, $13, 3, 'person', $14)`,
+           VALUES ($1, $2, $3, 'turn', $4, $5, $6, '[]'::jsonb, '[]'::jsonb, $7::jsonb, $8, $9, $10::jsonb, 'queued', $11, $12, $13, 3, 'agent', $14)`,
           [taskId, p.tenantId, ctx.scope, agent.id, channelId, `Turn in channel #${channel.title ?? 'channel'}`,
-           JSON.stringify(envelope), requiredCap, `agent:${agent.id}`, JSON.stringify(ctxVersions), p.id, newId(), reqHash, p.id]
+           JSON.stringify(envelope), resolved.capability, `agent:${agent.id}`, JSON.stringify(ctxVersions), p.id, newId(), reqHash, ctx.agent.id]
         );
 
-        await audit(db, p, ctx.scope, 'task.submitted', taskId, { kind: 'turn', agent_id: agent.id });
-        await event(db, p, ctx.scope, 'task.updated', taskId, { task_id: taskId, status: 'queued', action: 'submitted' });
+        await audit(db, p, ctx.scope, 'task.submitted', taskId, { kind: 'turn', agent_id: agent.id, initiator_kind: 'agent', required_capability: resolved.capability });
+        await event(db, p, ctx.scope, 'task.updated', taskId, { task_id: taskId, kind: 'turn', thread_id: channelId, required_capability: resolved.capability, status: 'queued', action: 'submitted' });
       }
     }
   }
@@ -1880,6 +1964,69 @@ export class SwarmsService {
 
     const targetThreadId = agent.main_thread_id!;
 
+    // Fetch swarm metadata (goal, base_ref, thread_id) and completed upstream dependency results.
+    const sw = (await db.query<{ thread_id: string | null; goal: string | null; base_ref: string | null }>(
+      'SELECT thread_id, goal, base_ref FROM swarms WHERE id=$1', [swarmId]
+    )).rows[0];
+
+    let effectiveBaseRef: string | null = sw?.base_ref ?? null;
+    let upstreamSection = '';
+    if (step.needs && step.needs.length > 0) {
+      const deps = (await db.query<{
+        id: string; step_key: string | null; title: string; agent_name: string | null;
+        reply_body: string | null; task_result: Record<string, unknown> | null; task_artifact_ids: string[] | null;
+      }>(
+        `SELECT s.id, s.step_key, s.title, a.name AS agent_name, m.body AS reply_body,
+                t.result AS task_result, t.artifact_ids AS task_artifact_ids
+         FROM swarm_steps s
+         LEFT JOIN agents a ON a.id = s.assignee_agent_id
+         LEFT JOIN messages m ON m.id = s.result_message_id
+         LEFT JOIN tasks t ON t.id = s.task_id
+         WHERE s.id = ANY($1::uuid[]) AND s.status = 'done'
+         ORDER BY s.order_index ASC`,
+        [step.needs]
+      )).rows;
+
+      const editCommits = deps
+        .map(d => (typeof d.task_result?.head_commit === 'string' && d.task_result.head_commit.trim() ? d.task_result.head_commit.trim() : null))
+        .filter((c): c is string => Boolean(c));
+      if (editCommits.length === 1 && isBaseRef(editCommits[0])) {
+        effectiveBaseRef = editCommits[0]!;
+      }
+
+      if (deps.length > 0) {
+        const lines: string[] = ['Upstream step results:'];
+        let budgetChars = 4000;
+        for (const dep of deps) {
+          if (budgetChars <= 0) break;
+          const res = dep.task_result ?? {};
+          const meta: string[] = [];
+          if (typeof res.branch === 'string' && res.branch.trim()) meta.push(`branch=${res.branch.trim()}`);
+          if (typeof res.head_commit === 'string' && res.head_commit.trim()) meta.push(`head_commit=${res.head_commit.trim()}`);
+          if (Array.isArray(dep.task_artifact_ids) && dep.task_artifact_ids.length > 0) meta.push(`artifacts=${dep.task_artifact_ids.join(',')}`);
+          const header = `- ${dep.title}${dep.agent_name ? ` (${dep.agent_name})` : ''}${meta.length ? ` [${meta.join(', ')}]` : ''}`;
+          const diffstat = typeof res.diffstat === 'string' && res.diffstat.trim()
+            ? `\n  Diffstat: ${redactSecrets(res.diffstat.trim()).slice(0, 400)}`
+            : '';
+          const reply = dep.reply_body && dep.reply_body.trim()
+            ? `\n  ${redactSecrets(dep.reply_body.trim()).slice(0, 800)}`
+            : '';
+          const entry = `${header}${diffstat}${reply}`.slice(0, budgetChars);
+          lines.push(entry);
+          budgetChars -= entry.length + 1;
+        }
+        if (lines.length > 1) upstreamSection = lines.join('\n');
+      }
+    }
+
+    const handoffParts = [
+      handoffBody(ownerName, step.title, step.check),
+      ...(sw?.goal?.trim() ? [`Swarm goal: ${redactSecrets(sw.goal.trim())}`] : []),
+      ...(step.instructions?.trim() ? [`Instructions: ${redactSecrets(step.instructions.trim())}`] : []),
+      ...(upstreamSection ? [upstreamSection] : []),
+    ];
+    const fullHandoffBody = clipUtf8(handoffParts.join('\n\n'), 16384);
+
     // Post handoff message into assignee's main thread
     const seq = await assignThreadSeq(db, p.tenantId, targetThreadId);
     const handoffMsgId = newId();
@@ -1887,7 +2034,7 @@ export class SwarmsService {
       `INSERT INTO messages (id, tenant_id, scope, thread_id, seq, author, kind, body, ref)
        VALUES ($1, $2, $3, $4, $5, $6::jsonb, 'handoff', $7, $8::jsonb)`,
       [handoffMsgId, p.tenantId, scope, targetThreadId, seq,
-       JSON.stringify({ kind: 'system', id: 'service' }), handoffBody(ownerName, step.title, step.check),
+       JSON.stringify({ kind: 'system', id: 'service' }), fullHandoffBody,
        JSON.stringify({ swarm_id: swarmId, step_id: step.id })]
     );
 
@@ -1900,47 +2047,46 @@ export class SwarmsService {
     });
 
     // Queue turn task
-    const sw = (await db.query<{ thread_id: string }>('SELECT thread_id FROM swarms WHERE id=$1', [swarmId])).rows[0];
-    let botId: string | null = null;
-    let requiredCap = runnerCapability(agent.runner, agent.edits);
-    let localPatch = agent.edits;
-    let runnerObj: Record<string, unknown> | undefined;
+    let bot: { id: string; routing: Record<string, unknown>; rules: Record<string, unknown>; lead_agent_id: string } | undefined;
     if (sw?.thread_id) {
-      const bot = (await db.query<{ id: string; routing: Record<string, unknown>; rules: Record<string, unknown>; lead_agent_id: string }>(
+      bot = (await db.query<{ id: string; routing: Record<string, unknown>; rules: Record<string, unknown>; lead_agent_id: string }>(
         'SELECT id, routing, rules, lead_agent_id FROM bots WHERE thread_id=$1', [sw.thread_id]
       )).rows[0];
-      if (bot) {
-        botId = bot.id;
-        const profile = leadTurnProfile(bot, agent);
-        if (profile.router) {
-          requiredCap = profile.capability;
-          localPatch = profile.edits;
-          if (profile.runner) runnerObj = profile.runner;
-        } else {
-          requiredCap = memberCapability(bot, agent, agent.edits ? 'patch' : 'research');
-        }
-      }
     }
+    const botId = bot?.id ?? null;
+    const resolved = resolveTurnRunner({
+      bot,
+      agent,
+      routeKind: agent.edits ? 'patch' : 'research',
+      noFast: true,
+    });
     const taskId = newId();
     const envelope = {
-      deploy: false, publish: false, purchase: false, local_patch: localPatch,
+      deploy: false, publish: false, purchase: false, local_patch: resolved.edits,
       read_project: true, send_messages: false, permission_changes: false, external_side_effects: false,
-      ...(runnerObj ? { runner: runnerObj } : {})
+      ...(resolved.runner ? { runner: resolved.runner } : {})
     };
     const ctxVersions = { message_seq: Number(seq), hop_depth: budget ? budget.hop + 1 : 0 };
     const reqHash = sha256(canonicalJson({
       kind: 'turn', scope, agent_id: agent.id, thread_id: targetThreadId, seq: Number(seq)
     }));
+    const objectiveParts = [
+      step.instructions?.trim() ? step.instructions.trim() : step.title,
+      ...(step.instructions?.trim() && step.title && step.instructions.trim() !== step.title ? [`Step: ${step.title}`] : []),
+      ...(sw?.goal?.trim() ? [`Swarm goal: ${sw.goal.trim()}`] : []),
+      ...(step.check?.trim() ? [`Done when: ${step.check.trim()}`] : []),
+    ];
+    const stepObjective = clipUtf8(redactSecrets(objectiveParts.join('\n\n')), 16000);
 
     await db.query(
       `INSERT INTO tasks
-         (id, tenant_id, scope, kind, agent_id, thread_id, bot_id, swarm_step_id, objective, constraints, acceptance_criteria,
+         (id, tenant_id, scope, kind, agent_id, thread_id, bot_id, swarm_step_id, base_ref, objective, constraints, acceptance_criteria,
           permission_envelope, required_capability, resource_key, context_versions, status, created_by,
           idempotency_key, request_hash, max_attempts, initiator_kind, initiator_id)
-       VALUES ($1, $2, $3, 'turn', $4, $5, $6, $7, $8, '[]'::jsonb, '[]'::jsonb, $9::jsonb, $10, $11, $12::jsonb, 'queued', $13, $14, $15, 3, 'swarm', $16)`,
-      [taskId, p.tenantId, scope, agent.id, targetThreadId, botId, step.id,
-       step.instructions ?? step.title, JSON.stringify(envelope),
-       requiredCap, `agent:${agent.id}`, JSON.stringify(ctxVersions), p.id, newId(), reqHash, swarmId]
+       VALUES ($1, $2, $3, 'turn', $4, $5, $6, $7, $8, $9, '[]'::jsonb, '[]'::jsonb, $10::jsonb, $11, $12, $13::jsonb, 'queued', $14, $15, $16, 3, 'swarm', $17)`,
+      [taskId, p.tenantId, scope, agent.id, targetThreadId, botId, step.id, effectiveBaseRef,
+       stepObjective, JSON.stringify(envelope),
+       resolved.capability, `agent:${agent.id}`, JSON.stringify(ctxVersions), p.id, newId(), reqHash, swarmId]
     );
 
     step.task_id = taskId;
@@ -1950,8 +2096,8 @@ export class SwarmsService {
       [taskId, step.id]
     );
 
-    await audit(db, p, scope, 'task.submitted', taskId, { kind: 'turn', agent_id: agent.id, swarm_step_id: step.id });
-    await event(db, p, scope, 'task.updated', taskId, { task_id: taskId, status: 'queued', action: 'submitted' });
+    await audit(db, p, scope, 'task.submitted', taskId, { kind: 'turn', agent_id: agent.id, swarm_step_id: step.id, required_capability: resolved.capability });
+    await event(db, p, scope, 'task.updated', taskId, { task_id: taskId, kind: 'turn', thread_id: targetThreadId, required_capability: resolved.capability, status: 'queued', action: 'submitted' });
   }
 
   private async postNotice(db: Db, p: Principal, scope: string, threadId: string | null, body: string): Promise<void> {
@@ -1997,7 +2143,7 @@ export class SwarmsService {
 export async function dispatchToBot(db: Db, p: Principal, opts: {
   botId: string; body: string; author: { kind: 'agent' | 'human'; id: string };
   initiatorKind: 'handoff' | 'person'; hopDepth?: number; idempotencyKey?: string; ref?: Record<string, unknown>;
-  from?: { thread_id: string; scope: string; bot_id: string } | null;
+  from?: DispatchedFromEntry | null;
   beforePost?: (name: string) => Promise<boolean>;
 }): Promise<{ name: string; thread_id: string; seq: number; message_id: string; task_id: string } | undefined> {
   const target = (await db.query<{ id: string; name: string; scope: string; thread_id: string; lead_agent_id: string; routing: Record<string, unknown>; rules: Record<string, unknown> }>(
@@ -2012,7 +2158,7 @@ export async function dispatchToBot(db: Db, p: Principal, opts: {
   if (opts.beforePost && !(await opts.beforePost(target.name))) return undefined;
   const seq = await assignThreadSeq(db, p.tenantId, thread.id);
   const msgId = newId();
-  const ref = { ...(opts.ref ?? {}), ...(opts.from ? { dispatched_from: { thread_id: opts.from.thread_id, bot_id: opts.from.bot_id } } : {}) };
+  const ref = { ...(opts.ref ?? {}), ...(opts.from ? { dispatched_from: { thread_id: opts.from.thread_id, bot_id: opts.from.bot_id, ...(opts.from.dispatch_group_id ? { dispatch_group_id: opts.from.dispatch_group_id } : {}) } } : {}) };
   await db.query(
     `INSERT INTO messages (id, tenant_id, scope, thread_id, seq, author, kind, body, ref, idempotency_key)
      VALUES ($1, $2, $3, $4, $5, $6::jsonb, 'text', $7, $8::jsonb, $9)`,

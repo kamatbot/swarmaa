@@ -1222,8 +1222,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @MainActor func openTeams(threadID: String? = nil) {
         if teams == nil {
             let window = TeamsWindowController()
-            store?.$usageSnapshots.receive(on: RunLoop.main)
-                .sink { [weak model = window.model] in model?.localUsage = $0 }
+            store?.$usageSnapshots
+                .removeDuplicates()
+                .receive(on: RunLoop.main)
+                .sink { [weak model = window.model] snapshots in
+                    if let model, model.localUsage != snapshots {
+                        model.localUsage = snapshots
+                    }
+                }
                 .store(in: &cancellables)
             teams = window
         }

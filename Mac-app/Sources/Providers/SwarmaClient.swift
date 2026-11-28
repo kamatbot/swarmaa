@@ -29,6 +29,17 @@ struct SwarmaStatus: Decodable, Equatable {
         let live: Bool
         let running: [Running]
         let providers: [String]
+        var defaultModels: [String: String]? = nil
+
+        init(name: String, lastSeenAt: Date?, live: Bool, running: [Running], providers: [String],
+             defaultModels: [String: String]? = nil) {
+            self.name = name
+            self.lastSeenAt = lastSeenAt
+            self.live = live
+            self.running = running
+            self.providers = providers
+            self.defaultModels = defaultModels
+        }
     }
 
     struct Usage: Equatable {
@@ -113,18 +124,97 @@ struct SwarmaStatus: Decodable, Equatable {
         var byKind: [String: Choice] = [:]
     }
 
+    /// Per-provider model catalog advertised by newer services (`swarm_status.model_catalog`).
+    struct ModelCatalogEntry: Decodable, Equatable {
+        struct Model: Decodable, Equatable, Identifiable, Hashable {
+            let id: String
+            let label: String
+            let efforts: [String]
+            var fast: Bool = false
+            var isDefault: Bool = false
+
+            private enum CodingKeys: String, CodingKey {
+                case id, label, efforts, fast
+                case isDefault = "default"
+            }
+
+            init(id: String, label: String, efforts: [String], fast: Bool = false, isDefault: Bool = false) {
+                self.id = id
+                self.label = label
+                self.efforts = efforts
+                self.fast = fast
+                self.isDefault = isDefault
+            }
+
+            init(from decoder: Decoder) throws {
+                let c = try decoder.container(keyedBy: CodingKeys.self)
+                id = try c.decode(String.self, forKey: .id)
+                label = (try? c.decodeIfPresent(String.self, forKey: .label)) ?? id
+                efforts = ((try? c.decodeIfPresent([String].self, forKey: .efforts)) ?? nil) ?? []
+                fast = (try? c.decodeIfPresent(Bool.self, forKey: .fast)) ?? false
+                isDefault = (try? c.decodeIfPresent(Bool.self, forKey: .isDefault)) ?? false
+            }
+        }
+
+        var defaultModel: String?
+        var turnModel: String?
+        var models: [Model]
+        var efforts: [String] = []
+
+        private enum CodingKeys: String, CodingKey {
+            case defaultModel = "default_model", turnModel = "turn_model", models, efforts
+        }
+
+        init(defaultModel: String? = nil, turnModel: String? = nil, models: [Model] = [], efforts: [String] = []) {
+            self.defaultModel = defaultModel
+            self.turnModel = turnModel
+            self.models = models
+            self.efforts = efforts
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            let defModel = (try? c.decodeIfPresent(String.self, forKey: .defaultModel)) ?? nil
+            defaultModel = defModel
+            turnModel = (try? c.decodeIfPresent(String.self, forKey: .turnModel)) ?? nil
+            let entryEfforts = ((try? c.decodeIfPresent([String].self, forKey: .efforts)) ?? nil) ?? []
+            efforts = entryEfforts
+            if let rich = try? c.decodeIfPresent([Model].self, forKey: .models) {
+                models = rich.map { m in
+                    m.efforts.isEmpty && !entryEfforts.isEmpty
+                        ? Model(id: m.id, label: m.label, efforts: entryEfforts, fast: m.fast, isDefault: m.isDefault)
+                        : m
+                }
+            } else if let ids = try? c.decodeIfPresent([String].self, forKey: .models) {
+                models = ids.map { id in
+                    Model(
+                        id: id,
+                        label: SwarmaModelCatalog.prettyLabel(for: id),
+                        efforts: entryEfforts,
+                        fast: id.contains("haiku") || id.contains("mini") || id.contains("flash"),
+                        isDefault: id == defModel
+                    )
+                }
+            } else {
+                models = []
+            }
+        }
+    }
+
     var workers: [Worker] = []
     var usage: [Usage] = []
     var scopes: [Scope] = []
     var recent: [TaskRow] = []
     var sessions: [Session] = []
     var routing: Routing?
+    var modelCatalog: [String: ModelCatalogEntry]? = nil
     /// Candidate lessons waiting for review. Newer services only; an older one sends none.
     var lessonsPending: Int = 0
     var generatedAt: Date?
 
     init(workers: [Worker] = [], usage: [Usage] = [], scopes: [Scope] = [],
          recent: [TaskRow] = [], sessions: [Session] = [], routing: Routing? = nil,
+         modelCatalog: [String: ModelCatalogEntry]? = nil,
          lessonsPending: Int = 0, generatedAt: Date? = nil) {
         self.lessonsPending = lessonsPending
         self.workers = workers
@@ -133,7 +223,192 @@ struct SwarmaStatus: Decodable, Equatable {
         self.recent = recent
         self.sessions = sessions
         self.routing = routing
+        self.modelCatalog = modelCatalog
         self.generatedAt = generatedAt
+    }
+}
+
+/// Dynamic model & effort catalog backed by `swarm_status.model_catalog`, with bundled defaults
+/// so older services or offline workers still offer full model/effort choices.
+enum SwarmaModelCatalog {
+    typealias Entry = SwarmaStatus.ModelCatalogEntry
+    typealias Model = SwarmaStatus.ModelCatalogEntry.Model
+
+    static let defaultOrder = ["claude", "codex", "antigravity"]
+
+    static let bundled: [String: Entry] = [
+        "claude": Entry(
+            defaultModel: "claude-opus-5-5",
+            turnModel: "claude-haiku-5-5",
+            models: [
+                Model(id: "claude-opus-5-5", label: "Opus 5.5", efforts: ["low", "medium", "high", "max"], isDefault: true),
+                Model(id: "claude-sonnet-5-5", label: "Sonnet 5.5", efforts: ["low", "medium", "high", "max"], fast: true),
+                Model(id: "claude-haiku-5-5", label: "Haiku 5.5", efforts: ["low", "medium", "high", "max"], fast: true),
+            ]
+        ),
+        "codex": Entry(
+            defaultModel: "gpt-6-astra",
+            turnModel: "gpt-5.4-mini",
+            models: [
+                Model(id: "gpt-6-astra", label: "GPT-6 Astra", efforts: ["minimal", "low", "medium", "high", "xhigh"], isDefault: true),
+                Model(id: "gpt-5.4", label: "GPT-5.4", efforts: ["minimal", "low", "medium", "high", "xhigh"]),
+                Model(id: "gpt-5.4-mini", label: "GPT-5.4 Mini", efforts: ["minimal", "low", "medium", "high", "xhigh"], fast: true),
+            ]
+        ),
+        "antigravity": Entry(
+            defaultModel: "gemini-3.8-pro",
+            turnModel: "gemini-3.8-flash",
+            models: [
+                Model(id: "gemini-3.8-pro", label: "Gemini 3.8 Pro", efforts: ["low", "medium", "high", "xhigh"], isDefault: true),
+                Model(id: "gemini-3.8-flash", label: "Gemini 3.8 Flash", efforts: ["low", "medium", "high", "xhigh"], fast: true),
+            ]
+        ),
+    ]
+
+    static func prettyLabel(for modelID: String) -> String {
+        for entry in bundled.values {
+            if let match = entry.models.first(where: { $0.id == modelID }) { return match.label }
+        }
+        if modelID == "gemini-3.8-flash-high" { return "Gemini 3.8 Flash" }
+        return modelID
+    }
+
+    static func entry(for provider: String, status: SwarmaStatus?) -> Entry {
+        let key = provider.lowercased()
+        let live = status?.modelCatalog?[key]
+        let fallback = bundled[key]
+        if let live {
+            let models = live.models.isEmpty ? (fallback?.models ?? []) : live.models
+            let efforts = live.efforts.isEmpty ? (fallback?.efforts ?? []) : live.efforts
+            return Entry(
+                defaultModel: live.defaultModel ?? fallback?.defaultModel,
+                turnModel: live.turnModel ?? fallback?.turnModel,
+                models: models,
+                efforts: efforts
+            )
+        }
+        return fallback ?? Entry(models: [])
+    }
+
+    static func models(for provider: String, status: SwarmaStatus?) -> [Model] {
+        entry(for: provider, status: status).models
+    }
+
+    static func efforts(for provider: String, model: String? = nil, status: SwarmaStatus?) -> [String] {
+        let e = entry(for: provider, status: status)
+        if let model, let match = e.models.first(where: { $0.id == model }), !match.efforts.isEmpty {
+            return match.efforts
+        }
+        if !e.efforts.isEmpty {
+            return e.efforts
+        }
+        if let first = e.models.first(where: { !$0.efforts.isEmpty }) {
+            return first.efforts
+        }
+        return ["low", "medium", "high"]
+    }
+
+    static func modelLabel(_ modelID: String, provider: String? = nil, status: SwarmaStatus? = nil) -> String {
+        if let provider {
+            if let match = models(for: provider, status: status).first(where: { $0.id == modelID }) {
+                return match.label
+            }
+        }
+        if let catalog = status?.modelCatalog {
+            for entry in catalog.values {
+                if let match = entry.models.first(where: { $0.id == modelID }) { return match.label }
+            }
+        }
+        for entry in bundled.values {
+            if let match = entry.models.first(where: { $0.id == modelID }) { return match.label }
+        }
+        if modelID == "gemini-3.8-flash-high" { return "Gemini 3.8 Flash" }
+        return modelID
+    }
+
+    static func effortLabel(_ effort: String) -> String {
+        switch effort.lowercased() {
+        case "minimal": return L10n.t("Minimal")
+        case "low": return L10n.t("Low")
+        case "medium": return L10n.t("Medium")
+        case "high": return L10n.t("High")
+        case "xhigh": return L10n.t("Extra High")
+        case "max": return L10n.t("Max")
+        default: return effort.prefix(1).uppercased() + effort.dropFirst()
+        }
+    }
+
+    /// Live worker's reported default model for `provider`, falling back to `model_catalog[provider].default_model`.
+    static func defaultModel(for provider: String, status: SwarmaStatus?) -> String? {
+        let key = provider.lowercased()
+        if let workerModel = status?.workers.first(where: { $0.live && $0.defaultModels?[key] != nil })?.defaultModels?[key],
+           !workerModel.isEmpty {
+            return workerModel
+        }
+        if let workerModel = status?.workers.compactMap({ $0.defaultModels?[key] }).first(where: { !$0.isEmpty }) {
+            return workerModel
+        }
+        if let cat = status?.modelCatalog?[key]?.defaultModel, !cat.isEmpty {
+            return cat
+        }
+        return nil
+    }
+
+    static func turnModel(for provider: String, status: SwarmaStatus?) -> String? {
+        let key = provider.lowercased()
+        if let cat = status?.modelCatalog?[key]?.turnModel, !cat.isEmpty {
+            return cat
+        }
+        return nil
+    }
+
+    /// Merges providers from `routing.policy.providers`, `routing.providers`, `modelCatalog`,
+    /// `usage`, `workers`, and built-in defaults so offline or newly added providers never vanish.
+    static func mergedProviders(status: SwarmaStatus?) -> [SwarmaStatus.Routing.Provider] {
+        var ordered: [String] = []
+        var seen = Set<String>()
+        func add(_ raw: String) {
+            let p = raw.lowercased()
+            guard !p.isEmpty, seen.insert(p).inserted else { return }
+            ordered.append(p)
+        }
+        if let policy = status?.routing?.policy {
+            for rule in policy.providers { add(rule.provider) }
+        }
+        if let routed = status?.routing?.providers {
+            for p in routed { add(p.provider) }
+        }
+        if let catalog = status?.modelCatalog {
+            for key in defaultOrder where catalog[key] != nil { add(key) }
+            for key in catalog.keys.sorted() { add(key) }
+        }
+        if let usage = status?.usage {
+            for u in usage { add(u.provider) }
+        }
+        if let workers = status?.workers {
+            for w in workers { for p in w.providers { add(p) } }
+        }
+        for p in defaultOrder { add(p) }
+
+        let routedByID = Dictionary((status?.routing?.providers ?? []).map { ($0.provider.lowercased(), $0) }, uniquingKeysWith: { a, _ in a })
+        let usageByID = Dictionary((status?.usage ?? []).map { ($0.provider.lowercased(), $0) }, uniquingKeysWith: { a, _ in a })
+        let liveWorkerProviders = Set((status?.workers ?? []).filter(\.live).flatMap { $0.providers.map { $0.lowercased() } })
+
+        return ordered.map { p in
+            if let existing = routedByID[p] {
+                let live = existing.liveWorker || liveWorkerProviders.contains(p)
+                let headroom = existing.headroom ?? usageByID[p]?.headroom
+                let windows = existing.windows.isEmpty ? (usageByID[p]?.windows ?? []) : existing.windows
+                return SwarmaStatus.Routing.Provider(provider: existing.provider, headroom: headroom, liveWorker: live, windows: windows)
+            }
+            let u = usageByID[p]
+            return SwarmaStatus.Routing.Provider(
+                provider: p,
+                headroom: u?.headroom,
+                liveWorker: liveWorkerProviders.contains(p),
+                windows: u?.windows ?? []
+            )
+        }
     }
 }
 
@@ -145,7 +420,11 @@ private extension KeyedDecodingContainer {
 }
 
 extension SwarmaStatus {
-    private enum CodingKeys: String, CodingKey { case workers, usage, scopes, recent, sessions, routing, generatedAt = "generated_at", lessonsPending = "lessons_pending" }
+    private enum CodingKeys: String, CodingKey {
+        case workers, usage, scopes, recent, sessions, routing
+        case modelCatalog = "model_catalog"
+        case generatedAt = "generated_at", lessonsPending = "lessons_pending"
+    }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -155,13 +434,22 @@ extension SwarmaStatus {
         recent = c.list(.recent)
         sessions = c.list(.sessions)
         routing = ((try? c.decodeIfPresent(Routing.self, forKey: .routing)) ?? nil)
+        struct CatalogWrapper: Decodable { let providers: [String: ModelCatalogEntry] }
+        if let wrapped = (try? c.decodeIfPresent(CatalogWrapper.self, forKey: .modelCatalog)) ?? nil {
+            modelCatalog = wrapped.providers
+        } else {
+            modelCatalog = ((try? c.decodeIfPresent([String: ModelCatalogEntry].self, forKey: .modelCatalog)) ?? nil)
+        }
         generatedAt = try c.decodeIfPresent(Date.self, forKey: .generatedAt)
         lessonsPending = max(0, (try? c.decodeIfPresent(Int.self, forKey: .lessonsPending)) ?? 0)
     }
 }
 
 extension SwarmaStatus.Worker: Decodable {
-    private enum CodingKeys: String, CodingKey { case name, lastSeenAt = "last_seen_at", live, running, providers }
+    private enum CodingKeys: String, CodingKey {
+        case name, lastSeenAt = "last_seen_at", live, running, providers
+        case defaultModels = "default_models"
+    }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -170,6 +458,7 @@ extension SwarmaStatus.Worker: Decodable {
         live = try c.decodeIfPresent(Bool.self, forKey: .live) ?? false
         running = c.list(.running)
         providers = c.list(.providers)
+        defaultModels = (try? c.decodeIfPresent([String: String].self, forKey: .defaultModels)) ?? nil
     }
 }
 
@@ -325,6 +614,8 @@ actor SwarmaClient {
 
     private var cached: (key: String, at: Date, result: Result<SwarmaStatus, Failure>)?
     private var inFlight: (key: String, task: Task<SwarmaStatus, Error>)?
+    private var routingInFlight: (key: String, task: Task<RoutingGetResult, Error>)?
+    private var cachedToken: (path: String, mtime: Date?, token: String)?
 
     init(
         serviceURL: @escaping @Sendable () -> String = { Preferences.storedSwarmaServiceURL() },
@@ -413,7 +704,16 @@ actor SwarmaClient {
     // MARK: - Routing
 
     func routingGet() async throws -> RoutingGetResult {
-        try await call("routing_get", body: Data("{}".utf8), as: RoutingGetResult.self)
+        let key = serviceURL() + "|" + tokenPath()
+        if let routingInFlight, routingInFlight.key == key {
+            return try await routingInFlight.task.value
+        }
+        let task = Task { () throws -> RoutingGetResult in
+            try await self.call("routing_get", body: Data("{}".utf8), as: RoutingGetResult.self)
+        }
+        routingInFlight = (key, task)
+        defer { routingInFlight = nil }
+        return try await task.value
     }
 
     func routingSet(_ policy: RoutingPolicy) async throws -> RoutingSetResult {
@@ -441,7 +741,17 @@ actor SwarmaClient {
 
     private func fetch(tool: String, body: Data) async throws -> Data {
         guard authMode() == .oauth else {
-            return try await Self.send(makeRequest(tool: tool, body: body), via: transport)
+            let token = try readToken()
+            do {
+                return try await Self.send(makeRequest(tool: tool, body: body, token: token), via: transport)
+            } catch Failure.unauthorized {
+                // Invalidate cached token on 401 and retry once if the file now holds a rotated token.
+                cachedToken = nil
+                if let refreshed = try? readToken(), refreshed != token {
+                    return try await Self.send(makeRequest(tool: tool, body: body, token: refreshed), via: transport)
+                }
+                throw Failure.unauthorized
+            }
         }
         var forceRefresh = false
         while true {
@@ -525,11 +835,11 @@ actor SwarmaClient {
         return request
     }
 
-    private func makeRequest(tool: String, body: Data) throws -> URLRequest {
+    private func makeRequest(tool: String, body: Data, token: String) throws -> URLRequest {
         var request = URLRequest(url: try Self.endpoint(serviceURL(), tool: tool))
         request.httpMethod = "POST"
         request.timeoutInterval = 5
-        request.setValue("Bearer \(try readToken())", forHTTPHeaderField: "Authorization")
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = body
         return request
@@ -537,10 +847,18 @@ actor SwarmaClient {
 
     private func readToken() throws -> String {
         let path = (tokenPath() as NSString).expandingTildeInPath
+        let mtime = (try? FileManager.default.attributesOfItem(atPath: path))?[.modificationDate] as? Date
+        if let cachedToken, cachedToken.path == path, let mtime, cachedToken.mtime == mtime {
+            return cachedToken.token
+        }
         guard let data = FileManager.default.contents(atPath: path),
               let file = try? JSONDecoder().decode(TokenFile.self, from: data),
               !file.token.isEmpty
-        else { throw Failure.noToken }
+        else {
+            cachedToken = nil
+            throw Failure.noToken
+        }
+        cachedToken = (path, mtime, file.token)
         return file.token
     }
 
@@ -603,15 +921,22 @@ actor SwarmaClient {
         }
     }
 
+    private static let isoPlain = Date.ISO8601FormatStyle(includingFractionalSeconds: false)
+    private static let isoFractional = Date.ISO8601FormatStyle(includingFractionalSeconds: true)
+
     static let decoder: JSONDecoder = {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .custom { decoder in
             let text = try decoder.singleValueContainer().decode(String.self)
-            // The service writes both "…:00Z" and "…:00.123Z".
-            let plain = ISO8601DateFormatter()
-            let fractional = ISO8601DateFormatter()
-            fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-            guard let date = plain.date(from: text) ?? fractional.date(from: text) else {
+            // The service writes both "…:00Z" and "…:00.123Z". Value-type ISO8601FormatStyle avoids
+            // per-date ISO8601DateFormatter allocations.
+            let parsed: Date?
+            if text.contains(".") {
+                parsed = (try? isoFractional.parse(text)) ?? (try? isoPlain.parse(text))
+            } else {
+                parsed = (try? isoPlain.parse(text)) ?? (try? isoFractional.parse(text))
+            }
+            guard let date = parsed else {
                 throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath,
                                                         debugDescription: "Unrecognised date"))
             }

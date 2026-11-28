@@ -33,6 +33,9 @@ function setup() {
       calls.push({ name, args });
       if (name === 'task_claim') return { task, lease_token: 'l', lease_generation: 1 } as T;
       if (name === 'context_get') return { scope: task.scope, task, memories: [], conflicts: [] } as T;
+      if (name === 'task_finish' && failDiffUpload && Array.isArray(args.inline_artifacts) && (args.inline_artifacts as Array<{ name: string }>).some(a => a.name.endsWith('.diff'))) {
+        throw Object.assign(new Error('Artifact exceeds 256 KiB'), { code: 'artifact_too_large' });
+      }
       if (name === 'artifact_put') {
         if (failDiffUpload && String(args.name).endsWith('.diff')) throw Object.assign(new Error('Artifact exceeds 256 KiB'), { code: 'artifact_too_large' });
         return { artifact: { id: `${calls.length}`.padStart(8, '0') + '-2222-4222-8222-222222222222' } } as T;
@@ -45,7 +48,7 @@ function setup() {
       const worker = new BridgeWorker(cfg, client, (e, m) => { if (process.env.DBG) console.error(e, m); }, async req => { edit(req.cwd); return ok; });
       await worker.claimAndRun(cfg.projects, new AbortController().signal);
     } finally { if (home === undefined) delete process.env.HOME; else process.env.HOME = home; }
-    const finish = calls.find(c => c.name === 'task_finish')!.args;
+    const finish = calls.filter(c => c.name === 'task_finish').at(-1)!.args;
     return { calls, finish, result: finish.result as Record<string, any> };
   }
   return { dir, root, attempt };
@@ -91,7 +94,8 @@ test('a >300 KiB diff is clipped to the artifact limit; upload failure keeps pro
   try {
     const big = 'é'.repeat(160 * 1024) + '\n'; // multi-byte, ~320 KiB
     const r = await s.attempt(cwd => writeFileSync(join(cwd, 'big.txt'), big));
-    const diff = String(r.calls.find(c => c.name === 'artifact_put' && String(c.args.name).endsWith('.diff'))!.args.content);
+    const inline = r.finish.inline_artifacts as Array<{ name: string; content: string }>;
+    const diff = String(inline.find(a => a.name.endsWith('.diff'))!.content);
     assert.ok(Buffer.byteLength(diff) <= ARTIFACT_MAX_BYTES, `${Buffer.byteLength(diff)} bytes`);
     assert.ok(!diff.includes('�'));
     assert.match(diff, /diff truncated/u);

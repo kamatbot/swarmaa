@@ -211,6 +211,7 @@ test('no-hostname setup generates only local config and plists', async t => {
   for (const k of ['claude', 'codex']) {
     const config = JSON.parse(files.get(join(root, `.local/bridge-${k}.json`))!);
     assert.equal(config.service_url, env.PUBLIC_URL);
+    assert.equal('model' in config.agents[0], false, `${k} default bridge config omits hardcoded model alias`);
     assert.ok([...files.keys()].some(f => f.endsWith(`com.swarma.bridge.${k}.plist`)));
   }
   assert.ok([...files.keys()].some(f => f.endsWith('com.swarma.service.plist')));
