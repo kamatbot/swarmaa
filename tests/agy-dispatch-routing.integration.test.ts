@@ -100,8 +100,9 @@ describe('agy dispatch routing', { skip: !connectionString, concurrency: false }
     const t = randomUUID(); const owner = await createPrincipal(t, 'o'); const worker = await createPrincipal(t, 'w', 'worker', ['project:coord', 'project:alpha']);
     const coord = await mk(owner, 'project:coord', 'Coordinator', { dispatch_all_projects: true, first_reply: 'off' });
     await mk(owner, 'project:alpha', 'Alpha', { first_reply: 'off' });
-    await call(owner, 'thread_post', { thread_id: coord.thread.id, body: 'go', idempotency_key: 'k1' });
+    await call(owner, 'thread_post', { thread_id: coord.thread.id, body: 'Run a test. Use agy with neon.', idempotency_key: 'k1' });
     const cc = await claimIn(worker, 'project:coord');
+    assert.equal(cc.task?.required_capability, 'codex.read', 'the coordinator keeps its runner; the dispatch carries "use agy"');
     const acts = [{ type: 'project_dispatch', bot: 'Alpha', body: 'a1' },
       { type: 'question_ask', prompt: 'Which?', options: ['x'.repeat(120), 'short'] }];
     await call(worker, 'task_finish', { task_id: cc.task.id, lease_token: cc.lease_token, lease_generation: cc.lease_generation, outcome: 'completed',
