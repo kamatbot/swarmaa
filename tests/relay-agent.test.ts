@@ -201,7 +201,11 @@ test('pairing is a 6-digit code; only its hash and five-minute expiry are stored
 
 test('relay launchd wiring is opt-in and dry-run performs no install', async () => {
   const calls: string[] = [];
-  const io: DeployIO = { uid: 501, port: '8787', command: (c, a) => { calls.push(`${c} ${a.join(' ')}`); return ''; }, signal: () => {}, sleep: async () => {}, status: async () => [], healthy: async () => true, log: () => {}, installRelay: () => { calls.push('install'); return '/fixture/relay.plist'; } };
+  const io: DeployIO = { uid: 501, port: '8787', command: (c, a) => {
+    calls.push(`${c} ${a.join(' ')}`);
+    if (a[0] === 'print') throw new Error('not loaded'); // the old relay is already gone
+    return a[0] === 'list' ? '{ "PID" = 4242; }' : '';
+  }, signal: () => {}, sleep: async () => {}, status: async () => [], healthy: async () => true, log: () => {}, installRelay: () => { calls.push('install'); return '/fixture/relay.plist'; } };
   await deployLocal(['--dry-run', '--relay'], io); assert.ok(!calls.includes('install'));
   calls.length = 0; await deployLocal(['--relay'], io);
   assert.ok(calls.includes('install')); assert.ok(calls.includes('launchctl bootstrap gui/501 /fixture/relay.plist')); assert.ok(calls.includes('launchctl kickstart -k gui/501/com.swarma.relay'));
