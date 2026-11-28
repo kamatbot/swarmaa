@@ -170,6 +170,23 @@ describe('routing policy', {skip:!connectionString,concurrency:false}, () => {
     assert.equal((await claim(agy,agyCaps)).task.id,review.id);
   });
 
+  it('auto work prefers a metered provider under its limits, then antigravity (no quota reading) over an over-limit one', async () => {
+    const {owner,front,claude,codex,agy} = await fixture();
+    await call(owner,'routing_set',{policy:policy(p => { p.providers = [entry(p,'antigravity'),entry(p,'claude'),entry(p,'codex')]; })});
+    await call(agy,'usage_report',{reports:[{provider:'antigravity',ok:false,error:'Antigravity quota is not exposed via a public CLI/ACP API',fetched_at:new Date().toISOString(),windows:[]}]});
+    await call(claude,'usage_report',report('claude',10,10));
+    assert.equal((await call(front,'swarm_status',{})).routing.by_kind.research.provider,'claude');
+    await call(claude,'usage_report',report('claude',95,10));
+    await call(codex,'usage_report',report('codex',99,99));
+    const by = (await call(front,'swarm_status',{})).routing.by_kind;
+    assert.equal(by.research.provider,'antigravity');
+    assert.match(by.research.reason,/no public quota reading/);
+    const task = (await call(front,'task_submit',submit('u1','research'))).task;
+    assert.equal((await claim(claude,['claude.read','auto.read'])).task,null);
+    assert.equal((await claim(codex,['codex.read','auto.read'])).task,null);
+    assert.equal((await claim(agy,['antigravity.read','auto.read'])).task.id,task.id);
+  });
+
   it('skips disabled providers for routing, submission and claiming', async () => {
     const {owner,front,claude,codex} = await fixture();
     const queued = (await call(front,'task_submit',submit('d0','review','claude.read'))).task;
