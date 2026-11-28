@@ -167,4 +167,8 @@ test('requestedProvider reads an agent the person names, and nothing else', asyn
   assert.equal(requestedProvider('compare codex and claude pricing'), null);
   assert.equal(requestedProvider('the agy CLI broke yesterday'), null);
   assert.equal(requestedProvider('email@codex.com'), null);
+  assert.equal(requestedProvider('Run a test. Do a research on top camera apps on iOS. Use agy with neon.'), 'antigravity');
+  assert.equal(requestedProvider('Do a performance review of retire using agy'), null);
+  assert.equal(requestedProvider("Use agy CLI to run Swarmaa. Owner's words: 'Use Swarmaa using agy cli'."), 'antigravity');
+  assert.equal(requestedProvider('I would use codex for that if it were up'), null);
 });

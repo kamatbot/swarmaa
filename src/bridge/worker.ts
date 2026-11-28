@@ -455,8 +455,10 @@ export class BridgeWorker {
       ...(limit > 1 ? { limit } : {}),
     };
     const response = await this.client.call<Claim>('task_claim', args, signal);
-    if (Array.isArray(response?.claims)) {
-      return { claims: response.claims.filter(c => Boolean(c?.task)), isBatch: true };
+    // The service returns a batch as `tasks`; reading only `task` would leave the rest leased but never run.
+    const batch = response?.tasks ?? response?.claims;
+    if (Array.isArray(batch)) {
+      return { claims: batch.filter(c => Boolean(c?.task)), isBatch: true };
     }
     return { claims: response?.task ? [response] : [], isBatch: false };
   }

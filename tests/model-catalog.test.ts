@@ -19,7 +19,7 @@ test('static model catalog loads config/models.json with claude, codex, antigrav
   assert.deepEqual(cat.providers.claude?.efforts, ['low', 'medium', 'high', 'max']);
   assert.deepEqual(cat.providers.codex?.models, ['gpt-6-astra', 'gpt-5.4', 'gpt-5.4-mini']);
   assert.deepEqual(cat.providers.codex?.efforts, ['minimal', 'low', 'medium', 'high', 'xhigh']);
-  assert.deepEqual(cat.providers.antigravity?.models, ['gemini-3.8-pro', 'gemini-3.8-flash']);
+  assert.deepEqual(cat.providers.antigravity?.models, ['gemini-4-neon-high', 'gemini-4-neon-medium', 'gemini-4-neon-low', 'gemini-4-neon-xhigh', 'gemini-3.8-flash']);
   assert.deepEqual(cat.providers.antigravity?.efforts, ['low', 'medium', 'high', 'xhigh']);
 });
 

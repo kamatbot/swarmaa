@@ -423,8 +423,8 @@ export function extractActionsBlock(text: string): ExtractedActions {
       }
       const options: string[] = [];
       for (const opt of act.options) {
-        if (typeof opt !== 'string' || opt.length > 80) {
-          return { cleanText, rawBlock, error: 'each option must be a string up to 80 chars', rejectedAction: item };
+        if (typeof opt !== 'string' || !opt.trim()) {
+          return { cleanText, rawBlock, error: 'each option must be a non-empty string', rejectedAction: item };
         }
         options.push(clipUtf8(redactSecrets(opt), 80));
       }
