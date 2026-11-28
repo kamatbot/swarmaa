@@ -208,5 +208,5 @@ test('relay launchd wiring is opt-in and dry-run performs no install', async () 
   }, signal: () => {}, sleep: async () => {}, status: async () => [], healthy: async () => true, log: () => {}, installRelay: () => { calls.push('install'); return '/fixture/relay.plist'; } };
   await deployLocal(['--dry-run', '--relay'], io); assert.ok(!calls.includes('install'));
   calls.length = 0; await deployLocal(['--relay'], io);
-  assert.ok(calls.includes('install')); assert.ok(calls.includes('launchctl bootstrap gui/501 /fixture/relay.plist')); assert.ok(calls.includes('launchctl kickstart -k gui/501/com.swarma.relay'));
+  assert.ok(calls.includes('install')); assert.ok(calls.includes('launchctl bootstrap gui/501 /fixture/relay.plist')); assert.ok(calls.includes('launchctl kickstart gui/501/com.swarma.relay'));
 });

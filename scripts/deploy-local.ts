@@ -142,7 +142,7 @@ export async function deployLocal(args = process.argv.slice(2), io = localIO()):
       try { launch('bootstrap', `gui/${io.uid}`, file); break; }
       catch (error) { if (attempt >= 5) throw error; await io.sleep(1000); }
     }
-    launch('kickstart', '-k', relayTarget);
+    launch('kickstart', relayTarget); // RunAtLoad already started it; -k would kill that fresh relay and can outlast the 10 s launchctl limit
     let pid: number | undefined;
     for (let i = 0; i < 20 && !pid; i++) {
       await io.sleep(500);
