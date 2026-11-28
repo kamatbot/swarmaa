@@ -76,6 +76,7 @@ export interface Claim {
   /** Router decision for auto.* tasks: the provider to run (null = any allowed) and the providers the policy enables. */
   route?: { provider: string | null; allowed: string[] };
   /** Present when task_claim is called with limit > 1 on a batch-capable service. */
+  tasks?: Claim[];
   claims?: Claim[];
 }
 export interface Lease {

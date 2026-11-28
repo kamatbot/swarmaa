@@ -810,8 +810,9 @@ test('batch task_claim requests limit and claims fan-out burst in 1 HTTP RTT', {
     async call<T>(name: string, args: Record<string, unknown>): Promise<T> {
       if (name === 'task_claim') {
         claimArgs.push(args);
-        if (claimArgs.length === 1) return { claims: batch, ...batch[0] } as T;
-        return { claims: [], task: null } as T;
+        // The service's real batch shape (tasks.ts claim): tasks[] plus the first claim's fields.
+        if (claimArgs.length === 1) return { tasks: batch, ...batch[0] } as T;
+        return { tasks: [], task: null } as T;
       }
       if (name === 'task_finish') {
         finishedIds.push(String(args.task_id));
