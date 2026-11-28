@@ -95,19 +95,28 @@ const gauge = (windows: UsageRow['windows'], name: string): number => {
 };
 const label = (u: UsageRow) => `5-hour ${Math.round(gauge(u.windows, '5h'))}%, weekly ${Math.round(gauge(u.windows, 'weekly'))}%`;
 
+const UNMETERED = new Set(['antigravity']);
+
 /** Pure routing decision for one task kind. The claim path and swarm_status both use it. */
 export function decide(policy: RoutingPolicy, kind: RoutingKind, usage: UsageRow[]): Decision {
   const candidates = policy.providers.filter(p => p.enabled && p.kinds.includes(kind));
   const usable = (provider: string) => usage.find(u => u.provider === provider && u.ok && u.fresh && u.live && u.windows.length > 0);
   const notes: string[] = [];
+  // Antigravity has no public quota API (src/usage/antigravity.ts): with no ceiling to check, auto work goes to it only when
+  // no metered provider is under its limits. A bot or task that names antigravity runs there regardless.
+  let unmetered: string | undefined;
   for (const c of candidates) {
     const u = usable(c.provider);
-    if (!u) { notes.push(`${c.provider}: no live fresh quota reading`); continue; }
+    if (!u) {
+      if (UNMETERED.has(c.provider) && usage.some(x => x.provider === c.provider && x.fresh && x.live)) { unmetered ??= c.provider; continue; }
+      notes.push(`${c.provider}: no live fresh quota reading`); continue;
+    }
     const five = gauge(u.windows, '5h'), week = gauge(u.windows, 'weekly');
     if (five >= c.max_five_hour_pct) { notes.push(`${c.provider}: 5-hour window at ${Math.round(five)}% ≥ ${c.max_five_hour_pct}% limit`); continue; }
     if (week >= c.max_weekly_pct) { notes.push(`${c.provider}: weekly window at ${Math.round(week)}% ≥ ${c.max_weekly_pct}% limit`); continue; }
     return { provider: c.provider, anyone: false, reason: `${notes.length ? `${notes.join('; ')} → ` : ''}${c.provider} (${label(u)})` };
   }
+  if (unmetered) return { provider: unmetered, anyone: false, reason: `${notes.length ? `${notes.join('; ')} → ` : ''}${unmetered} (no public quota reading; used while its worker is live)` };
   const live = candidates.map(c => usable(c.provider)).filter((u): u is UsageRow => !!u);
   if (!live.length) return { provider: null, anyone: true, reason: `No fresh quota reading from a live ${kind} worker; any enabled worker that allows ${kind} may take auto work.` };
   if (policy.fallback === 'none') return { provider: null, anyone: false, reason: `${notes.join('; ')}; fallback is none, so auto ${kind} tasks wait.` };
