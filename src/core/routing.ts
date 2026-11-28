@@ -13,8 +13,8 @@ export const DEFAULT_POLICY: RoutingPolicy = {
   providers: [
     { provider: 'claude', enabled: true, max_five_hour_pct: 90, max_weekly_pct: 90, kinds: ['review', 'research', 'patch'] },
     { provider: 'codex', enabled: true, max_five_hour_pct: 95, max_weekly_pct: 95, kinds: ['review', 'research', 'patch'] },
-    // Antigravity cannot reach outside the project, so it takes reviews and in-project edits, not research.
-    { provider: 'antigravity', enabled: true, max_five_hour_pct: 95, max_weekly_pct: 95, kinds: ['review', 'patch'] },
+    // Antigravity takes every kind of person-started work (it searches the web over ACP); unattended work never reaches it.
+    { provider: 'antigravity', enabled: true, max_five_hour_pct: 95, max_weekly_pct: 95, kinds: ['review', 'research', 'patch'] },
   ],
   fallback: 'most_headroom',
 };

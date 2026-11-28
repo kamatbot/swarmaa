@@ -59,7 +59,7 @@ describe('routing policy', {skip:!connectionString,concurrency:false}, () => {
     const {front,claude} = await fixture();
     const got = await call(claude,'routing_get',{});
     assert.deepEqual(got,{policy:DEFAULT_POLICY,is_default:true,updated_at:null,default_policy:DEFAULT_POLICY});
-    assert.deepEqual(DEFAULT_POLICY.providers.map(p => [p.provider,p.kinds]),[['claude',['review','research','patch']],['codex',['review','research','patch']],['antigravity',['review','patch']]]);
+    assert.deepEqual(DEFAULT_POLICY.providers.map(p => [p.provider,p.kinds]),[['claude',['review','research','patch']],['codex',['review','research','patch']],['antigravity',['review','research','patch']]]);
     assert.equal((await call(front,'swarm_status',{})).routing.is_default,true);
   });
 
@@ -117,7 +117,7 @@ describe('routing policy', {skip:!connectionString,concurrency:false}, () => {
     await assert.rejects(() => call(front,'task_submit',submit('ex-1')),code('idempotency_conflict'));
     await assert.rejects(() => call(front,'task_submit',{...submit('ex-2','review','codex.read'),exclude_providers:['claude']}),code('invalid_arguments'));
     await assert.rejects(() => call(front,'task_submit',{...submit('ex-3'),exclude_providers:['Claude!']}),code('invalid_arguments'));
-    await assert.rejects(() => call(front,'task_submit',{...submit('ex-4','research'),exclude_providers:['claude','codex']}),code('no_provider'));
+    await assert.rejects(() => call(front,'task_submit',{...submit('ex-4','research'),exclude_providers:['claude','codex','antigravity']}),code('no_provider'));
   });
 
   it('walks providers in priority order using the 5-hour and weekly ceilings', async () => {
@@ -152,7 +152,7 @@ describe('routing policy', {skip:!connectionString,concurrency:false}, () => {
     assert.equal((await call(front,'swarm_status',{})).routing.by_kind.research.provider,'claude');
   });
 
-  it('never routes research to antigravity, but may route review to it', async () => {
+  it('routes research and review to antigravity when it comes first with headroom', async () => {
     const {owner,front,claude,codex,agy} = await fixture();
     await call(owner,'routing_set',{policy:policy(p => { p.providers = [entry(p,'antigravity'),entry(p,'claude'),entry(p,'codex')]; })});
     await call(agy,'usage_report',report('antigravity',1,1));
@@ -160,15 +160,14 @@ describe('routing policy', {skip:!connectionString,concurrency:false}, () => {
     await call(codex,'usage_report',report('codex',96,10));
     const by = (await call(front,'swarm_status',{})).routing.by_kind;
     assert.equal(by.review.provider,'antigravity');
-    assert.notEqual(by.research.provider,'antigravity');
-    assert.equal(by.research.provider,'claude');
+    assert.equal(by.research.provider,'antigravity');
     const research = (await call(front,'task_submit',submit('r1','research'))).task;
     const review = (await call(front,'task_submit',submit('r2','review'))).task;
-    const agyCaps = ['antigravity.read','auto.read'];
-    assert.equal((await claim(agy,agyCaps)).task.id,review.id);
-    assert.equal((await claim(agy,agyCaps)).task,null);
     assert.equal((await claim(codex,['codex.read','auto.read'])).task,null);
-    assert.equal((await claim(claude,['claude.read','auto.read'])).task.id,research.id);
+    assert.equal((await claim(claude,['claude.read','auto.read'])).task,null);
+    const agyCaps = ['antigravity.read','auto.read'];
+    assert.equal((await claim(agy,agyCaps)).task.id,research.id);
+    assert.equal((await claim(agy,agyCaps)).task.id,review.id);
   });
 
   it('skips disabled providers for routing, submission and claiming', async () => {
@@ -212,16 +211,16 @@ describe('routing policy', {skip:!connectionString,concurrency:false}, () => {
     const research = (await call(front,'task_submit',submit('n1','research'))).task;
     const review = (await call(front,'task_submit',submit('n2','review'))).task;
     const agyCaps = ['antigravity.read','auto.read'];
-    assert.equal((await claim(agy,agyCaps)).task.id,review.id);
-    assert.equal((await claim(agy,agyCaps)).task,null);
-    assert.equal((await claim(claude,['claude.read','auto.read'])).task.id,research.id);
+    assert.equal((await claim(agy,agyCaps)).task.id,research.id);
+    assert.equal((await claim(claude,['claude.read','auto.read'])).task.id,review.id);
     assert.match((await call(front,'swarm_status',{})).routing.by_kind.review.reason,/^No fresh quota reading/);
   });
 
   it('rejects explicit capabilities the policy does not allow and refuses to claim them', async () => {
     const {front,owner,agy} = await fixture();
+    await call(owner,'routing_set',{policy:policy(p => { entry(p,'antigravity').kinds = ['review','patch']; })});
     await assert.rejects(() => call(front,'task_submit',submit('x1','research','antigravity.read')),(e:unknown) => code('kind_not_allowed')(e)
-      && (e as AppError).message === 'Antigravity takes review and in-project edit tasks, not research (it cannot reach outside the project). Use auto.read or codex.read for research.');
+      && (e as AppError).message === "antigravity does not take research tasks under the owner's routing policy. Use auto.read or another provider.");
     const ok = (await call(front,'task_submit',submit('x2','review','antigravity.read'))).task;
     assert.equal((await claim(agy,['antigravity.read'])).task.id,ok.id);
     await call(owner,'routing_set',{policy:policy(p => { entry(p,'codex').kinds = ['review']; })});
@@ -253,7 +252,7 @@ describe('routing policy', {skip:!connectionString,concurrency:false}, () => {
     assert.deepEqual(done.task.result,fin);
     await call(front,'task_submit',{...submit('p2','patch','antigravity.patch'),objective:'Edit it.'});
     await assert.rejects(() => call(front,'task_submit',submit('p3','research','antigravity.patch')),code('invalid_arguments'));
-    await assert.rejects(() => call(front,'task_submit',submit('p4','research','antigravity.read')),code('kind_not_allowed'));
+    await call(front,'task_submit',submit('p4','research','antigravity.read'));
     await assert.rejects(() => call(front,'task_submit',submit('p5','patch','auto.read')),code('invalid_arguments'));
     await assert.rejects(() => call(front,'task_submit',submit('p6','review','auto.patch')),code('invalid_arguments'));
     await assert.rejects(() => call(codex,'task_finish',{task_id:task.id,lease_token:'x',lease_generation:1,outcome:'completed',result:{changed_files:'2'}}),code('invalid_arguments'));

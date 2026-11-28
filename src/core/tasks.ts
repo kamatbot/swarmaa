@@ -67,10 +67,6 @@ const UNATTENDED_SQL = UNATTENDED_INITIATORS.map(k => `'${k}'`).join(',');
 /** Unattended itself, or spawned (directly or not) by unattended work: the migration 049 trigger marks those by excluding antigravity. */
 const isUnattendedRow = (row: Pick<TaskRow,'initiator_kind'|'excluded_providers'>) =>
   Boolean(row.initiator_kind && UNATTENDED_INITIATORS.includes(row.initiator_kind)) || (row.excluded_providers ?? []).includes('antigravity');
-// A photo in the messages this turn answers (the last few, sent in the 30 minutes before it), not an old one in the history.
-const TURN_HAS_PHOTO =`EXISTS (SELECT 1 FROM (SELECT has_attachments, created_at FROM messages WHERE thread_id=t.thread_id
-  AND seq <= COALESCE((t.context_versions->>'message_seq')::bigint, 9223372036854775807) ORDER BY seq DESC LIMIT 5) m
-  WHERE m.has_attachments AND m.created_at > t.created_at - interval '30 minutes')`;
 export const VALID_CAPABILITIES = [AUTO_READ,AUTO_PATCH,'claude.read','claude.patch','codex.read','codex.patch','antigravity.read','antigravity.patch','demo.read'] as const;
 const date = (value:Date|null):string|null => value?.toISOString() ?? null;
 const expectedVersion = (value:unknown):number => integer(value, 'expected_version', 1, 2147483647);
@@ -326,9 +322,8 @@ export class TaskService {
         const provider = capability.slice(0,capability.lastIndexOf('.'));
         const entry = policy.providers.find(x => x.provider === provider);
         requireCondition(!entry || entry.enabled,400,'provider_disabled',`${capability} is disabled by the owner's routing policy. Use ${kind === 'patch' ? 'auto.patch' : 'auto.read'} or another provider.`);
-        requireCondition(policyAllows(policy,provider,kind),400,'kind_not_allowed',provider === 'antigravity'
-          ? 'Antigravity takes review and in-project edit tasks, not research (it cannot reach outside the project). Use auto.read or codex.read for research.'
-          : `${provider} does not take ${kind} tasks under the owner's routing policy. Use ${kind === 'patch' ? 'auto.patch' : 'auto.read'} or another provider.`);
+        requireCondition(policyAllows(policy,provider,kind),400,'kind_not_allowed',
+          `${provider} does not take ${kind} tasks under the owner's routing policy. Use ${kind === 'patch' ? 'auto.patch' : 'auto.read'} or another provider.`);
       }
       if (exclude.length) {
         const {policy} = await getPolicy(db,p.tenantId);
@@ -607,14 +602,6 @@ export class TaskService {
           permission_envelope=permission_envelope #- '{runner,model}' #- '{runner,effort}' #- '{runner,provider}'
           WHERE tenant_id=$1 AND scope=$2 AND status='queued' AND required_capability LIKE 'antigravity.%'
             AND (initiator_kind IN (${UNATTENDED_SQL}) OR 'antigravity'=ANY(excluded_providers))`,[p.tenantId,scope]);
-        // Interactive Antigravity turns holding a photo move to claude, stripping any Antigravity model/effort even without runner.provider.
-        await db.query(`UPDATE tasks t SET
-          required_capability='claude.'||split_part(required_capability,'.',2),
-          permission_envelope=CASE WHEN permission_envelope ? 'runner'
-            THEN jsonb_set(permission_envelope #- '{runner,model}' #- '{runner,effort}','{runner,provider}','"claude"')
-            ELSE permission_envelope END
-          WHERE tenant_id=$1 AND scope=$2 AND status='queued' AND required_capability LIKE 'antigravity.%'
-            AND kind='turn' AND ${TURN_HAS_PHOTO}`,[p.tenantId,scope]);
       }
       const candidates = await db.query<TaskRow>(`SELECT * FROM tasks WHERE tenant_id=$1 AND scope=$2 AND status='queued'
         AND (not_before IS NULL OR not_before<=clock_timestamp())
@@ -636,9 +623,6 @@ export class TaskService {
       const claimedBatch: Array<{ task: Record<string, unknown>; lease_token: string; lease_generation: number; route?: { provider: string | null; allowed: string[] } }> = [];
       for (const row of candidates.rows) {
         if (claimedBatch.length >= limit) break;
-        // Auto turns with a photo never route to antigravity (it throws photo_provider_unsupported).
-        if (row.kind==='turn' && row.required_capability.startsWith('auto.') && !(row.excluded_providers ?? []).includes('antigravity')
-          && (await db.query(`SELECT 1 FROM tasks t WHERE t.id=$1 AND ${TURN_HAS_PHOTO}`,[row.id])).rowCount) row.excluded_providers = [...(row.excluded_providers ?? []),'antigravity'];
         // Antigravity runs only work a person started: schedules, webhooks and scheduled checks go to the other providers.
         if (row.initiator_kind && UNATTENDED_INITIATORS.includes(row.initiator_kind) && !(row.excluded_providers ?? []).includes('antigravity'))
           row.excluded_providers = [...(row.excluded_providers ?? []),'antigravity'];
