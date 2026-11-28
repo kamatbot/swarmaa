@@ -79,7 +79,7 @@ describe('agy dispatch routing', { skip: !connectionString, concurrency: false }
   const caps = ['codex.read', 'claude.read', 'antigravity.read'];
   const claimIn = (worker: any, scope: string) => call(worker, 'task_claim', { scope, capabilities: caps, kinds: ['turn'] });
 
-  it('an old photo in the thread does not move an explicit agy turn to Claude; a fresh one does', async () => {
+  it('agy keeps explicit turns whether or not the thread has photos', async () => {
     const t = randomUUID(); const owner = await createPrincipal(t, 'o'); const worker = await createPrincipal(t, 'w', 'worker', ['project:a']);
     const bot = await mk(owner, 'project:a', 'Alpha', { first_reply: 'off' });
     await call(owner, 'thread_post', { thread_id: bot.thread.id, body: 'look at this', idempotency_key: 'p1' });
@@ -93,7 +93,7 @@ describe('agy dispatch routing', { skip: !connectionString, concurrency: false }
     await call(owner, 'thread_post', { thread_id: bot.thread.id, body: 'use agy to read this screenshot', idempotency_key: 'p3' });
     await pool.query('UPDATE messages SET has_attachments=true WHERE thread_id=$1 AND seq=(SELECT max(seq) FROM messages WHERE thread_id=$1)', [bot.thread.id]);
     const c2 = await claimIn(worker, 'project:a');
-    assert.equal(c2.task?.required_capability, 'claude.read', 'fresh photo still goes to Claude');
+    assert.equal(c2.task?.required_capability, 'antigravity.read', 'agy takes photo turns over ACP');
   });
 
   it('a turn that dispatched to a project bot does not also delegate a "fuller answer"; long options are clipped', async () => {

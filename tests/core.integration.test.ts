@@ -145,7 +145,7 @@ describe('core transactional invariants', {skip:!connectionString,concurrency:fa
     await rejects(f.front,'task_submit',{...submission(),kind:'patch',resource_key:'repo:x',required_capability:'gemini.patch'},'unknown_capability');
     await call(f.front,'task_submit',{...submission(),idempotency_key:'agy-patch',kind:'patch',required_capability:'antigravity.patch'});
     await call(f.front,'task_submit',{...submission(),kind:'review',required_capability:'antigravity.read'});
-    await rejects(f.front,'task_submit',{...submission(),idempotency_key:'agy-research',required_capability:'antigravity.read'},'kind_not_allowed');
+    await call(f.front,'task_submit',{...submission(),idempotency_key:'agy-research',required_capability:'antigravity.read'});
   });
 
   it('never lets Antigravity claim scheduled or webhook-sourced work; person-started work still routes to it',async () => {
