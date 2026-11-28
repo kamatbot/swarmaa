@@ -39,8 +39,8 @@ const FALLBACK_CATALOG: ModelCatalog = {
       efforts: ['minimal', 'low', 'medium', 'high', 'xhigh'],
     },
     antigravity: {
-      default_model: 'gemini-3.8-pro',
-      models: ['gemini-3.8-pro', 'gemini-3.8-flash'],
+      default_model: 'gemini-4-neon-high',
+      models: ['gemini-4-neon-high', 'gemini-4-neon-medium', 'gemini-4-neon-low', 'gemini-4-neon-xhigh', 'gemini-3.8-flash'],
       efforts: ['low', 'medium', 'high', 'xhigh'],
     },
   },
