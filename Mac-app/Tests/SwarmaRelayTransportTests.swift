@@ -1004,6 +1004,47 @@ final class SwarmaRelayTransportTests: XCTestCase {
         XCTAssertEqual(String(decoding: data, as: UTF8.self), "ok")
         await transport.disconnect()
     }
+
+    // MARK: 16. cancelStream(sid:) cancels only that request and keeps the socket alive
+
+    func testCancelStreamLeavesSharedSocketAndOtherRequestsAlive() async throws {
+        let socket = FakeWebSocket()
+        let transport = SwarmaRelayTransport(hostID: "host123", socket: socket)
+        try await transport.connect()
+
+        let reqA = URLRequest(url: URL(string: "https://relay.swarmaa.com/api/tools/slow")!)
+        let reqB = URLRequest(url: URL(string: "https://relay.swarmaa.com/api/tools/fast")!)
+        let taskA = Task { try await transport.send(reqA, sid: "sid-slow") }
+        let taskB = Task { try await transport.send(reqB, sid: "sid-fast") }
+
+        _ = try await socket.waitForSentFrame { if case .req(let sid, _, _, _, _) = $0 { return sid == "sid-slow" }; return false }
+        _ = try await socket.waitForSentFrame { if case .req(let sid, _, _, _, _) = $0 { return sid == "sid-fast" }; return false }
+
+        await transport.cancelStream(sid: "sid-slow")
+
+        do {
+            _ = try await taskA.value
+            XCTFail("Expected cancelled request to throw")
+        } catch is CancellationError {
+            // expected
+        }
+
+        // An `end` frame is sent for the cancelled sid.
+        _ = try await socket.waitForSentFrame {
+            if case .end(let sid, _) = $0 { return sid == "sid-slow" }
+            return false
+        }
+
+        // The other concurrent request still completes normally over the same socket.
+        try socket.simulateFrame(.res(sid: "sid-fast", status: 200, headers: [:]))
+        try socket.simulateFrame(.chunk(sid: "sid-fast", data: "alive"))
+        try socket.simulateFrame(.end(sid: "sid-fast", error: nil))
+        let (data, response) = try await taskB.value
+        XCTAssertEqual(response.statusCode, 200)
+        XCTAssertEqual(String(decoding: data, as: UTF8.self), "alive")
+
+        await transport.disconnect()
+    }
 }
 
 final class RelayTestClock: @unchecked Sendable {

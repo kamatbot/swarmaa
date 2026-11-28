@@ -7,7 +7,7 @@
 // Bounded and silent on errors. Prints only hook JSON. Transcripts, prompts and diffs are untrusted data.
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { closeSync, copyFileSync, existsSync, fstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -19,6 +19,8 @@ export const OBJECTIVE_MAX = 15500;     // task_submit caps objective at 16000 c
 export const DIFF_MAX = 10000;
 export const MAX_REVIEWS_PER_DIFF = 2;  // the same unchanged diff is reviewed at most twice
 export const LIMIT_TTL_MS = 6 * 60 * 60 * 1000;
+const TURN_PRUNE_INTERVAL_MS = 24 * 60 * 60 * 1000;
+export const TURN_STATE_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
 const SELF = { claude: 'claude', codex: 'codex' };
 const WORKER_PROVIDER = { claude: 'claude', codex: 'codex', agy: 'antigravity' };
 const NAME = { claude: 'Claude Code', codex: 'Codex', antigravity: 'Antigravity', grok: 'Grok' };
@@ -62,6 +64,41 @@ function saveState(file, state) {
   const temp = `${file}.${process.pid}.tmp`;
   writeFileSync(temp, JSON.stringify(state), { mode: 0o600 });
   renameSync(temp, file);
+}
+
+/** Opportunistically prunes stale per-session turn state directories older than maxAgeMs (default 14 days, bounded). */
+export function pruneTurnState(baseDir, maxAgeMs = TURN_STATE_MAX_AGE_MS, { force = false, maxEntries = 64, now = Date.now } = {}) {
+  let removed = 0;
+  try {
+    const marker = join(dirname(baseDir), '.turn-last-prune');
+    const current = now();
+    if (!force) {
+      try { if (current - statSync(marker).mtimeMs < TURN_PRUNE_INTERVAL_MS) return 0; } catch { /* first sweep */ }
+    }
+    const entries = readdirSync(baseDir);
+    let scanned = 0;
+    for (const name of entries) {
+      if (++scanned > maxEntries) break;
+      const sub = join(baseDir, name);
+      try {
+        const st = statSync(sub);
+        if (!st.isDirectory()) continue;
+        let newest = st.mtimeMs;
+        for (const child of readdirSync(sub)) {
+          try {
+            const cst = statSync(join(sub, child));
+            if (cst.mtimeMs > newest) newest = cst.mtimeMs;
+          } catch { /* ignore */ }
+        }
+        if (current - newest > maxAgeMs) {
+          rmSync(sub, { recursive: true, force: true });
+          removed++;
+        }
+      } catch { /* ignore */ }
+    }
+    try { writeFileSync(marker, '', { mode: 0o600 }); } catch { /* ignore */ }
+  } catch { /* ignore */ }
+  return removed;
 }
 
 // ---------- git: a snapshot of the whole working tree that never touches the user's index ----------
@@ -112,12 +149,30 @@ export function extractCodexTurns(jsonl) {
   return turns;
 }
 
-function readTail(path, bytes = 1024 * 1024) {
+export function readTail(path, bytes = 1024 * 1024) {
+  let fd;
   try {
-    const buf = readFileSync(path);
-    const text = buf.subarray(Math.max(0, buf.length - bytes)).toString('utf8');
-    return buf.length > bytes ? text.slice(text.indexOf('\n') + 1) : text;
-  } catch { return ''; }
+    fd = openSync(path, 'r');
+    const size = fstatSync(fd).size;
+    if (size <= 0) return '';
+    const start = Math.max(0, size - bytes);
+    const len = size - start;
+    const buf = Buffer.allocUnsafe(len);
+    let offset = 0;
+    while (offset < len) {
+      const n = readSync(fd, buf, offset, len - offset, start + offset);
+      if (n <= 0) break;
+      offset += n;
+    }
+    const text = buf.subarray(0, offset).toString('utf8');
+    if (start > 0) {
+      const nl = text.indexOf('\n');
+      return nl === -1 ? '' : text.slice(nl + 1);
+    }
+    return text;
+  } catch { return ''; } finally {
+    if (fd !== undefined) try { closeSync(fd); } catch { /* ignore */ }
+  }
 }
 
 function transcriptTurns(harness, payload, root) {
@@ -242,6 +297,18 @@ export function output(harness, event, message, block = false) {
 
 // ---------- handlers ----------
 
+async function submitAndWatch(ctx, body, ms = 4000) {
+  try {
+    return await ctx.call('task_submit', { ...body, watch_session: ctx.session }, ms);
+  } catch (err) {
+    if (err?.code !== 'invalid_arguments') throw err;
+    const submitted = await ctx.call('task_submit', body, ms);
+    const id = submitted?.task?.id;
+    if (id) await ctx.call('task_watch', { task_id: id, session: ctx.session });
+    return submitted;
+  }
+}
+
 async function review(harness, payload, ctx, state, { again = false } = {}) {
   const r = state.review;
   const base = again ? r?.last?.base : r?.snapshot?.tree;
@@ -265,7 +332,7 @@ async function review(harness, payload, ctx, state, { again = false } = {}) {
     answer: again ? r.answer ?? '' : str(payload.last_assistant_message), diff: truncated ? d.diff.slice(0, DIFF_MAX) : d.diff, stat: d.stat, truncated });
   if (!again) r.answer = str(payload.last_assistant_message).slice(0, 1500);
   const reviewer = r.reviewer && r.reviewer !== SELF[harness] ? r.reviewer : null;
-  const submitted = await ctx.call('task_submit', {
+  const submitted = await submitAndWatch(ctx, {
     scope: ctx.scope, kind: 'review', objective, idempotency_key: `peer-review-${sha(`${ctx.session}:${hash}:${again ? Date.now() : r.reviewed.count}`).slice(0, 40)}`,
     required_capability: reviewer ? `${reviewer}.read` : 'auto.read', ...(reviewer ? {} : { exclude_providers: [SELF[harness]] }),
     resource_key: `peer-review:${ctx.session}`.slice(0, 240), max_attempts: 2,
@@ -273,7 +340,6 @@ async function review(harness, payload, ctx, state, { again = false } = {}) {
   }, 4000);
   const id = submitted?.task?.id;
   if (!id) return null;
-  await ctx.call('task_watch', { task_id: id, session: ctx.session });
   const files = d.stat.split('\n').filter(l => l.includes('|')).length;
   return `${reviewer ? agentName(reviewer) : 'Another agent'} is reviewing this turn's changes (${files || 'some'} file${files === 1 ? '' : 's'}, task ${id.slice(0, 8)}). The review will show up here.`;
 }
@@ -295,14 +361,13 @@ async function handoff(harness, payload, ctx, state, cmd) {
   const status = git(str(payload.cwd) || '.', ['status', '--short'], { timeout: 2000 }) ?? '';
   const objective = handoffObjective({ self, turns, instruction: cmd.instruction, status });
   const usage = usagePicture(await ctx.call('swarm_status', { scope: ctx.scope }).catch(() => null), self, edit ? editors : others);
-  const submitted = await ctx.call('task_submit', {
+  const submitted = await submitAndWatch(ctx, {
     scope: ctx.scope, kind: edit ? 'patch' : 'research', objective, required_capability: edit ? 'auto.patch' : 'auto.read', exclude_providers: [self],
     idempotency_key: `handoff-${sha(`${ctx.session}:${turns.length}:${cmd.instruction}:${Math.floor(ctx.now() / 60000)}`).slice(0, 40)}`,
     resource_key: `handoff:${ctx.session}`.slice(0, 240), max_attempts: 2,
   }, 4000);
   const task = submitted?.task;
   if (!task?.id) return 'The handoff could not be submitted.';
-  await ctx.call('task_watch', { task_id: task.id, session: ctx.session });
   state.handoff = { task_id: task.id, edit, at: new Date(ctx.now()).toISOString(), shown: false };
   const who = usage.best ? agentName(usage.best) : 'another agent';
   const what = edit ? 'It can edit files on a local swarmaa/<agent>/<task> branch; nothing is pushed.' : 'It answers only; no files change.';
@@ -332,8 +397,25 @@ export async function run(harness, event, payload, opts = {}) {
   const session = sessionKey(harness, payload);
   if (!session) return null;
   const file = stateFile(home, session);
+  pruneTurnState(join(home, '.swarma', 'turn'), TURN_STATE_MAX_AGE_MS, { now });
+  let filePresent = existsSync(file);
   const state = loadState(file);
-  const save = () => saveState(file, state);
+  let savedJson = JSON.stringify(state);
+  const save = () => {
+    if (Object.keys(state).length === 0) {
+      if (filePresent) {
+        try { rmSync(dirname(file), { recursive: true, force: true }); } catch { /* ignore */ }
+        filePresent = false;
+      }
+      savedJson = '{}';
+      return;
+    }
+    const nextJson = JSON.stringify(state);
+    if (nextJson === savedJson && filePresent) return;
+    saveState(file, state);
+    filePresent = true;
+    savedJson = nextJson;
+  };
 
   if (event === 'StopFailure') { // Claude Code: the turn ended on an API error; only usage errors matter here
     const kind = str(payload.error_type) || str(payload.error) || str(payload.matcher) || 'rate_limit';
@@ -354,15 +436,22 @@ export async function run(harness, event, payload, opts = {}) {
   if (event === 'UserPromptSubmit') {
     const cmd = parseCommand(payload.prompt);
     if (cmd?.verb === 'review') {
-      const r = state.review ??= {};
       let message;
       if (cmd.action === 'on') {
+        const r = state.review ??= {};
         r.on = true; r.reviewer = cmd.reviewer && cmd.reviewer !== SELF[harness] ? cmd.reviewer : null; delete r.snapshot;
         message = `Review is on for this chat. After each turn that changes files, ${r.reviewer ? agentName(r.reviewer) : 'another agent'} reviews just that turn's diff and the result shows up here. It never edits; you decide what to fix. Each review costs that agent's usage. /swarm review off stops it.`;
-      } else if (cmd.action === 'off') { r.on = false; delete r.snapshot; message = 'Review is off for this chat.'; }
-      else if (cmd.action === 'again') message = await review(harness, payload, ctx, state, { again: true }).catch(e => `The review could not be submitted${e?.code ? ` (${e.code})` : ''}.`);
-      else if (cmd.action === 'status') message = r.on ? `Review is on${r.reviewer ? ` (${agentName(r.reviewer)} reviews)` : ''}. /swarm review off stops it.` : 'Review is off. /swarm review on [agent] turns it on for this chat.';
-      else message = 'Usage: /swarm review on [claude|codex|agy] | off | again | status';
+      } else if (cmd.action === 'off') {
+        if (state.review) { state.review.on = false; delete state.review.snapshot; }
+        message = 'Review is off for this chat.';
+      } else if (cmd.action === 'again') {
+        message = await review(harness, payload, ctx, state, { again: true }).catch(e => `The review could not be submitted${e?.code ? ` (${e.code})` : ''}.`);
+      } else if (cmd.action === 'status') {
+        const r = state.review;
+        message = r?.on ? `Review is on${r.reviewer ? ` (${agentName(r.reviewer)} reviews)` : ''}. /swarm review off stops it.` : 'Review is off. /swarm review on [agent] turns it on for this chat.';
+      } else {
+        message = 'Usage: /swarm review on [claude|codex|agy] | off | again | status';
+      }
       save();
       return output(harness, event, message, true);
     }

@@ -99,10 +99,18 @@ final class RoutingEditorModel: ObservableObject {
         return (choice.provider, choice.reason)
     }
 
-    // MARK: Slider markers
+    // MARK: Slider markers & live worker models
 
     func usedPercent(_ provider: String, _ window: RoutingWindow) -> Double? {
         status?.usedPercent(provider: provider, window: window)
+    }
+
+    func defaultModel(for provider: String) -> String? {
+        SwarmaModelCatalog.defaultModel(for: provider, status: status)
+    }
+
+    func turnModel(for provider: String) -> String? {
+        SwarmaModelCatalog.turnModel(for: provider, status: status)
     }
 
     nonisolated static func phase(for error: Error) -> Phase {

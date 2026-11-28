@@ -29,6 +29,15 @@ struct TeamsRunner: Codable, Equatable, Hashable {
         return effort.map { name + " · " + $0.prefix(1).uppercased() + $0.dropFirst() } ?? name
     }
 
+    /// Human-friendly label using the dynamic model catalog (e.g. "Claude Opus 5.5 · Max").
+    func displayLabel(status: SwarmaStatus?) -> String {
+        guard let provider else { return L10n.t("Auto") }
+        let vendor = SwarmaCells.vendorName(provider)
+        let modelName = model.map { SwarmaModelCatalog.modelLabel($0, provider: provider, status: status) }
+        let base = modelName.map { $0.lowercased().hasPrefix(vendor.lowercased()) ? $0 : vendor + " " + $0 } ?? vendor
+        return effort.map { base + " · " + SwarmaModelCatalog.effortLabel($0) } ?? base
+    }
+
     private enum CodingKeys: String, CodingKey { case mode, provider, model, effort }
 
     init(provider: String? = nil, model: String? = nil, effort: String? = nil) {
@@ -618,14 +627,22 @@ struct SSEParser {
     /// for its end; `:` heartbeat comments are dropped.
     // ponytail: "\n" and "\r\n" endings only; a bare "\r" (legal SSE, sent by no server we talk to) is not a break.
     mutating func feed(_ chunk: String) -> [Frame] {
-        carry += Array(chunk.utf8)
+        carry.append(contentsOf: chunk.utf8)
         var frames: [Frame] = []
-        while let end = carry.firstIndex(of: UInt8(ascii: "\n")) {
-            var line = carry[..<end]
+        var offset = 0
+        while offset < carry.count, let end = carry[offset...].firstIndex(of: UInt8(ascii: "\n")) {
+            var line = carry[offset..<end]
             if line.last == UInt8(ascii: "\r") { line = line.dropLast() }
             let text = String(decoding: line, as: UTF8.self)
-            carry.removeSubrange(...end)
+            offset = end + 1
             if let frame = take(text) { frames.append(frame) }
+        }
+        if offset > 0 {
+            if offset == carry.count {
+                carry.removeAll(keepingCapacity: true)
+            } else {
+                carry.removeFirst(offset)
+            }
         }
         return frames
     }
@@ -834,9 +851,11 @@ actor SwarmaTeamsClient {
                                         "idempotency_key": UUID().uuidString], as: AgentWrapper.self).agent
     }
 
-    func agentUpdate(id: String, expectedVersion: Int, runner: TeamsRunner) async throws -> TeamsAgent {
-        try await call("agent_update", ["agent_id": id, "expected_version": expectedVersion, "runner": try json(runner),
-                                        "idempotency_key": UUID().uuidString], as: AgentWrapper.self).agent
+    func agentUpdate(id: String, expectedVersion: Int, runner: TeamsRunner? = nil, edits: Bool? = nil) async throws -> TeamsAgent {
+        var input: [String: Any] = ["agent_id": id, "expected_version": expectedVersion]
+        if let runner { input["runner"] = try json(runner) }
+        if let edits { input["edits"] = edits }
+        return try await call("agent_update", input, as: AgentWrapper.self).agent
     }
 
     // MARK: Bots (docs/BOTS.md)
@@ -915,9 +934,10 @@ actor SwarmaTeamsClient {
         return try await call("thread_read", input, as: MessagePage.self)
     }
 
-    func threadPost(id: String, body: String, idempotencyKey: String = UUID().uuidString, photos: [ChatPhoto] = []) async throws -> TeamsMessage? {
+    func threadPost(id: String, body: String, idempotencyKey: String = UUID().uuidString, photos: [ChatPhoto] = [], runner: TeamsRunner? = nil) async throws -> TeamsMessage? {
         var input: [String: Any] = ["thread_id": id, "body": body, "idempotency_key": idempotencyKey]
         if !photos.isEmpty { input["attachments"] = photos.map { ["name": $0.name, "media_type": "image/jpeg", "data_base64": $0.data.base64EncodedString()] } }
+        if let runner { input["runner"] = try json(runner) }
         return try await call("thread_post", input,
                        as: OptionalMessage.self).message
     }
@@ -980,9 +1000,13 @@ actor SwarmaTeamsClient {
     }
 
     /// One research or review task, to an agent you pick (`antigravity.read`) or routed by quota (`auto.read`).
-    func taskSubmit(scope: String, kind: String, objective: String, capability: String) async throws -> TeamsTask {
-        try await call("task_submit", ["scope": scope, "kind": kind, "objective": objective, "required_capability": capability,
-                                       "idempotency_key": UUID().uuidString], as: TaskWrapper.self).task
+    func taskSubmit(scope: String, kind: String, objective: String, capability: String,
+                    model: String? = nil, effort: String? = nil) async throws -> TeamsTask {
+        var input: [String: Any] = ["scope": scope, "kind": kind, "objective": objective, "required_capability": capability,
+                                    "idempotency_key": UUID().uuidString]
+        if let model, !model.isEmpty { input["model"] = model }
+        if let effort, !effort.isEmpty { input["effort"] = effort }
+        return try await call("task_submit", input, as: TaskWrapper.self).task
     }
 
     func taskGet(id: String) async throws -> TeamsTask {
@@ -1140,45 +1164,137 @@ actor SwarmaTeamsClient {
 
     // MARK: Live stream transport
 
+    /// Chunked `URLSessionDataDelegate` stream: yields complete newline-terminated UTF-8 chunks per
+    /// network packet (zero per-byte async hops) while preserving blank lines (`\n\n`) that SSE
+    /// relies on as frame delimiters (`URLSession.AsyncBytes.lines` drops blank lines).
     static let liveStream: StreamTransport = { request in
-        let (bytes, response) = try await streamSession.bytes(for: request)
-        guard let http = response as? HTTPURLResponse else { throw SwarmaClient.Failure.badResponse }
-        let chunks = AsyncThrowingStream<String, Error> { continuation in
-            let task = Task {
-                do {
-                    // Byte by byte so a frame is delivered as soon as its blank
-                    // line arrives; lines are flushed whole.
-                    var line: [UInt8] = []
-                    for try await byte in bytes {
-                        line.append(byte)
-                        if byte == UInt8(ascii: "\n") {
-                            continuation.yield(String(decoding: line, as: UTF8.self))
-                            line.removeAll(keepingCapacity: true)
-                        }
-                    }
-                    if !line.isEmpty { continuation.yield(String(decoding: line, as: UTF8.self)) }
-                    continuation.finish()
-                } catch { continuation.finish(throwing: error) }
-            }
-            continuation.onTermination = { _ in task.cancel() }
-        }
-        return (http, chunks)
+        try await streamDelegate.open(request: request, session: streamSession)
     }
 
     /// Long-lived, unlike the tool session's 5 s; refuses redirects for the
     /// same reason (the token belongs to the configured URL only).
-    private final class NoRedirects: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    private final class StreamDelegate: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+        private final class Entry {
+            var responseContinuation: CheckedContinuation<(HTTPURLResponse, AsyncThrowingStream<String, Error>), Error>?
+            var chunkContinuation: AsyncThrowingStream<String, Error>.Continuation?
+            var stream: AsyncThrowingStream<String, Error>?
+            var buffer: [UInt8] = []
+        }
+
+        private let lock = NSLock()
+        private var entries: [Int: Entry] = [:]
+
+        func open(request: URLRequest, session: URLSession) async throws -> (HTTPURLResponse, AsyncThrowingStream<String, Error>) {
+            let task = session.dataTask(with: request)
+            return try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation { responseContinuation in
+                    // onCancel may have run before this entry existed; nothing would resume the continuation.
+                    if Task.isCancelled {
+                        task.cancel()
+                        responseContinuation.resume(throwing: CancellationError())
+                        return
+                    }
+                    let entry = Entry()
+                    entry.responseContinuation = responseContinuation
+                    var holder: AsyncThrowingStream<String, Error>.Continuation?
+                    let stream = AsyncThrowingStream<String, Error> { c in holder = c }
+                    entry.chunkContinuation = holder
+                    entry.stream = stream
+                    holder?.onTermination = { [weak self, task] _ in
+                        self?.remove(task.taskIdentifier)
+                        task.cancel()
+                    }
+                    lock.lock()
+                    entries[task.taskIdentifier] = entry
+                    lock.unlock()
+                    task.resume()
+                }
+            } onCancel: {
+                task.cancel()
+            }
+        }
+
+        private func remove(_ id: Int) {
+            lock.lock()
+            entries.removeValue(forKey: id)
+            lock.unlock()
+        }
+
         func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
                         newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
             completionHandler(nil)
         }
+
+        func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse,
+                        completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
+            lock.lock()
+            let entry = entries[dataTask.taskIdentifier]
+            let responseCont = entry?.responseContinuation
+            entry?.responseContinuation = nil
+            let stream = entry?.stream
+            lock.unlock()
+            guard let http = response as? HTTPURLResponse, let stream else {
+                responseCont?.resume(throwing: SwarmaClient.Failure.badResponse)
+                completionHandler(.cancel)
+                return
+            }
+            responseCont?.resume(returning: (http, stream))
+            completionHandler(.allow)
+        }
+
+        func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+            let text: String?
+            let continuation: AsyncThrowingStream<String, Error>.Continuation?
+            lock.lock()
+            if let entry = entries[dataTask.taskIdentifier] {
+                entry.buffer.append(contentsOf: data)
+                if let lastNL = entry.buffer.lastIndex(of: UInt8(ascii: "\n")) {
+                    text = String(decoding: entry.buffer[...lastNL], as: UTF8.self)
+                    if lastNL + 1 == entry.buffer.count {
+                        entry.buffer.removeAll(keepingCapacity: true)
+                    } else {
+                        entry.buffer.removeFirst(lastNL + 1)
+                    }
+                } else {
+                    text = nil
+                }
+                continuation = entry.chunkContinuation
+            } else {
+                text = nil
+                continuation = nil
+            }
+            lock.unlock()
+            if let text { continuation?.yield(text) }
+        }
+
+        func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+            lock.lock()
+            let entry = entries.removeValue(forKey: task.taskIdentifier)
+            lock.unlock()
+            guard let entry else { return }
+            if let responseCont = entry.responseContinuation {
+                responseCont.resume(throwing: error ?? SwarmaClient.Failure.badResponse)
+                return
+            }
+            if !entry.buffer.isEmpty {
+                entry.chunkContinuation?.yield(String(decoding: entry.buffer, as: UTF8.self))
+                entry.buffer.removeAll(keepingCapacity: false)
+            }
+            if let error {
+                entry.chunkContinuation?.finish(throwing: error)
+            } else {
+                entry.chunkContinuation?.finish()
+            }
+        }
     }
+
+    private static let streamDelegate = StreamDelegate()
 
     private static let streamSession: URLSession = {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = 60
         configuration.timeoutIntervalForResource = 7 * 24 * 3600
-        return URLSession(configuration: configuration, delegate: NoRedirects(), delegateQueue: nil)
+        return URLSession(configuration: configuration, delegate: streamDelegate, delegateQueue: nil)
     }()
 }
 

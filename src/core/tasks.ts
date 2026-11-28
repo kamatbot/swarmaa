@@ -1,25 +1,25 @@
-import { botTaskFinished, taskBotPolicy } from './bot-routing.js';
-import { botCapability, firstReplyRunner, leadTurnProfile, postBotTaskCard } from './bots.js';
+import { botPolicy, botTaskFinished, taskBotPolicy } from './bot-routing.js';
+import { firstReplyRunner, leadTurnProfile, postBotTaskCard } from './bots.js';
 import { advanceFlow, validateFlowCompletion } from './flows.js';
 import type { FlowTask } from './flow-definition.js';
-import { inboxSession, readTaskInbox, taskFinished, taskReroutedNotice } from './inbox.js';
+import { bindSession, inboxSession, readTaskInbox, taskFinished, taskReroutedNotice } from './inbox.js';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import type { Pool, PoolClient } from 'pg';
 import { transaction } from '../db.js';
 import { requireCondition } from '../errors.js';
-import { hasPermission } from '../policy.js';
+import { hasPermission, requirePermission } from '../policy.js';
 import { ARTIFACT_MAX_BYTES, type Principal } from '../types.js';
 import { enumValue, integer, object, optionalString, scopeName, string, strings, uuid } from '../validation.js';
 import { assertKnownScope, audit, canonicalJson, event, jsonObject, newId, noExtraKeys, requireFound, scopeLock, scopeSql, sha256, teamsLock, uuidArray, type Db } from './shared.js';
-import { decide, decideAll, getPolicy, policyAllows, scopeUsage, type RoutingKind } from './routing.js';
+import { decide, decideAll, getPolicy, policyAllows, scopeUsage, type RoutingKind, type RoutingPolicy } from './routing.js';
 import { AUTO_PATCH, AUTO_READ, touchWorker, workerProviders } from './swarm.js';
-import { runnerCapability } from '../bridge/adapters.js';
 import { redactSecrets } from '../safety/redact.js';
 import { clipUtf8, assignThreadSeq, getTurnWindow, type AgentRow } from './teams.js';
 import { booleanOption } from './memory.js';
 import { extractActionsBlock, validateTurnGrant, type TurnGrantContext } from './actions.js';
 import { runOriginActions } from './voice.js';
-import { SwarmsService, deriveSwarmStatus, type SwarmRow, type SwarmStepRow, type TurnBudget } from './swarms.js';
+import { MAX_HANDOFF_HOPS, SwarmsService, deriveSwarmStatus, type SwarmRow, type SwarmStepRow, type TurnBudget } from './swarms.js';
+import { normalizeDispatchedFrom, resolveTurnRunner, validateModelAndEffort } from './model-catalog.js';
 
 function effectiveRoutingKind(row: { kind: string; required_capability: string }): RoutingKind {
   return row.kind === 'turn'
@@ -36,7 +36,7 @@ export interface TaskRow {
   id:string; tenant_id:string; scope:string; kind:TaskKind; objective:string;
   flow_id:string|null; flow:FlowTask|null;
   bot_id?:string|null; agent_id?:string|null; thread_id?:string|null; swarm_step_id?:string|null;
-  initiator_kind?: 'person' | 'handoff' | 'swarm' | 'answer' | 'flow' | 'schedule' | 'bot_check' | 'source';
+  initiator_kind?: 'person' | 'agent' | 'handoff' | 'swarm' | 'answer' | 'flow' | 'schedule' | 'bot_check' | 'source';
   initiator_id?: string | null;
   resolved_at?: Date | null;
   constraints:string[]; acceptance_criteria:string[]; permission_envelope:Record<string,unknown>;
@@ -64,6 +64,9 @@ interface ArtifactRow {
 /** Task origins nobody is present for; Antigravity's consumer login never serves them (see bridge assertAntigravityCompliance). */
 const UNATTENDED_INITIATORS: readonly string[] = ['schedule', 'source', 'bot_check'];
 const UNATTENDED_SQL = UNATTENDED_INITIATORS.map(k => `'${k}'`).join(',');
+/** Unattended itself, or spawned (directly or not) by unattended work: the migration 049 trigger marks those by excluding antigravity. */
+const isUnattendedRow = (row: Pick<TaskRow,'initiator_kind'|'excluded_providers'>) =>
+  Boolean(row.initiator_kind && UNATTENDED_INITIATORS.includes(row.initiator_kind)) || (row.excluded_providers ?? []).includes('antigravity');
 const TURN_HAS_PHOTO =`EXISTS (SELECT 1 FROM (SELECT has_attachments FROM messages WHERE thread_id=t.thread_id ORDER BY seq DESC LIMIT 40) m WHERE m.has_attachments)`;
 export const VALID_CAPABILITIES = [AUTO_READ,AUTO_PATCH,'claude.read','claude.patch','codex.read','codex.patch','antigravity.read','antigravity.patch','demo.read'] as const;
 const date = (value:Date|null):string|null => value?.toISOString() ?? null;
@@ -152,7 +155,7 @@ async function lockedTask(db:PoolClient,p:Principal,id:string,teams=false):Promi
 
 export async function taskChanged(db:PoolClient,p:Principal,row:TaskRow,action:string,advance=true,audited=true):Promise<void> {
   const failureCode = (row.result as any)?.failure?.code;
-  const details = { task_id:row.id,kind:row.kind,
+  const details = { task_id:row.id,kind:row.kind,required_capability:row.required_capability,
     ...(row.thread_id ? {thread_id:row.thread_id} : {}),version:row.version,status:row.status,action,
     attempt_count:row.attempt_count,lease_generation:row.lease_generation,
     ...(failureCode ? { failure_code: failureCode } : {}),
@@ -225,6 +228,8 @@ export async function cancelTask(db:PoolClient,p:Principal,row:TaskRow,advance=t
     lease_generation=lease_generation+1,lease_owner=NULL,lease_hash=NULL,lease_expires_at=NULL,
     updated_at=clock_timestamp(),completed_at=clock_timestamp() WHERE id=$1 RETURNING *`,[id]);
   const next = updated.rows[0]!;
+  // A cancelled dispatched turn still reports back, so the coordinator's fan-in group can finish instead of waiting forever.
+  await copyReplyToCoordinator(db, p, next, 'Cancelled before it finished.', 'failed');
   if (row.swarm_step_id) {
     await db.query("UPDATE swarm_steps SET status='cancelled', updated_at=clock_timestamp() WHERE id=$1", [row.swarm_step_id]);
     const stepRow = (await db.query<{ swarm_id: string }>('SELECT swarm_id FROM swarm_steps WHERE id=$1', [row.swarm_step_id])).rows[0];
@@ -262,7 +267,7 @@ export class TaskService {
   }
 
   async submit(p:Principal,input:Record<string,unknown>):Promise<unknown> {
-    noExtraKeys(input,['scope','kind','objective','idempotency_key','required_capability','resource_key','base_ref','constraints','acceptance_criteria','context_refs','max_attempts','model','effort','exclude_providers']);
+    noExtraKeys(input,['scope','kind','objective','idempotency_key','required_capability','resource_key','base_ref','constraints','acceptance_criteria','context_refs','max_attempts','model','effort','exclude_providers','watch_session']);
     const scope = scopeName(input.scope);
     assertKnownScope(p,scope);
     const kind = enumValue(input.kind,'kind',TASK_KINDS);
@@ -286,6 +291,10 @@ export class TaskService {
     const model = optionalString(input.model,'model',80) ?? null;
     requireCondition(model === null || /^[A-Za-z0-9._:\/-]+$/u.test(model),400,'invalid_arguments','model must be a model name such as gpt-6-astra.');
     const effort = input.effort === undefined ? null : enumValue(input.effort,'effort',['minimal','low','medium','high','xhigh','max'] as const);
+    const namedProvider = capability === AUTO_READ || capability === AUTO_PATCH ? null : capability.slice(0, capability.lastIndexOf('.'));
+    validateModelAndEffort(namedProvider, model, effort);
+    const watchSession = input.watch_session === undefined ? null : inboxSession(input.watch_session);
+    if (watchSession) requirePermission(p, 'events:read');
     const exclude = input.exclude_providers === undefined ? [] : [...new Set(strings(input.exclude_providers,'exclude_providers',8,40))].sort();
     requireCondition(exclude.every(x => /^[a-z][a-z0-9-]{0,39}$/u.test(x)),400,'invalid_arguments','exclude_providers holds provider names such as claude, codex or antigravity.');
     requireCondition(!exclude.length || capability === AUTO_READ || capability === AUTO_PATCH,400,'invalid_arguments','exclude_providers applies to auto.read and auto.patch only; a named provider already picks who runs it.');
@@ -299,7 +308,15 @@ export class TaskService {
       const existing = await db.query<TaskRow>('SELECT * FROM tasks WHERE tenant_id=$1 AND created_by=$2 AND idempotency_key=$3',[p.tenantId,p.id,idempotency]);
       if (existing.rows[0]) {
         requireCondition(existing.rows[0].request_hash === requestHash,409,'idempotency_conflict','This idempotency key was used for different task inputs.');
-        return {task:await taskWithInstructions(db,existing.rows[0]),replayed:true};
+        if (watchSession) {
+          await bindSession(db, p, watchSession);
+          const exists = await db.query('SELECT 1 FROM task_watchers WHERE task_id=$1 AND principal_id=$2 AND session=$3',[existing.rows[0].id,p.id,watchSession]);
+          const wCount = await db.query('SELECT count(*)::int AS n FROM task_watchers WHERE task_id=$1',[existing.rows[0].id]);
+          requireCondition(exists.rowCount || wCount.rows[0].n<128,429,'watch_limit','This task has reached its watcher limit.');
+          await db.query('INSERT INTO task_watchers(task_id,principal_id,session) VALUES($1,$2,$3) ON CONFLICT DO NOTHING',[existing.rows[0].id,p.id,watchSession]);
+          await taskFinished(db, p, existing.rows[0]);
+        }
+        return {task:await taskWithInstructions(db,existing.rows[0]),replayed:true,...(watchSession ? {watching:true} : {})};
       }
       if ((capability.endsWith('.read') && capability !== AUTO_READ) || (capability.endsWith('.patch') && capability !== AUTO_PATCH)) {
         const {policy} = await getPolicy(db,p.tenantId);
@@ -331,6 +348,10 @@ export class TaskService {
       [newId(),p.tenantId,scope,kind,objective,JSON.stringify(constraints),JSON.stringify(acceptance),JSON.stringify(envelope),
         capability,resource,refs,JSON.stringify(versions),p.id,idempotency,requestHash,attempts,baseRef,exclude]);
       const row = result.rows[0]!;
+      if (watchSession) {
+        await bindSession(db, p, watchSession);
+        await db.query('INSERT INTO task_watchers(task_id,principal_id,session) VALUES($1,$2,$3) ON CONFLICT DO NOTHING',[row.id,p.id,watchSession]);
+      }
       await taskChanged(db,p,row,'submitted');
       // Say so now rather than let the task sit unclaimed: no live worker serves this project.
       const served = await db.query<{workers:number;free:number}>(`SELECT count(*)::int AS workers,
@@ -338,11 +359,11 @@ export class TaskService {
         FROM principals w WHERE w.tenant_id=$1 AND w.role='worker' AND NOT w.disabled
         AND $2=ANY(w.scopes) AND w.last_seen_at>clock_timestamp()-interval '60 seconds'`,[p.tenantId,scope]);
       const {workers,free} = served.rows[0] ?? {workers:0,free:0};
-      if (!workers) return {task:await taskWithInstructions(db,row),replayed:false,
+      if (!workers) return {task:await taskWithInstructions(db,row),replayed:false,...(watchSession ? {watching:true} : {}),
         warning:`No live worker serves ${scope}, so this task will wait in the queue. Start a worker for this project or submit it to a project a worker serves.`};
       // Acknowledge to the submitting agent, in words it can relay to the user.
       const message = `Swarm started: task ${row.id.slice(0,8)} is queued in ${scope}. ${workers} live worker${workers===1?'':'s'} with ${free} free slot${free===1?'':'s'} serve it, so it ${free ? 'should start within seconds' : 'will start when a slot frees up'}. Follow it with events_poll on ${scope} (claimed, then finished; start after 0.0 and pass next_cursor unchanged) or task_get.`;
-      return {task:await taskWithInstructions(db,row),replayed:false,message};
+      return {task:await taskWithInstructions(db,row),replayed:false,...(watchSession ? {watching:true} : {}),message};
     });
   }
 
@@ -365,7 +386,7 @@ export class TaskService {
     const limit = input.limit === undefined ? 20 : integer(input.limit,'limit',1,100);
     const before = input.before_id === undefined ? null : uuid(input.before_id,'before_id');
     const resolved = input.resolved !== undefined ? booleanOption(input.resolved,'resolved') : null;
-    const initiatorKind = input.initiator_kind !== undefined ? enumValue(input.initiator_kind,'initiator_kind',['person','handoff','swarm','answer','flow'] as const) : null;
+    const initiatorKind = input.initiator_kind !== undefined ? enumValue(input.initiator_kind,'initiator_kind',['person','agent','handoff','swarm','answer','flow','schedule','bot_check','source'] as const) : null;
     let beforeDate:Date|null = null;
     if (before) {
       const cursor = await this.pool.query<{created_at:Date}>('SELECT created_at FROM tasks WHERE id=$1 AND tenant_id=$2 AND scope=$3',[before,p.tenantId,scope]);
@@ -453,7 +474,7 @@ export class TaskService {
   }
 
   async claim(p:Principal,input:Record<string,unknown>):Promise<unknown> {
-    noExtraKeys(input,['scope','capabilities','kinds','projects','lease_seconds']);
+    noExtraKeys(input,['scope','capabilities','kinds','projects','lease_seconds','limit']);
     worker(p);
     requireCondition((input.scope !== undefined) !== (input.projects !== undefined),400,'invalid_arguments','Give exactly one of scope or projects.');
     if (input.projects !== undefined) {
@@ -477,13 +498,15 @@ export class TaskService {
       return {scope,capabilities,kinds};
     });
     const seconds = leaseSeconds(input.lease_seconds);
+    const batchMode = input.limit !== undefined;
+    const maxClaims = batchMode ? integer(input.limit,'limit',1,16) : 1;
     // One liveness write per call, then one cheap query so idle scopes skip the locked per-scope transaction.
     await touchWorker(this.pool,p);
     const ready = new Set((await this.pool.query<{scope:string}>(`SELECT x.scope FROM jsonb_to_recordset($2::jsonb)
       AS x(scope text,capabilities text[],kinds text[]) WHERE
       EXISTS (SELECT 1 FROM tasks t WHERE t.tenant_id=$1 AND t.scope=x.scope AND t.status='queued'
         AND (t.not_before IS NULL OR t.not_before<=clock_timestamp()) AND t.attempt_count<t.max_attempts
-        AND t.required_capability=ANY(x.capabilities) AND (
+        AND (t.required_capability=ANY(x.capabilities) OR t.required_capability LIKE 'antigravity.%') AND (
           (t.kind<>'turn' AND t.kind=ANY(x.kinds))
           OR (t.kind='turn' AND (
             (NOT t.required_capability LIKE '%.patch' AND ('turn'=ANY(x.kinds) OR x.kinds && ARRAY['research','review']::text[]))
@@ -491,15 +514,27 @@ export class TaskService {
       OR EXISTS (SELECT 1 FROM tasks t WHERE t.tenant_id=$1 AND t.scope=x.scope AND t.status='running' AND t.lease_expires_at<=clock_timestamp())
       OR EXISTS (SELECT 1 FROM questions q WHERE q.tenant_id=$1 AND q.scope=x.scope AND q.status='open' AND q.expires_at<=clock_timestamp())`,
       [p.tenantId,JSON.stringify(projects)])).rows.map(r => r.scope));
+    const claimed: Array<{ task: Record<string, unknown>; lease_token: string; lease_generation: number; route?: { provider: string | null; allowed: string[] } }> = [];
     for (const {scope,capabilities,kinds} of projects) {
       if (!ready.has(scope)) continue;
-      const claim = await this.claimScope(p,scope,capabilities,kinds,seconds);
-      if (claim.task) return claim;
+      const remaining = maxClaims - claimed.length;
+      if (remaining <= 0) break;
+      const batch = await this.claimScope(p,scope,capabilities,kinds,seconds,remaining);
+      claimed.push(...batch);
+      if (claimed.length >= maxClaims) break;
     }
-    return {task:null};
+    if (batchMode) {
+      const first = claimed[0];
+      return {
+        tasks: claimed,
+        task: first?.task ?? null,
+        ...(first ? { lease_token: first.lease_token, lease_generation: first.lease_generation, ...(first.route ? { route: first.route } : {}) } : {}),
+      };
+    }
+    return claimed[0] ?? {task:null};
   }
 
-  private async claimScope(p:Principal,scope:string,capabilities:string[],kinds:TaskKind[],seconds:number) {
+  private async claimScope(p:Principal,scope:string,capabilities:string[],kinds:TaskKind[],seconds:number,limit=1) {
     return transaction(this.pool,async db => {
       await scopeLock(db,'tasks',p,scope);
       // The owner's routing policy decides, per kind, which provider takes auto.read work; explicit
@@ -508,7 +543,6 @@ export class TaskService {
       const servedPatch = capabilities.filter(c => c.endsWith('.patch') && c !== AUTO_PATCH).map(c => c.slice(0,-6));
       const {policy} = await getPolicy(db,p.tenantId);
       const usage = await scopeUsage(db,p.tenantId,scope);
-      const decisions = capabilities.includes(AUTO_READ) || capabilities.includes(AUTO_PATCH) ? decideAll(policy,usage) : null;
       const eligible = (row:TaskRow, taskPolicy=policy):boolean => {
         if (row.kind === 'check') return true;
         const exclusions = row.excluded_providers ?? [];
@@ -536,22 +570,49 @@ export class TaskService {
         const prov = row.required_capability.slice(0, -5);
         return !exclusions.includes(prov) && policyAllows(policy, prov, effectiveKind);
       };
-      // B2 bot hooks: acquire Teams before selecting bot task rows or writing bot threads.
-      if ((await db.query(`SELECT 1 FROM tasks WHERE tenant_id=$1 AND scope=$2 AND bot_id IS NOT NULL AND status IN ('queued','running') LIMIT 1`,[p.tenantId,scope])).rowCount) await teamsLock(db,p.tenantId);
+      // Only acquire teamsLock when actually needed for an eligible queued bot/thread candidate,
+      // an expired teams task, or a due question (preserving strict scopeLock -> teamsLock -> tasks lock order).
+      const needsTeamsLock = await db.query<{ needs_lock: boolean }>(`SELECT (
+        EXISTS (SELECT 1 FROM tasks WHERE tenant_id=$1 AND scope=$2 AND status='queued'
+          AND (bot_id IS NOT NULL OR thread_id IS NOT NULL OR agent_id IS NOT NULL OR swarm_step_id IS NOT NULL)
+          AND (required_capability=ANY($3::text[]) OR required_capability LIKE 'antigravity.%') LIMIT 1)
+        OR EXISTS (SELECT 1 FROM tasks WHERE tenant_id=$1 AND scope=$2 AND status='running'
+          AND lease_expires_at<=clock_timestamp()
+          AND (bot_id IS NOT NULL OR agent_id IS NOT NULL OR swarm_step_id IS NOT NULL) LIMIT 1)
+        OR EXISTS (SELECT 1 FROM questions WHERE tenant_id=$1 AND scope=$2 AND status='open'
+          AND expires_at<=clock_timestamp() LIMIT 1)
+      ) AS needs_lock`,[p.tenantId,scope,capabilities]);
+      if (needsTeamsLock.rows[0]?.needs_lock) await teamsLock(db,p.tenantId);
       // Questions past their expiry are expired here and by question_answer, never by a read.
       const dueQuestion = await db.query(`SELECT 1 FROM questions WHERE tenant_id=$1 AND scope=$2 AND status='open'
         AND expires_at<=clock_timestamp() LIMIT 1`,[p.tenantId,scope]);
       if (dueQuestion.rowCount) {
-        await teamsLock(db,p.tenantId);
         await this.swarms.expireDueQuestions(db,p,scope);
       }
       await this.sweepExpired(db,p,scope);
-      // Antigravity cannot read photos: a queued turn pinned to it moves to claude when its window holds a photo.
-      await db.query(`UPDATE tasks t SET required_capability='claude.'||split_part(required_capability,'.',2),
-        permission_envelope=CASE WHEN permission_envelope#>>'{runner,provider}'='antigravity'
-          THEN jsonb_set(permission_envelope #- '{runner,model}' #- '{runner,effort}','{runner,provider}','"claude"') ELSE permission_envelope END
-        WHERE tenant_id=$1 AND scope=$2 AND status='queued' AND required_capability LIKE 'antigravity.%'
-          AND ((kind='turn' AND ${TURN_HAS_PHOTO}) OR initiator_kind IN (${UNATTENDED_SQL}))`,[p.tenantId,scope]);
+      // Skip unconditional UPDATE tasks ... antigravity.% unless a queued antigravity task exists in this scope.
+      const hasAgyQueued = await db.query(
+        `SELECT 1 FROM tasks WHERE tenant_id=$1 AND scope=$2 AND status='queued' AND required_capability LIKE 'antigravity.%' LIMIT 1`,
+        [p.tenantId,scope]
+      );
+      if (hasAgyQueued.rowCount) {
+        // Unattended Antigravity tasks (schedules, webhooks, bot checks) rewrite to auto.<mode> with antigravity
+        // excluded (not hardcoded claude) so Codex-only installs keep working; always strip runner model/effort/provider.
+        await db.query(`UPDATE tasks t SET
+          required_capability='auto.'||split_part(required_capability,'.',2),
+          excluded_providers=CASE WHEN 'antigravity'=ANY(excluded_providers) THEN excluded_providers ELSE array_append(excluded_providers,'antigravity') END,
+          permission_envelope=permission_envelope #- '{runner,model}' #- '{runner,effort}' #- '{runner,provider}'
+          WHERE tenant_id=$1 AND scope=$2 AND status='queued' AND required_capability LIKE 'antigravity.%'
+            AND (initiator_kind IN (${UNATTENDED_SQL}) OR 'antigravity'=ANY(excluded_providers))`,[p.tenantId,scope]);
+        // Interactive Antigravity turns holding a photo move to claude, stripping any Antigravity model/effort even without runner.provider.
+        await db.query(`UPDATE tasks t SET
+          required_capability='claude.'||split_part(required_capability,'.',2),
+          permission_envelope=CASE WHEN permission_envelope ? 'runner'
+            THEN jsonb_set(permission_envelope #- '{runner,model}' #- '{runner,effort}','{runner,provider}','"claude"')
+            ELSE permission_envelope END
+          WHERE tenant_id=$1 AND scope=$2 AND status='queued' AND required_capability LIKE 'antigravity.%'
+            AND kind='turn' AND ${TURN_HAS_PHOTO}`,[p.tenantId,scope]);
+      }
       const candidates = await db.query<TaskRow>(`SELECT * FROM tasks WHERE tenant_id=$1 AND scope=$2 AND status='queued'
         AND (not_before IS NULL OR not_before<=clock_timestamp())
         AND attempt_count<max_attempts AND required_capability=ANY($3::text[])
@@ -568,15 +629,28 @@ export class TaskService {
         AND (kind NOT IN ('patch', 'turn') OR NOT EXISTS (SELECT 1 FROM task_resource_leases r WHERE r.tenant_id=tasks.tenant_id
           AND r.scope=tasks.scope AND r.resource_key=tasks.resource_key AND r.expires_at>clock_timestamp()))
         ORDER BY created_at,id LIMIT 100 FOR UPDATE SKIP LOCKED`,[p.tenantId,scope,capabilities,kinds]);
+      const botPolicyCache = new Map<string, RoutingPolicy>();
+      const claimedBatch: Array<{ task: Record<string, unknown>; lease_token: string; lease_generation: number; route?: { provider: string | null; allowed: string[] } }> = [];
       for (const row of candidates.rows) {
+        if (claimedBatch.length >= limit) break;
         // Auto turns with a photo never route to antigravity (it throws photo_provider_unsupported).
         if (row.kind==='turn' && row.required_capability.startsWith('auto.') && !(row.excluded_providers ?? []).includes('antigravity')
           && (await db.query(`SELECT 1 FROM tasks t WHERE t.id=$1 AND ${TURN_HAS_PHOTO}`,[row.id])).rowCount) row.excluded_providers = [...(row.excluded_providers ?? []),'antigravity'];
         // Antigravity runs only work a person started: schedules, webhooks and scheduled checks go to the other providers.
         if (row.initiator_kind && UNATTENDED_INITIATORS.includes(row.initiator_kind) && !(row.excluded_providers ?? []).includes('antigravity'))
           row.excluded_providers = [...(row.excluded_providers ?? []),'antigravity'];
-        // B2 bot hook: same usage snapshot for eligibility and the execution-bound route.
-        const taskPolicy = await taskBotPolicy(db,p.tenantId,row,policy,usage);
+        // Cache taskBotPolicy() by bot_id within this claimScope call.
+        let taskPolicy: RoutingPolicy;
+        if (row.bot_id && row.required_capability.startsWith('auto.')) {
+          const cached = botPolicyCache.get(row.bot_id);
+          if (cached) taskPolicy = cached;
+          else {
+            taskPolicy = await taskBotPolicy(db,p.tenantId,row,policy,usage);
+            botPolicyCache.set(row.bot_id, taskPolicy);
+          }
+        } else {
+          taskPolicy = policy;
+        }
         let flowProvider:string|undefined;
         if (row.flow && row.kind!=='check') {
           const other = row.flow.different_provider_than ? (await db.query<TaskRow>("SELECT * FROM tasks WHERE flow_id=$1 AND flow->>'step_id'=$2",[row.flow_id,row.flow.different_provider_than])).rows[0] : undefined;
@@ -636,13 +710,53 @@ export class TaskService {
           const agent = aRes.rows[0] ?? null;
           const window = await getTurnWindow(db, next.thread_id);
           const maxSeq = window.reduce((max, m) => Math.max(max, Number((m as any).seq ?? 0)), 0);
+          // Populate live crew / scope agents so leads/routers always see their crew & edit capabilities.
+          const memberAgents = (await db.query<{ id: string; name: string; role: string; edits: boolean }>(
+            `SELECT a.id, a.name, a.role, a.edits
+             FROM thread_members tm
+             JOIN agents a ON a.id = tm.agent_id
+             WHERE tm.thread_id=$1 AND a.tenant_id=$2 AND NOT a.archived
+             ORDER BY a.name ASC`,
+            [next.thread_id, p.tenantId]
+          )).rows;
+          const crewAgents = memberAgents.length > 0
+            ? memberAgents
+            : (await db.query<{ id: string; name: string; role: string; edits: boolean }>(
+                `SELECT id, name, role, edits FROM agents
+                 WHERE tenant_id=$1 AND scope=$2 AND NOT archived
+                 ORDER BY name ASC`,
+                [p.tenantId, next.scope]
+              )).rows;
+          // Populate native_session_id from agent_provider_sessions for the target provider.
+          const sessionProvider = route?.provider
+            ?? (next.required_capability.startsWith('auto.') ? null : next.required_capability.split('.')[0]);
+          // Unknown provider (auto routing to anyone): send no session id; another provider's id must never be resumed.
+          const sessionRow = sessionProvider
+            ? (await db.query<{ session_data: unknown }>(
+                'SELECT session_data FROM agent_provider_sessions WHERE tenant_id=$1 AND agent_id=$2 AND provider=$3',
+                [p.tenantId, next.agent_id, sessionProvider]
+              )).rows[0]
+            : undefined;
+          const rawSession = sessionRow?.session_data as Record<string, unknown> | string | undefined;
+          const nativeSessionId = typeof rawSession === 'string'
+            ? rawSession
+            : (typeof rawSession?.session_id === 'string' ? rawSession.session_id
+              : typeof rawSession?.id === 'string' ? rawSession.id
+              : typeof rawSession?.thread_id === 'string' ? rawSession.thread_id
+              : null);
+          const turnExtras = {
+            ...(agent ? { agent } : {}),
+            agents: crewAgents.map(a => ({ id: a.id, name: a.name, role: a.role, edits: a.edits })),
+            ...(nativeSessionId ? { native_session_id: nativeSessionId } : {}),
+            thread_messages: window,
+          };
           if (maxSeq > 0) {
             const nextVersions = { ...(next.context_versions ?? {}), message_seq: maxSeq };
             await db.query('UPDATE tasks SET context_versions=$2::jsonb WHERE id=$1', [next.id, JSON.stringify(nextVersions)]);
             next.context_versions = nextVersions;
-            claimTask = { ...baseTask, ...(agent ? { agent } : {}), context_versions: nextVersions, thread_messages: window };
+            claimTask = { ...baseTask, ...turnExtras, context_versions: nextVersions };
           } else {
-            claimTask = { ...baseTask, ...(agent ? { agent } : {}), thread_messages: window };
+            claimTask = { ...baseTask, ...turnExtras };
           }
         }
         if (next.kind === 'turn' && next.bot_id) {
@@ -658,9 +772,9 @@ export class TaskService {
           }
           if (own?.rules?.local_actions === true) claimTask = {...claimTask, local_actions: true};
         }
-        return {task:claimTask,lease_token:token,lease_generation:generation,...(route ? {route} : {})};
+        claimedBatch.push({task:claimTask,lease_token:token,lease_generation:generation,...(route ? {route} : {})});
       }
-      return {task:null};
+      return claimedBatch;
     });
   }
 
@@ -704,6 +818,9 @@ export class TaskService {
         WHERE id=$1 RETURNING *`,[row.id,exhausted ? 'failed':'queued',exhausted,
         JSON.stringify({error:'attempts_exhausted',message:'Worker lease expired after the configured attempt limit.',checkpoint_available:row.checkpoint !== null})]);
       await taskChanged(db,p,result.rows[0]!,exhausted ? 'attempts_exhausted':'lease_expired');
+      if (exhausted) {
+        await copyReplyToCoordinator(db, p, result.rows[0]!, 'Failed: worker lease expired after attempts exhausted.', 'failed');
+      }
       if (exhausted && row.swarm_step_id) {
         await db.query(
           `UPDATE swarm_steps SET status='failed', failure_code='attempts_exhausted', failure_detail='Worker lease expired after the configured attempt limit.', updated_at=clock_timestamp() WHERE id=$1`,
@@ -803,17 +920,20 @@ export class TaskService {
 
   /** finish(): validate lease/idempotency -> requeue on provider failure -> record run -> side effects, one transaction. */
   async finish(p:Principal,input:Record<string,unknown>):Promise<unknown> {
-    noExtraKeys(input,['task_id','lease_token','lease_generation','outcome','result','artifact_ids']);
+    noExtraKeys(input,['task_id','lease_token','lease_generation','outcome','result','artifact_ids','inline_artifacts']);
     worker(p);
     const lease = leaseInput(input);
     const outcome = enumValue(input.outcome,'outcome',['completed','failed','blocked'] as const);
     const result = jsonObject(input.result,'result',65536);
     const artifactIds = uuidArray(input.artifact_ids,'artifact_ids');
+    const inlineArtifacts = parseInlineArtifacts(input.inline_artifacts);
     patchResult(result);
     const out = await transaction(this.pool,async db => {
-      const v = await finishValidate(db,p,lease,outcome,result,artifactIds);
+      const v = await finishValidate(db,p,lease,outcome,result,artifactIds,inlineArtifacts);
       if ('replay' in v) return v.replay;
       const c = v.ctx;
+      // Turns this finish spawns inherit "unattended" (migration 049 trigger), so Antigravity never picks them up.
+      if (isUnattendedRow(c.row)) await db.query("SELECT set_config('swarmaa.unattended','on',true)");
       const requeued = await finishRequeue(db,p,c);
       if (requeued) return requeued;
       const next = await finishRecord(db,p,c);
@@ -854,6 +974,7 @@ export class TaskService {
       requireCondition(Number(isMember) > 0, 403, 'turn_grant_forbidden', 'Turn grant refuses posting to a channel or bot thread the agent is not a member of.');
     }
 
+    const dispatchedEntries = normalizeDispatchedFrom((row.context_versions as any)?.dispatched_from);
     if (outcome === 'completed') {
       const rawAnswer = [result.answer, result.summary, result.reason].find(v => typeof v === 'string') ?? '';
       const extracted = extractActionsBlock(String(rawAnswer));
@@ -861,6 +982,7 @@ export class TaskService {
       const scheduled = row.bot_id && row.initiator_kind === 'schedule';
       // Models wrap JSON in fences or spaces; any {"quiet": true} as the whole answer counts.
       const quiet = scheduled && /^\s*(?:```(?:json)?\s*)?\{\s*"quiet"\s*:\s*true\s*\}\s*(?:```)?\s*$/u.test(String(rawAnswer));
+      const replyText = (Boolean(row.bot_id) && !answer.trim()) ? 'Finished without a summary' : answer;
       if (!quiet) {
         // Defer the schedule notice until there is a reply; quiet runs never touch the thread.
         if (scheduled) await serviceNotice(db, p, row.scope, targetThreadId, 'Scheduled run', false);
@@ -873,7 +995,7 @@ export class TaskService {
           `INSERT INTO messages (id, tenant_id, scope, thread_id, seq, author, kind, body)
            VALUES ($1, $2, $3, $4, $5, $6::jsonb, $8, $7)`,
           [replyMsgId, p.tenantId, row.scope, targetThreadId, nextSeq, JSON.stringify(replyAuthor),
-           emptyBotAnswer ? 'Finished without a summary' : answer, replyKind]
+           replyText, replyKind]
         );
         await event(db, p, row.scope, 'message.created', replyMsgId, {
           thread_id: targetThreadId,
@@ -882,7 +1004,6 @@ export class TaskService {
           kind: replyKind,
           author: replyAuthor
         });
-        await copyReplyToCoordinator(db, p, row, emptyBotAnswer ? 'Finished without a summary' : answer);
       }
       if (result.native_session) {
         await db.query(
@@ -895,6 +1016,7 @@ export class TaskService {
       }
 
       // Process turn actions under turn grant
+      let startedSwarm = false;
       const agentRow = (await db.query<AgentRow>('SELECT * FROM agents WHERE id=$1 FOR UPDATE', [row.agent_id])).rows[0];
       if (agentRow && threadRow) {
         const currentHop = (row.context_versions as any)?.hop_depth ?? 0;
@@ -906,7 +1028,8 @@ export class TaskService {
           hopDepth: typeof currentHop === 'number' ? currentHop : 0,
           botId: row.bot_id ?? null,
           leadMode: routerLead ? 'router' : 'default',
-          taskId: row.id
+          taskId: row.id,
+          ...(dispatchedEntries.length > 0 ? { dispatchedFrom: dispatchedEntries } : {}),
         };
 
         if (extracted.error) {
@@ -917,8 +1040,9 @@ export class TaskService {
             await serviceNotice(db, p, row.scope, targetThreadId, clipUtf8(`Turn action rejected: ${grant.action.type}: ${grant.reason}`, 16384));
           } else {
             // Summary turns remain reply-only. Appearance targets are locked by validateTurnGrant.
-            await this.swarms.applyTurnActions(db, p, turnCtx,
+            const actionRes = await this.swarms.applyTurnActions(db, p, turnCtx,
               budget.summary ? extracted.actions : extracted.actions.filter(a => a.type !== 'bot_appearance'), budget);
+            startedSwarm = actionRes.startedSwarm;
             if (!budget.summary) for (const act of extracted.actions) {
               if (act.type !== 'bot_appearance') continue;
               const updated = (await db.query<{ version: number }>(
@@ -935,11 +1059,26 @@ export class TaskService {
           }
         }
       }
+
+      // Only copy reply back to coordinator(s) when the turn is terminal (not delegating and not just starting a swarm).
+      const runnerObj = row.permission_envelope.runner as { delegated?: unknown } | undefined;
+      const delegateObj = result.delegate as { objective?: unknown } | undefined;
+      const willDelegate = Boolean(
+        runnerObj?.delegated !== true && !row.swarm_step_id && !routerLead
+        && typeof delegateObj?.objective === 'string' && redactSecrets(delegateObj.objective).trim().length > 0
+      );
+      if (!quiet && !willDelegate && !startedSwarm && dispatchedEntries.length > 0) {
+        await copyReplyToCoordinator(db, p, row, replyText, 'completed');
+      }
     } else {
       const failureObj = result.failure as { code?: string; detail?: string } | undefined;
       const failCode = failureObj?.code || 'harness_error';
       const detail = failureObj?.detail || result.summary || failCode;
-      await serviceNotice(db, p, row.scope, targetThreadId, clipUtf8(redactSecrets(`Turn failed: ${failCode} - ${detail}`), 16384));
+      const failText = clipUtf8(redactSecrets(`Turn failed: ${failCode} - ${detail}`), 16384);
+      await serviceNotice(db, p, row.scope, targetThreadId, failText);
+      if (dispatchedEntries.length > 0) {
+        await copyReplyToCoordinator(db, p, row, failText, 'failed');
+      }
     }
     return { replyMsgId, budget };
   }
@@ -1002,6 +1141,34 @@ export class TaskService {
 
 // ---- finish() phases -------------------------------------------------------------------------------------------
 
+interface InlineArtifactInput {
+  name: string;
+  content: string;
+  media_type: 'text/plain' | 'text/markdown' | 'application/json' | 'text/x-diff' | 'application/x-patch';
+  bytes: number;
+  sha256: string;
+}
+
+function parseInlineArtifacts(raw: unknown): InlineArtifactInput[] {
+  if (raw === undefined) return [];
+  requireCondition(Array.isArray(raw) && raw.length <= 16, 400, 'invalid_arguments', 'inline_artifacts must be an array of at most 16 items.');
+  const seenNames = new Set<string>();
+  return raw.map(item => {
+    const obj = object(item);
+    noExtraKeys(obj, ['name', 'content', 'media_type']);
+    const name = string(obj.name, 'inline_artifacts[].name', 120);
+    requireCondition(/^[A-Za-z0-9][A-Za-z0-9 ._-]*$/.test(name) && !name.includes('..'), 400, 'invalid_arguments', 'inline_artifacts[].name must be a plain filename beginning with a letter or digit.');
+    requireCondition(!seenNames.has(name), 400, 'invalid_arguments', `Duplicate inline artifact name: ${name}.`);
+    seenNames.add(name);
+    requireCondition(typeof obj.content === 'string' && !obj.content.includes('\u0000'), 400, 'invalid_arguments', 'inline_artifacts[].content must be a UTF-8 text string without NUL.');
+    const content = obj.content;
+    const bytes = Buffer.byteLength(content, 'utf8');
+    requireCondition(bytes <= ARTIFACT_MAX_BYTES, 400, 'artifact_too_large', 'Inline artifact exceeds 256 KiB in UTF-8.');
+    const media_type = obj.media_type === undefined ? 'text/plain' : enumValue(obj.media_type, 'media_type', ['text/plain', 'text/markdown', 'application/json', 'text/x-diff', 'application/x-patch'] as const);
+    return { name, content, media_type, bytes, sha256: sha256(content) };
+  });
+}
+
 type FinishOutcome = 'completed'|'failed'|'blocked';
 interface FinishBot { id: string; routing: Record<string, unknown>; rules: Record<string, unknown>; lead_agent_id: string }
 interface FinishCtx {
@@ -1009,9 +1176,16 @@ interface FinishCtx {
   completionHash:string; bot?:FinishBot; routerLead:boolean; servedProvider:string;
 }
 
-/** Phase 1: lock, fence the lease, replay by completion_hash, validate flow/artifacts. */
-async function finishValidate(db:PoolClient,p:Principal,lease:LeaseInput,outcomeIn:FinishOutcome,result:Record<string,unknown>,artifactIds:string[])
-  :Promise<{replay:unknown}|{ctx:FinishCtx}> {
+/** Phase 1: lock, fence the lease, replay by completion_hash, validate flow/artifacts (including inline_artifacts). */
+async function finishValidate(
+  db:PoolClient,
+  p:Principal,
+  lease:LeaseInput,
+  outcomeIn:FinishOutcome,
+  result:Record<string,unknown>,
+  artifactIds:string[],
+  inlineArtifacts:InlineArtifactInput[] = []
+): Promise<{replay:unknown}|{ctx:FinishCtx}> {
   let outcome = outcomeIn;
   const row = await lockedTask(db,p,lease.taskId,true);
   const runResult = await db.query<RunRow>('SELECT * FROM task_runs WHERE task_id=$1 AND generation=$2 FOR UPDATE',[row.id,lease.generation]);
@@ -1027,11 +1201,27 @@ async function finishValidate(db:PoolClient,p:Principal,lease:LeaseInput,outcome
     outcome = 'failed';
     result.failure = { code: 'router_edit_forbidden', retry: false, detail: 'Router lead turns cannot edit files or create branches.' };
   }
-  const completionHash = sha256(canonicalJson({outcome,result_json:canonicalJson(result),artifact_ids:[...artifactIds].sort()}));
+
+  // Handle idempotent replay before requireLease (a completed run no longer holds a live lease).
   if (run.completion_hash !== null) {
-    requireCondition(run.completion_hash === completionHash,409,'completion_conflict','This run already finished with different result content.');
+    const replayArtifactIds = [...artifactIds];
+    if (inlineArtifacts.length > 0) {
+      const existingRows = (await db.query<ArtifactRow>(
+        'SELECT * FROM artifacts WHERE task_id=$1 AND run_generation=$2 AND name=ANY($3::text[])',
+        [row.id, lease.generation, inlineArtifacts.map(a => a.name)]
+      )).rows;
+      const byName = new Map(existingRows.map(a => [a.name, a]));
+      for (const art of inlineArtifacts) {
+        const ex = byName.get(art.name);
+        requireCondition(ex && ex.sha256 === art.sha256 && ex.media_type === art.media_type, 409, 'completion_conflict', 'This run already finished with different result content.');
+        replayArtifactIds.push(ex.id);
+      }
+    }
+    const replayHash = sha256(canonicalJson({outcome,result_json:canonicalJson(result),artifact_ids:[...new Set(replayArtifactIds)].sort()}));
+    requireCondition(run.completion_hash === replayHash,409,'completion_conflict','This run already finished with different result content.');
     return {replay:{task:await taskWithInstructions(db,row),replayed:true}};
   }
+
   await requireLease(db,p,row,lease);
   validateFlowCompletion(row,outcome,result);
   if (row.flow?.different_provider_than) {
@@ -1040,11 +1230,42 @@ async function finishValidate(db:PoolClient,p:Principal,lease:LeaseInput,outcome
     const currentServed = (result.served as any)?.provider ?? result.provider;
     requireCondition(!otherServed || currentServed !== otherServed, 409, 'flow_provider_mismatch', 'Step ran on the same provider as the step it must differ from.');
   }
-  const artifacts = await db.query<{id:string}>(`SELECT id FROM artifacts WHERE tenant_id=$1 AND scope=$2
-    AND task_id=$3 AND run_generation=$4 AND id=ANY($5::uuid[])`,[p.tenantId,row.scope,row.id,lease.generation,artifactIds]);
-  requireCondition(artifacts.rows.length === artifactIds.length,400,'invalid_artifacts','Each artifact must belong to this task execution attempt.');
+  if (artifactIds.length > 0) {
+    const artifacts = await db.query<{id:string}>(`SELECT id FROM artifacts WHERE tenant_id=$1 AND scope=$2
+      AND task_id=$3 AND run_generation=$4 AND id=ANY($5::uuid[])`,[p.tenantId,row.scope,row.id,lease.generation,artifactIds]);
+    requireCondition(artifacts.rows.length === artifactIds.length,400,'invalid_artifacts','Each artifact must belong to this task execution attempt.');
+  }
+  const mergedArtifactIds = [...artifactIds];
+  if (inlineArtifacts.length > 0) {
+    requireCondition(hasPermission(p, 'artifact:write'), 403, 'forbidden', 'Saving inline_artifacts requires artifact:write permission.');
+    const countRes = await db.query<{count:string}>('SELECT count(*)::text AS count FROM artifacts WHERE task_id=$1',[row.id]);
+    let currentCount = Number(countRes.rows[0]?.count ?? 0);
+    for (const art of inlineArtifacts) {
+      const existing = await db.query<ArtifactRow>(
+        'SELECT * FROM artifacts WHERE task_id=$1 AND run_generation=$2 AND name=$3',
+        [row.id, lease.generation, art.name]
+      );
+      if (existing.rows[0]) {
+        requireCondition(existing.rows[0].sha256 === art.sha256 && existing.rows[0].media_type === art.media_type, 409, 'artifact_conflict', 'An artifact with this name already exists with different content.');
+        mergedArtifactIds.push(existing.rows[0].id);
+      } else {
+        requireCondition(currentCount < 128, 409, 'artifact_limit', 'A task permits at most 128 text artifacts across attempts.');
+        const inserted = await db.query<ArtifactRow>(`INSERT INTO artifacts
+          (id,tenant_id,scope,task_id,run_generation,created_by,name,media_type,content,byte_length,sha256)
+          SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11 FROM tasks
+          WHERE id=$4 AND lease_expires_at>clock_timestamp() RETURNING *`,
+        [newId(),p.tenantId,row.scope,row.id,lease.generation,p.id,art.name,art.media_type,art.content,art.bytes,art.sha256]);
+        requireCondition(inserted.rows[0],409,'lease_lost','Lease expired before artifact commit.');
+        currentCount++;
+        await audit(db,p,row.scope,'artifact.created',inserted.rows[0].id,{task_id:row.id,run_generation:lease.generation,byte_length:art.bytes,sha256:art.sha256});
+        mergedArtifactIds.push(inserted.rows[0].id);
+      }
+    }
+  }
+  const finalArtifactIds = [...new Set(mergedArtifactIds)];
+  const completionHash = sha256(canonicalJson({outcome,result_json:canonicalJson(result),artifact_ids:[...finalArtifactIds].sort()}));
   const servedProvider = (result.served as any)?.provider || (result.provider as string) || row.required_capability.split('.')[0]!;
-  return {ctx:{row,lease,outcome,result,artifactIds,completionHash,bot,routerLead,servedProvider}};
+  return {ctx:{row,lease,outcome,result,artifactIds:finalArtifactIds,completionHash,bot,routerLead,servedProvider}};
 }
 
 /** Requeue the task with the failed run recorded. Differences between callers: `exclusions` replaces
@@ -1206,29 +1427,85 @@ async function finishFollowUpTurn(db:PoolClient,p:Principal,c:FinishCtx):Promise
   // A delegation is queued even behind a busy agent (resource_key runs it after); the user was told it is coming.
   if (active && !effectiveDelegateObjective) return;
   const profile = bot ? leadTurnProfile(bot, agentRow) : null;
-  let nextCap = profile ? profile.capability : runnerCapability(agentRow.runner, agentRow.edits);
-  let firstFollowUp: ReturnType<typeof firstReplyRunner> = null;
-  if (bot && !profile?.router && !effectiveDelegateObjective) {
-    firstFollowUp = firstReplyRunner(bot.rules, agentRow.edits);
-    if (firstFollowUp?.capability) nextCap = firstFollowUp.capability;
-  }
-  const followUpId = newId();
-  // The full model must match the provider that runs it: a named non-Claude runner keeps its own model
-  // (the bridge's full model when unset); Claude or auto agents are pinned to Claude on DELEGATE_MODEL.
-  const pinnedProvider = agentRow.runner.provider;
-  const delegateModel = pinnedProvider && pinnedProvider !== 'claude' ? agentRow.runner.model : (agentRow.runner.model ?? DELEGATE_MODEL);
-  if (effectiveDelegateObjective && (!pinnedProvider || pinnedProvider === 'claude')) nextCap = `claude.${agentRow.edits ? 'patch' : 'read'}`;
   const edits = profile ? profile.edits : agentRow.edits;
-  const runnerObj = effectiveDelegateObjective
-    ? { ...agentRow.runner, ...(delegateModel ? { model: delegateModel } : {}), ...(pinnedProvider ? {} : { provider: 'claude', mode: undefined }), delegated: true }
-    : (profile?.runner ?? firstFollowUp?.runner);
+  const suffix = edits ? 'patch' : 'read';
+  let nextCap: string;
+  let runnerObj: Record<string, unknown> | undefined;
+  let noticeModelLabel: string | undefined;
+
+  if (effectiveDelegateObjective) {
+    // Respect bot routing.summary / routing.patch and global routing policy instead of blindly forcing
+    // auto agents onto claude-opus-5-5 when Claude is disabled or over quota.
+    const routeKind = edits ? 'patch' : 'summary';
+    const policyKind: RoutingKind = edits ? 'patch' : 'review';
+    const botRoute = (bot?.routing && typeof bot.routing === 'object')
+      ? (bot.routing[routeKind] as { mode?: string; provider?: string; model?: string; effort?: string } | undefined)
+      : undefined;
+    const agentPinned = agentRow.runner.mode !== 'auto' ? agentRow.runner.provider : undefined;
+
+    if (botRoute && botRoute.mode !== 'auto' && botRoute.mode !== 'different_from_author' && botRoute.provider) {
+      const m = botRoute.model ?? (botRoute.provider === 'claude' ? DELEGATE_MODEL : undefined);
+      nextCap = `${botRoute.provider}.${suffix}`;
+      runnerObj = {
+        provider: botRoute.provider,
+        ...(m ? { model: m } : {}),
+        ...(botRoute.effort ? { effort: botRoute.effort } : {}),
+        delegated: true,
+      };
+      noticeModelLabel = m;
+    } else if (agentPinned) {
+      const m = agentRow.runner.model ?? (agentPinned === 'claude' ? DELEGATE_MODEL : undefined);
+      nextCap = `${agentPinned}.${suffix}`;
+      runnerObj = {
+        provider: agentPinned,
+        ...(m ? { model: m } : {}),
+        ...(agentRow.runner.effort ? { effort: agentRow.runner.effort } : {}),
+        delegated: true,
+      };
+      noticeModelLabel = m;
+    } else {
+      const [{ policy }, usage] = await Promise.all([
+        getPolicy(db, p.tenantId),
+        scopeUsage(db, p.tenantId, agentRow.scope),
+      ]);
+      const floor = typeof bot?.rules?.quota_floor_pct === 'number' ? bot.rules.quota_floor_pct : 0;
+      const effectivePolicy = bot ? botPolicy(policy, usage, floor) : policy;
+      const decision = decide(effectivePolicy, policyKind, usage);
+      const claudeEntry = effectivePolicy.providers.find(pr => pr.provider === 'claude' && pr.enabled && pr.kinds.includes(policyKind));
+      if (decision.provider === 'claude' || (decision.anyone && Boolean(claudeEntry))) {
+        const m = agentRow.runner.model ?? DELEGATE_MODEL;
+        nextCap = `claude.${suffix}`;
+        runnerObj = { provider: 'claude', model: m, ...(agentRow.runner.effort ? { effort: agentRow.runner.effort } : {}), delegated: true };
+        noticeModelLabel = m;
+      } else if (decision.provider) {
+        nextCap = `${decision.provider}.${suffix}`;
+        runnerObj = { provider: decision.provider, delegated: true };
+        noticeModelLabel = decision.provider;
+      } else {
+        nextCap = edits ? AUTO_PATCH : AUTO_READ;
+        runnerObj = { mode: 'auto', delegated: true };
+      }
+    }
+  } else {
+    const firstFollowUp = (bot && !profile?.router) ? firstReplyRunner(bot.rules, agentRow.edits) : null;
+    const resolved = resolveTurnRunner({ bot, agent: agentRow, firstReply: firstFollowUp });
+    nextCap = resolved.capability;
+    runnerObj = resolved.runner;
+  }
+
+  const followUpId = newId();
   const envelope = {
     deploy: false, publish: false, purchase: false, local_patch: edits,
     read_project: true, send_messages: false, permission_changes: false, external_side_effects: false,
     ...(runnerObj ? { runner: runnerObj } : {})
   };
-  // hop_depth carries over, so a handoff -> delegate -> handoff chain still reaches MAX_HANDOFF_HOPS.
-  const ctxVersions = { message_seq: Number(pendingHuman?.seq ?? processedSeq), hop_depth: (row.context_versions as any)?.hop_depth ?? 0 };
+  const dispatched = effectiveDelegateObjective ? normalizeDispatchedFrom((row.context_versions as any)?.dispatched_from) : [];
+  // hop_depth and dispatched_from carry over across DELEGATE follow-ups.
+  const ctxVersions = {
+    message_seq: Number(pendingHuman?.seq ?? processedSeq),
+    hop_depth: (row.context_versions as any)?.hop_depth ?? 0,
+    ...(dispatched.length > 0 ? { dispatched_from: dispatched } : {}),
+  };
   const reqHash = sha256(canonicalJson({
     kind: 'turn', scope: agentRow.scope, agent_id: agentRow.id, thread_id: threadId, seq: Number(pendingHuman?.seq ?? processedSeq)
   }));
@@ -1241,27 +1518,122 @@ async function finishFollowUpTurn(db:PoolClient,p:Principal,c:FinishCtx):Promise
     [followUpId, p.tenantId, agentRow.scope, agentRow.id, threadId, botId, effectiveDelegateObjective || `Turn for agent ${agentRow.name}`,
      JSON.stringify(envelope), nextCap, `agent:${agentRow.id}`, JSON.stringify(ctxVersions), row.created_by, newId(), reqHash]
   );
-  await audit(db, p, agentRow.scope, 'task.submitted', followUpId, { kind: 'turn', agent_id: agentRow.id, thread_id: threadId });
-  await event(db, p, agentRow.scope, 'task.updated', followUpId, { task_id: followUpId, kind: 'turn', thread_id: threadId, status: 'queued', action: 'submitted' });
+  await audit(db, p, agentRow.scope, 'task.submitted', followUpId, { kind: 'turn', agent_id: agentRow.id, thread_id: threadId, required_capability: nextCap });
+  await event(db, p, agentRow.scope, 'task.updated', followUpId, { task_id: followUpId, kind: 'turn', thread_id: threadId, required_capability: nextCap, status: 'queued', action: 'submitted' });
   if (effectiveDelegateObjective) {
-    await serviceNotice(db, p, row.scope, threadId, redactSecrets(`${agentRow.name} handed this to ${delegateModel ?? 'its full model'} for a fuller answer`));
+    await serviceNotice(db, p, row.scope, threadId, redactSecrets(`${agentRow.name} handed this to ${noticeModelLabel ?? 'its full model'} for a fuller answer`));
   }
 }
 
-/** A turn a coordinator bot dispatched (project_dispatch): copy the reply into the coordinator's thread. Agent posts queue no turn there. */
-async function copyReplyToCoordinator(db: PoolClient, p: Principal, row: TaskRow, answer: string): Promise<void> {
-  const from = (row.context_versions as { dispatched_from?: { thread_id?: unknown; scope?: unknown } } | null)?.dispatched_from;
-  if (!from || typeof from.thread_id !== 'string' || typeof from.scope !== 'string' || !row.bot_id) return;
-  const origin = (await db.query<{ id: string }>("SELECT id FROM threads WHERE id=$1 AND tenant_id=$2 AND scope=$3 AND kind='bot' AND NOT archived",
-    [from.thread_id, p.tenantId, from.scope])).rows[0];
+/**
+ * A turn a coordinator bot dispatched (project_dispatch): copy the reply into each coordinator's thread.
+ * When a dispatch_group reaches completed + failed >= total, atomically mark it synthesized and queue
+ * ONE batched read-only synthesis turn on the coordinator (bounded by MAX_HANDOFF_HOPS).
+ */
+async function copyReplyToCoordinator(
+  db: PoolClient,
+  p: Principal,
+  row: TaskRow,
+  answer: string,
+  outcomeStatus: 'completed' | 'failed' = 'completed'
+): Promise<void> {
+  const entries = normalizeDispatchedFrom((row.context_versions as any)?.dispatched_from);
+  if (!entries.length || !row.bot_id) return;
   const bot = (await db.query<{ name: string }>('SELECT name FROM bots WHERE id=$1', [row.bot_id])).rows[0];
-  if (!origin || !bot) return;
-  const seq = await assignThreadSeq(db, p.tenantId, origin.id);
-  const id = newId(), author = { kind: 'agent', id: row.agent_id };
-  await db.query(`INSERT INTO messages (id, tenant_id, scope, thread_id, seq, author, kind, body, ref)
-    VALUES ($1, $2, $3, $4, $5, $6::jsonb, 'text', $7, $8::jsonb)`,
-    [id, p.tenantId, from.scope, origin.id, seq, JSON.stringify(author), clipUtf8(`**${bot.name.trim()}:** ${answer}`, 16384),
-     JSON.stringify({ dispatched_reply: { bot_id: row.bot_id, task_id: row.id } })]);
-  await db.query('UPDATE threads SET updated_at=clock_timestamp() WHERE id=$1', [origin.id]);
-  await event(db, p, from.scope, 'message.created', id, { thread_id: origin.id, message_id: id, seq: Number(seq), kind: 'text', author });
+  if (!bot) return;
+
+  for (const from of entries) {
+    const origin = (await db.query<{ id: string }>(
+      "SELECT id FROM threads WHERE id=$1 AND tenant_id=$2 AND scope=$3 AND kind='bot' AND NOT archived",
+      [from.thread_id, p.tenantId, from.scope]
+    )).rows[0];
+    if (!origin) continue;
+    const seq = await assignThreadSeq(db, p.tenantId, origin.id);
+    const id = newId(), author = { kind: 'agent', id: row.agent_id };
+    await db.query(`INSERT INTO messages (id, tenant_id, scope, thread_id, seq, author, kind, body, ref)
+      VALUES ($1, $2, $3, $4, $5, $6::jsonb, 'text', $7, $8::jsonb)`,
+      [id, p.tenantId, from.scope, origin.id, seq, JSON.stringify(author), clipUtf8(`**${bot.name.trim()}:** ${answer}`, 16384),
+       JSON.stringify({ dispatched_reply: { bot_id: row.bot_id, task_id: row.id, ...(from.dispatch_group_id ? { dispatch_group_id: from.dispatch_group_id } : {}) } })]);
+    await db.query('UPDATE threads SET updated_at=clock_timestamp() WHERE id=$1', [origin.id]);
+    await event(db, p, from.scope, 'message.created', id, { thread_id: origin.id, message_id: id, seq: Number(seq), kind: 'text', author });
+
+    if (from.dispatch_group_id) {
+      const updatedGroup = (await db.query<{
+        id: string; coordinator_scope: string; coordinator_thread_id: string;
+        coordinator_agent_id: string; coordinator_bot_id: string | null;
+        total: number; completed: number; failed: number; synthesized: boolean;
+      }>(
+        `UPDATE dispatch_groups
+         SET completed = completed + CASE WHEN $2 = 'completed' THEN 1 ELSE 0 END,
+             failed = failed + CASE WHEN $2 = 'failed' THEN 1 ELSE 0 END,
+             counted = array_append(counted, $4::uuid),
+             updated_at = clock_timestamp()
+         WHERE id = $1 AND tenant_id = $3 AND NOT synthesized AND NOT ($4::uuid = ANY(counted))
+         RETURNING *`,
+        // A continued or retried task finishes again with the same id: it counts once.
+        [from.dispatch_group_id, outcomeStatus, p.tenantId, row.id]
+      )).rows[0];
+
+      if (updatedGroup && updatedGroup.completed + updatedGroup.failed >= updatedGroup.total) {
+        const claimed = await db.query(
+          'UPDATE dispatch_groups SET synthesized=TRUE, updated_at=clock_timestamp() WHERE id=$1 AND NOT synthesized RETURNING id',
+          [updatedGroup.id]
+        );
+        if (claimed.rowCount) {
+          const nextHop = (from.hop_depth ?? 0) + 1;
+          if (nextHop <= MAX_HANDOFF_HOPS) {
+            const coordAgent = (await db.query<AgentRow>(
+              'SELECT * FROM agents WHERE id=$1 AND tenant_id=$2 AND NOT archived',
+              [updatedGroup.coordinator_agent_id, p.tenantId]
+            )).rows[0];
+            const coordBot = updatedGroup.coordinator_bot_id
+                ? (await db.query<{ id: string; routing: Record<string, unknown>; rules: Record<string, unknown>; lead_agent_id: string }>(
+                    'SELECT id, routing, rules, lead_agent_id FROM bots WHERE id=$1 AND tenant_id=$2 AND NOT archived',
+                    [updatedGroup.coordinator_bot_id, p.tenantId]
+                  )).rows[0]
+                : undefined;
+            // An archived coordinator bot gets no synthesis turn (never fall back to its id).
+            if (coordAgent && (!updatedGroup.coordinator_bot_id || coordBot)) {
+              const resolved = resolveTurnRunner({
+                bot: coordBot,
+                agent: coordAgent,
+                routeKind: 'summary',
+                forceReadOnly: true,
+                summary: true,
+              });
+              const synthId = newId();
+              const synthEnvelope = {
+                deploy: false, publish: false, purchase: false, local_patch: false,
+                read_project: true, send_messages: false, permission_changes: false, external_side_effects: false,
+                runner: { ...(resolved.runner ?? {}), summary: true, fast: false },
+              };
+              const synthCtxVersions = {
+                message_seq: Number(seq),
+                hop_depth: nextHop,
+                summary: true,
+                dispatch_group_id: updatedGroup.id,
+              };
+              const synthReqHash = sha256(canonicalJson({
+                kind: 'turn', scope: updatedGroup.coordinator_scope, agent_id: coordAgent.id, dispatch_group_id: updatedGroup.id, summary: true
+              }));
+              await db.query(
+                `INSERT INTO tasks
+                   (id, tenant_id, scope, kind, agent_id, thread_id, bot_id, objective, constraints, acceptance_criteria,
+                    permission_envelope, required_capability, resource_key, context_versions, status, created_by,
+                    idempotency_key, request_hash, max_attempts, initiator_kind, initiator_id)
+                 VALUES ($1, $2, $3, 'turn', $4, $5, $6, $7, '[]'::jsonb, '[]'::jsonb, $8::jsonb, $9, $10, $11::jsonb, 'queued', $12, $13, $14, 3, 'handoff', $15)`,
+                [synthId, p.tenantId, updatedGroup.coordinator_scope, coordAgent.id, updatedGroup.coordinator_thread_id,
+                 coordBot?.id ?? updatedGroup.coordinator_bot_id,
+                 'Synthesize the replies from the dispatched bots for the user. Reply only; start no new dispatches.',
+                 JSON.stringify(synthEnvelope), resolved.capability, `agent:${coordAgent.id}`,
+                 JSON.stringify(synthCtxVersions), row.created_by, `dispatch-synth:${updatedGroup.id}`, synthReqHash, updatedGroup.id]
+              );
+              await audit(db, p, updatedGroup.coordinator_scope, 'task.submitted', synthId, { kind: 'turn', agent_id: coordAgent.id, thread_id: updatedGroup.coordinator_thread_id, required_capability: resolved.capability });
+              await event(db, p, updatedGroup.coordinator_scope, 'task.updated', synthId, { task_id: synthId, kind: 'turn', thread_id: updatedGroup.coordinator_thread_id, required_capability: resolved.capability, status: 'queued', action: 'submitted' });
+            }
+          }
+        }
+      }
+    }
+  }
 }

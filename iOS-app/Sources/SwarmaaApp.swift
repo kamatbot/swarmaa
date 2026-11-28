@@ -1287,12 +1287,71 @@ private struct ThreadComposerBar: View {
     @State private var dictationToken = UUID()
     @State private var demoPreviewLoaded = false
     @State private var flushTask: Task<Void, Never>?
+    @State private var showingModelSheet = false
     @StateObject private var dictation = ChatDictation()
     @FocusState private var composerFocused: Bool
     @Environment(\.scenePhase) private var phase
 
+    private var activeBot: Bot? {
+        model.bots.first(where: { $0.id == botID }) ?? model.openBot
+    }
+    private var activeOverride: JSON? {
+        let r = model.messageRunnerOverrides[threadID]
+        return r == .null ? nil : r
+    }
+    private var nextReplyLabel: String {
+        if let override = activeOverride, !override["provider"].string.isEmpty {
+            return ModelCatalog.runnerLabel(override, status: model.status) + " · once"
+        }
+        if let bot = activeBot {
+            let fr = bot.raw["rules"]["first_reply"].string
+            let effectiveFR = fr.isEmpty ? replyModels[0] : fr
+            if effectiveFR != "off" {
+                return ModelCatalog.modelLabel(effectiveFR, status: model.status) + " (fast)"
+            }
+            if let lead = model.agents.first(where: { $0["id"].string == bot.raw["lead_agent_id"].string }) {
+                return ModelCatalog.runnerLabel(lead["runner"], status: model.status)
+            }
+        }
+        return "Auto"
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
+            if !model.hasOpenApproval, activeBot != nil {
+                HStack(spacing: 8) {
+                    Button { showingModelSheet = true } label: {
+                        HStack(spacing: 5) {
+                            Image(systemName: activeOverride != nil ? "sparkles" : "cpu")
+                                .font(.system(size: 11, weight: .semibold))
+                            Text(nextReplyLabel)
+                                .font(KS.mono(.semibold))
+                                .lineLimit(1)
+                            Image(systemName: "chevron.up.chevron.down")
+                                .font(.system(size: 9, weight: .bold))
+                        }
+                        .foregroundStyle(activeOverride != nil ? KS.signal : KS.soft)
+                        .padding(.horizontal, 10).padding(.vertical, 5)
+                        .background(activeOverride != nil ? KS.signalTint : KS.chip, in: Capsule())
+                        .overlay(Capsule().strokeBorder(activeOverride != nil ? KS.signal.opacity(0.45) : KS.hairline, lineWidth: 1))
+                    }
+                    .buttonStyle(PressStyle())
+                    .accessibilityLabel("Model for next reply: \(nextReplyLabel)")
+                    .accessibilityIdentifier("composer-model-chip")
+                    if activeOverride != nil {
+                        Button {
+                            model.messageRunnerOverrides[threadID] = nil
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .font(.system(size: 14))
+                                .foregroundStyle(KS.muted)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Clear model override")
+                    }
+                    Spacer()
+                }
+            }
             if !photos.isEmpty {
                 ScrollView(.horizontal) {
                     HStack {
@@ -1394,6 +1453,11 @@ private struct ThreadComposerBar: View {
         }
         .padding(.horizontal, 12).padding(.top, 8).padding(.bottom, 6).background(KS.ground)
         .overlay(alignment: .top) { Rectangle().fill(KS.hairline).frame(height: 1) }
+        .sheet(isPresented: $showingModelSheet) {
+            ContentSheet {
+                ComposerModelSheet(model: model, bot: activeBot, threadID: threadID, close: { showingModelSheet = false })
+            }
+        }
         .onAppear { loadDraft() }
         .onDisappear {
             dictation.stop(); dictationToken = UUID(); dictationStarting = false
@@ -1492,6 +1556,188 @@ struct ReplyPicker: View {
             .pickerStyle(.menu).tint(KS.ink).frame(maxWidth: .infinity, minHeight: 44, alignment: .leading).padding(.horizontal, 4).card(KS.inset)
     }
 }
+
+/// Reusable iOS Provider → Model → Effort picker backed by `ModelCatalog`.
+private struct IOSRunnerPicker: View {
+    let title: String
+    let status: JSON
+    @Binding var runner: JSON
+    var allowDifferentFromAuthor: Bool = false
+    var autoLabel: String = "Auto"
+
+    private var providers: [String] { ModelCatalog.providers(status: status) }
+    private var selectedProviderOrMode: String {
+        let p = runner["provider"].string
+        if !p.isEmpty { return p }
+        let m = runner["mode"].string
+        return m.isEmpty ? "auto" : m
+    }
+    private var selectedProvider: String? {
+        let p = runner["provider"].string
+        return p.isEmpty ? nil : p
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                if !title.isEmpty {
+                    Text(title).font(KS.body(.semibold)).foregroundStyle(KS.strong)
+                    Spacer()
+                }
+                Picker(title.isEmpty ? "Provider" : title, selection: Binding(
+                    get: { selectedProviderOrMode },
+                    set: { value in
+                        runner = ModelCatalog.updatingRouting(runner, providerOrMode: value, status: status)
+                    }
+                )) {
+                    Text(autoLabel).tag("auto")
+                    if allowDifferentFromAuthor { Text("Different from author").tag("different_from_author") }
+                    ForEach(providers, id: \.self) { p in
+                        Text(ModelCatalog.providerName(p)).tag(p)
+                    }
+                    if let p = selectedProvider, !providers.contains(p) {
+                        Text(ModelCatalog.providerName(p)).tag(p)
+                    }
+                }
+                .pickerStyle(.menu).tint(KS.ink).frame(minHeight: 40)
+            }
+            if let provider = selectedProvider {
+                let models = ModelCatalog.models(for: provider, status: status)
+                let currentModel = runner["model"].string
+                let efforts = ModelCatalog.efforts(for: provider, model: currentModel.isEmpty ? nil : currentModel, status: status)
+                let currentEffort = runner["effort"].string
+                let workerDefault = ModelCatalog.defaultModel(for: provider, status: status)
+                let defaultLabel = workerDefault.map {
+                    "Worker default (\(ModelCatalog.modelLabel($0, provider: provider, status: status)))"
+                } ?? "Worker default"
+
+                HStack(spacing: 8) {
+                    Picker("Model", selection: Binding(
+                        get: { currentModel },
+                        set: { next in
+                            var obj = runner.object
+                            obj["provider"] = .string(provider)
+                            obj.removeValue(forKey: "mode")
+                            if next.isEmpty { obj.removeValue(forKey: "model") }
+                            else { obj["model"] = .string(next) }
+                            let nextEfforts = ModelCatalog.efforts(for: provider, model: next.isEmpty ? nil : next, status: status)
+                            if let e = obj["effort"]?.string, !e.isEmpty, !nextEfforts.contains(e) {
+                                obj.removeValue(forKey: "effort")
+                            }
+                            runner = .object(obj)
+                        }
+                    )) {
+                        Text(defaultLabel).tag("")
+                        ForEach(models) { m in Text(m.label).tag(m.id) }
+                        if !currentModel.isEmpty && !models.contains(where: { $0.id == currentModel }) {
+                            Text(currentModel).tag(currentModel)
+                        }
+                    }
+                    .pickerStyle(.menu).tint(KS.ink)
+                    .frame(maxWidth: .infinity, minHeight: 40, alignment: .leading)
+                    .padding(.horizontal, 4).card(KS.inset, radius: 9)
+
+                    Picker("Effort", selection: Binding(
+                        get: { currentEffort },
+                        set: { next in
+                            var obj = runner.object
+                            obj["provider"] = .string(provider)
+                            obj.removeValue(forKey: "mode")
+                            if next.isEmpty { obj.removeValue(forKey: "effort") }
+                            else { obj["effort"] = .string(next) }
+                            runner = .object(obj)
+                        }
+                    )) {
+                        Text("Default effort").tag("")
+                        ForEach(efforts, id: \.self) { e in
+                            Text(ModelCatalog.effortLabel(e)).tag(e)
+                        }
+                        if !currentEffort.isEmpty && !efforts.contains(currentEffort) {
+                            Text(ModelCatalog.effortLabel(currentEffort)).tag(currentEffort)
+                        }
+                    }
+                    .pickerStyle(.menu).tint(KS.ink)
+                    .frame(minHeight: 40)
+                    .padding(.horizontal, 4).card(KS.inset, radius: 9)
+                }
+            }
+        }
+    }
+}
+
+/// Sheet opened from the thread composer chip to pick a one-off per-message runner or update `first_reply`.
+private struct ComposerModelSheet: View {
+    @Bindable var model: AppModel
+    let bot: Bot?
+    let threadID: String
+    var close: () -> Void
+    @State private var savingFirstReply = false
+    @State private var error: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 12) {
+                CloseButton(action: close)
+                Text("Next reply model").font(KS.title()).foregroundStyle(KS.strong)
+                Spacer()
+            }
+            VStack(alignment: .leading, spacing: 8) {
+                Eyebrow("This message only")
+                Text("Overrides provider, model, and effort for your next message only.")
+                    .font(KS.secondary()).foregroundStyle(KS.muted)
+                IOSRunnerPicker(
+                    title: "",
+                    status: model.status,
+                    runner: Binding(
+                        get: { model.messageRunnerOverrides[threadID] ?? .object(["mode": .string("auto")]) },
+                        set: { next in
+                            if next["provider"].string.isEmpty {
+                                model.messageRunnerOverrides[threadID] = nil
+                            } else {
+                                model.messageRunnerOverrides[threadID] = next
+                            }
+                        }
+                    ),
+                    autoLabel: "Use bot default"
+                )
+            }.padding(14).card()
+
+            if let bot, !model.isDemo {
+                VStack(alignment: .leading, spacing: 8) {
+                    Eyebrow("Standing chat replies")
+                    ReplyPicker(value: Binding(
+                        get: {
+                            let fr = bot.raw["rules"]["first_reply"].string
+                            return fr.isEmpty ? replyModels[0] : fr
+                        },
+                        set: { next in
+                            let current = bot.raw["rules"]["first_reply"].string
+                            guard next != current, !savingFirstReply else { return }
+                            savingFirstReply = true; error = nil
+                            Task {
+                                defer { savingFirstReply = false }
+                                do { try await model.setFirstReply(next, for: bot) }
+                                catch { self.error = safeError(error) }
+                            }
+                        }
+                    ))
+                    .disabled(savingFirstReply)
+                }.padding(14).card()
+            }
+            if let error { Text(error).font(KS.body()).foregroundStyle(KS.failedText) }
+            HStack(spacing: 12) {
+                if model.messageRunnerOverrides[threadID] != nil {
+                    Button("Reset") {
+                        model.messageRunnerOverrides[threadID] = nil
+                    }
+                    .font(KS.body(.semibold)).foregroundStyle(KS.signal)
+                }
+                Button("Done", action: close).buttonStyle(Pill(fill: KS.signal, primary: true))
+            }
+        }
+    }
+}
+
 struct NewBotView: View {
     @Bindable var model: AppModel
     var close: () -> Void
@@ -1517,6 +1763,21 @@ struct NewBotView: View {
                         Eyebrow("Lead")
                         Picker("Lead", selection: $draft.lead) { Text("A new agent").tag(""); ForEach(model.agents.filter { $0["scope"].string == draft.project }, id: \.self) { Text($0["name"].string).tag($0["id"].string) } }.pickerStyle(.menu).padding(.vertical, 8).frame(maxWidth: .infinity, minHeight: 44).tint(KS.ink).card(KS.inset).accessibilityIdentifier("lead-picker")
                         }
+                    }
+                    if draft.lead.isEmpty {
+                        Eyebrow("Lead model & effort")
+                        IOSRunnerPicker(
+                            title: "",
+                            status: model.status,
+                            runner: Binding(
+                                get: { draft.leadRunnerJSON },
+                                set: { next in
+                                    draft.leadProvider = next["provider"].string
+                                    draft.leadModel = next["model"].string
+                                    draft.leadEffort = next["effort"].string
+                                }
+                            )
+                        )
                     }
                     Eyebrow("04 — Chat replies"); ReplyPicker(value: $draft.firstReply)
                 }.padding(3)
@@ -1622,20 +1883,30 @@ struct SettingsView: View {
                                 if on { members.append(agent["id"]) }; draft.raw["member_agent_ids"] = .array(members)
                             })).frame(minHeight: 44)
                         }
+                        if !draft.raw["member_agent_ids"].array.filter({ $0 != draft.raw["lead_agent_id"] }).isEmpty {
+                            Picker("Lead mode", selection: Binding(
+                                get: {
+                                    let m = draft.raw["rules"]["lead_mode"].string
+                                    return m.isEmpty ? "default" : m
+                                },
+                                set: { draft.raw["rules"]["lead_mode"] = .string($0) }
+                            )) {
+                                Text("Direct").tag("default")
+                                Text("Router").tag("router")
+                            }
+                            .pickerStyle(.segmented)
+                        }
                         Eyebrow("03 — Who does what")
                         ForEach(["research", "patch", "review", "summary"], id: \.self) { kind in
-                            Picker(kind.capitalized, selection: Binding(get: {
-                                let raw = draft.raw["routing"][kind]["provider"].string.isEmpty
-                                    ? draft.raw["routing"][kind]["mode"].string
-                                    : draft.raw["routing"][kind]["provider"].string
-                                return raw.isEmpty ? "auto" : raw
-                            }, set: { value in
-                                draft.raw["routing"][kind] = ["claude", "codex", "antigravity"].contains(value) ? .object(["provider": .string(value)]) : .object(["mode": .string(value)])
-                            })) {
-                                Text("Auto").tag("auto")
-                                if kind == "review" { Text("Different from author").tag("different_from_author") }
-                                Text("Claude").tag("claude"); Text("Codex").tag("codex"); Text("Antigravity").tag("antigravity")
-                            }.tint(KS.ink).frame(minHeight: 44)
+                            IOSRunnerPicker(
+                                title: kind.capitalized,
+                                status: model.status,
+                                runner: Binding(
+                                    get: { draft.raw["routing"][kind] },
+                                    set: { draft.raw["routing"][kind] = $0 }
+                                ),
+                                allowDifferentFromAuthor: kind == "review"
+                            )
                         }
                         Eyebrow("04 — Schedule")
                         let schedulePresets: [(label: String, cron: String)] = [

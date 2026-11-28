@@ -315,6 +315,9 @@ struct NewBotDraft {
     var job = ""
     var project = ""
     var lead = ""
+    var leadProvider = ""   // "" = Auto
+    var leadModel = ""
+    var leadEffort = ""
     var firstReply = "claude-haiku-5-5"
     let agentKey = UUID().uuidString
     let botKey = UUID().uuidString
@@ -323,6 +326,206 @@ struct NewBotDraft {
         if job.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return "Say what it does to make the bot." }
         if project.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return "Choose a project." }
         return nil
+    }
+    var leadRunnerJSON: JSON {
+        guard !leadProvider.isEmpty else { return .object(["mode": .string("auto")]) }
+        var obj: [String: JSON] = ["provider": .string(leadProvider)]
+        if !leadModel.isEmpty { obj["model"] = .string(leadModel) }
+        if !leadEffort.isEmpty { obj["effort"] = .string(leadEffort) }
+        return .object(obj)
+    }
+}
+
+/// Dynamic model & effort catalog backed by `swarm_status.model_catalog`, with bundled defaults
+/// so older hosts or offline workers still expose full Provider → Model → Effort options.
+enum ModelCatalog {
+    struct Model: Identifiable, Equatable, Hashable, Sendable {
+        let id: String
+        let label: String
+        let efforts: [String]
+        var fast: Bool = false
+        var isDefault: Bool = false
+    }
+
+    static let defaultOrder = ["claude", "codex", "antigravity"]
+
+    static let bundled: [String: [Model]] = [
+        "claude": [
+            Model(id: "claude-opus-5-5", label: "Opus 5.5", efforts: ["low", "medium", "high", "max"], isDefault: true),
+            Model(id: "claude-sonnet-5-5", label: "Sonnet 5.5", efforts: ["low", "medium", "high", "max"], fast: true),
+            Model(id: "claude-haiku-5-5", label: "Haiku 5.5", efforts: ["low", "medium", "high", "max"], fast: true),
+        ],
+        "codex": [
+            Model(id: "gpt-6-astra", label: "GPT-6 Astra", efforts: ["minimal", "low", "medium", "high", "xhigh"], isDefault: true),
+            Model(id: "gpt-5.4", label: "GPT-5.4", efforts: ["minimal", "low", "medium", "high", "xhigh"]),
+            Model(id: "gpt-5.4-mini", label: "GPT-5.4 Mini", efforts: ["minimal", "low", "medium", "high", "xhigh"], fast: true),
+        ],
+        "antigravity": [
+            Model(id: "gemini-3.8-pro", label: "Gemini 3.8 Pro", efforts: ["low", "medium", "high", "xhigh"], isDefault: true),
+            Model(id: "gemini-3.8-flash", label: "Gemini 3.8 Flash", efforts: ["low", "medium", "high", "xhigh"], fast: true),
+        ],
+    ]
+
+    private static func catalogMap(status: JSON) -> JSON {
+        let raw = status["model_catalog"]
+        return raw["providers"] != .null ? raw["providers"] : raw
+    }
+
+    static func providers(status: JSON) -> [String] {
+        var ordered: [String] = []
+        var seen = Set<String>()
+        func add(_ raw: String) {
+            let p = raw.lowercased()
+            // The server's parseRunner only accepts these; anything else is a 400.
+            guard defaultOrder.contains(p), seen.insert(p).inserted else { return }
+            ordered.append(p)
+        }
+        let cat = catalogMap(status: status)
+        for rule in status["routing"]["policy"]["providers"].array { add(rule["provider"].string) }
+        for p in status["routing"]["providers"].array { add(p["provider"].string) }
+        for k in defaultOrder where cat[k] != .null { add(k) }
+        for k in cat.object.keys.sorted() { add(k) }
+        for u in status["usage"].array { add(u["provider"].string) }
+        for w in status["workers"].array { for p in w["providers"].array { add(p.string) } }
+        for p in defaultOrder { add(p) }
+        return ordered
+    }
+
+    static func prettyLabel(for id: String) -> String {
+        for list in bundled.values {
+            if let match = list.first(where: { $0.id == id }) { return match.label }
+        }
+        if id == "gemini-3.8-flash-high" { return "Gemini 3.8 Flash" }
+        return id
+    }
+
+    static func models(for provider: String, status: JSON) -> [Model] {
+        let key = provider.lowercased()
+        let entry = catalogMap(status: status)[key]
+        let entryEfforts = entry["efforts"].array.map(\.string).filter { !$0.isEmpty }
+        let defaultID = entry["default_model"].string
+        let live = entry["models"].array.compactMap { item -> Model? in
+            if case .string(let id) = item, !id.isEmpty {
+                return Model(
+                    id: id,
+                    label: prettyLabel(for: id),
+                    efforts: entryEfforts,
+                    fast: id.contains("haiku") || id.contains("mini") || id.contains("flash"),
+                    isDefault: id == defaultID
+                )
+            }
+            let id = item["id"].string
+            guard !id.isEmpty else { return nil }
+            let label = item["label"].string.isEmpty ? prettyLabel(for: id) : item["label"].string
+            let modelEfforts = item["efforts"].array.map(\.string).filter { !$0.isEmpty }
+            return Model(id: id, label: label, efforts: modelEfforts.isEmpty ? entryEfforts : modelEfforts, fast: item["fast"].bool, isDefault: item["default"].bool)
+        }
+        return live.isEmpty ? (bundled[key] ?? []) : live
+    }
+
+    static func efforts(for provider: String, model: String? = nil, status: JSON) -> [String] {
+        let key = provider.lowercased()
+        let list = models(for: key, status: status)
+        if let model, !model.isEmpty, let m = list.first(where: { $0.id == model }), !m.efforts.isEmpty {
+            return m.efforts
+        }
+        let entryEfforts = catalogMap(status: status)[key]["efforts"].array.map(\.string).filter { !$0.isEmpty }
+        if !entryEfforts.isEmpty {
+            return entryEfforts
+        }
+        if let first = list.first(where: { !$0.efforts.isEmpty }) {
+            return first.efforts
+        }
+        return ["low", "medium", "high"]
+    }
+
+    static func defaultModel(for provider: String, status: JSON) -> String? {
+        let key = provider.lowercased()
+        for w in status["workers"].array where w["live"].bool {
+            let m = w["default_models"][key].string
+            if !m.isEmpty { return m }
+        }
+        for w in status["workers"].array {
+            let m = w["default_models"][key].string
+            if !m.isEmpty { return m }
+        }
+        let cat = catalogMap(status: status)[key]["default_model"].string
+        return cat.isEmpty ? nil : cat
+    }
+
+    static func providerName(_ provider: String) -> String {
+        switch provider.lowercased() {
+        case "claude": "Claude"
+        case "codex": "Codex"
+        case "antigravity": "Antigravity"
+        default: provider.prefix(1).uppercased() + provider.dropFirst()
+        }
+    }
+
+    static func modelLabel(_ id: String, provider: String? = nil, status: JSON = .null) -> String {
+        if let provider, let match = models(for: provider, status: status).first(where: { $0.id == id }) {
+            return match.label
+        }
+        for (_, entry) in catalogMap(status: status).object {
+            if let match = entry["models"].array.first(where: { $0["id"].string == id }) {
+                let lbl = match["label"].string
+                if !lbl.isEmpty { return lbl }
+            }
+        }
+        return prettyLabel(for: id)
+    }
+
+    static func effortLabel(_ effort: String) -> String {
+        switch effort.lowercased() {
+        case "minimal": "Minimal"
+        case "low": "Low"
+        case "medium": "Medium"
+        case "high": "High"
+        case "xhigh": "Extra High"
+        case "max": "Max"
+        default: effort.prefix(1).uppercased() + effort.dropFirst()
+        }
+    }
+
+    static func runnerLabel(_ runner: JSON, status: JSON = .null) -> String {
+        let provider = runner["provider"].string
+        guard !provider.isEmpty else {
+            return runner["mode"].string == "different_from_author" ? "Different from author" : "Auto"
+        }
+        let vendor = providerName(provider)
+        let modelID = runner["model"].string
+        let base: String
+        if !modelID.isEmpty {
+            let lbl = modelLabel(modelID, provider: provider, status: status)
+            base = lbl.lowercased().hasPrefix(vendor.lowercased()) ? lbl : "\(vendor) \(lbl)"
+        } else {
+            base = vendor
+        }
+        let effort = runner["effort"].string
+        return effort.isEmpty ? base : "\(base) · \(effortLabel(effort))"
+    }
+
+    /// Updates a routing entry while preserving `model` and `effort` when keeping the same provider,
+    /// and clearing them only when switching providers or switching to auto / different_from_author.
+    static func updatingRouting(_ current: JSON, providerOrMode value: String, status: JSON = .null) -> JSON {
+        if value == "auto" || value == "different_from_author" {
+            return .object(["mode": .string(value)])
+        }
+        let existingProvider = current["provider"].string
+        var obj: [String: JSON] = ["provider": .string(value)]
+        if existingProvider == value {
+            let existingModel = current["model"].string
+            if !existingModel.isEmpty { obj["model"] = .string(existingModel) }
+            let existingEffort = current["effort"].string
+            if !existingEffort.isEmpty { obj["effort"] = .string(existingEffort) }
+        } else {
+            let existingEffort = current["effort"].string
+            let supported = efforts(for: value, model: nil, status: status)
+            if !existingEffort.isEmpty && supported.contains(existingEffort) {
+                obj["effort"] = .string(existingEffort)
+            }
+        }
+        return .object(obj)
     }
 }
 
@@ -497,8 +700,9 @@ func safeError(_ error: Error) -> String {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONEncoder().encode(JSON.object(input))
-        let (data, response) = try await Self.bounded(transport: transport, seconds: 15) { [transport, request] in
-            try await transport.send(request)
+        let sid = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
+        let (data, response) = try await Self.bounded(transport: transport, sid: sid, seconds: 15) { [transport, request, sid] in
+            try await transport.send(request, sid: sid)
         }
         guard (200..<300).contains(response.statusCode) else {
             throw response.statusCode == 401 ? AppFailure.unauthorized : AppFailure.service(response.statusCode)
@@ -507,6 +711,36 @@ func safeError(_ error: Error) -> String {
         guard root["result"] != .null else { throw AppFailure.invalidResponse }
         return root["result"]
     }
+    /// Bounds a single relay request by `sid`, cancelling only that stream on timeout or cancellation
+    /// so the shared WebSocket and live SSE stream stay intact.
+    private final class TimedOutFlag: @unchecked Sendable {
+        private let lock = NSLock(); private var flag = false
+        var value: Bool { get { lock.lock(); defer { lock.unlock() }; return flag }
+                          set { lock.lock(); flag = newValue; lock.unlock() } }
+    }
+    nonisolated static func bounded<T: Sendable>(transport: SwarmaRelayTransport, sid: String, seconds: Double,
+                                                operation: @escaping @Sendable () async throws -> T) async throws -> T {
+        try await withTaskCancellationHandler {
+            let timedOut = TimedOutFlag()
+            return try await withThrowingTaskGroup(of: T.self) { group in
+                group.addTask {
+                    try Task.checkCancellation()
+                    do { return try await operation() }
+                    catch is CancellationError where timedOut.value { throw AppFailure.timeout }
+                }
+                group.addTask {
+                    try await Task.sleep(for: .seconds(seconds))
+                    timedOut.value = true // Set before cancelStream so the operation's CancellationError maps to timeout.
+                    await transport.cancelStream(sid: sid)
+                    throw AppFailure.timeout
+                }
+                defer { group.cancelAll() }
+                return try await group.next()!
+            }
+        } onCancel: {
+            Task { await transport.cancelStream(sid: sid) }
+        }
+    }
     nonisolated static func bounded<T: Sendable>(transport: SwarmaRelayTransport, seconds: Double,
                                                 operation: @escaping @Sendable () async throws -> T) async throws -> T {
         try await withTaskCancellationHandler {
@@ -514,7 +748,7 @@ func safeError(_ error: Error) -> String {
                 group.addTask { try Task.checkCancellation(); return try await operation() }
                 group.addTask {
                     try await Task.sleep(for: .seconds(seconds))
-                    await transport.disconnect() // Unblocks transport continuations on timeout.
+                    await transport.disconnect() // Unblocks pairing continuations on timeout.
                     throw AppFailure.timeout
                 }
                 defer { group.cancelAll() }
@@ -533,6 +767,7 @@ func safeError(_ error: Error) -> String {
 }
 
 // A byte parser so UTF-8 and CRLF can be split at arbitrary relay chunk boundaries.
+// Scans with a read offset and compacts once per `feed` call (O(N) instead of O(N²)).
 struct EventParser {
     var carry = Data()
     var lines: [String] = []
@@ -541,9 +776,14 @@ struct EventParser {
         carry.append(chunk)
         guard carry.count < 1_048_576 else { throw AppFailure.invalidResponse }
         var events: [JSON] = []
-        while let end = carry.firstIndex(of: 10) {
-            let line = String(decoding: carry[..<end], as: UTF8.self).trimmingCharacters(in: .newlines)
-            carry.removeSubrange(...end)
+        var offset = carry.startIndex
+        while offset < carry.endIndex, let end = carry[offset...].firstIndex(of: 10) {
+            var lineEnd = end
+            if lineEnd > offset && carry[carry.index(before: lineEnd)] == 13 {
+                lineEnd = carry.index(before: lineEnd)
+            }
+            let line = String(decoding: carry[offset..<lineEnd], as: UTF8.self)
+            offset = carry.index(after: end)
             if line.isEmpty {
                 var data: [String] = [], name = "", id = ""
                 for l in lines {
@@ -565,6 +805,11 @@ struct EventParser {
                 guard frameBytes < 1_048_576 else { throw AppFailure.invalidResponse }
                 lines.append(line)
             }
+        }
+        if offset == carry.endIndex {
+            carry.removeAll(keepingCapacity: true)
+        } else if offset > carry.startIndex {
+            carry.removeSubrange(carry.startIndex..<offset)
         }
         return events
     }
@@ -703,10 +948,17 @@ enum PushNotification {
     private var streamTask: Task<Void, Never>?
     private var presenceTask: Task<Void, Never>?
     private var botRefreshTask: Task<Void, Never>?
+    private var turnRefreshTask: Task<Void, Never>?
+    private var taskGetTask: Task<Void, Never>?
+    private var pendingTaskGetIDs: Set<String> = []
     var botRefreshDebounce: Duration = .milliseconds(250)
+    var turnRefreshDebounce: Duration = .milliseconds(300)
+    var taskGetDebounce: Duration = .milliseconds(250)
     private var cursor = "now"
     private var createdLeads: [String: String] = [:]
-    private var pendingPosts: [String: (text: String, photos: [ChatPhoto], key: String)] = [:]
+    private var pendingPosts: [String: (text: String, photos: [ChatPhoto], runner: JSON?, key: String)] = [:]
+    /// Per-thread one-off runner override chosen from the composer chip (cleared on send).
+    var messageRunnerOverrides: [String: JSON] = [:]
     let keychain: ConnectionKeychain
     init(keychain: ConnectionKeychain = ConnectionKeychain()) { self.keychain = keychain }
     /// Whether home's collapsed "Hidden" section is open. Hidden bots never mix into the main list.
@@ -724,6 +976,8 @@ enum PushNotification {
     }
     func attach(_ service: RelayService) {
         streamTask?.cancel(); presenceTask?.cancel(); botRefreshTask?.cancel(); botRefreshTask = nil
+        turnRefreshTask?.cancel(); turnRefreshTask = nil
+        taskGetTask?.cancel(); taskGetTask = nil; pendingTaskGetIDs = []
         self.service = service; connected = true; didLoadBots = false
         onConnectionChanged?()
         presenceTask = Task { [weak self, transport = service.transport] in
@@ -815,16 +1069,16 @@ enum PushNotification {
         messages.removeAll { $0.id == id }
         if let bot = openBot { threadCache[bot.id] = messages }
     }
-    func readThread(_ bot: Bot, incremental: Bool = false) async throws {
+    func readThread(_ bot: Bot, incremental: Bool = false, markRead: Bool = true) async throws {
         guard let service else { return }
         do {
             let previous = incremental ? (messages.map(\.seq).max() ?? 0) : 0
-            var input: [String: JSON] = ["thread_id": .string(bot.threadID), "limit": .number(100)]
+            var input: [String: JSON] = ["thread_id": .string(bot.threadID), "limit": .number(incremental ? 50 : 100)]
             if incremental { input["after_seq"] = .number(Double(previous)) }
             var page = try await service.call("thread_read", input)
             var incoming = page["messages"].array.map { Message(raw: $0) }
             var pages = 1
-            // Read every forward page on stream catch-up, not only the first 100 messages.
+            // Read every forward page on stream catch-up, not only the first page.
             while incremental && page["has_more"].bool {
                 guard pages < 100, let last = incoming.map(\.seq).max(), last > (input["after_seq"]?.int ?? 0) else { throw AppFailure.invalidResponse }
                 input["after_seq"] = .number(Double(last))
@@ -839,7 +1093,8 @@ enum PushNotification {
             }
             messages = patchResolved(merged.sorted { $0.seq < $1.seq }); typing = page["typing"].array
             threadCache[bot.id] = messages
-            if let seq = messages.last?.seq {
+            let shouldMark = markRead || !incoming.isEmpty
+            if shouldMark, let seq = messages.last?.seq {
                 _ = try await service.call("thread_mark_read", ["thread_id": .string(bot.threadID), "seq": .number(Double(seq))])
                 clearUnread(bot.id)
             }
@@ -896,18 +1151,46 @@ enum PushNotification {
             if !id.isEmpty { removeMessage(id) } else { messages.removeAll { $0.seq == value("seq").int } }
             if let bot = openBot { threadCache[bot.id] = messages }
         }
-        if let bot = openBot,
-           (name.hasPrefix("message.") && value("thread_id").string == bot.threadID)
-            || (name == "task.updated" && value("kind").string == "turn")
-            || name.hasPrefix("question.") {
-            try await readThread(bot, incremental: name == "message.created")
+        if let bot = openBot {
+            let eventThread = value("thread_id").string
+            if (name.hasPrefix("message.") && eventThread == bot.threadID)
+                || (name.hasPrefix("question.") && (eventThread.isEmpty || eventThread == bot.threadID)) {
+                try await readThread(bot, incremental: name == "message.created")
+            } else if name == "task.updated", value("kind").string == "turn",
+                      eventThread.isEmpty || eventThread == bot.threadID {
+                let statusStr = value("status").string
+                let taskID = value("subject_id").string.isEmpty ? value("task_id").string : value("subject_id").string
+                if !taskID.isEmpty && !statusStr.isEmpty && !["running", "queued"].contains(statusStr) {
+                    typing.removeAll { $0["task_id"].string == taskID }
+                }
+                if turnRefreshDebounce == .zero {
+                    try await readThread(bot, incremental: true, markRead: false)
+                } else {
+                    scheduleTurnRefresh(bot)
+                }
+            }
         }
         if name.hasPrefix("task.") {
             let id = value("subject_id").string.isEmpty ? value("task_id").string : value("subject_id").string
             if !id.isEmpty {
-                let task = try await service.call("task_get", ["task_id": .string(id)])["task"]
-                if let index = tasks.firstIndex(where: { $0["id"].string == id }) { tasks[index] = task }
-                else { tasks.append(task) }
+                let statusStr = value("status").string
+                let actionStr = value("action").string
+                let resolvedVal = value("resolved")
+                if let index = tasks.firstIndex(where: { $0["id"].string == id }),
+                   !statusStr.isEmpty, actionStr != "submitted", resolvedVal == .null,
+                   ["running", "queued"].contains(statusStr) {
+                    // Patch cached task state directly from event fields without an extra task_get round trip.
+                    tasks[index]["status"] = .string(statusStr)
+                    if value("version") != .null { tasks[index]["version"] = value("version") }
+                    // Attempts/claimant/progress/summary aren't in the event: one coalesced task_get refreshes them.
+                    scheduleTaskGet(id)
+                } else if taskGetDebounce == .zero {
+                    let task = try await service.call("task_get", ["task_id": .string(id)])["task"]
+                    if let index = tasks.firstIndex(where: { $0["id"].string == id }) { tasks[index] = task }
+                    else { tasks.append(task) }
+                } else {
+                    scheduleTaskGet(id)
+                }
             }
         }
         if name.hasPrefix("bot.") || name == "message.created" || name.hasPrefix("question.") {
@@ -915,6 +1198,37 @@ enum PushNotification {
                 try await refreshBotsNow()
             } else {
                 scheduleBotRefresh()
+            }
+        }
+    }
+    private func scheduleTurnRefresh(_ bot: Bot) {
+        let targetID = bot.id
+        turnRefreshTask?.cancel()
+        let delay = turnRefreshDebounce
+        turnRefreshTask = Task { [weak self] in
+            do { try await Task.sleep(for: delay) } catch { return }
+            guard !Task.isCancelled, let self, let current = self.openBot, current.id == targetID else { return }
+            try? await self.readThread(current, incremental: true, markRead: false)
+            self.turnRefreshTask = nil
+        }
+    }
+    private func scheduleTaskGet(_ id: String) {
+        pendingTaskGetIDs.insert(id)
+        guard taskGetTask == nil else { return }
+        let delay = max(taskGetDebounce, .milliseconds(250)) // Never zero: bursts of running events must coalesce.
+        taskGetTask = Task { [weak self] in
+            do { try await Task.sleep(for: delay) } catch { return }
+            guard !Task.isCancelled, let self else { return }
+            let ids = self.pendingTaskGetIDs
+            self.pendingTaskGetIDs.removeAll()
+            self.taskGetTask = nil
+            guard let service = self.service else { return }
+            for taskID in ids {
+                guard !Task.isCancelled else { return }
+                if let task = try? await service.call("task_get", ["task_id": .string(taskID)])["task"], !task["id"].string.isEmpty {
+                    if let index = self.tasks.firstIndex(where: { $0["id"].string == taskID }) { self.tasks[index] = task }
+                    else { self.tasks.append(task) }
+                }
             }
         }
     }
@@ -986,24 +1300,40 @@ enum PushNotification {
         }
         tasks = rows; attention = try await needs
     }
-    func post(_ text: String, photos: [ChatPhoto] = []) async throws {
+    func post(_ text: String, photos: [ChatPhoto] = [], runner: JSON? = nil) async throws {
         guard let service, let bot = openBot, photos.count <= 2, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !photos.isEmpty else { throw AppFailure.invalidMessage }
         let text = text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "" : text
+        let effectiveRunner = runner ?? messageRunnerOverrides[bot.threadID]
         let key: String
-        if let pendingPost = pendingPosts[bot.threadID], pendingPost.text == text, pendingPost.photos.count == photos.count, zip(pendingPost.photos, photos).allSatisfy({ $0.0.name == $0.1.name && $0.0.data == $0.1.data }) { key = pendingPost.key }
-        else { key = UUID().uuidString }
-        pendingPosts[bot.threadID] = (text, photos, key)
+        if let pendingPost = pendingPosts[bot.threadID], pendingPost.text == text, pendingPost.runner == effectiveRunner,
+           pendingPost.photos.count == photos.count, zip(pendingPost.photos, photos).allSatisfy({ $0.0.name == $0.1.name && $0.0.data == $0.1.data }) {
+            key = pendingPost.key
+        } else {
+            key = UUID().uuidString
+        }
+        pendingPosts[bot.threadID] = (text, photos, effectiveRunner, key)
         var input: [String: JSON] = ["thread_id": .string(bot.threadID), "body": .string(text), "idempotency_key": .string(key)]
         if !photos.isEmpty { input["attachments"] = .array(photos.map { .object(["name": .string($0.name), "media_type": .string("image/jpeg"), "data_base64": .string($0.data.base64EncodedString())]) }) }
+        if let effectiveRunner, effectiveRunner != .null { input["runner"] = effectiveRunner }
         _ = try await service.call("thread_post", input)
         pendingPosts[bot.threadID] = nil
+        messageRunnerOverrides[bot.threadID] = nil
         do { try await readThread(bot, incremental: true) } catch { self.error = safeError(error) }
+    }
+    func setFirstReply(_ value: String, for bot: Bot) async throws {
+        guard let service, bot.raw["version"].int > 0 else { throw AppFailure.invalidResponse }
+        var rules = bot.raw["rules"] == .null ? JSON.object([:]) : bot.raw["rules"]
+        rules["first_reply"] = .string(value)
+        let result = try await service.call("bot_update", ["bot_id": .string(bot.id), "expected_version": bot.raw["version"], "rules": rules])
+        let updated = Bot(raw: result["bot"])
+        if let i = bots.firstIndex(where: { $0.id == updated.id }) { bots[i] = updated }
+        if openBot?.id == updated.id { openBot = updated }
     }
     func create(_ draft: NewBotDraft) async throws {
         guard draft.missing == nil, let service else { throw AppFailure.invalidResponse }
         var lead = draft.lead.isEmpty ? (createdLeads[draft.agentKey] ?? "") : draft.lead
         if lead.isEmpty {
-            let agent = try await service.call("agent_create", ["name": .string(draft.name + " lead"), "role": .string("Lead"), "instructions": .string(draft.job), "scope": .string(draft.project), "runner": .object(["mode": .string("auto")]), "edits": .bool(false), "idempotency_key": .string(draft.agentKey)])
+            let agent = try await service.call("agent_create", ["name": .string(draft.name + " lead"), "role": .string("Lead"), "instructions": .string(draft.job), "scope": .string(draft.project), "runner": draft.leadRunnerJSON, "edits": .bool(false), "idempotency_key": .string(draft.agentKey)])
             lead = agent["agent"]["id"].string
             guard !lead.isEmpty else { throw AppFailure.invalidResponse }
             createdLeads[draft.agentKey] = lead
@@ -1049,11 +1379,15 @@ enum PushNotification {
         removeBot(bot.id)
     }
     private func removeBot(_ id: String) {
-        if let thread = bots.first(where: { $0.id == id })?.threadID { pendingPosts[thread] = nil }
+        if let thread = bots.first(where: { $0.id == id })?.threadID {
+            pendingPosts[thread] = nil
+            messageRunnerOverrides[thread] = nil
+        }
         bots.removeAll { $0.id == id }
         threadCache.removeValue(forKey: id)
         if pendingPushBotID == id { pendingPushBotID = nil }
         if let bot = openBot, bot.id == id {
+            turnRefreshTask?.cancel(); turnRefreshTask = nil
             expandedWorkingNotes.removeValue(forKey: bot.threadID)
             openBot = nil; messages = []; typing = []; error = nil
         }
@@ -1102,9 +1436,11 @@ enum PushNotification {
         onConnectionChanged?()
         pushToken = nil; activityStartToken = nil; didLoadBots = false; pendingPushBotID = nil; visibleThreadBotID = nil
         streamTask?.cancel(); presenceTask?.cancel(); botRefreshTask?.cancel(); botRefreshTask = nil
+        turnRefreshTask?.cancel(); turnRefreshTask = nil
+        taskGetTask?.cancel(); taskGetTask = nil; pendingTaskGetIDs = []
         if let service = service as? RelayService { await service.transport.disconnect() }
         service = nil; connected = false; online = false; openBot = nil
-        expandedWorkingNotes = [:]; pendingPosts = [:]
+        expandedWorkingNotes = [:]; pendingPosts = [:]; messageRunnerOverrides = [:]
         bots = []; messages = []; typing = []; tasks = []; attention = []; agents = []; status = .null; cursor = "now"
         threadCache = [:]; resolvedTaskIDs = []; PhotoCache.clear()
     }

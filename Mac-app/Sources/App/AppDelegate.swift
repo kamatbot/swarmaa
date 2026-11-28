@@ -775,9 +775,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // re-fires thresholds, announces a reset that did not happen, and
             // leaves a spent session with no "available again" to follow it.
             store.$snapshots
-                .combineLatest(preferences.$claudeDailyPaceRing)
+                .combineLatest(preferences.$claudeDailyPaceRing, store.polled.prepend(()))
                 .receive(on: RunLoop.main)
-                .sink { [weak statusItem] snapshots, paced in
+                .sink { [weak statusItem] snapshots, paced, _ in
                     let snapshots = DailyPace.apply(to: snapshots, enabled: paced)
                     statusItem?.snapshots = snapshots
                     let usageSnapshots = snapshots.filter { $0.kind != .swarm }
@@ -1222,8 +1222,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @MainActor func openTeams(threadID: String? = nil) {
         if teams == nil {
             let window = TeamsWindowController()
-            store?.$usageSnapshots.receive(on: RunLoop.main)
-                .sink { [weak model = window.model] in model?.localUsage = $0 }
+            store?.$usageSnapshots
+                .removeDuplicates()
+                .receive(on: RunLoop.main)
+                .sink { [weak model = window.model] snapshots in
+                    if let model, model.localUsage != snapshots {
+                        model.localUsage = snapshots
+                    }
+                }
                 .store(in: &cancellables)
             teams = window
         }

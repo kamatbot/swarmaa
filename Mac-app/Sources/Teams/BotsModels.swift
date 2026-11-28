@@ -200,6 +200,8 @@ struct TeamsBotRules: Codable, Equatable {
     /// The model for chat replies (`rules.first_reply`). Haiku and Sonnet answer fast and hand off to the
     /// full model when needed; Opus thinks hard on every reply; "off" uses the agent's own model.
     var firstReply = Self.defaultFirstReply
+    /// `"default"` (lead answers directly) or `"router"` (lead delegates to crew). Nil when absent on older services.
+    var leadMode: String? = nil
     static let defaultFirstReply = "claude-haiku-5-5"
     static let firstReplyChoices: [(id: String, title: String, detail: String)] = [
         ("claude-haiku-5-5", "Haiku 5.5", "Replies in seconds, hands off to Opus when it needs to"),
@@ -212,6 +214,7 @@ struct TeamsBotRules: Codable, Equatable {
         case quotaFloorPct = "quota_floor_pct", approvePublic = "approve_public"
         case schedulePaused = "schedule_paused"
         case reviewEdits = "review_edits", requireTests = "require_tests", firstReply = "first_reply"
+        case leadMode = "lead_mode"
     }
     init() {}
     init(from decoder: Decoder) throws {
@@ -222,6 +225,18 @@ struct TeamsBotRules: Codable, Equatable {
         requireTests = c.opt(Bool.self, .requireTests) ?? false
         schedulePaused = c.opt(Bool.self, .schedulePaused)
         firstReply = c.opt(String.self, .firstReply) ?? Self.defaultFirstReply
+        leadMode = c.opt(String.self, .leadMode)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(quotaFloorPct, forKey: .quotaFloorPct)
+        try c.encode(approvePublic, forKey: .approvePublic)
+        try c.encode(reviewEdits, forKey: .reviewEdits)
+        try c.encode(requireTests, forKey: .requireTests)
+        try c.encodeIfPresent(schedulePaused, forKey: .schedulePaused)
+        try c.encode(firstReply, forKey: .firstReply)
+        try c.encodeIfPresent(leadMode, forKey: .leadMode)
     }
 }
 

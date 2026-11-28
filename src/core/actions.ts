@@ -5,6 +5,7 @@ import { checkProblem, patchStepProblem, validateStepGraph } from './swarms.js';
 import { clipUtf8 } from './teams.js';
 import type { Db } from './shared.js';
 import type { AgentRow, ThreadRow } from './teams.js';
+import type { DispatchedFromEntry } from './model-catalog.js';
 import type { LocalAction } from '../voice/types.js';
 import { validateLocalAction } from '../voice/intent.js';
 
@@ -13,6 +14,10 @@ export interface TurnActionHandoff {
   to_agent: string;
   body: string;
   swarm_step_id?: string;
+  base_ref?: string;
+  branch?: string;
+  artifact_ids?: string[];
+  reply_to_thread?: string;
 }
 
 export interface SwarmStartStepInput {
@@ -265,7 +270,7 @@ export function extractActionsBlock(text: string): ExtractedActions {
       actions.push({ type, ...(act.avatar !== undefined ? { avatar: act.avatar as string } : {}),
         ...(act.color !== undefined ? { color: act.color as string | null } : {}) });
     } else if (type === 'handoff') {
-      const allowed = new Set(['type', 'to_agent', 'body', 'swarm_step_id']);
+      const allowed = new Set(['type', 'to_agent', 'body', 'swarm_step_id', 'base_ref', 'branch', 'artifact_ids', 'reply_to_thread']);
       for (const k of Object.keys(act)) {
         if (!allowed.has(k)) {
           return { cleanText, rawBlock, error: `unknown field '${k}' in handoff action`, rejectedAction: item };
@@ -280,11 +285,43 @@ export function extractActionsBlock(text: string): ExtractedActions {
       if (act.swarm_step_id !== undefined && (typeof act.swarm_step_id !== 'string' || !act.swarm_step_id.trim())) {
         return { cleanText, rawBlock, error: 'invalid swarm_step_id in handoff', rejectedAction: item };
       }
+      if (act.base_ref !== undefined && !isBaseRef(act.base_ref)) {
+        return { cleanText, rawBlock, error: 'handoff base_ref must be a git branch, tag or commit name', rejectedAction: item };
+      }
+      if (act.branch !== undefined && !isBaseRef(act.branch)) {
+        return { cleanText, rawBlock, error: 'handoff branch must be a git branch name', rejectedAction: item };
+      }
+      let artifactIds: string[] | undefined;
+      if (act.artifact_ids !== undefined) {
+        if (!Array.isArray(act.artifact_ids) || act.artifact_ids.length > 32) {
+          return { cleanText, rawBlock, error: 'handoff artifact_ids must be an array of at most 32 uuids', rejectedAction: item };
+        }
+        const deduped: string[] = [];
+        const seen = new Set<string>();
+        for (const aid of act.artifact_ids) {
+          if (!isUuid(aid)) {
+            return { cleanText, rawBlock, error: `invalid artifact_id '${String(aid)}' in handoff`, rejectedAction: item };
+          }
+          const lower = aid.toLowerCase();
+          if (!seen.has(lower)) {
+            seen.add(lower);
+            deduped.push(lower);
+          }
+        }
+        artifactIds = deduped;
+      }
+      if (act.reply_to_thread !== undefined && !isUuid(act.reply_to_thread)) {
+        return { cleanText, rawBlock, error: 'handoff reply_to_thread must be a valid uuid', rejectedAction: item };
+      }
       actions.push({
         type: 'handoff',
         to_agent: act.to_agent.trim(),
         body: clipUtf8(redactSecrets(act.body), 16384),
-        swarm_step_id: act.swarm_step_id ? String(act.swarm_step_id).trim() : undefined
+        swarm_step_id: act.swarm_step_id ? String(act.swarm_step_id).trim() : undefined,
+        ...(act.base_ref !== undefined ? { base_ref: (act.base_ref as string).trim() } : {}),
+        ...(act.branch !== undefined ? { branch: (act.branch as string).trim() } : {}),
+        ...(artifactIds !== undefined ? { artifact_ids: artifactIds } : {}),
+        ...(act.reply_to_thread !== undefined ? { reply_to_thread: (act.reply_to_thread as string).toLowerCase() } : {}),
       });
     } else if (type === 'swarm_start') {
       const allowed = new Set(['type', 'title', 'goal', 'steps', 'base_ref']);
@@ -470,6 +507,8 @@ export interface TurnGrantContext {
   leadMode?: 'router' | 'default';
   /** The turn task whose answer these actions came from (origin of its local_action rows). */
   taskId?: string;
+  /** Coordinator dispatches to propagate onto any swarm started during this turn. */
+  dispatchedFrom?: DispatchedFromEntry[];
 }
 
 const ROUTER_ACTIONS = new Set(['swarm_start', 'handoff', 'question_ask', 'bot_appearance', 'project_dispatch', 'local_action']);
@@ -489,6 +528,20 @@ export async function validateTurnGrant(
   ctx: TurnGrantContext,
   actions: TurnAction[]
 ): Promise<{ valid: true } | { valid: false; reason: string; action: TurnAction }> {
+  // Cache own bot rules once per turn so multiple project_dispatch / local_action entries do not re-query bots.
+  let ownBotLoaded = false;
+  let ownBotRules: Record<string, unknown> | undefined;
+  const getOwnBotRules = async (): Promise<Record<string, unknown> | undefined> => {
+    if (!ownBotLoaded) {
+      ownBotLoaded = true;
+      ownBotRules = ctx.botId ? (await db.query<{ rules: Record<string, unknown> }>(
+        'SELECT rules FROM bots WHERE id=$1 AND tenant_id=$2 AND scope=$3 AND NOT archived',
+        [ctx.botId, ctx.tenantId, ctx.scope]
+      )).rows[0]?.rules : undefined;
+    }
+    return ownBotRules;
+  };
+
   for (const act of actions) {
     if (ctx.leadMode === 'router' && !ROUTER_ACTIONS.has(act.type)) {
       return { valid: false, reason: 'router_dispatch_only', action: act };
@@ -516,6 +569,19 @@ export async function validateTurnGrant(
       // Re-map to exact UUID if name was provided
       act.to_agent = res.rows[0].id;
 
+      if (act.reply_to_thread) {
+        const replyThread = (await db.query<{ id: string }>(
+          'SELECT id FROM threads WHERE id=$1 AND tenant_id=$2 AND scope=$3 AND NOT archived',
+          [act.reply_to_thread, ctx.tenantId, ctx.scope]
+        )).rows[0];
+        if (!replyThread) {
+          return {
+            valid: false,
+            reason: `reply_to_thread '${act.reply_to_thread}' not found in this scope`,
+            action: act
+          };
+        }
+      }
       if (act.swarm_step_id) {
         if (!isUuid(act.swarm_step_id)) {
           return {
@@ -708,10 +774,8 @@ export async function validateTurnGrant(
       }
     } else if (act.type === 'project_dispatch') {
       // Only a bot the owner marked as a coordinator may reach other projects, and only their bots (never raw repos).
-      const own = ctx.botId ? (await db.query<{ rules: Record<string, unknown> }>(
-        'SELECT rules FROM bots WHERE id=$1 AND tenant_id=$2 AND scope=$3 AND NOT archived', [ctx.botId, ctx.tenantId, ctx.scope]
-      )).rows[0] : undefined;
-      if (own?.rules?.dispatch_all_projects !== true) {
+      const rules = await getOwnBotRules();
+      if (rules?.dispatch_all_projects !== true) {
         return { valid: false, reason: 'this bot may not send work to other projects (rules.dispatch_all_projects is off)', action: act };
       }
       const target = (await db.query<{ id: string }>(
@@ -725,10 +789,8 @@ export async function validateTurnGrant(
       act.bot = target[0]!.id;
     } else if (act.type === 'local_action') {
       // Only a bot the owner allowed may act on the owner's Mac.
-      const own = ctx.botId ? (await db.query<{ rules: Record<string, unknown> }>(
-        'SELECT rules FROM bots WHERE id=$1 AND tenant_id=$2 AND scope=$3 AND NOT archived', [ctx.botId, ctx.tenantId, ctx.scope]
-      )).rows[0] : undefined;
-      if (own?.rules?.local_actions !== true) {
+      const rules = await getOwnBotRules();
+      if (rules?.local_actions !== true) {
         return { valid: false, reason: 'this bot may not run local actions (rules.local_actions is off)', action: act };
       }
     } else if (act.type === 'channel_post') {

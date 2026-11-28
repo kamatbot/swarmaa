@@ -117,9 +117,106 @@ final class TeamsBotsTests: XCTestCase {
     func testChatReplyModelDefaultsToHaikuAndRoundTrips() throws {
         let old = try SwarmaClient.decoder.decode(TeamsBotRules.self, from: Data(#"{"quota_floor_pct":0}"#.utf8))
         XCTAssertEqual(old.firstReply, "claude-haiku-5-5", "a service without first_reply means the Haiku default")
-        var heavy = TeamsBotRules(); heavy.firstReply = "claude-opus-5-5"
+        XCTAssertNil(old.leadMode)
+        var heavy = TeamsBotRules(); heavy.firstReply = "claude-opus-5-5"; heavy.leadMode = "router"
         let wire = try JSONSerialization.jsonObject(with: JSONEncoder().encode(heavy)) as! [String: Any]
         XCTAssertEqual(wire["first_reply"] as? String, "claude-opus-5-5")
+        XCTAssertEqual(wire["lead_mode"] as? String, "router")
         XCTAssertTrue(TeamsBotRules.firstReplyChoices.contains { $0.id == "claude-opus-5-5" })
+    }
+
+    func testModelCatalogDecodingAndMergedProviders() throws {
+        let json = """
+        {"workers":[{"name":"w1","live":true,"running":[],"providers":["claude"],
+                     "default_models":{"claude":"claude-opus-5-5"}}],
+         "routing":{"recommended":"claude","reason":"ok","providers":[{"provider":"claude","live_worker":true,"headroom":80}],
+                    "policy":{"providers":[{"provider":"claude","enabled":true,"max_five_hour_pct":90,"max_weekly_pct":90,"kinds":["review","research","patch"]},
+                                           {"provider":"codex","enabled":true,"max_five_hour_pct":95,"max_weekly_pct":95,"kinds":["review","research","patch"]},
+                                           {"provider":"antigravity","enabled":true,"max_five_hour_pct":95,"max_weekly_pct":95,"kinds":["review","patch"]}],
+                              "fallback":"most_headroom"}},
+         "model_catalog":{"codex":{"default_model":"gpt-6-astra","turn_model":"gpt-5.4-mini",
+                                   "models":[{"id":"gpt-6-astra","label":"GPT-6 Astra","efforts":["minimal","low","medium","high","xhigh"],"default":true}]}}}
+        """
+        let status = try SwarmaClient.decoder.decode(SwarmaStatus.self, from: Data(json.utf8))
+        XCTAssertEqual(status.workers.first?.defaultModels?["claude"], "claude-opus-5-5")
+        XCTAssertEqual(status.modelCatalog?["codex"]?.defaultModel, "gpt-6-astra")
+        XCTAssertEqual(status.modelCatalog?["codex"]?.turnModel, "gpt-5.4-mini")
+        XCTAssertEqual(SwarmaModelCatalog.defaultModel(for: "claude", status: status), "claude-opus-5-5")
+        XCTAssertEqual(SwarmaModelCatalog.defaultModel(for: "codex", status: status), "gpt-6-astra")
+        XCTAssertEqual(SwarmaModelCatalog.efforts(for: "codex", model: "gpt-6-astra", status: status), ["minimal", "low", "medium", "high", "xhigh"])
+        XCTAssertEqual(SwarmaModelCatalog.efforts(for: "claude", model: "claude-opus-5-5", status: status), ["low", "medium", "high", "max"])
+        // Offline providers from policy must never vanish from mergedProviders.
+        let merged = SwarmaModelCatalog.mergedProviders(status: status)
+        XCTAssertEqual(merged.map(\.provider), ["claude", "codex", "antigravity"])
+        XCTAssertTrue(merged[0].liveWorker)
+        XCTAssertFalse(merged[1].liveWorker)
+
+        // Also decode the wrapped `model_catalog.providers` string-array shape emitted by `src/core/model-catalog.ts`.
+        let wrappedJSON = """
+        {"model_catalog":{"providers":{
+          "claude":{"default_model":"claude-sonnet-5-5","turn_model":"claude-haiku-5-5",
+                    "models":["claude-opus-5-5","claude-sonnet-5-5","claude-haiku-5-5"],
+                    "efforts":["low","medium","high","max"]}
+        }}}
+        """
+        let wrapped = try SwarmaClient.decoder.decode(SwarmaStatus.self, from: Data(wrappedJSON.utf8))
+        XCTAssertEqual(SwarmaModelCatalog.defaultModel(for: "claude", status: wrapped), "claude-sonnet-5-5")
+        XCTAssertEqual(SwarmaModelCatalog.turnModel(for: "claude", status: wrapped), "claude-haiku-5-5")
+        XCTAssertEqual(SwarmaModelCatalog.models(for: "claude", status: wrapped).map(\.id), ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"])
+        XCTAssertEqual(SwarmaModelCatalog.efforts(for: "claude", model: "claude-sonnet-5-5", status: wrapped), ["low", "medium", "high", "max"])
+    }
+
+    func testAgentUpdateOmitsIdempotencyKeyAndThreadPostSupportsRunner() async throws {
+        let path = FileManager.default.temporaryDirectory.appendingPathComponent("agent-upd-\(UUID().uuidString).json").path
+        try Data("{\"token\":\"cn_fake\"}".utf8).write(to: URL(fileURLWithPath: path))
+        addTeardownBlock { try? FileManager.default.removeItem(atPath: path) }
+        final class Capture: @unchecked Sendable {
+            let lock = NSLock()
+            var bodies: [(String, [String: Any])] = []
+            func add(_ tool: String, _ body: [String: Any]) { lock.lock(); bodies.append((tool, body)); lock.unlock() }
+        }
+        let capture = Capture()
+        let base = SwarmaClient(serviceURL: { "http://127.0.0.1:8787" }, tokenPath: { path }, transport: { req in
+            let tool = req.url!.lastPathComponent
+            let obj = (try? JSONSerialization.jsonObject(with: req.httpBody ?? Data())) as? [String: Any] ?? [:]
+            capture.add(tool, obj)
+            let reply: String
+            switch tool {
+            case "agent_update":
+                reply = #"{"result":{"agent":{"id":"a1","name":"Atlas","runner":{"provider":"codex","model":"gpt-6-astra","effort":"xhigh"},"edits":true,"version":3}}}"#
+            case "thread_post":
+                reply = #"{"result":{"message":{"id":"m1","seq":1,"thread_id":"t1","author":{"kind":"human"},"kind":"text","body":"hi"}}}"#
+            case "task_submit":
+                reply = #"{"result":{"task":{"id":"k1","objective":"check","status":"queued","version":1}}}"#
+            default:
+                reply = #"{"result":{}}"#
+            }
+            return (Data(reply.utf8), HTTPURLResponse(url: req.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+        }, authMode: { .tokenFile })
+        let client = SwarmaTeamsClient(base: base, streamTransport: { _ in throw URLError(.badURL) })
+
+        let updated = try await client.agentUpdate(id: "a1", expectedVersion: 2,
+                                                   runner: TeamsRunner(provider: "codex", model: "gpt-6-astra", effort: "xhigh"),
+                                                   edits: true)
+        XCTAssertTrue(updated.edits)
+        XCTAssertEqual(updated.runner.effort, "xhigh")
+
+        _ = try await client.threadPost(id: "t1", body: "hi",
+                                        runner: TeamsRunner(provider: "claude", model: "claude-opus-5-5", effort: "max"))
+        _ = try await client.threadPost(id: "t1", body: "plain")
+        _ = try await client.taskSubmit(scope: "project:demo", kind: "review", objective: "check",
+                                        capability: "codex.read", model: "gpt-6-astra", effort: "xhigh")
+
+        let updBody = try XCTUnwrap(capture.bodies.first { $0.0 == "agent_update" }?.1)
+        XCTAssertNil(updBody["idempotency_key"], "agent_update rejects idempotency_key with HTTP 400")
+        XCTAssertEqual(updBody["edits"] as? Bool, true)
+
+        let postBodies = capture.bodies.filter { $0.0 == "thread_post" }.map(\.1)
+        XCTAssertEqual((postBodies[0]["runner"] as? [String: Any])?["effort"] as? String, "max")
+        XCTAssertNil(postBodies[1]["runner"], "plain thread_post omits runner for older servers")
+
+        let taskBody = try XCTUnwrap(capture.bodies.first { $0.0 == "task_submit" }?.1)
+        XCTAssertEqual(taskBody["model"] as? String, "gpt-6-astra")
+        XCTAssertEqual(taskBody["effort"] as? String, "xhigh")
     }
 }

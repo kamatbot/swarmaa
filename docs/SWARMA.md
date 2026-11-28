@@ -24,7 +24,7 @@ What it does:
 | Database | Local PostgreSQL 17 cluster in `.local/pg` on `127.0.0.1:54329` (needs `brew install postgresql@17`) |
 | Identities | One scoped identity per client, token in an owner-only `.local/<name>.json` |
 | Clients | `swarma` MCP server registered in Claude Code (user scope), Codex and Antigravity (with per-tool allow rules) |
-| Workers | `.local/bridge-<agent>.json` per worker (`claude`, `codex`, `agy`), read-only and Seatbelt-sandboxed, Claude on Sonnet; Antigravity serves `antigravity.read` |
+| Workers | `.local/bridge-<agent>.json` per worker (`claude`, `codex`, `agy`), read-only and Seatbelt-sandboxed, using each CLI's default model; Antigravity serves `antigravity.read` over `agy acp --stdio` |
 | Autostart | LaunchAgents `com.swarma.postgres`, `com.swarma.service`, `com.swarma.bridge.<agent>`; logs in `.local/logs/` |
 
 Tokens never appear in client configs or process arguments: `clients/macos/swarma-mcp.sh` reads
@@ -92,8 +92,8 @@ isolated git worktree and returns a local branch `swarmaa/<provider>/<task id>` 
 `branch`, `base_ref`, `base_commit`, `head_commit`, `changed_files`, `diffstat`, `commands_allowed`. Review, then merge;
 nothing is pushed.
 
-`swarm_status` returns live workers, provider headroom with reset times, `routing` (`recommended`/`reason` for review, plus `policy`, `is_default`, `by_kind`), task counts per scope and
-recent tasks. `npm run usage` prints the local readings.
+`swarm_status` returns live workers, provider headroom with reset times, `model_catalog` (per-provider `default_model`, `turn_model`, and `models[]` reported via `usage_report`), `routing` (`recommended`/`reason` for review, plus `policy`, `is_default`, `by_kind`), task counts per scope and
+recent tasks. `npm run usage` prints the local readings. Multi-slot bridges can batch-claim up to 16 tasks per `task_claim` (`limit`) and attach bounded artifacts atomically in `task_finish` (`inline_artifacts`), and can keep warm resident provider sessions across turns (with all person-started Antigravity work running over `agy acp --stdio`).
 
 **Teams & Bots:** persistent agents, threads, channels, tracked swarms, and configured bots are documented in [TEAMS.md](TEAMS.md) and [BOTS.md](BOTS.md).
 
@@ -116,7 +116,10 @@ Installed automatically by `npm run setup` and by `npm run hooks:install` (`-- -
 
 Two commands work inside the harness you already use. Swarmaa's turn hook (`clients/hooks/swarmaa-turn.mjs`, installed with the
 inbox hooks) answers them before the prompt reaches the model, so they cost no tokens and work even when the agent is out of usage.
-Codex spells them `$swarm ...`.
+Codex spells them `$swarm ...`. On `Stop` and non-`/swarm` `UserPromptSubmit` prompts, a POSIX shell fast-path guard skips spawning Node
+whenever no session has an active `~/.swarma/turn/<sha>/state.json`; the hook writes state only when dirty, prunes stale turn directories
+older than 14 days, reads only the bounded tail of transcripts, and binds watchers atomically via `task_submit.watch_session` (falling back
+to `task_watch` on older servers).
 
 | Input | Does |
 |---|---|

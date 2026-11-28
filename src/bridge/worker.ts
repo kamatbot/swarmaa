@@ -5,14 +5,14 @@ import { AUTO_PATCH, AUTO_READ, buildInvocation, withTurnImages, capability, ant
 import { collectUsage, headroom } from '../usage/index.js';
 import { windowsForModel } from '../usage/antigravity.js';
 import type { UsageProviderId, UsageSnapshot } from '../usage/types.js';
-import { runAcpSession } from './acp.js';
 import { runBoundedProcess } from './process.js';
+import { WarmProviderPool } from './warm-pool.js';
 import { sameModel, type ServedStamp } from '../core/failures.js';
 import { reasonNotify } from './reason.js';
 import { cleanupNative, finishNative, prepareNative, type NativeSession } from './native-session.js';
 import { annotateEvidence, contextReceipt } from './context-receipt.js';
 import { createWorktree, finishWorktree, inspectWorktree, providerPidfile, removeSnapshot, type PatchOutcome, type Worktree } from './worktree.js';
-import type { AgentConfig, BridgeConfig, BridgeLogger, Claim, Lease, ProcessResult, ProcessRunner, ProjectConfig, Task, ToolClient } from './types.js';
+import type { AgentConfig, BridgeConfig, BridgeLogger, Claim, Lease, ProcessResult, ProcessRunner, ProjectConfig, Provider, Task, ToolClient } from './types.js';
 import { redactSecrets } from '../safety/redact.js';
 import { botSecrets, scrubSecrets } from './bot-secrets.js';
 
@@ -104,7 +104,8 @@ export class BridgeWorker {
   private drainTimer?: ReturnType<typeof setTimeout>;
   private readonly streamFetch?: typeof fetch;
   private readonly streamToken?: string;
-  private lastWakeTime = 0;
+  private readonly warmPool: WarmProviderPool;
+  private readonly useWarmPool: boolean;
   private wakeTimer?: NodeJS.Timeout;
   private wakePending = false;
 
@@ -114,44 +115,64 @@ export class BridgeWorker {
     private readonly logger: BridgeLogger = (event, metadata) => process.stderr.write(`${JSON.stringify({ event, ...metadata })}\n`),
     private readonly runner: ProcessRunner = runBoundedProcess,
     private readonly usage: (providers: UsageProviderId[]) => Promise<UsageSnapshot[]> = providers => collectUsage(providers, { claudeBinary: config.agents.find(a => a.provider === 'claude')?.binary }),
-    streamOptions?: { fetcher?: typeof fetch; token?: string } | typeof fetch
+    streamOptions?: { fetcher?: typeof fetch; token?: string; warmPool?: WarmProviderPool } | typeof fetch
   ) {
+    let explicitWarmPool: WarmProviderPool | undefined;
     if (typeof streamOptions === 'function') {
       this.streamFetch = streamOptions;
     } else if (streamOptions) {
       this.streamFetch = streamOptions.fetcher;
       this.streamToken = streamOptions.token;
+      explicitWarmPool = streamOptions.warmPool;
     }
+    this.warmPool = explicitWarmPool ?? new WarmProviderPool({
+      logger: this.logger,
+      onModelsUpdated: () => { this.nextUsageAt = 0; },
+    });
+    this.useWarmPool = this.runner === runBoundedProcess || Boolean(explicitWarmPool);
   }
 
   private triggerWake(): void {
-    const now = Date.now();
-    const timeSinceLast = now - this.lastWakeTime;
-    if (timeSinceLast >= 200) {
-      this.lastWakeTime = now;
+    if (this.draining) return;
+    if (this.pollWait && !this.pollWait.signal.aborted) {
+      // Idle in poll sleep: wake immediately (0 ms).
       if (this.wakeTimer) {
         clearTimeout(this.wakeTimer);
         this.wakeTimer = undefined;
       }
-      if (this.pollWait) {
-        this.pollWait.abort();
-      } else {
-        this.wakePending = true;
-      }
-    } else if (!this.wakeTimer) {
+      const wait = this.pollWait;
+      this.pollWait = undefined;
+      wait.abort();
+      return;
+    }
+    // Mid-claim or busy: coalesce bursts over a tiny 15 ms window.
+    if (!this.wakeTimer) {
       this.wakeTimer = setTimeout(() => {
         this.wakeTimer = undefined;
-        this.lastWakeTime = Date.now();
-        if (this.pollWait) {
-          this.pollWait.abort();
+        if (this.draining) return;
+        if (this.pollWait && !this.pollWait.signal.aborted) {
+          const wait = this.pollWait;
+          this.pollWait = undefined;
+          wait.abort();
         } else {
           this.wakePending = true;
         }
-      }, 200 - timeSinceLast);
+      }, 15);
     }
   }
 
-  private handleSseBlock(block: string, myScopes: Set<string>): void {
+  private projectScopeCapabilities(): Map<string, Set<string>> {
+    const scopeCaps = new Map<string, Set<string>>();
+    for (const project of this.config.projects) {
+      const caps = projectCapabilities(project, this.config.agents);
+      const allowsPatch = caps.some(c => c.endsWith('.patch'));
+      const allCaps = allowsPatch && project.checks !== undefined ? [...caps, 'bridge.check'] : caps;
+      scopeCaps.set(project.scope, new Set(allCaps));
+    }
+    return scopeCaps;
+  }
+
+  private handleSseBlock(block: string, scopeCaps: Map<string, Set<string>>): void {
     let eventName = '';
     let dataStr = '';
 
@@ -172,16 +193,26 @@ export class BridgeWorker {
       try { data = JSON.parse(dataStr); } catch {}
     }
 
+    const payload = (data.payload && typeof data.payload === 'object' && !Array.isArray(data.payload))
+      ? data.payload as Record<string, unknown>
+      : undefined;
     const name = eventName || String(data.name ?? '');
-    const scope = String(data.scope ?? (data.payload as any)?.scope ?? '');
-    const status = String((data.payload as any)?.status ?? data.status ?? '');
+    const scope = String(data.scope ?? payload?.scope ?? '');
+    const status = String(payload?.status ?? data.status ?? '');
 
     const isSubmitted = name === 'task.submitted';
     const isQueuedUpdate = name === 'task.updated' && status === 'queued';
+    if (!isSubmitted && !isQueuedUpdate) return;
 
-    if ((isSubmitted || isQueuedUpdate) && (myScopes.has(scope) || myScopes.has('*'))) {
-      this.triggerWake();
-    }
+    const caps = scopeCaps.get(scope) ?? scopeCaps.get('*');
+    if (!caps) return;
+
+    // When the SSE event advertises required_capability, only wake if this worker can actually claim it.
+    const rawCap = payload?.required_capability ?? data.required_capability;
+    const reqCap = typeof rawCap === 'string' && rawCap.trim() ? rawCap.trim() : undefined;
+    if (reqCap && !caps.has(reqCap)) return;
+
+    this.triggerWake();
   }
 
   private async maintainStream(signal: AbortSignal): Promise<void> {
@@ -192,7 +223,7 @@ export class BridgeWorker {
     const baseUrl = (this.client as any).origin ?? this.config.service_url;
     const url = `${baseUrl.replace(/\/+$/, '')}/api/stream?after=now`;
     const fetcher = this.streamFetch ?? (this.client as any).fetcher ?? globalThis.fetch;
-    const myScopes = new Set(this.config.projects.map(p => p.scope));
+    const scopeCaps = this.projectScopeCapabilities();
 
     let backoffMs = 500;
 
@@ -231,7 +262,7 @@ export class BridgeWorker {
               const match = buffer.slice(boundary).match(/^\r?\n\r?\n/);
               const delimLength = match ? match[0].length : 2;
               buffer = buffer.slice(boundary + delimLength);
-              this.handleSseBlock(eventBlock, myScopes);
+              this.handleSseBlock(eventBlock, scopeCaps);
               // Reset only once something arrives: a 200 that closes at once must keep backing off.
               backoffMs = 500;
             }
@@ -264,6 +295,7 @@ export class BridgeWorker {
     this.draining = true;
     this.nextUsageAt = 0;
     this.streamAbort.abort();
+    this.warmPool.drain();
     if (this.wakeTimer) {
       clearTimeout(this.wakeTimer);
       this.wakeTimer = undefined;
@@ -276,7 +308,12 @@ export class BridgeWorker {
     }, maxSeconds * 1000);
   }
 
-  /** Report provider quota to the service between tasks. Failures only delay routing data. */
+  /** Immediately terminate all warm resident provider processes. */
+  close(): void {
+    this.warmPool.closeAll();
+  }
+
+  /** Report provider quota and configured/live model catalogs to the service between tasks. Failures only delay routing data. */
   async reportUsage(signal: AbortSignal): Promise<void> {
     const seconds = this.draining ? Math.min(this.config.usage_seconds || 30, 30) : this.config.usage_seconds;
     if (!seconds || Date.now() < this.nextUsageAt) return;
@@ -287,17 +324,32 @@ export class BridgeWorker {
       const snapshots = (this.draining ? [] : await this.usage(providers))
         .map(s => s.provider === 'antigravity' ? { ...s, windows: windowsForModel(s.windows, agyModel) } : s);
       for (const s of snapshots) this.headroom.set(s.provider, headroom(s));
-      await this.client.call('usage_report', { reports: snapshots.map(s => ({ provider: s.provider, ok: s.ok, windows: s.windows, fetched_at: s.fetched_at,
-        ...(s.plan ? { plan: s.plan.slice(0, 80) } : {}), ...(s.error ? { error: s.error.slice(0, 200) } : {}) })), slots: this.draining ? 0 : this.config.max_concurrent }, signal);
+      await this.client.call('usage_report', {
+        reports: snapshots.map(s => {
+          const cfgAgent = this.config.agents.find(a => a.provider === s.provider);
+          const liveModels = this.warmPool.getCachedModels(s.provider as Provider);
+          return {
+            provider: s.provider,
+            ok: s.ok,
+            windows: s.windows,
+            fetched_at: s.fetched_at,
+            ...(s.plan ? { plan: s.plan.slice(0, 80) } : {}),
+            ...(s.error ? { error: s.error.slice(0, 200) } : {}),
+            ...(cfgAgent?.model ? { default_model: cfgAgent.model } : {}),
+            ...(cfgAgent?.turn_model ? { turn_model: cfgAgent.turn_model } : {}),
+            ...(liveModels?.length ? { models: liveModels } : {}),
+          };
+        }),
+        slots: this.draining ? 0 : this.config.max_concurrent,
+      }, signal);
     } catch (error) {
       this.logger('usage_report_failed', { code: errorCode(error), message: String((error as Error)?.message ?? error).slice(0, 200) });
     }
   }
 
   /**
-   * One polling loop with `max_concurrent` slots: each pass asks for work across projects, and keeps
-   * claiming while it has work and a slot is free. Claimed tasks run in the background, so a
-   * worker runs up to `max_concurrent` tasks at once without multiplying its requests to the service.
+   * One polling loop with `max_concurrent` slots: each pass asks for up to `max_concurrent - inflight`
+   * tasks in a single batch `task_claim` RTT across projects, and runs claimed tasks concurrently.
    */
   async run(signal: AbortSignal, once = false): Promise<void> {
     signal = AbortSignal.any([signal, this.drainAbort.signal]);
@@ -316,41 +368,55 @@ export class BridgeWorker {
         // Homebrew upgrading node deletes the binary this process runs on; macOS then refuses it folder access
         // (EPERM in ~/Documents). Stop claiming and exit once idle so launchd restarts on the new binary.
         if (!this.draining && !existsSync(process.execPath)) { this.logger('node_binary_replaced', { path: process.execPath }); this.drain(); }
-        let claimedAny = false;
+        let queueMayHaveMore = false;
         await this.reportUsage(signal);
         for (let i = 0; i < this.config.projects.length; i += 64) {
           const projects = this.config.projects.slice(i, i + 64);
           while (!signal.aborted && !this.draining && !(once && claimedOnce) && inflight < this.config.max_concurrent) {
-            let claimed!: () => void;
-            const started = new Promise<boolean>(r => { claimed = () => r(true); });
-            let slotReleased = false;
-            const releaseSlot = (): void => {
-              if (slotReleased) return;
-              slotReleased = true;
-              inflight--;
-              if (!this.draining && !once) this.pollWait?.abort();
-            };
-            inflight++;
-            const task = this.claimAndRun(projects, signal, claimed, releaseSlot)
-              .catch(error => { this.logger('bridge_poll_failed', { scope: projects[0]!.scope, code: errorCode(error), message: String((error as Error)?.message ?? error).slice(0, 200) }); return false; })
-              .finally(() => {
-                releaseSlot();
-                running.delete(task);
-                if (!running.size) {
-                  if (this.drainTimer) clearTimeout(this.drainTimer);
-                  if (this.draining || once) this.pollWait?.abort();
-                }
-              });
-            running.add(task);
-            if (!(await Promise.race([started, task]))) break; // nothing to claim here
-            claimedAny = true;
+            const limit = once ? 1 : Math.min(16, this.config.max_concurrent - inflight);
+            const claimStarted = performance.now();
+            let claimed: { claims: Claim[]; isBatch: boolean };
+            try {
+              claimed = await this.claimBatch(projects, signal, limit);
+            } catch (error) {
+              this.logger('bridge_poll_failed', { scope: projects[0]!.scope, code: errorCode(error), message: String((error as Error)?.message ?? error).slice(0, 200) });
+              break;
+            }
+            if (!claimed.claims.length) break;
             claimedOnce = true;
-            if (once) break;
+            for (const claim of claimed.claims) {
+              let slotReleased = false;
+              const releaseSlot = (): void => {
+                if (slotReleased) return;
+                slotReleased = true;
+                const wasAtCapacity = inflight >= this.config.max_concurrent;
+                inflight--;
+                if (wasAtCapacity && !this.draining && !once) this.pollWait?.abort();
+              };
+              inflight++;
+              const task = this.runClaim(claim, projects, signal, claimStarted, releaseSlot)
+                .catch(error => {
+                  this.logger('bridge_poll_failed', { scope: claim.task?.scope ?? projects[0]!.scope, code: errorCode(error), message: String((error as Error)?.message ?? error).slice(0, 200) });
+                })
+                .finally(() => {
+                  releaseSlot();
+                  running.delete(task);
+                  if (!running.size) {
+                    if (this.drainTimer) clearTimeout(this.drainTimer);
+                    if (this.draining || once) this.pollWait?.abort();
+                  }
+                });
+              running.add(task);
+            }
+            if (once) { queueMayHaveMore = true; break; }
+            // A batch-capable server returning fewer than `limit` claims has drained this slice's queue.
+            if (claimed.isBatch && claimed.claims.length < limit) break;
+            queueMayHaveMore = true;
           }
         }
         if (once && !running.size) return;
         if (this.draining && !running.size) break;
-        if (!claimedAny) {
+        if (!queueMayHaveMore) {
           if (this.wakePending) {
             this.wakePending = false;
             continue;
@@ -367,23 +433,35 @@ export class BridgeWorker {
         clearTimeout(this.wakeTimer);
         this.wakeTimer = undefined;
       }
+      this.warmPool.drain();
       await Promise.allSettled([...running, ...(streamTask ? [streamTask] : [])]);
+      this.warmPool.closeAll();
     }
   }
 
-  async claimAndRun(projects: ProjectConfig[], signal: AbortSignal, onClaimed?: () => void, onSlotRelease?: () => void): Promise<boolean> {
-    if (this.draining || signal.aborted) return false;
-    const claimStarted = performance.now();
-    const claim = await this.client.call<Claim>('task_claim', {
+  private async claimBatch(projects: ProjectConfig[], signal: AbortSignal, limit: number): Promise<{ claims: Claim[]; isBatch: boolean }> {
+    const args: Record<string, unknown> = {
       projects: projects.map(project => {
         const capabilities = projectCapabilities(project, this.config.agents);
         const allowsPatch = capabilities.some(c => c.endsWith('.patch'));
         const checks = allowsPatch && project.checks !== undefined;
-        return { scope: project.scope, capabilities:checks ? [...capabilities,'bridge.check'] : capabilities,
-          kinds: allowsPatch ? ['research', 'review', 'patch',...(checks ? ['check'] : [])] : ['research', 'review'] };
+        return {
+          scope: project.scope,
+          capabilities: checks ? [...capabilities, 'bridge.check'] : capabilities,
+          kinds: allowsPatch ? ['research', 'review', 'patch', ...(checks ? ['check'] : [])] : ['research', 'review'],
+        };
       }),
-      lease_seconds: this.config.lease_seconds
-    }, signal);
+      lease_seconds: this.config.lease_seconds,
+      ...(limit > 1 ? { limit } : {}),
+    };
+    const response = await this.client.call<Claim>('task_claim', args, signal);
+    if (Array.isArray(response?.claims)) {
+      return { claims: response.claims.filter(c => Boolean(c?.task)), isBatch: true };
+    }
+    return { claims: response?.task ? [response] : [], isBatch: false };
+  }
+
+  private async runClaim(claim: Claim, projects: ProjectConfig[], signal: AbortSignal, claimStarted: number, onSlotRelease?: () => void, onClaimed?: () => void): Promise<boolean> {
     if (!claim.task) return false;
     const project = projects.find(p => p.scope === claim.task!.scope);
     if (!project) throw new Error('Invalid or misrouted task claim');
@@ -405,6 +483,14 @@ export class BridgeWorker {
     return true;
   }
 
+  async claimAndRun(projects: ProjectConfig[], signal: AbortSignal, onClaimed?: () => void, onSlotRelease?: () => void): Promise<boolean> {
+    if (this.draining || signal.aborted) return false;
+    const claimStarted = performance.now();
+    const { claims } = await this.claimBatch(projects, signal, 1);
+    if (!claims.length) return false;
+    return this.runClaim(claims[0]!, projects, signal, claimStarted, onSlotRelease, onClaimed);
+  }
+
   private async execute(task: Task, lease: Lease, agent: AgentConfig, project: ProjectConfig, shutdown: AbortSignal, claimStarted: number, onSlotRelease?: () => void): Promise<void> {
     const execution = new AbortController();
     const heartbeatStop = new AbortController();
@@ -421,16 +507,33 @@ export class BridgeWorker {
     let checkFact:Awaited<ReturnType<typeof runFlowCheck>>|undefined;
     let snapshotInvalid = false;
     let checkResults: Awaited<ReturnType<typeof runConfiguredChecks>> | undefined;
-    // A retry resumes the provider's own session recorded in this task's checkpoint by an earlier attempt.
+    // A retry resumes the provider's own session recorded in this task's checkpoint by an earlier attempt;
+    // Antigravity turns may also receive a persistent native_session_id populated from agent_provider_sessions.
     const prior = task.checkpoint as { native_session?: { provider?: unknown; id?: unknown }; last_failure?: unknown } | null;
-    const resumeId = task.kind !== 'turn' && task.kind !== 'check' && prior?.native_session?.provider === agent.provider && typeof prior.native_session.id === 'string' && UUID.test(prior.native_session.id) ? prior.native_session.id : undefined;
+    const ACP_SESSION_ID_RE = /^[A-Za-z0-9._:-]{1,128}$/u;
+    const taskNativeSessionId = typeof task.native_session_id === 'string' && ACP_SESSION_ID_RE.test(task.native_session_id)
+      ? task.native_session_id
+      : undefined;
+    const priorId = prior?.native_session?.provider === agent.provider && typeof prior.native_session.id === 'string'
+      ? (agent.provider === 'antigravity'
+        ? (ACP_SESSION_ID_RE.test(prior.native_session.id) ? prior.native_session.id : undefined)
+        : (UUID.test(prior.native_session.id) ? prior.native_session.id : undefined))
+      : undefined;
+    const resumeId = task.kind === 'check'
+      ? undefined
+      : task.kind === 'turn'
+        ? (agent.provider === 'antigravity' ? taskNativeSessionId : undefined)
+        : priorId;
     let nativeId = resumeId;
     let lastFailure = typeof prior?.last_failure === 'string' ? prior.last_failure : undefined;
     let finalizeFailure: { worktree_path: string; recovery: string } | undefined;
     let expiryTimer: ReturnType<typeof setTimeout> | undefined;
+    let leaseDeadlineMs = 0;
     let progress = { output_bytes: 0, stdout_tail: '' };
     let currentPartialText = '';
     let lastSentPartialText = '';
+    let activityVersion = 0;
+    let lastSentActivityVersion = 0;
     let lastCheckpointTime = 0;
     let partialTextTimer: NodeJS.Timeout | undefined;
     let checkpointInFlight = false;
@@ -501,7 +604,8 @@ export class BridgeWorker {
       // The server renews after the request starts. Measuring from request start is
       // conservative and avoids trusting wall-clock synchronization. Leave four
       // seconds for the subprocess termination grace before the known lease window.
-      const remaining = requestStarted + this.config.lease_seconds * 1000 - 4000 - performance.now();
+      leaseDeadlineMs = requestStarted + this.config.lease_seconds * 1000;
+      const remaining = leaseDeadlineMs - 4000 - performance.now();
       if (remaining <= 0) loseLease('local_lease_deadline');
       else expiryTimer = setTimeout(() => loseLease('local_lease_deadline'), remaining);
     };
@@ -533,20 +637,23 @@ export class BridgeWorker {
     const sendPartialCheckpoint = async (): Promise<void> => {
       if (finished || leaseLost || execution.signal.aborted || heartbeatStop.signal.aborted) return;
       if (checkpointInFlight) return;
-      if (currentPartialText === lastSentPartialText) return;
+      if (currentPartialText === lastSentPartialText && activityVersion === lastSentActivityVersion) return;
 
       checkpointInFlight = true;
+      const sentText = currentPartialText;
+      const sentActivity = activityVersion;
       try {
         // Checkpoint only: lease renewal stays with the heartbeat loop.
         takeSteers(await this.client.call('task_checkpoint', { ...lease, checkpoint: checkpoint('running') }));
-        lastSentPartialText = currentPartialText;
+        lastSentPartialText = sentText;
+        lastSentActivityVersion = sentActivity;
         lastCheckpointTime = Date.now();
       } catch (error) {
         if (!transient(error)) { loseLease(errorCode(error)); return; }
         this.logger('checkpoint_retry', { task_id: task.id, code: errorCode(error) });
       } finally {
         checkpointInFlight = false;
-        if (currentPartialText !== lastSentPartialText && !finished && !leaseLost) {
+        if ((currentPartialText !== lastSentPartialText || activityVersion !== lastSentActivityVersion) && !finished && !leaseLost) {
           schedulePartialCheckpoint();
         }
       }
@@ -593,7 +700,16 @@ export class BridgeWorker {
         if (fromTail) currentPartialText = fromTail;
       }
 
-      if (currentPartialText !== lastSentPartialText) {
+      for (const item of extractActivity(agent.provider, stdoutTail)) {
+        const prev = activityLog.get(item.id);
+        if (!prev || prev.state !== item.state || prev.label !== item.label) {
+          activityLog.set(item.id, item);
+          activityVersion++;
+        }
+      }
+      while (activityLog.size > 20) activityLog.delete(activityLog.keys().next().value!);
+
+      if (currentPartialText !== lastSentPartialText || activityVersion !== lastSentActivityVersion) {
         schedulePartialCheckpoint();
       }
     };
@@ -622,14 +738,20 @@ export class BridgeWorker {
     this.logger('task_claimed', { task_id: task.id, scope: task.scope, provider: task.kind==='check' ? 'bridge' : agent.provider, kind: task.kind });
     try {
       if (leaseLost) return;
-      // Independent reads/writes, so one round trip instead of two. The only coupling: context.task is the task row,
-      // and serially it showed the 'starting' checkpoint and version. Overlay the checkpoint's returned row so the
-      // prompt is the same whichever finishes first. A refused checkpoint still fails the attempt before anything runs.
-      const [started, fetched] = await Promise.all([
-        beforeStart(() => this.client.call('task_checkpoint', { ...lease, checkpoint: checkpoint('starting') }, execution.signal), execution.signal),
-        beforeStart(() => this.client.call('context_get', { scope: task.scope, task_id: task.id, limit: 12 }, execution.signal), execution.signal),
-      ]);
-      context = withStartedTask(fetched, started);
+      if (task.kind === 'turn' || task.kind === 'check') {
+        // task_claim already delivers agent, thread_messages, agents, and project_bots for turns; checks need no context.
+        const started = await beforeStart(() => this.client.call('task_checkpoint', { ...lease, checkpoint: checkpoint('starting') }, execution.signal), execution.signal);
+        context = withStartedTask({ scope: task.scope, task, memories: [], conflicts: [] }, started);
+      } else {
+        // Independent reads/writes, so one round trip instead of two. The only coupling: context.task is the task row,
+        // and serially it showed the 'starting' checkpoint and version. Overlay the checkpoint's returned row so the
+        // prompt is the same whichever finishes first. A refused checkpoint still fails the attempt before anything runs.
+        const [started, fetched] = await Promise.all([
+          beforeStart(() => this.client.call('task_checkpoint', { ...lease, checkpoint: checkpoint('starting') }, execution.signal), execution.signal),
+          beforeStart(() => this.client.call('context_get', { scope: task.scope, task_id: task.id, limit: 12 }, execution.signal), execution.signal),
+        ]);
+        context = withStartedTask(fetched, started);
+      }
       // Patch work gets its own worktree+branch, so parallel patch tasks on one project never share files.
       // ponytail: flow commits must exist locally; cross-host execution needs reviewed commit transfer.
       const isPatchWork = task.kind === 'patch' || (task.kind === 'turn' && task.required_capability.endsWith('.patch'));
@@ -648,8 +770,8 @@ export class BridgeWorker {
       let nativePlan: ReturnType<typeof prepareNative>;
       try { if (task.kind!=='check') nativePlan = prepareNative(agent, task, worktree?.dir, undefined, undefined, resumeId ? { id: resumeId, projectRoot: project.root } : undefined); }
       catch { this.logger('native_session_failed', { task_id: task.id, phase: 'prepare' }); }
-      // Claude resumes only when its transcript was put back (plan.resumed); Codex resumes by thread id.
-      const resumed = agent.provider === 'codex' || nativePlan?.resumed ? resumeId : undefined;
+      // Claude resumes only when its transcript was put back (plan.resumed); Codex and Antigravity ACP resume by session id.
+      const resumed = agent.provider === 'codex' || agent.provider === 'antigravity' || nativePlan?.resumed ? resumeId : undefined;
       try {
         if (leaseLost || execution.signal.aborted) throw new Error('Execution start was aborted');
         if (task.kind==='check') {
@@ -674,22 +796,36 @@ export class BridgeWorker {
             request.on_progress = value => {
               // ACP's tail is answer text, not CLI JSON lines: its text and activity arrive via onPartialText/onActivity,
               // so scanning it would turn JSON-looking answer lines into fake partial text or activity rows.
-              if (request.acp && this.runner === runBoundedProcess) { progress = { ...value, stdout_tail: '' }; return; }
+              if (request.acp && this.useWarmPool) { progress = { ...value, stdout_tail: '' }; return; }
               progress = images.length ? { ...value, stdout_tail: "" } : { ...value, stdout_tail: scrubSecrets(value.stdout_tail, secrets) };
               updatePartialText(progress.stdout_tail, value.stdout_bytes ?? value.output_bytes);
             };
-            const output = request.acp && this.runner === runBoundedProcess
-              ? await runAcpSession(request, {
+            const output = request.acp && this.useWarmPool
+              ? await this.warmPool.runAcp(request, { projectRoot: project.root, patch: isPatchWork }, {
                   onPartialText: text => {
                     currentPartialText = scrub(text);
                     if (currentPartialText !== lastSentPartialText) schedulePartialCheckpoint();
                   },
                   onActivity: item => {
-                    activityLog.set(item.id, { ...item, label: scrubSecrets(item.label, secrets) });
-                    while (activityLog.size > 20) activityLog.delete(activityLog.keys().next().value!);
+                    const nextItem = { ...item, label: scrubSecrets(item.label, secrets) };
+                    const prev = activityLog.get(item.id);
+                    if (!prev || prev.state !== nextItem.state || prev.label !== nextItem.label) {
+                      activityLog.set(item.id, nextItem);
+                      activityVersion++;
+                      while (activityLog.size > 20) activityLog.delete(activityLog.keys().next().value!);
+                      schedulePartialCheckpoint();
+                    }
                   },
                 })
-              : await this.runner(request);
+              : this.useWarmPool && agent.provider === 'claude' && task.kind === 'turn' && !isPatchWork && !nativePlan
+                ? await this.warmPool.runClaude(request, {
+                    projectRoot: project.root,
+                    model: request.pool_meta?.model,
+                    effort: request.pool_meta?.effort,
+                    lightChat: Boolean(request.pool_meta?.light_chat),
+                    patch: false,
+                  }, this.runner)
+                : await this.runner(request);
             closeStdin();
             return { ...output, stdout: scrub(output.stdout), stderr: scrub(output.stderr) };
           };
@@ -701,6 +837,17 @@ export class BridgeWorker {
           return go(undefined);
           });
           nativeId = agent.provider === 'codex' ? codexThreadId(result.stdout) ?? nativeId : nativePlan?.id ?? nativeId;
+          if (agent.provider === 'antigravity') {
+            try {
+              const parsed = JSON.parse(result.stdout) as { session_id?: unknown };
+              if (typeof parsed.session_id === 'string' && ACP_SESSION_ID_RE.test(parsed.session_id)) {
+                nativeId = parsed.session_id;
+                if (!nativeSession) {
+                  nativeSession = { harness: 'antigravity', id: parsed.session_id, resume: `agy --resume ${parsed.session_id}` };
+                }
+              }
+            } catch { /* non-ACP or non-JSON */ }
+          }
           // Owner-configured checks judge the patch before it is committed; a flow's own check steps cover flow patches.
           if (task.kind === 'patch' && !task.flow_id && worktree && project.checks && Object.keys(project.checks).length && providerSucceeded(agent.provider, result) && !leaseLost && !execution.signal.aborted)
             checkResults = await runConfiguredChecks(project, agent, this.config, worktree, this.runner, execution.signal);
@@ -731,31 +878,24 @@ export class BridgeWorker {
       const denied = task.kind==='check' ? [] : deniedActions(agent.provider, result.stdout);
       const failedChecks = checkResults?.filter(c => !c.passed) ?? [];
       const outcome = finalizeFailure ? 'failed' : shutdown.aborted || denied.length || snapshotInvalid ? 'blocked' : task.kind==='check' ? (checkFact?.passed ? 'completed' : 'blocked') : providerSucceeded(agent.provider, result) && !failedChecks.length ? 'completed' : 'failed';
-      // What the next (resumed) attempt is told about why this one failed.
-      if (outcome === 'failed') lastFailure = untrusted(failedChecks.length
-        ? `Configured checks failed:\n${failedChecks.map(c => `${c.name} (exit ${c.exit_code ?? 'none'}${c.stop_reason ? `, ${c.stop_reason}` : ''}):\n${c.output_tail.slice(-1500)}`).join('\n')}`
-        : classifyFailure(agent.provider, result)?.detail ?? 'The previous attempt failed.', 3000);
-      await this.client.call('task_checkpoint', { ...lease, checkpoint: checkpoint('provider_finished') });
-      const artifact = await this.client.call<{ artifact: { id: string } }>('artifact_put', {
-        ...lease, name: `${agent.id}-transcript.txt`, media_type: 'text/plain',
-        content: task.kind==='check' ? JSON.stringify(checkFact) : this.resultArtifact(agent, result)
-      });
-      let diffArtifact: { artifact: { id: string } } | undefined;
-      let diffArtifactError: string | undefined;
-      if (patchResult?.diff) {
-        // The commit already exists; a failed upload must not lose branch/base/head provenance.
-        try { diffArtifact = await this.client.call<{ artifact: { id: string } }>('artifact_put', { ...lease, name: `${agent.id}-patch.diff`, media_type: 'text/x-diff', content: untrusted(patchResult.diff, Buffer.byteLength(patchResult.diff)) }); }
-        catch (error) { if (leaseLost) return; diffArtifactError = `${errorCode(error)}: ${error instanceof Error ? error.message.slice(0, 200) : ''}`; }
+      // What the next (resumed) attempt is told about why this one failed. Persist via checkpoint only on failure
+      // so the happy path stays 1 atomic RTT while retries still receive last_failure + native_session.
+      if (outcome === 'failed') {
+        lastFailure = untrusted(failedChecks.length
+          ? `Configured checks failed:\n${failedChecks.map(c => `${c.name} (exit ${c.exit_code ?? 'none'}${c.stop_reason ? `, ${c.stop_reason}` : ''}):\n${c.output_tail.slice(-1500)}`).join('\n')}`
+          : classifyFailure(agent.provider, result)?.detail ?? 'The previous attempt failed.', 3000);
+        await this.client.call('task_checkpoint', { ...lease, checkpoint: checkpoint('provider_finished') });
       }
-      if (leaseLost) return;
       // Stop concurrent heartbeats before the terminal update to avoid a harmless
-      // post-completion heartbeat being mistaken for a lost lease. Renew once more
-      // to give the bounded terminal request a full lease window.
+      // post-completion heartbeat being mistaken for a lost lease. Only renew if
+      // remaining lease time is under 30 s so normal finishes complete in 1 atomic RTT.
       heartbeatStop.abort();
       await heartbeat;
       if (leaseLost) return;
-      await renew();
-      if (leaseLost) return;
+      if (leaseDeadlineMs - performance.now() < 30_000) {
+        await renew();
+        if (leaseLost) return;
+      }
       let failure: ReturnType<typeof classifyFailure> = outcome === 'completed' ? undefined : failedChecks.length && !finalizeFailure
         ? { code: 'swarmaa_checks_failed', retry: true, detail: `Configured checks failed: ${failedChecks.map(c => c.name).join(', ')}` }
         : classifyFailure(agent.provider, result);
@@ -775,9 +915,10 @@ export class BridgeWorker {
       const isTurn = task.kind === 'turn';
       const isEditTurn = isTurn && (isPatchWork || Boolean(envelope?.local_patch));
       // Same rule as buildInvocation: the fast model only for non-edit, non-delegated turns without a runner model.
-      const runnerFast = envelope?.runner?.fast, delegated = envelope?.runner?.delegated === true;
-      const fastTurn = isTurn && !isEditTurn && !delegated && (runnerModel ? runnerFast === true : Boolean(agent.turn_model) && runnerFast !== false);
-      const askedModel = isTurn && !isEditTurn && runnerModel ? runnerModel : fastTurn ? agent.turn_model : agent.model;
+      const runnerFast = envelope?.runner?.fast, delegated = envelope?.runner?.delegated === true, isRouter = envelope?.runner?.router === true;
+      const usedTurnModel = isTurn && !isEditTurn && !delegated && !runnerModel && Boolean(agent.turn_model) && runnerFast !== false;
+      const fastTurn = isTurn && !isEditTurn && !delegated && !isRouter && (runnerModel ? runnerFast === true : Boolean(agent.turn_model) && runnerFast !== false);
+      const askedModel = runnerModel ?? (usedTurnModel ? agent.turn_model : agent.model);
       let served: ServedStamp = task.kind === 'check' ? { provider: 'bridge', model: null } : extractServed(agent.provider, result, askedModel);
       if (agent.provider === 'antigravity' && !served.model) {
         const model = await antigravityLogModel(Date.parse(startedAt));
@@ -786,34 +927,92 @@ export class BridgeWorker {
       const rawAnswer = task.kind === 'check' ? checkFact!.output_tail : finalAnswer(agent.provider, result.stdout);
       const { cleanAnswer, delegate } = extractDelegate(rawAnswer, !fastTurn);
       const usage = task.kind === 'check' ? undefined : extractUsage(agent.provider, result.stdout);
+      const transcriptArtifact = {
+        name: `${agent.id}-transcript.txt`,
+        media_type: 'text/plain',
+        content: task.kind === 'check' ? JSON.stringify(checkFact) : this.resultArtifact(agent, result),
+      };
+      const diffArtifactPayload = patchResult?.diff
+        ? {
+            name: `${agent.id}-patch.diff`,
+            media_type: 'text/x-diff',
+            content: untrusted(patchResult.diff, Buffer.byteLength(patchResult.diff)),
+          }
+        : undefined;
+      const inlineArtifacts = [transcriptArtifact, ...(diffArtifactPayload ? [diffArtifactPayload] : [])];
+      const baseResult = {
+        agent: agent.id, provider: task.kind==='check' ? 'bridge' : agent.provider, execution_completed: outcome === 'completed',
+        acceptance_criteria_verified: false, review_required: true,
+        exit_code: result.exit_code, stop_reason: result.stop_reason,
+        duration_ms: result.duration_ms,
+        ...(usage ? { usage } : {}),
+        served,
+        ...(failure ? { failure } : {}),
+        ...(task.kind !== 'check' ? { context_used: contextReceipt(task, context, promptText, this.config.max_prompt_bytes, worktree?.baseRef ?? task.base_ref ?? null) } : {}),
+        // The agent's own answer, so callers can read it with task_get; untrusted provider output.
+        answer: task.kind==='check' ? checkFact!.output_tail : untrusted(cleanAnswer, 8 * 1024),
+        ...(delegate ? { delegate } : {}),
+        ...(denied.length ? { denied_actions: denied, next_step: 'This worker cannot run those actions (read-only sandbox). Resubmit with a capability whose worker can, e.g. codex.read, or narrow the task.' } : {}),
+        summary: task.kind==='check' ? `Deterministic bridge check ${outcome==='completed' ? 'passed' : 'did not pass'}. See the recorded check evidence.` : failedChecks.length ? 'Provider finished but the configured checks failed. See checks for their output.' : outcome === 'completed' ? 'Provider completed. Review the transcript and acceptance criteria before integrating changes.' : 'Provider did not complete successfully. Review the transcript before continuing the task.',
+        ...(isPatchWork ? { commands_allowed: true, ...(patchResult ? { branch: patchResult.branch, base_ref: patchResult.base_ref, base_commit: patchResult.base_commit, head_commit: patchResult.head_commit, changed_files: patchResult.changed_files, diffstat: patchResult.diffstat, ...(patchResult.continued ? { continued: true } : {}) } : {}), ...(finalizeFailure ?? {}) } : {}),
+        ...(nativeSession ? { native_session: nativeSession } : {}),
+        ...(task.flow_id ? {observed_commit:observedCommit} : {}),
+        ...(checkFact ? {check:checkFact} : {}),
+        ...(checkResults ? { checks: checkResults, checks_passed: !failedChecks.length } : {}),
+        ...(snapshotInvalid ? {reason:'Review changed tracked source or HEAD; pinned evidence is invalid.'} : {}),
+        tests_run_by_bridge: task.kind==='check'
+      };
       const completion = {
-        ...lease, outcome, artifact_ids: [artifact.artifact.id, ...(diffArtifact ? [diffArtifact.artifact.id] : [])], result: {
-          agent: agent.id, provider: task.kind==='check' ? 'bridge' : agent.provider, execution_completed: outcome === 'completed',
-          acceptance_criteria_verified: false, review_required: true,
-          exit_code: result.exit_code, stop_reason: result.stop_reason,
-          duration_ms: result.duration_ms,
-          ...(usage ? { usage } : {}),
-          served,
-          ...(failure ? { failure } : {}),
-          ...(task.kind !== 'check' ? { context_used: contextReceipt(task, context, promptText, this.config.max_prompt_bytes, worktree?.baseRef ?? task.base_ref ?? null) } : {}),
-          // The agent's own answer, so callers can read it with task_get; untrusted provider output.
-          answer: task.kind==='check' ? checkFact!.output_tail : untrusted(cleanAnswer, 8 * 1024),
-          ...(delegate ? { delegate } : {}),
-          ...(denied.length ? { denied_actions: denied, next_step: 'This worker cannot run those actions (read-only sandbox). Resubmit with a capability whose worker can, e.g. codex.read, or narrow the task.' } : {}),
-          summary: task.kind==='check' ? `Deterministic bridge check ${outcome==='completed' ? 'passed' : 'did not pass'}. See the recorded check evidence.` : failedChecks.length ? 'Provider finished but the configured checks failed. See checks for their output.' : outcome === 'completed' ? 'Provider completed. Review the transcript and acceptance criteria before integrating changes.' : 'Provider did not complete successfully. Review the transcript before continuing the task.',
-          ...(isPatchWork ? { commands_allowed: true, ...(patchResult ? { branch: patchResult.branch, base_ref: patchResult.base_ref, base_commit: patchResult.base_commit, head_commit: patchResult.head_commit, changed_files: patchResult.changed_files, diffstat: patchResult.diffstat, ...(patchResult.continued ? { continued: true } : {}) } : {}), ...(diffArtifactError ? { diff_artifact_error: diffArtifactError } : {}), ...(finalizeFailure ?? {}) } : {}),
-          ...(nativeSession ? { native_session: nativeSession } : {}),
-          ...(task.flow_id ? {observed_commit:observedCommit} : {}),
-          ...(checkFact ? {check:checkFact} : {}),
-          ...(checkResults ? { checks: checkResults, checks_passed: !failedChecks.length } : {}),
-          ...(snapshotInvalid ? {reason:'Review changed tracked source or HEAD; pinned evidence is invalid.'} : {}),
-          tests_run_by_bridge: task.kind==='check'
-        }
+        ...lease, outcome, inline_artifacts: inlineArtifacts, result: baseResult
       };
       completionAttempted = true;
-      try { await this.client.call('task_finish', completion); }
-      catch { // A response can be lost after the commit. Retry the exact idempotent result.
+      try {
         await this.client.call('task_finish', completion);
+      } catch (finishErr) {
+        const status = finishErr && typeof finishErr === 'object' && 'status' in finishErr && typeof (finishErr as { status?: unknown }).status === 'number'
+          ? (finishErr as { status: number }).status
+          : undefined;
+        const code = errorCode(finishErr);
+        const shouldFallbackToArtifactPut =
+          (status === 400 && code === 'invalid_arguments') ||
+          (Boolean(diffArtifactPayload) && code === 'artifact_too_large');
+        if (shouldFallbackToArtifactPut) {
+          // Backwards compatibility with older servers (or oversized diff): upload artifacts separately and retry.
+          const artifact = await this.client.call<{ artifact: { id: string } }>('artifact_put', {
+            ...lease,
+            name: transcriptArtifact.name,
+            media_type: transcriptArtifact.media_type,
+            content: transcriptArtifact.content,
+          });
+          let diffArtifact: { artifact: { id: string } } | undefined;
+          let diffArtifactError: string | undefined;
+          if (diffArtifactPayload) {
+            // The commit already exists; a failed upload must not lose branch/base/head provenance.
+            try {
+              diffArtifact = await this.client.call<{ artifact: { id: string } }>('artifact_put', {
+                ...lease,
+                name: diffArtifactPayload.name,
+                media_type: diffArtifactPayload.media_type,
+                content: diffArtifactPayload.content,
+              });
+            } catch (error) {
+              if (leaseLost) return;
+              diffArtifactError = `${errorCode(error)}: ${error instanceof Error ? error.message.slice(0, 200) : ''}`;
+            }
+          }
+          if (leaseLost) return;
+          const fallbackCompletion = {
+            ...lease,
+            outcome,
+            artifact_ids: [artifact.artifact.id, ...(diffArtifact ? [diffArtifact.artifact.id] : [])],
+            result: diffArtifactError ? { ...baseResult, diff_artifact_error: diffArtifactError } : baseResult,
+          };
+          try { await this.client.call('task_finish', fallbackCompletion); }
+          catch { await this.client.call('task_finish', fallbackCompletion); }
+        } else {
+          // A response can be lost after the commit. Retry the exact idempotent result.
+          await this.client.call('task_finish', completion);
+        }
       }
       finished = true;
       this.logger('task_finished', { task_id: task.id, outcome });

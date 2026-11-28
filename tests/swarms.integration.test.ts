@@ -904,8 +904,8 @@ describe('teams phase 2 swarms and coordination', { skip: !connectionString, con
     const linusTasks2 = (await pool.query("SELECT id FROM tasks WHERE agent_id=$1 AND status='queued'", [linus.id])).rows;
     assert.equal(linusTasks2.length, 1);
 
-    // 3. Hop limit test: task at hop_depth 3 posts mention -> does not queue further agent turns
-    await pool.query("UPDATE tasks SET context_versions = jsonb_set(context_versions, '{hop_depth}', '3'::jsonb) WHERE id=$1", [linusTasks1[0].id]);
+    // 3. Hop limit test: task at hop_depth 6 (MAX_HANDOFF_HOPS) posts mention -> does not queue further agent turns
+    await pool.query("UPDATE tasks SET context_versions = jsonb_set(context_versions, '{hop_depth}', '6'::jsonb) WHERE id=$1", [linusTasks1[0].id]);
     const claimHop = await call(worker, 'task_claim', { scope: 'project:f13', capabilities: ['codex.read'] });
     assert.equal(claimHop.task.id, linusTasks1[0].id);
 
@@ -915,11 +915,11 @@ describe('teams phase 2 swarms and coordination', { skip: !connectionString, con
       lease_generation: claimHop.lease_generation,
       outcome: 'completed',
       result: {
-        answer: `Hop 3 posting @Ada.\n\n\`\`\`swarmaa-actions\n[{"type":"channel_post","channel_id":"${channel.id}","body":"Hey @Ada"}]\n\`\`\``
+        answer: `Hop 6 posting @Ada.\n\n\`\`\`swarmaa-actions\n[{"type":"channel_post","channel_id":"${channel.id}","body":"Hey @Ada"}]\n\`\`\``
       }
     });
 
-    // Ada does NOT receive a queued task because hop depth >= 3
+    // Ada does NOT receive a queued task because hop depth >= 6
     const adaTasks = (await pool.query("SELECT id FROM tasks WHERE agent_id=$1 AND status='queued'", [ada.id])).rows;
     assert.equal(adaTasks.length, 0);
   });
@@ -1493,7 +1493,7 @@ describe('teams phase 2 swarms and coordination', { skip: !connectionString, con
     const { swarm } = await start('the site loads');
     await assert.rejects(() => call(t.user, 'swarm_update', { swarm_id: swarm.id, ops: [{ op: 'add_step', step: { title: 'N', assignee_agent_id: A.id } }] }),
       (err: any) => err.status === 400 && err.code === 'invalid_steps');
-    assert.ok((await threadMessages(t.user, A.main_thread_id)).some(m => m.kind === 'handoff' && m.body.endsWith('gave you: Ship it\nDone when: the site loads')));
+    assert.ok((await threadMessages(t.user, A.main_thread_id)).some(m => m.kind === 'handoff' && m.body.includes('gave you: Ship it\nDone when: the site loads')));
 
     const c = await t.claim();
     const action = { kind: 'deploy', summary: 'Deploy the site', detail: 'npm run deploy', where: 'example.com' };
@@ -1628,8 +1628,11 @@ describe('teams phase 2 swarms and coordination', { skip: !connectionString, con
     const c = await t.claim();
     assert.equal(c.task.id, stepTurn.id);
     await finishTurn(t.worker, c, 's done');
-    const summary = (await pool.query("SELECT context_versions FROM tasks WHERE agent_id=$1 AND initiator_kind='swarm' AND status='queued'", [A.id])).rows[0];
-    assert.equal(summary.context_versions.hop_depth, 4);
+    const summary = (await pool.query("SELECT context_versions, permission_envelope, required_capability FROM tasks WHERE agent_id=$1 AND initiator_kind='swarm' AND status='queued'", [A.id])).rows[0];
+    assert.equal(summary.context_versions.hop_depth, 3, 'summary turn does not increment hop_depth');
+    assert.equal(summary.permission_envelope.local_patch, false);
+    assert.equal(summary.permission_envelope.runner.summary, true);
+    assert.ok(summary.required_capability.endsWith('.read'));
 
     // Fan-out cap: 20 ready swarm steps plus one handoff in one finish queue 20 turns and refuse the handoff.
     const t2 = await team('project:cap', ['A', 'B']);

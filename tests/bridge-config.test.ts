@@ -85,18 +85,16 @@ test('antigravity: sandbox-only, advertises antigravity.read + auto.read', () =>
   assert.throws(() => parseBridgeConfig(agy({ sandbox: false })), /sandbox:true/u);
 });
 
-test('antigravity argv: sandboxed default mode + skip-permissions, json, prompt attached to -p=, no token, no stdin', { skip: process.platform !== 'darwin' }, () => {
+test('antigravity argv: person-started review uses sandboxed ACP stdio (never -p= in argv), no token, no stdin', { skip: process.platform !== 'darwin' }, () => {
   const cfg = parseBridgeConfig(agy());
   const t = { ...task, required_capability: 'antigravity.read', objective: '$(touch /tmp/x); --mode auto' };
   const req = buildInvocation(cfg.agents[0]!, cfg.projects[0]!, t, {}, cfg, new AbortController().signal, { COLLECTIVE_WORKER_TOKEN: 'secret', HOME: '/h' });
   assert.equal(req.command, '/usr/bin/sandbox-exec');
   const [, , bin, ...args] = req.args;
   assert.equal(bin, '/bin/agy');
-  assert.deepEqual(args.slice(0, 5), ['--output-format', 'json', '--print-timeout', '3600s', '--dangerously-skip-permissions']);
-  assert.ok(!args.includes('--sandbox') && !args.includes('--mode') && !args.includes('--input-format'));
-  const prompts = args.filter(a => a.startsWith('-p='));
-  assert.equal(prompts.length, 1);
-  assert.ok(prompts[0]!.includes('$(touch /tmp/x); --mode auto'));
+  assert.deepEqual(args, ['acp', '--stdio', '--sandbox']);
+  assert.ok(!args.some(a => a.startsWith('-p=')), 'prompt must go over ACP JSON-RPC stdin, never argv');
+  assert.ok(req.acp?.prompt.includes('$(touch /tmp/x); --mode auto'));
   assert.equal(req.input, '');
   assert.ok(!JSON.stringify(req.env).includes('secret'));
   assert.throws(() => buildInvocation(cfg.agents[0]!, cfg.projects[0]!, { ...t, kind: 'patch', required_capability: 'antigravity.patch' }, {}, cfg, new AbortController().signal));
@@ -154,9 +152,9 @@ test('workers run the real CLIs headless with auto-approved permissions, wrapped
   assert.equal(claude.cwd, '/projects/demo');
   assert.ok(claude.input.includes('Review; $(touch /tmp/injected)'), 'task text stays stdin data');
   assert.deepEqual(run('codex', false).args, ['--search', 'exec', '--json', '--skip-git-repo-check', '--dangerously-bypass-approvals-and-sandbox', '--color', 'never', '-']);
-  const agy = run('antigravity', true); // agy always runs inside the sandbox
-  assert.deepEqual(agy.args.slice(2, 8), ['/bin/antigravity', '--output-format', 'json', '--print-timeout', '3600s', '--dangerously-skip-permissions']);
-  assert.ok(agy.args.at(-1)!.startsWith('-p=') && agy.args.at(-1)!.includes('Review; $(touch /tmp/injected)') && agy.input === '');
+  const agy = run('antigravity', true); // agy always runs inside the sandbox, person-started work over ACP stdio
+  assert.deepEqual(agy.args.slice(2), ['/bin/antigravity', 'acp', '--stdio', '--sandbox']);
+  assert.ok(agy.acp?.prompt.includes('Review; $(touch /tmp/injected)') && agy.input === '');
   const wrapped = run('codex', true, 'patch');
   assert.equal(wrapped.command, '/usr/bin/sandbox-exec');
   assert.match(wrapped.args[1]!, /\(allow default\)/u);

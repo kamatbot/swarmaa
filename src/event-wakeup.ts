@@ -9,16 +9,30 @@ export function eventWakeup(pool: Pool): EventWakeup {
   return listener;
 }
 
+interface WakeupSubscription {
+  tenantId: string;
+  /** null means all scopes (wildcard); otherwise only wake on matching scopes. */
+  scopes: Set<string> | null;
+}
+
 class EventWakeup {
-  private callbacks = new Map<() => void, string>();
+  private callbacks = new Map<() => void, WakeupSubscription>();
   private client?: pg.Client;
+  private listening = false;
   private connecting?: Promise<void>;
   private retry?: NodeJS.Timeout;
   private delay = 100;
   constructor(private pool: Pool) {}
 
-  async subscribe(wake: () => void, tenantId: string): Promise<() => void> {
-    this.callbacks.set(wake, tenantId);
+  isConnected(): boolean {
+    return this.listening && this.client !== undefined;
+  }
+
+  async subscribe(wake: () => void, tenantId: string, scopes?: readonly string[] | null): Promise<() => void> {
+    this.callbacks.set(wake, {
+      tenantId,
+      scopes: scopes && scopes.length > 0 ? new Set(scopes) : null,
+    });
     await this.connect();
     return () => {
       this.callbacks.delete(wake);
@@ -27,6 +41,7 @@ class EventWakeup {
         this.retry = undefined;
         this.delay = 100;
         this.connecting = undefined;
+        this.listening = false;
         const client = this.client;
         this.client = undefined;
         void client?.end().catch(() => {});
@@ -37,11 +52,13 @@ class EventWakeup {
   private connect(): Promise<void> {
     if (this.connecting) return this.connecting;
     if (this.client || !this.callbacks.size || this.retry) return Promise.resolve();
-    const client = new pg.Client({ ...this.pool.options, connectionTimeoutMillis: 5000 });
+    const client = new pg.Client({ ...this.pool.options, connectionTimeoutMillis: 30_000 });
     this.client = client;
+    this.listening = false;
     const disconnected = () => {
       if (this.client !== client) return;
       this.client = undefined;
+      this.listening = false;
       this.connecting = undefined;
       void client.end().catch(() => {});
       if (this.callbacks.size && !this.retry) {
@@ -54,7 +71,15 @@ class EventWakeup {
     client.on('end', disconnected);
     client.on('notification', n => {
       if (this.client === client && n.channel === 'swarmaa_events') {
-        for (const [wake, tenantId] of this.callbacks) if (n.payload === tenantId) wake();
+        const payload = n.payload ?? '';
+        const tabIdx = payload.indexOf('\t');
+        const notifTenant = tabIdx >= 0 ? payload.slice(0, tabIdx) : payload;
+        const notifScope = tabIdx >= 0 ? payload.slice(tabIdx + 1) : null;
+        for (const [wake, sub] of this.callbacks) {
+          if (sub.tenantId !== notifTenant) continue;
+          if (notifScope !== null && sub.scopes !== null && !sub.scopes.has(notifScope)) continue;
+          wake();
+        }
       }
     });
     this.connecting = (async () => {
@@ -63,6 +88,7 @@ class EventWakeup {
         if (this.client !== client) return;
         await client.query('LISTEN swarmaa_events');
         if (this.client !== client) return;
+        this.listening = true;
         this.delay = 100;
         for (const wake of this.callbacks.keys()) wake();
       } catch { disconnected(); }

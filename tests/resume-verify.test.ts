@@ -111,7 +111,10 @@ test('files a configured check creates are not committed with the patch', async 
     return ok;
   }, true);
   assert.equal(h.finish.outcome, 'completed');
-  const diff = h.calls.filter(c => c.name === 'artifact_put').map(c => JSON.stringify(c.args)).join('\n');
+  const diff = [
+    ...h.calls.filter(c => c.name === 'artifact_put').map(c => JSON.stringify(c.args)),
+    ...(Array.isArray(h.finish.inline_artifacts) ? h.finish.inline_artifacts.map((a: unknown) => JSON.stringify(a)) : [])
+  ].join('\n');
   assert.match(diff, /agent\.txt/);
   assert.doesNotMatch(diff, /build\.out/);
 });

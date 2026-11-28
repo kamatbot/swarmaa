@@ -2,7 +2,9 @@ import { spawn } from 'node:child_process';
 import { unlinkSync, writeFileSync } from 'node:fs';
 import { redactSecrets } from '../safety/redact.js';
 import { processStart } from './process.js';
-import type { ProcessRequest, ProcessResult } from './types.js';
+import type { ProcessRequest, ProcessResult, ProviderModelInfo } from './types.js';
+
+export type { ProviderModelInfo };
 
 export interface AcpActivityItem {
   id: string;
@@ -20,6 +22,7 @@ export interface AcpUsage {
 export interface AcpCallbacks {
   onPartialText?: (text: string) => void;
   onActivity?: (item: AcpActivityItem) => void;
+  onModels?: (models: ProviderModelInfo[]) => void;
 }
 
 export interface AcpArgsOptions {
@@ -46,7 +49,7 @@ export function buildAcpArgs(opts: AcpArgsOptions = {}): string[] {
   return args;
 }
 
-interface JsonRpcMessage {
+export interface JsonRpcMessage {
   jsonrpc?: string;
   id?: number | string;
   method?: string;
@@ -55,11 +58,143 @@ interface JsonRpcMessage {
   error?: { code?: number; message?: string; data?: unknown };
 }
 
-function asObj(value: unknown): Record<string, unknown> | undefined {
+export function asObj(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 }
 
-function extractTextContent(content: unknown): string {
+const SAFE_READ_ONLY_ACP_KINDS = new Set([
+  'read',
+  'search',
+  'list',
+  'grep',
+  'glob',
+  'fetch',
+  'web',
+  'think',
+  'execute',
+  'command',
+  'bash',
+  'terminal',
+  'other',
+]);
+const MUTATING_ACP_VERB_RE = /(?:edit|write|delete|move|create|patch|apply|rename|modify)/iu;
+const MUTATING_ACP_TITLE_PREFIX_RE = /^\s*(?:edit|write|delete|move|create|patch|apply|rename|modify)\b/iu;
+
+/**
+ * Case-normalized explicit allowlist for ACP `session/request_permission` in read-only mode.
+ * Allows only safe read-only ACP tool kinds (Seatbelt enforces the filesystem write boundary)
+ * and explicitly refuses any mutating tool kind/name or mutating `other` action.
+ * Full tools are allowed when `patch` or `dangerouslySkipPermissions` is true.
+ */
+export function isReadOnlyAcpToolAllowed(
+  toolCall: Record<string, unknown> | undefined,
+  patch = false,
+  dangerouslySkipPermissions = false
+): boolean {
+  if (patch || dangerouslySkipPermissions) return true;
+  if (!toolCall) return false;
+  const kind = String(toolCall.kind ?? '').trim().toLowerCase();
+  const toolName = String(toolCall.toolName ?? toolCall.name ?? '').trim().toLowerCase();
+  if (!kind || !SAFE_READ_ONLY_ACP_KINDS.has(kind)) return false;
+  if (MUTATING_ACP_VERB_RE.test(kind)) return false;
+  if (toolName && MUTATING_ACP_VERB_RE.test(toolName)) return false;
+  if (kind === 'other' && typeof toolCall.title === 'string' && MUTATING_ACP_TITLE_PREFIX_RE.test(toolCall.title)) {
+    return false;
+  }
+  return true;
+}
+
+function flattenConfigOptions(rawOptions: unknown): Record<string, unknown>[] {
+  if (!Array.isArray(rawOptions)) return [];
+  const out: Record<string, unknown>[] = [];
+  for (const entry of rawOptions) {
+    const obj = asObj(entry);
+    if (!obj) continue;
+    if (Array.isArray(obj.options)) {
+      out.push(...flattenConfigOptions(obj.options));
+    } else {
+      out.push(obj);
+    }
+  }
+  return out;
+}
+
+/** Extract live model + thought_level catalog from ACP `session/new` or `session/load` result. */
+export function extractAcpModelCatalog(sessionRes: Record<string, unknown> | undefined): ProviderModelInfo[] | undefined {
+  if (!sessionRes) return undefined;
+  const configOptions = Array.isArray(sessionRes.configOptions)
+    ? sessionRes.configOptions.map(asObj).filter((x): x is Record<string, unknown> => Boolean(x))
+    : [];
+
+  let efforts: string[] | undefined;
+  const effortOption = configOptions.find(opt => {
+    const id = String(opt.id ?? opt.configId ?? '').trim().toLowerCase();
+    return id === 'thought_level' || id === 'effort' || id === 'reasoning_effort';
+  });
+  if (effortOption) {
+    const vals = flattenConfigOptions(effortOption.options)
+      .map(o => String(o.value ?? o.id ?? '').trim())
+      .filter(Boolean);
+    if (vals.length) efforts = [...new Set(vals)];
+  }
+
+  const models: ProviderModelInfo[] = [];
+  const seen = new Set<string>();
+  const pushModel = (idRaw: unknown, labelRaw: unknown, isDefault: boolean, itemEfforts?: string[]): void => {
+    const id = typeof idRaw === 'string' ? idRaw.trim() : '';
+    if (!id || seen.has(id)) return;
+    seen.add(id);
+    const label = (typeof labelRaw === 'string' && labelRaw.trim()) ? labelRaw.trim() : id;
+    const eff = itemEfforts?.length ? itemEfforts : efforts;
+    const fast = /(?:^|[-_/.])(?:flash|haiku|mini|fast|lite)(?:$|[-_/.])/iu.test(id);
+    models.push({
+      id,
+      label,
+      ...(eff?.length ? { efforts: eff } : {}),
+      ...(fast ? { fast: true } : {}),
+      ...(isDefault ? { default: true } : {}),
+    });
+  };
+
+  const modelsObj = asObj(sessionRes.models);
+  const currentFromModels = typeof modelsObj?.currentModelId === 'string' ? modelsObj.currentModelId.trim() : undefined;
+
+  const modelOption = configOptions.find(opt => {
+    const id = String(opt.id ?? opt.configId ?? '').trim().toLowerCase();
+    const cat = String(opt.category ?? '').trim().toLowerCase();
+    return id === 'model' || cat === 'model';
+  });
+  if (modelOption) {
+    const currentVal = typeof modelOption.currentValue === 'string' ? modelOption.currentValue.trim() : currentFromModels;
+    for (const opt of flattenConfigOptions(modelOption.options)) {
+      const id = opt.value ?? opt.id ?? opt.modelId;
+      const label = opt.name ?? opt.label ?? id;
+      const optEfforts = Array.isArray(opt.efforts)
+        ? opt.efforts.filter((e): e is string => typeof e === 'string' && e.trim().length > 0)
+        : undefined;
+      pushModel(id, label, typeof id === 'string' && id.trim() === currentVal, optEfforts);
+    }
+  }
+
+  if (!models.length && Array.isArray(modelsObj?.availableModels)) {
+    for (const entry of modelsObj.availableModels) {
+      if (typeof entry === 'string') {
+        pushModel(entry, entry, entry.trim() === currentFromModels);
+      } else {
+        const obj = asObj(entry);
+        if (obj) {
+          const id = obj.modelId ?? obj.id ?? obj.value;
+          const label = obj.name ?? obj.label ?? id;
+          pushModel(id, label, typeof id === 'string' && id.trim() === currentFromModels);
+        }
+      }
+    }
+  }
+
+  return models.length ? models : undefined;
+}
+
+export function extractTextContent(content: unknown): string {
   if (typeof content === 'string') return content;
   if (Array.isArray(content)) {
     return content.map(block => extractTextContent(block)).join('');
@@ -71,10 +206,21 @@ function extractTextContent(content: unknown): string {
   return '';
 }
 
-function extractModelFromObj(obj: Record<string, unknown> | undefined): string | undefined {
+export function extractModelFromObj(obj: Record<string, unknown> | undefined): string | undefined {
   if (!obj) return undefined;
   for (const key of ['currentModelId', 'modelId', 'model']) {
     if (typeof obj[key] === 'string' && obj[key]!.trim()) return obj[key]!.trim();
+  }
+  if (Array.isArray(obj.configOptions)) {
+    for (const raw of obj.configOptions) {
+      const opt = asObj(raw);
+      if (!opt) continue;
+      const id = String(opt.id ?? opt.configId ?? '').trim().toLowerCase();
+      const cat = String(opt.category ?? '').trim().toLowerCase();
+      if ((id === 'model' || cat === 'model') && typeof opt.currentValue === 'string' && opt.currentValue.trim()) {
+        return opt.currentValue.trim();
+      }
+    }
   }
   for (const nestedKey of ['models', 'metadata', 'response_metadata', 'usage']) {
     const nested = asObj(obj[nestedKey]);
@@ -84,7 +230,7 @@ function extractModelFromObj(obj: Record<string, unknown> | undefined): string |
   return undefined;
 }
 
-function extractUsageFromObj(obj: Record<string, unknown> | undefined): AcpUsage | undefined {
+export function extractUsageFromObj(obj: Record<string, unknown> | undefined): AcpUsage | undefined {
   if (!obj) return undefined;
   const candidate = asObj(obj.usage) ?? obj;
   const inputRaw = candidate.input_tokens ?? candidate.inputTokens ?? candidate.promptTokens;
@@ -100,14 +246,14 @@ function extractUsageFromObj(obj: Record<string, unknown> | undefined): AcpUsage
   };
 }
 
-function mapToolState(status: unknown): 'running' | 'done' | 'failed' {
+export function mapToolState(status: unknown): 'running' | 'done' | 'failed' {
   const s = typeof status === 'string' ? status.toLowerCase() : '';
   if (s === 'completed' || s === 'done' || s === 'success') return 'done';
   if (s === 'failed' || s === 'error' || s === 'cancelled' || s === 'rejected' || s === 'denied') return 'failed';
   return 'running';
 }
 
-function formatAcpToolLabel(tool: string, title: string, input?: Record<string, unknown>): string {
+export function formatAcpToolLabel(tool: string, title: string, input?: Record<string, unknown>): string {
   if (title && title.trim()) return redactSecrets(title.trim()).slice(0, 120);
   if (input) {
     for (const key of ['file_path', 'path', 'command', 'pattern', 'url', 'query', 'description']) {
@@ -293,10 +439,9 @@ export async function runAcpSession(request: ProcessRequest, callbacks?: AcpCall
         const options = Array.isArray(params.options) ? params.options.map(asObj).filter((x): x is Record<string, unknown> => !!x) : [];
         const toolCall = asObj(params.toolCall);
         const toolLabel = String(toolCall?.title ?? toolCall?.kind ?? toolCall?.toolName ?? params.title ?? 'permission');
-        // Read-only turns may read, search, fetch and run commands (the Seatbelt profile denies writes to the project,
-        // as on the print-mode path); only file edits, deletes and moves are refused.
-        const toolKind = String(toolCall?.kind ?? '');
-        const allow = Boolean(acp.patch || acp.dangerously_skip_permissions) || !['edit', 'delete', 'move'].includes(toolKind);
+        // Read-only turns allow only explicit safe ACP tool kinds (Seatbelt enforces the filesystem write boundary);
+        // mutating kinds/names are refused unless patch mode is explicitly enabled.
+        const allow = isReadOnlyAcpToolAllowed(toolCall, acp.patch, acp.dangerously_skip_permissions);
         if (allow) {
           const picked = options.find(o => typeof o.kind === 'string' && o.kind.startsWith('allow')) ?? options[0];
           const optionId = typeof picked?.optionId === 'string' ? picked.optionId : undefined;
@@ -480,6 +625,8 @@ export async function runAcpSession(request: ProcessRequest, callbacks?: AcpCall
 
         const sessionModel = extractModelFromObj(sessionRes);
         if (sessionModel) servedModel = sessionModel;
+        const catalog = extractAcpModelCatalog(sessionRes);
+        if (catalog?.length) callbacks?.onModels?.(catalog);
 
         // agy exposes the model as a family config option plus a separate thought_level; a suffixed id such as
         // gemini-3.8-flash-high means family gemini-3.8-flash at level high. session/set_model is accepted but ignored.

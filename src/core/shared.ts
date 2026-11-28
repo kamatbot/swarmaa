@@ -105,15 +105,22 @@ export type EventType = 'task.updated' | 'memory.changed' | 'message.created' | 
 
 export async function event(db: Db, p: Principal, scope: string, name: EventType, subjectId: string, metadata: Record<string, unknown>): Promise<void> {
   // Other subsystems also emit task updates; fill their identifiers without a round trip on the hot checkpoint path.
-  if (name === 'task.updated' && metadata.kind === undefined) {
-    const task = (await db.query<{ kind: string; thread_id: string | null }>(
-      'SELECT kind,thread_id FROM tasks WHERE id=$1 AND tenant_id=$2 AND scope=$3',
+  if (name === 'task.updated' && (metadata.kind === undefined || metadata.required_capability === undefined)) {
+    const task = (await db.query<{ kind: string; thread_id: string | null; required_capability: string }>(
+      'SELECT kind,thread_id,required_capability FROM tasks WHERE id=$1 AND tenant_id=$2 AND scope=$3',
       [subjectId, p.tenantId, scope]
     )).rows[0];
-    if (task) metadata = { ...metadata, kind: task.kind, ...(task.thread_id ? { thread_id: task.thread_id } : {}) };
+    if (task) {
+      metadata = {
+        ...metadata,
+        kind: metadata.kind ?? task.kind,
+        required_capability: metadata.required_capability ?? task.required_capability,
+        ...(metadata.thread_id === undefined && task.thread_id ? { thread_id: task.thread_id } : {})
+      };
+    }
   }
   await db.query('INSERT INTO events (id,tenant_id,scope,name,subject_id,payload) VALUES ($1,$2,$3,$4,$5,$6::jsonb)', [newId(), p.tenantId, scope, name, subjectId, JSON.stringify(metadata)]);
-  await db.query("SELECT pg_notify('swarmaa_events', $1)", [p.tenantId]);
+  await db.query("SELECT pg_notify('swarmaa_events', $1)", [`${p.tenantId}\t${scope}`]);
 }
 
 export async function scopeLock(db: PoolClient, namespace: string, p: Principal, scope: string, key = ''): Promise<void> {

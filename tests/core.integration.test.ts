@@ -156,9 +156,13 @@ describe('core transactional invariants', {skip:!connectionString,concurrency:fa
     const agy = {scope:'project:a',capabilities:['antigravity.read'],kinds:['review'],lease_seconds:30};
     const claimed = await call(f.worker,'task_claim',agy);
     assert.equal(claimed.task.id,person.id,'agy takes the person-started review, skipping the older scheduled one');
-    const moved = (await pool.query('SELECT required_capability FROM tasks WHERE id=$1',[scheduled.id])).rows[0];
-    assert.equal(moved.required_capability,'claude.read','the scheduled task pinned to agy moves to claude');
+    const moved = (await pool.query('SELECT required_capability, excluded_providers, permission_envelope FROM tasks WHERE id=$1',[scheduled.id])).rows[0];
+    assert.equal(moved.required_capability,'auto.read','unattended Antigravity tasks rewrite to auto.read so Codex-only installs still work');
+    assert.ok(moved.excluded_providers.includes('antigravity'),'antigravity is excluded after unattended rewrite');
     assert.equal((await call(f.worker,'task_claim',agy)).task,null);
+    // A Codex-only worker can now claim the rewritten unattended task
+    const codexOnly = await call(f.worker,'task_claim',{scope:'project:a',capabilities:['auto.read','codex.read'],kinds:['review'],lease_seconds:30});
+    assert.equal(codexOnly.task.id,scheduled.id);
   });
 
   it('enforces permissions, roles, tenant and exact scope inside CoreService',async () => {

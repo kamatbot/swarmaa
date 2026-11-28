@@ -3,7 +3,14 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { buildAcpArgs, runAcpSession, type AcpActivityItem } from '../src/bridge/acp.js';
+import {
+  buildAcpArgs,
+  extractAcpModelCatalog,
+  isReadOnlyAcpToolAllowed,
+  runAcpSession,
+  type AcpActivityItem,
+  type ProviderModelInfo,
+} from '../src/bridge/acp.js';
 import {
   assertAntigravityCompliance,
   buildInvocation,
@@ -45,7 +52,38 @@ rl.on('line', (line) => {
     return;
   }
   if (msg.method === 'session/new') {
-    send({ jsonrpc: '2.0', id: msg.id, result: { sessionId: 'acp-sess-123', models: { currentModelId: 'gemini-3.8-flash' } } });
+    send({
+      jsonrpc: '2.0',
+      id: msg.id,
+      result: {
+        sessionId: 'acp-sess-123',
+        models: { currentModelId: 'gemini-3.8-flash' },
+        configOptions: [
+          {
+            id: 'model',
+            name: 'Model',
+            category: 'model',
+            type: 'select',
+            currentValue: 'gemini-3.8-flash',
+            options: [
+              { value: 'gemini-3.8-flash', name: 'Gemini 3.8 Flash' },
+              { value: 'gemini-3.8-pro', name: 'Gemini 3.8 Pro' }
+            ]
+          },
+          {
+            id: 'thought_level',
+            name: 'Thought level',
+            type: 'select',
+            currentValue: 'medium',
+            options: [
+              { value: 'low', name: 'Low' },
+              { value: 'medium', name: 'Medium' },
+              { value: 'high', name: 'High' }
+            ]
+          }
+        ]
+      }
+    });
     return;
   }
   if (msg.method === 'session/set_model') {
@@ -251,7 +289,7 @@ test('runAcpSession sends session/cancel on AbortSignal', async () => {
   });
 });
 
-test('Google ToS compliance boundary: interactive turns use ACP, unattended OAuth fails closed', { skip: process.platform !== 'darwin' }, () => {
+test('Google ToS compliance boundary: all person-started work uses ACP, unattended OAuth fails closed, enterprise fallback splits model/effort', { skip: process.platform !== 'darwin' }, () => {
   const cfg = parseBridgeConfig({
     service_url: 'http://127.0.0.1:8080',
     agents: [{ id: 'antigravity', provider: 'antigravity', binary: '/bin/agy', model: 'gemini-3.8-pro', enable_patch: true }],
@@ -278,12 +316,24 @@ test('Google ToS compliance boundary: interactive turns use ACP, unattended OAut
     (err: any) => err.code === 'antigravity_unattended_oauth_disallowed'
   );
 
-  // 3. A review a person submitted runs on the user's own agy login (CLI path, not ACP)...
+  // 3. Person-started review AND patch ALSO route through `agy acp --stdio` (never -p= in argv)...
   const bgReview = makeTask({ kind: 'review', required_capability: 'antigravity.read', initiator_kind: 'person' } as any);
   assert.equal(isInteractiveAntigravityTask(bgReview), true);
-  const personReq = buildInvocation(agent, project, bgReview, {}, cfg, new AbortController().signal, { HOME: '/h' });
-  assert.ok(!personReq.acp, 'non-turn work uses the print-mode CLI, not ACP');
-  // ...but a scheduled bot run or webhook-sourced task without API/enterprise auth fails closed.
+  const reviewReq = buildInvocation(agent, project, bgReview, {}, cfg, new AbortController().signal, { HOME: '/h' });
+  assert.ok(reviewReq.acp, 'person-started review uses ACP');
+  assert.equal(reviewReq.acp!.patch, false);
+  assert.deepEqual(reviewReq.args.slice(reviewReq.args.indexOf('/bin/agy') + 1), ['acp', '--stdio', '--sandbox']);
+  assert.ok(!reviewReq.args.some(a => a.startsWith('-p=')), 'person-started review never uses -p= in argv');
+
+  const bgPatch = makeTask({ kind: 'patch', required_capability: 'antigravity.patch', initiator_kind: 'person' } as any);
+  const patchReq = buildInvocation(agent, project, bgPatch, {}, cfg, new AbortController().signal, { HOME: '/h' }, { dir: '/wt/x', gitDir: '/projects/demo/.git' });
+  assert.ok(patchReq.acp, 'person-started patch uses ACP');
+  assert.equal(patchReq.acp!.patch, true);
+  assert.equal(patchReq.acp!.dangerously_skip_permissions, true);
+  assert.deepEqual(patchReq.args.slice(patchReq.args.indexOf('/bin/agy') + 1), ['acp', '--stdio', '--dangerously-skip-permissions']);
+  assert.ok(!patchReq.args.some(a => a.startsWith('-p=')), 'person-started patch never uses -p= in argv');
+
+  // ...while a scheduled bot run or webhook-sourced task without API/enterprise auth fails closed.
   for (const initiator_kind of ['schedule', 'source', 'bot_check']) {
     const unattended = makeTask({ kind: 'review', required_capability: 'antigravity.read', initiator_kind } as any);
     assert.equal(isInteractiveAntigravityTask(unattended), false);
@@ -293,13 +343,13 @@ test('Google ToS compliance boundary: interactive turns use ACP, unattended OAut
     );
   }
 
-  // 4. Print-mode work (person-started review/research/patch): json output, prompt on -p=, --effort
+  // 4. Unattended enterprise/API-key fallback: print mode splits `-low|-medium|-high|-xhigh` so --model and --effort never conflict
   assert.equal(hasAntigravityEnterpriseAuth(agent, { GEMINI_API_KEY: 'key' }), true);
   assert.equal(hasAntigravityEnterpriseAuth({ ...agent, auth_mode: 'enterprise' }, {}), true);
   const bgReq = buildInvocation(
-    agent,
+    { ...agent, model: 'gemini-3.8-flash-high' },
     project,
-    makeTask({ kind: 'review', permission_envelope: { runner: { effort: 'high' } } } as any),
+    makeTask({ kind: 'review', initiator_kind: 'schedule' } as any),
     {},
     cfg,
     new AbortController().signal,
@@ -309,9 +359,67 @@ test('Google ToS compliance boundary: interactive turns use ACP, unattended OAut
   const directArgs = bgReq.args.slice(bgReq.args.indexOf('/bin/agy') + 1);
   assert.ok(!directArgs.includes('--input-format'), "agy's stream-json input wants event-shaped messages");
   assert.equal(directArgs[directArgs.indexOf('--output-format') + 1], 'json');
+  assert.equal(directArgs[directArgs.indexOf('--model') + 1], 'gemini-3.8-flash');
   assert.equal(directArgs[directArgs.indexOf('--effort') + 1], 'high');
   assert.equal(directArgs.filter(a => a.startsWith('-p=')).length, 1, 'prompt attached to -p=');
   assert.equal(bgReq.input, '');
+});
+
+test('isReadOnlyAcpToolAllowed uses a case-normalized explicit allowlist and refuses mutating kinds/verbs', () => {
+  for (const safe of ['read', 'READ', 'search', 'list', 'grep', 'glob', 'fetch', 'web', 'think', 'execute', 'command', 'bash', 'terminal', 'other']) {
+    assert.equal(isReadOnlyAcpToolAllowed({ kind: safe, title: 'Inspect file' }, false, false), true, `expected ${safe} allowed`);
+  }
+  for (const unsafe of ['edit', 'EDIT', 'write', 'Write', 'delete', 'DELETE', 'move', 'create', 'patch', 'apply', 'rename', 'modify', 'file_edit', 'apply_patch', 'unknown_kind', '']) {
+    assert.equal(isReadOnlyAcpToolAllowed({ kind: unsafe, title: 'Do thing' }, false, false), false, `expected ${unsafe} denied`);
+  }
+  // Mutating toolName on an otherwise allowed kind is refused.
+  assert.equal(isReadOnlyAcpToolAllowed({ kind: 'other', toolName: 'write_file', title: 'Helper' }, false, false), false);
+  assert.equal(isReadOnlyAcpToolAllowed({ kind: 'execute', toolName: 'applyPatch', title: 'Apply' }, false, false), false);
+  // Generic `other` with leading mutating verb in title is refused, while safe `read` on a file named write.ts is allowed.
+  assert.equal(isReadOnlyAcpToolAllowed({ kind: 'other', title: 'Write config.json' }, false, false), false);
+  assert.equal(isReadOnlyAcpToolAllowed({ kind: 'read', title: 'Read src/write.ts' }, false, false), true);
+  // Missing toolCall fails closed in read-only mode.
+  assert.equal(isReadOnlyAcpToolAllowed(undefined, false, false), false);
+  // Patch mode allows full tools.
+  assert.equal(isReadOnlyAcpToolAllowed({ kind: 'edit', toolName: 'write_file' }, true, false), true);
+  assert.equal(isReadOnlyAcpToolAllowed({ kind: 'DELETE' }, false, true), true);
+});
+
+test('extractAcpModelCatalog and runAcpSession capture live configOptions models and thought_level efforts', async () => {
+  await withMockAcpScript(async scriptPath => {
+    let seenModels: ProviderModelInfo[] | undefined;
+    const res = await runAcpSession({
+      command: process.execPath,
+      args: [scriptPath],
+      cwd: process.cwd(),
+      env: { PATH: process.env.PATH },
+      input: '',
+      acp: { cwd: process.cwd(), prompt: 'Hi' },
+      timeout_ms: 5000,
+      max_output_bytes: 1 << 20,
+    }, {
+      onModels: m => { seenModels = m; },
+    });
+    assert.equal(res.exit_code, 0);
+    assert.deepEqual(seenModels, [
+      { id: 'gemini-3.8-flash', label: 'Gemini 3.8 Flash', efforts: ['low', 'medium', 'high'], fast: true, default: true },
+      { id: 'gemini-3.8-pro', label: 'Gemini 3.8 Pro', efforts: ['low', 'medium', 'high'] },
+    ]);
+  });
+
+  // Fallback to availableModels when configOptions is absent
+  assert.deepEqual(
+    extractAcpModelCatalog({
+      models: {
+        currentModelId: 'gemini-3.8-pro',
+        availableModels: [{ modelId: 'gemini-3.8-pro', name: 'Gemini 3.8 Pro' }, { modelId: 'gemini-3.8-flash-lite', name: 'Flash Lite' }],
+      },
+    }),
+    [
+      { id: 'gemini-3.8-pro', label: 'Gemini 3.8 Pro', default: true },
+      { id: 'gemini-3.8-flash-lite', label: 'Flash Lite', fast: true },
+    ]
+  );
 });
 
 test('BridgeWorker finishes unattended consumer-OAuth Antigravity task as blocked with actionable code', { skip: process.platform !== 'darwin' }, async () => {

@@ -8,14 +8,22 @@ import { TOOL_PERMISSIONS, TOOLS } from '../src/core/tools.js';
 import { CoreService } from '../src/core/index.js';
 import type { Principal } from '../src/types.js';
 
-test('DEFAULT_PRICES is shipped empty in code and unknown models return null', () => {
-  assert.deepEqual(DEFAULT_PRICES, {});
-  // Without any prices configured, models return null
-  assert.deepEqual(priceUsage('claude', 'claude-3-5-sonnet', { input_tokens: 1000, output_tokens: 500 }), { usd: null });
-  assert.deepEqual(priceUsage('codex', 'gpt-4o', { input_tokens: 1000, output_tokens: 500 }), { usd: null });
+test('DEFAULT_PRICES includes default model rates and unknown models return null', () => {
+  for (const model of ['claude-haiku-5', 'claude-sonnet-5', 'claude-opus-5', 'gpt-5', 'gpt-6', 'gemini-3.8-pro', 'gemini-3.8-flash']) {
+    assert.ok(DEFAULT_PRICES[model], `DEFAULT_PRICES must include ${model}`);
+    assert.ok(DEFAULT_PRICES[model]!.input > 0);
+    assert.ok(DEFAULT_PRICES[model]!.output > 0);
+  }
+  const priced = priceUsage('claude', 'claude-sonnet-5-5', { input_tokens: 1_000_000, output_tokens: 1_000_000 });
+  assert.equal(typeof priced.usd, 'number');
+  assert.ok(priced.usd! > 0);
+
+  // Unknown or missing models still return null
+  assert.deepEqual(priceUsage('claude', 'experimental-unlisted-model', { input_tokens: 1000, output_tokens: 500 }), { usd: null });
+  assert.deepEqual(priceUsage('codex', 'unlisted-gpt-model', { input_tokens: 1000, output_tokens: 500 }), { usd: null });
   assert.deepEqual(priceUsage('antigravity', 'gemini-2.0-flash', { input_tokens: 1000, output_tokens: 500 }), { usd: null });
   assert.deepEqual(priceUsage(null, null, { input_tokens: 1000, output_tokens: 500 }), { usd: null });
-  assert.deepEqual(priceUsage('claude', 'claude-3-5-sonnet', null), { usd: null });
+  assert.deepEqual(priceUsage('claude', 'claude-sonnet-5', null), { usd: null });
 });
 
 test('priceUsage charges cached input at cached rate, not input rate', () => {
@@ -393,7 +401,7 @@ test('loadPrices caches parsed file by mtimeMs and invalidates on update or dele
 
     unlinkSync(file);
     const removed = loadPrices(file);
-    assert.deepEqual(removed, {});
+    assert.deepEqual(removed, DEFAULT_PRICES);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

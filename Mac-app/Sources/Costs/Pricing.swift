@@ -119,11 +119,13 @@ final class PriceTable: ObservableObject {
         var out: [ModelPrice] = []
         for m in list {
             guard let id = m["id"] as? String, !id.contains(":"),
-                  id.hasPrefix("anthropic/") || id.hasPrefix("openai/"),
+                  id.hasPrefix("anthropic/") || id.hasPrefix("openai/") || id.hasPrefix("google/"),
                   let pr = m["pricing"] as? [String: Any] else { continue }
             func num(_ k: String) -> Double { Double((pr[k] as? String) ?? "") ?? 0 }
-            // "anthropic/claude-fable-5.1" → "claude-fable-5-1" (Claude Code's spelling)
-            let name = id.split(separator: "/").last.map(String.init)!.replacingOccurrences(of: ".", with: "-")
+            // "anthropic/claude-fable-5.1" → "claude-fable-5-1" (Claude Code's spelling);
+            // keep dotted spellings (e.g. "gemini-3.8-pro") for Google models.
+            let rawName = id.split(separator: "/").last.map(String.init)!
+            let name = id.hasPrefix("google/") ? rawName : rawName.replacingOccurrences(of: ".", with: "-")
             out.append(ModelPrice(model: name, input: num("prompt") * 1e6, output: num("completion") * 1e6,
                                   cacheRead: num("input_cache_read") * 1e6, cacheWrite: num("input_cache_write") * 1e6))
         }

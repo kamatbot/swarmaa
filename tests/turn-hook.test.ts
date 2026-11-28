@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import test from 'node:test';
@@ -98,7 +98,8 @@ test('peer review: off by default, snapshots each prompt, reviews only a turn th
   assert.doesNotMatch(submit.objective, /untracked\.txt/, 'only this turn\'s changes');
   assert.match(submit.objective, /add a line/); assert.match(submit.objective, /Added it\./); assert.match(submit.objective, /^VERDICT: complete \| fix \| decision$/m);
   assert.ok(submit.objective.length <= 16000);
-  assert.deepEqual(f.calls.find(c => c.tool === 'task_watch')!.body, { task_id: TASK, session: 'claude:chat-1' });
+  assert.equal(submit.watch_session, 'claude:chat-1');
+  assert.equal(f.calls.filter(c => c.tool === 'task_watch').length, 0, 'watch_session binds atomically without a separate task_watch RTT');
 
   // The same unchanged diff again (e.g. a no-op follow-up from the same base) is reviewed at most twice.
   for (let i = 0; i < 2; i++) {
@@ -154,7 +155,8 @@ test('out of usage: the next prompt shows the keep-going card once, and /swarm h
   assert.equal(submit.kind, 'patch'); assert.equal(submit.required_capability, 'auto.patch');
   assert.deepEqual(submit.exclude_providers, ['claude']); assert.equal(submit.resource_key, 'handoff:claude:chat-2');
   assert.match(submit.objective, /Build the login page/); assert.match(submit.objective, /last message, which still needs an answer:\n<<<\nNow add tests for it/);
-  assert.deepEqual(f.calls.find(c => c.tool === 'task_watch')!.body, { task_id: TASK, session: 'claude:chat-2' });
+  assert.equal(submit.watch_session, 'claude:chat-2');
+  assert.equal(f.calls.filter(c => c.tool === 'task_watch').length, 0, 'handoff uses atomic watch_session');
 
   f.setTask({ id: TASK, status: 'running', result: null });
   assert.match((await T.run('claude', 'UserPromptSubmit', { ...p, prompt: '/swarm handoff status' }, f)).systemMessage, /is working on handoff 0f8b6c1e/);
@@ -209,6 +211,8 @@ test('installer adds the turn hooks for Claude Code (with the usage-limit StopFa
   const claude = JSON.parse(readFileSync(join(home, '.claude/settings.json'), 'utf8'));
   const cmds = (ev: string) => claude.hooks[ev].flatMap((g: any) => g.hooks.map((h: any) => h.command)).filter((c: string) => c.includes('swarmaa-turn.mjs'));
   assert.equal(cmds('UserPromptSubmit').length, 1); assert.equal(cmds('Stop').length, 1);
+  assert.match(cmds('Stop')[0], /\$HOME\/\.swarma\/turn.*state\.json/);
+  assert.match(cmds('UserPromptSubmit')[0], /\$HOME\/\.swarma\/turn.*state\.json/);
   assert.equal(claude.hooks.StopFailure[0].matcher, 'rate_limit|billing_error');
   assert.match(claude.hooks.StopFailure[0].hooks[0].command, /swarmaa-turn\.mjs' claude StopFailure$/);
   await installInboxHooks('codex', o);
@@ -217,4 +221,104 @@ test('installer adds the turn hooks for Claude Code (with the usage-limit StopFa
   assert.ok(codex.hooks.Stop.some((g: any) => g.hooks.some((h: any) => h.command.includes('swarmaa-turn.mjs'))));
   await removeInboxHooks('claude', o); await removeInboxHooks('codex', o);
   assert.deepEqual(JSON.parse(readFileSync(join(home, '.claude/settings.json'), 'utf8')), {});
+});
+
+test('dirty-only save avoids creating state.json for idle chats, removes emptied state, and prunes >14d directories', async t => {
+  const f = fixture(t);
+  const p = { session_id: 'idle-chat', cwd: '/tmp' };
+  const sf = T.stateFile(f.home, 'claude:idle-chat');
+
+  // Normal prompts, Stop, and read-only /swarm review commands must not create state.json.
+  assert.equal(await T.run('claude', 'UserPromptSubmit', { ...p, prompt: 'hello' }, f), null);
+  assert.equal(await T.run('claude', 'Stop', p, f), null);
+  assert.match((await T.run('claude', 'UserPromptSubmit', { ...p, prompt: '/swarm review status' }, f)).systemMessage, /^Review is off/);
+  assert.match((await T.run('claude', 'UserPromptSubmit', { ...p, prompt: '/swarm review off' }, f)).systemMessage, /^Review is off/);
+  assert.match((await T.run('claude', 'UserPromptSubmit', { ...p, prompt: '/swarm review help' }, f)).systemMessage, /^Usage:/);
+  assert.equal(existsSync(sf), false, 'idle chat must not create state.json');
+
+  // StopFailure creates state.json; a subsequent normal Stop clears limited and removes the empty state dir.
+  await T.run('claude', 'StopFailure', { ...p, error_type: 'rate_limit' }, f);
+  assert.equal(existsSync(sf), true);
+  await T.run('claude', 'Stop', p, f);
+  assert.equal(existsSync(sf), false, 'clearing the last state key removes empty state.json');
+
+  // Opportunistic pruning removes >14d state directories and keeps recent ones.
+  const turnBase = join(f.home, '.swarma', 'turn');
+  const oldDir = join(turnBase, 'old-session');
+  const freshDir = join(turnBase, 'fresh-session');
+  mkdirSync(oldDir, { recursive: true });
+  mkdirSync(freshDir, { recursive: true });
+  writeFileSync(join(oldDir, 'state.json'), JSON.stringify({ review: { on: false } }));
+  writeFileSync(join(freshDir, 'state.json'), JSON.stringify({ review: { on: true } }));
+  const oldTime = new Date(f.now() - 20 * 24 * 60 * 60 * 1000);
+  utimesSync(join(oldDir, 'state.json'), oldTime, oldTime);
+  utimesSync(oldDir, oldTime, oldTime);
+  const freshTime = new Date(f.now() - 2 * 24 * 60 * 60 * 1000);
+  utimesSync(join(freshDir, 'state.json'), freshTime, freshTime);
+  utimesSync(freshDir, freshTime, freshTime);
+
+  assert.equal(T.pruneTurnState(turnBase, T.TURN_STATE_MAX_AGE_MS, { force: true, now: f.now }), 1);
+  assert.equal(existsSync(oldDir), false);
+  assert.equal(existsSync(freshDir), true);
+});
+
+test('watch_session falls back to 2-step task_submit + task_watch when an older server returns invalid_arguments', async t => {
+  const f = fixture(t), { dir } = repo(t);
+  const transcript = join(f.root, 't.jsonl');
+  writeFileSync(transcript, [
+    { type: 'user', message: { content: 'Fix the flaky test' } },
+    { type: 'assistant', message: { content: [{ type: 'text', text: 'Working on it.' }] } },
+  ].map(x => JSON.stringify(x)).join('\n'));
+
+  const legacyCalls: { tool: string; body: any }[] = [];
+  const legacyCall = async (tool: string, body: any) => {
+    legacyCalls.push({ tool, body });
+    if (tool === 'task_submit' && 'watch_session' in body) {
+      const err: any = new Error('unknown field watch_session');
+      err.code = 'invalid_arguments';
+      throw err;
+    }
+    if (tool === 'task_submit') return { task: { id: TASK } };
+    if (tool === 'swarm_status') return { usage: [] };
+    return {};
+  };
+
+  const p = { session_id: 'legacy-1', cwd: dir, transcript_path: transcript };
+  const res = await T.run('claude', 'UserPromptSubmit', { ...p, prompt: '/swarm handoff' }, { ...f, call: legacyCall });
+  assert.equal(res.decision, 'block');
+  assert.match(res.systemMessage, /Continuing with/);
+  const submits = legacyCalls.filter(c => c.tool === 'task_submit');
+  assert.equal(submits.length, 2);
+  assert.equal(submits[0]!.body.watch_session, 'claude:legacy-1');
+  assert.equal('watch_session' in submits[1]!.body, false);
+  assert.deepEqual(legacyCalls.find(c => c.tool === 'task_watch')!.body, { task_id: TASK, session: 'claude:legacy-1' });
+});
+
+test('readTail reads only the bounded tail of multi-MB transcripts without losing trailing JSONL lines', t => {
+  const dir = temp();
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  assert.equal(T.readTail(join(dir, 'missing.jsonl')), '');
+
+  const empty = join(dir, 'empty.jsonl');
+  writeFileSync(empty, '');
+  assert.equal(T.readTail(empty, 128), '');
+
+  const small = join(dir, 'small.jsonl');
+  writeFileSync(small, '{"a":1}\n{"a":2}\n');
+  assert.equal(T.readTail(small, 128), '{"a":1}\n{"a":2}\n');
+
+  const big = join(dir, 'big.jsonl');
+  const filler = `${JSON.stringify({ type: 'assistant', pad: 'x'.repeat(1000) })}\n`.repeat(3000); // >3 MB
+  const tailLines = [
+    JSON.stringify({ type: 'user', message: { content: 'penultimate request' } }),
+    JSON.stringify({ type: 'user', message: { content: 'final request' } }),
+  ].join('\n') + '\n';
+  writeFileSync(big, filler + tailLines);
+
+  const tail = T.readTail(big, 2048);
+  assert.ok(tail.length <= 2048);
+  assert.match(tail, /penultimate request/);
+  assert.match(tail, /final request/);
+  // Every non-empty line in the returned tail must be complete, valid JSON (partial first line dropped).
+  for (const line of tail.trim().split('\n')) assert.doesNotThrow(() => JSON.parse(line));
 });

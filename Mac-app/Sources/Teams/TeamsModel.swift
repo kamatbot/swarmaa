@@ -166,6 +166,8 @@ final class TeamsModel: ObservableObject {
     @Published var taskSort = TeamsTaskSort.newest
     @Published var drafts: [String: String] = [:]
     @Published var photoDrafts: [String: [ChatPhoto]] = [:]
+    /// One-off per-message runner override from the composer pill (cleared on send).
+    @Published var messageRunnerOverrides: [String: TeamsRunner] = [:]
     @Published private(set) var pendingSends: [String: PendingSend] = [:]
     @Published private(set) var rejectedSends: [String: PendingSend] = [:]
     @Published private(set) var sendErrors: [String: String] = [:]
@@ -201,6 +203,7 @@ final class TeamsModel: ObservableObject {
         let body: String
         let key: String
         let photos: [ChatPhoto]
+        var runner: TeamsRunner? = nil
     }
     var threadIsVisible: Bool { isVisible && pane == .bots && editingBotID == nil }
     private var hasLoaded = false
@@ -266,8 +269,11 @@ final class TeamsModel: ObservableObject {
         }
     }
 
-    /// Runner choices: Auto, then each routed provider at three efforts.
-    var runnerProviders: [SwarmaStatus.Routing.Provider] { status?.routing?.providers ?? [] }
+    /// Runner choices: merged from routing policy, live routing, catalog, usage, and workers
+    /// so offline or newly added providers never vanish.
+    var runnerProviders: [SwarmaStatus.Routing.Provider] {
+        SwarmaModelCatalog.mergedProviders(status: status)
+    }
 
     // MARK: Loading
 
@@ -525,11 +531,14 @@ final class TeamsModel: ObservableObject {
     /// `onLeadCreated` hands back a lead made here, so a retry after a failed `bot_create` reuses it
     /// instead of colliding with its name. Errors go to `botError`, shown in the sheet.
     /// Hands one task straight to an agent (or Auto) without a bot; it shows in Tasks and on the swarm map.
-    func submitTask(scope: String, kind: String, objective: String, provider: String?) async -> Bool {
+    func submitTask(scope: String, kind: String, objective: String, provider: String?,
+                    model: String? = nil, effort: String? = nil) async -> Bool {
         savingTask = true; taskError = nil
         defer { savingTask = false }
         do {
-            _ = try await client.taskSubmit(scope: scope, kind: kind, objective: objective, capability: (provider ?? "auto") + ".read")
+            _ = try await client.taskSubmit(scope: scope, kind: kind, objective: objective,
+                                            capability: (provider ?? "auto") + ".read",
+                                            model: model, effort: effort)
             pane = .tasks
             await loadTasks()
             return true
@@ -540,6 +549,7 @@ final class TeamsModel: ObservableObject {
     }
 
     func createBot(name: String, job: String, scope: String, leadAgentID: String?, memberAgentIDs: [String],
+                   leadRunner: TeamsRunner = .auto, firstReply: String = TeamsBotRules.defaultFirstReply,
                    onLeadCreated: (String) -> Void = { _ in }) async -> Bool {
         savingBot = true
         botError = nil
@@ -548,7 +558,7 @@ final class TeamsModel: ObservableObject {
             var lead = leadAgentID
             if lead == nil {
                 let agent = try await client.agentCreate(name: name, role: L10n.t("Lead"), instructions: job,
-                                                         scope: scope, runner: .auto, edits: false)
+                                                         scope: scope, runner: leadRunner, edits: false)
                 replace(agent)
                 lead = agent.id
                 onLeadCreated(agent.id)
@@ -558,14 +568,31 @@ final class TeamsModel: ObservableObject {
                 if let a = agent(id: lead), let t = a.mainThreadID { select(threadID: t) }
                 return true
             }
+            var rules = TeamsBotRules()
+            rules.firstReply = firstReply
             let bot = try await client.botCreate(name: name, job: job, scope: scope, leadAgentID: lead!,
-                                                 memberAgentIDs: memberAgentIDs, routing: TeamsBotRouting(), rules: TeamsBotRules())
+                                                 memberAgentIDs: memberAgentIDs, routing: TeamsBotRouting(), rules: rules)
             replaceBot(bot)
             select(threadID: bot.threadID)
             return true
         } catch {
             botError = SwarmaTeamsClient.Failure.map(error).message
             return false
+        }
+    }
+
+    func setFirstReply(_ firstReply: String, for bot: TeamsBot) async {
+        guard !bot.isLegacyAgent, !savingBot, let version = bot.version else { return }
+        savingBot = true
+        defer { savingBot = false }
+        do {
+            var updatedRules = bot.rules
+            updatedRules.firstReply = firstReply
+            let data = try JSONEncoder().encode(updatedRules)
+            let obj = try JSONSerialization.jsonObject(with: data)
+            replaceBot(try await client.botPatch(id: bot.id, expectedVersion: version, ["rules": obj]))
+        } catch {
+            self.error = SwarmaTeamsClient.Failure.map(error).message
         }
     }
 
@@ -1000,17 +1027,20 @@ final class TeamsModel: ObservableObject {
             let text = (drafts[t] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             let photos = photoDrafts[t] ?? []
             guard !text.isEmpty || !photos.isEmpty else { return false }
-            pending = PendingSend(body: text, key: UUID().uuidString, photos: photos)
+            let runner = messageRunnerOverrides[t]
+            pending = PendingSend(body: text, key: UUID().uuidString, photos: photos, runner: runner)
             rejectedSends[t] = nil
             sendErrors[t] = nil
             pendingSends[t] = pending
             drafts[t] = ""
             photoDrafts[t] = []
+            messageRunnerOverrides[t] = nil
         }
         sendingThreads.insert(t)
         defer { sendingThreads.remove(t) }
         do {
-            if let message = try await client.threadPost(id: t, body: pending.body, idempotencyKey: pending.key, photos: pending.photos) {
+            if let message = try await client.threadPost(id: t, body: pending.body, idempotencyKey: pending.key,
+                                                         photos: pending.photos, runner: pending.runner) {
                 merge([message], into: t)
             }
             pendingSends[t] = nil
@@ -1039,6 +1069,9 @@ final class TeamsModel: ObservableObject {
             let draft = drafts[t] ?? ""
             drafts[t] = failed.body + (draft.isEmpty ? "" : "\n" + draft)
             photoDrafts[t] = failed.photos + (photoDrafts[t] ?? [])
+            if let runner = failed.runner, messageRunnerOverrides[t] == nil {
+                messageRunnerOverrides[t] = runner
+            }
         }
         rejectedSends[t] = nil
         pendingSends[t] = nil
@@ -1071,11 +1104,21 @@ final class TeamsModel: ObservableObject {
     }
 
     func setRunner(_ runner: TeamsRunner, for agent: TeamsAgent) async {
-        guard savingRunners.insert(agent.id).inserted else { return }
+        _ = await updateAgent(agent, runner: runner)
+    }
+
+    @discardableResult
+    func updateAgent(_ agent: TeamsAgent, runner: TeamsRunner? = nil, edits: Bool? = nil) async -> Bool {
+        guard savingRunners.insert(agent.id).inserted else { return false }
         defer { savingRunners.remove(agent.id) }
-        guard let version = agent.version else { error = L10n.t("This agent can't be changed yet"); return }
-        do { replace(try await client.agentUpdate(id: agent.id, expectedVersion: version, runner: runner)) }
-        catch { self.error = SwarmaTeamsClient.Failure.map(error).message }
+        guard let version = agent.version else { error = L10n.t("This agent can't be changed yet"); return false }
+        do {
+            replace(try await client.agentUpdate(id: agent.id, expectedVersion: version, runner: runner, edits: edits))
+            return true
+        } catch {
+            self.error = SwarmaTeamsClient.Failure.map(error).message
+            return false
+        }
     }
 
     func createAgent(name: String, role: String, instructions: String, scope: String,

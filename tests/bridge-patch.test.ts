@@ -73,9 +73,10 @@ test('patch task: own branch + commit, worktree removed, user checkout untouched
     assert.ok(!existsSync(join(s.seen!.cwd)));
     assert.equal(git(s.root, 'worktree', 'list').split('\n').length, 1);
     assert.ok(!existsSync(join(s.root, 'b.txt')));
-    const diff = s.calls.filter(c => c.name === 'artifact_put').find(c => c.args.name === 'codex-patch.diff')!;
-    assert.equal(diff.args.media_type, 'text/x-diff');
-    assert.match(String(diff.args.content), /\+new/u);
+    const inline = s.finish.inline_artifacts as Array<{ name: string; media_type: string; content: string }>;
+    const diff = inline.find(a => a.name === 'codex-patch.diff')!;
+    assert.equal(diff.media_type, 'text/x-diff');
+    assert.match(String(diff.content), /\+new/u);
     assert.deepEqual((s.calls.find(c => c.name === 'task_claim')!.args.projects as {capabilities:string[]}[])[0]!.capabilities, ['codex.read', 'codex.patch', 'auto.read', 'auto.patch']);
     const rec = s.calls.find(c => c.name === 'session_record')!.args as { harness: string; cwd: string; turns: { text: string }[] };
     assert.equal(rec.harness, 'codex');
