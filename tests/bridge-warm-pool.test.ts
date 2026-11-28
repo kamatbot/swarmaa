@@ -266,11 +266,11 @@ test('WarmProviderPool (ACP): idle TTL disposes unused warm process automaticall
   });
 });
 
-test('WarmProviderPool (Claude): reuses read-only stream-json processes, keys by (projectRoot, model, effort, lightChat), enforces LRU cap=4, recycles on error/abort/maxTurns', async () => {
+test('WarmProviderPool (Claude): one turn per process with a prewarmed spare, keys by (projectRoot, model, effort, lightChat), enforces LRU cap, recycles on error/abort', async () => {
   await withMockScripts(async ({ claude }) => {
-    const pool = new WarmProviderPool({ claudeIdleTtlMs: 60_000, claudeMaxTurns: 3, claudeMaxProcesses: 2 });
+    const pool = new WarmProviderPool({ claudeIdleTtlMs: 60_000, claudeMaxProcesses: 2 });
     try {
-      // Turn 1 & Turn 2 with identical key reuse the same process and keep stdin open across turns
+      // Turn 2 with the same key runs in the spare started after turn 1: a fresh conversation, never turn 1's
       const r1 = await pool.runClaude(makeClaudeReq(claude, 'hello-1'), { projectRoot: '/proj/a', model: 'haiku', effort: 'low', lightChat: true, patch: false });
       assert.equal(providerSucceeded('claude', r1), true);
       const pidA = parsePid(finalAnswer('claude', r1.stdout));
@@ -278,8 +278,8 @@ test('WarmProviderPool (Claude): reuses read-only stream-json processes, keys by
 
       const r2 = await pool.runClaude(makeClaudeReq(claude, 'hello-2'), { projectRoot: '/proj/a', model: 'haiku', effort: 'low', lightChat: true, patch: false });
       assert.equal(providerSucceeded('claude', r2), true);
-      assert.equal(parsePid(finalAnswer('claude', r2.stdout)), pidA, 'reused warm Claude process');
-      assert.match(finalAnswer('claude', r2.stdout), /turn=2/);
+      assert.notEqual(parsePid(finalAnswer('claude', r2.stdout)), pidA, 'turn 2 never joins turn 1\'s Claude conversation');
+      assert.match(finalAnswer('claude', r2.stdout), /turn=1/, 'turn 2 starts a fresh conversation');
 
       // Different lightChat/model/effort key gets its own warm process
       const rB = await pool.runClaude(makeClaudeReq(claude, 'full-1'), { projectRoot: '/proj/a', model: 'opus', effort: 'high', lightChat: false, patch: false });
@@ -321,7 +321,7 @@ test('WarmProviderPool (Claude): reuses read-only stream-json processes, keys by
       assert.equal(rAbort.stop_reason, 'aborted');
       await new Promise(r => setTimeout(r, 30));
       assert.equal(isPidAlive(pidB), false, 'abort immediately recycles warm Claude process');
-      assert.equal(pool.stats().claude.total, 0);
+      assert.equal(pool.stats().claude.busy, 0, 'only idle spares remain; an aborted turn starts no spare');
 
       // Steered turn: on_stdin.write keeps turn open until caller calls on_stdin.end(), then returns warm process to pool
       let stdinCtl: { write: (t: string) => boolean; end: () => void } | undefined;
@@ -343,7 +343,8 @@ test('WarmProviderPool (Claude): reuses read-only stream-json processes, keys by
       );
       assert.equal(providerSucceeded('claude', rSteer), true);
       assert.match(finalAnswer('claude', rSteer.stdout), /first pid=\d+\n\npid=\d+ turn=2 text=steered-followup/);
-      assert.equal(pool.stats().claude.idle, 1, 'warm process stays alive after steered turn');
+      assert.equal(pool.stats().claude.busy, 0, 'the steered turn finished');
+      assert.ok(pool.stats().claude.idle >= 1, 'a fresh spare is ready after a steered turn');
 
       pool.closeAll();
       assert.equal(pool.stats().claude.total, 0);

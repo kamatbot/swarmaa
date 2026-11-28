@@ -34,7 +34,6 @@ export interface WarmPoolOptions {
   acpMaxTurns?: number;
   acpCancelGraceMs?: number;
   claudeIdleTtlMs?: number;
-  claudeMaxTurns?: number;
   claudeMaxProcesses?: number;
   logger?: BridgeLogger;
   onModelsUpdated?: (provider: Provider, models: ProviderModelInfo[]) => void;
@@ -772,7 +771,7 @@ class WarmClaudeSlot {
     }
   }
 
-  private armIdleTimer(): void {
+  armIdleTimer(): void {
     this.clearIdleTimer();
     if (this.disposed || this.childClosed || this.isDraining()) return;
     this.idleTimer = setTimeout(() => {
@@ -940,7 +939,6 @@ export class WarmProviderPool {
   private readonly acpMaxTurns: number;
   private readonly acpCancelGraceMs: number;
   private readonly claudeIdleTtlMs: number;
-  private readonly claudeMaxTurns: number;
   private readonly claudeMaxProcesses: number;
   private readonly logger?: BridgeLogger;
   private readonly onModelsUpdated?: (provider: Provider, models: ProviderModelInfo[]) => void;
@@ -955,7 +953,6 @@ export class WarmProviderPool {
     this.acpMaxTurns = options.acpMaxTurns ?? 50;
     this.acpCancelGraceMs = options.acpCancelGraceMs ?? 500;
     this.claudeIdleTtlMs = options.claudeIdleTtlMs ?? 5 * 60 * 1000;
-    this.claudeMaxTurns = options.claudeMaxTurns ?? 25;
     this.claudeMaxProcesses = options.claudeMaxProcesses ?? 4;
     this.logger = options.logger;
     this.onModelsUpdated = options.onModelsUpdated;
@@ -1097,7 +1094,7 @@ export class WarmProviderPool {
         key,
         request,
         this.claudeIdleTtlMs,
-        this.claudeMaxTurns,
+        1,
         s => this.removeClaudeSlot(s),
         () => this.draining
       );
@@ -1116,16 +1113,35 @@ export class WarmProviderPool {
         key,
         request,
         this.claudeIdleTtlMs,
-        this.claudeMaxTurns,
+        1,
         s => this.removeClaudeSlot(s),
         () => this.draining
       );
       const targetList = this.claudeSlots.get(key) ?? [];
       targetList.push(fresh);
       this.claudeSlots.set(key, targetList);
-      return (await fresh.runTurn(request)).result;
+      const retried = (await fresh.runTurn(request)).result;
+      this.prewarmClaude(key, request);
+      return retried;
     }
+    this.prewarmClaude(key, request);
     return first.result;
+  }
+
+  /**
+   * One warm Claude process answers exactly one turn: a second message on the same stdin would join the previous
+   * turn's conversation and leak one thread's chat into another. Speed comes from starting the next process early:
+   * after a turn, spawn an idle one with the same command, args and env so the next turn for this key skips startup.
+   */
+  private prewarmClaude(key: string, request: ProcessRequest): void {
+    if (this.draining || request.signal?.aborted) return;
+    if ((this.claudeSlots.get(key) ?? []).some(s => !s.inUse && !s.disposed && !s.childClosed)) return;
+    if (this.allClaudeSlots().length >= this.claudeMaxProcesses && !this.evictOldestIdleClaude()) return;
+    const spare = new WarmClaudeSlot(key, request, this.claudeIdleTtlMs, 1, s => this.removeClaudeSlot(s), () => this.draining);
+    const list = this.claudeSlots.get(key) ?? [];
+    list.push(spare);
+    this.claudeSlots.set(key, list);
+    spare.armIdleTimer(); // an unused spare exits after the idle TTL
   }
 
   /** Stop keeping idle warm processes alive; active turns dispose their process upon completion. */

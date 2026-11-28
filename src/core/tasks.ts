@@ -64,6 +64,9 @@ interface ArtifactRow {
 /** Task origins nobody is present for; Antigravity's consumer login never serves them (see bridge assertAntigravityCompliance). */
 const UNATTENDED_INITIATORS: readonly string[] = ['schedule', 'source', 'bot_check'];
 const UNATTENDED_SQL = UNATTENDED_INITIATORS.map(k => `'${k}'`).join(',');
+/** Unattended itself, or spawned (directly or not) by unattended work: the migration 049 trigger marks those by excluding antigravity. */
+const isUnattendedRow = (row: Pick<TaskRow,'initiator_kind'|'excluded_providers'>) =>
+  Boolean(row.initiator_kind && UNATTENDED_INITIATORS.includes(row.initiator_kind)) || (row.excluded_providers ?? []).includes('antigravity');
 const TURN_HAS_PHOTO =`EXISTS (SELECT 1 FROM (SELECT has_attachments FROM messages WHERE thread_id=t.thread_id ORDER BY seq DESC LIMIT 40) m WHERE m.has_attachments)`;
 export const VALID_CAPABILITIES = [AUTO_READ,AUTO_PATCH,'claude.read','claude.patch','codex.read','codex.patch','antigravity.read','antigravity.patch','demo.read'] as const;
 const date = (value:Date|null):string|null => value?.toISOString() ?? null;
@@ -225,6 +228,8 @@ export async function cancelTask(db:PoolClient,p:Principal,row:TaskRow,advance=t
     lease_generation=lease_generation+1,lease_owner=NULL,lease_hash=NULL,lease_expires_at=NULL,
     updated_at=clock_timestamp(),completed_at=clock_timestamp() WHERE id=$1 RETURNING *`,[id]);
   const next = updated.rows[0]!;
+  // A cancelled dispatched turn still reports back, so the coordinator's fan-in group can finish instead of waiting forever.
+  await copyReplyToCoordinator(db, p, next, 'Cancelled before it finished.', 'failed');
   if (row.swarm_step_id) {
     await db.query("UPDATE swarm_steps SET status='cancelled', updated_at=clock_timestamp() WHERE id=$1", [row.swarm_step_id]);
     const stepRow = (await db.query<{ swarm_id: string }>('SELECT swarm_id FROM swarm_steps WHERE id=$1', [row.swarm_step_id])).rows[0];
@@ -598,7 +603,7 @@ export class TaskService {
           excluded_providers=CASE WHEN 'antigravity'=ANY(excluded_providers) THEN excluded_providers ELSE array_append(excluded_providers,'antigravity') END,
           permission_envelope=permission_envelope #- '{runner,model}' #- '{runner,effort}' #- '{runner,provider}'
           WHERE tenant_id=$1 AND scope=$2 AND status='queued' AND required_capability LIKE 'antigravity.%'
-            AND initiator_kind IN (${UNATTENDED_SQL})`,[p.tenantId,scope]);
+            AND (initiator_kind IN (${UNATTENDED_SQL}) OR 'antigravity'=ANY(excluded_providers))`,[p.tenantId,scope]);
         // Interactive Antigravity turns holding a photo move to claude, stripping any Antigravity model/effort even without runner.provider.
         await db.query(`UPDATE tasks t SET
           required_capability='claude.'||split_part(required_capability,'.',2),
@@ -725,15 +730,13 @@ export class TaskService {
           // Populate native_session_id from agent_provider_sessions for the target provider.
           const sessionProvider = route?.provider
             ?? (next.required_capability.startsWith('auto.') ? null : next.required_capability.split('.')[0]);
+          // Unknown provider (auto routing to anyone): send no session id; another provider's id must never be resumed.
           const sessionRow = sessionProvider
             ? (await db.query<{ session_data: unknown }>(
                 'SELECT session_data FROM agent_provider_sessions WHERE tenant_id=$1 AND agent_id=$2 AND provider=$3',
                 [p.tenantId, next.agent_id, sessionProvider]
               )).rows[0]
-            : (await db.query<{ session_data: unknown }>(
-                'SELECT session_data FROM agent_provider_sessions WHERE tenant_id=$1 AND agent_id=$2 ORDER BY updated_at DESC LIMIT 1',
-                [p.tenantId, next.agent_id]
-              )).rows[0];
+            : undefined;
           const rawSession = sessionRow?.session_data as Record<string, unknown> | string | undefined;
           const nativeSessionId = typeof rawSession === 'string'
             ? rawSession
@@ -929,6 +932,8 @@ export class TaskService {
       const v = await finishValidate(db,p,lease,outcome,result,artifactIds,inlineArtifacts);
       if ('replay' in v) return v.replay;
       const c = v.ctx;
+      // Turns this finish spawns inherit "unattended" (migration 049 trigger), so Antigravity never picks them up.
+      if (isUnattendedRow(c.row)) await db.query("SELECT set_config('swarmaa.unattended','on',true)");
       const requeued = await finishRequeue(db,p,c);
       if (requeued) return requeued;
       const next = await finishRecord(db,p,c);
@@ -1561,10 +1566,12 @@ async function copyReplyToCoordinator(
         `UPDATE dispatch_groups
          SET completed = completed + CASE WHEN $2 = 'completed' THEN 1 ELSE 0 END,
              failed = failed + CASE WHEN $2 = 'failed' THEN 1 ELSE 0 END,
+             counted = array_append(counted, $4::uuid),
              updated_at = clock_timestamp()
-         WHERE id = $1 AND tenant_id = $3 AND NOT synthesized
+         WHERE id = $1 AND tenant_id = $3 AND NOT synthesized AND NOT ($4::uuid = ANY(counted))
          RETURNING *`,
-        [from.dispatch_group_id, outcomeStatus, p.tenantId]
+        // A continued or retried task finishes again with the same id: it counts once.
+        [from.dispatch_group_id, outcomeStatus, p.tenantId, row.id]
       )).rows[0];
 
       if (updatedGroup && updatedGroup.completed + updatedGroup.failed >= updatedGroup.total) {
@@ -1579,13 +1586,14 @@ async function copyReplyToCoordinator(
               'SELECT * FROM agents WHERE id=$1 AND tenant_id=$2 AND NOT archived',
               [updatedGroup.coordinator_agent_id, p.tenantId]
             )).rows[0];
-            if (coordAgent) {
-              const coordBot = updatedGroup.coordinator_bot_id
+            const coordBot = updatedGroup.coordinator_bot_id
                 ? (await db.query<{ id: string; routing: Record<string, unknown>; rules: Record<string, unknown>; lead_agent_id: string }>(
                     'SELECT id, routing, rules, lead_agent_id FROM bots WHERE id=$1 AND tenant_id=$2 AND NOT archived',
                     [updatedGroup.coordinator_bot_id, p.tenantId]
                   )).rows[0]
                 : undefined;
+            // An archived coordinator bot gets no synthesis turn (never fall back to its id).
+            if (coordAgent && (!updatedGroup.coordinator_bot_id || coordBot)) {
               const resolved = resolveTurnRunner({
                 bot: coordBot,
                 agent: coordAgent,

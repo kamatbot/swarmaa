@@ -267,9 +267,8 @@ export function resolveTurnRunner(input: ResolveTurnRunnerInput): ResolvedTurnRu
     if (agentRunner.model) runnerObj.model = agentRunner.model;
     if (agentRunner.effort) runnerObj.effort = agentRunner.effort;
   } else {
+    // Auto picks the provider at claim time, so a saved model or effort could belong to another provider: never copy it.
     capability = edits ? AUTO_PATCH : AUTO_READ;
-    if (agentRunner?.model) runnerObj.model = agentRunner.model;
-    if (agentRunner?.effort) runnerObj.effort = agentRunner.effort;
   }
 
   if (isRouter) {

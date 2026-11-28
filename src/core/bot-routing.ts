@@ -85,8 +85,11 @@ export async function botTaskFinished(db:PoolClient,p:Principal,row:TaskRow):Pro
     return;
   }
   const result = row.result ?? {};
-  // Skip intermediate auto-review/checks on swarm steps (wait for swarm completion / explicit review).
-  if (bot.archived || row.swarm_step_id || row.status!=='completed' || !(row.kind==='patch' || row.kind==='turn' && row.required_capability.endsWith('.patch')) || typeof result.head_commit!=='string' || !COMMIT.test(result.head_commit)) return;
+  if (bot.archived || row.status!=='completed' || !(row.kind==='patch' || row.kind==='turn' && row.required_capability.endsWith('.patch')) || typeof result.head_commit!=='string' || !COMMIT.test(result.head_commit)) return;
+  // A swarm step whose edits feed a later step skips review: the later step builds on this commit and gets reviewed.
+  // A step nothing depends on is final work, so it is reviewed and tested like any other edit.
+  if (row.swarm_step_id && (await db.query(`SELECT 1 FROM swarm_steps s JOIN swarm_steps me ON me.id=$1
+    WHERE s.swarm_id=me.swarm_id AND $1=ANY(s.needs) LIMIT 1`,[row.swarm_step_id])).rowCount) return;
   const branch = typeof result.branch==='string' ? result.branch : null;
   if (!branch) { await notice(db,p,bot,'Cannot queue bot checks: edit has no branch.'); return; }
   const enqueue = async(kind:'review'|'check',capability:string,exclusions:string[]=[],reviewRunner?:Record<string,unknown>) => {

@@ -170,8 +170,11 @@ describe('handoffs, model catalog, fan-in synthesis, and next-wave perf', { skip
 
     await call(worker, 'task_finish', {
       task_id: c2.task.id, lease_token: c2.lease_token, lease_generation: c2.lease_generation,
-      outcome: 'completed', result: { answer: 'Tests passing' },
+      outcome: 'completed', result: { answer: 'Tests passing', branch: 'swarmaa/claude/s2', head_commit: 'b'.repeat(40), served: { provider: 'claude', model: 'claude-opus-5-5' } },
     });
+    // The final step's edits (nothing depends on step 2) are reviewed like any other bot edit.
+    const finalReviews = (await pool.query("SELECT id FROM tasks WHERE bot_id=$1 AND kind='review'", [bot.id])).rows;
+    assert.equal(finalReviews.length, 1, 'the final swarm step queues auto-review');
 
     // Summary turn is forced read-only even though lead has edits: true
     const summaryTask = (await pool.query("SELECT * FROM tasks WHERE agent_id=$1 AND initiator_kind='swarm' AND status='queued'", [lead.id])).rows[0];

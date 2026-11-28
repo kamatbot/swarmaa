@@ -577,6 +577,7 @@ export function createHttpHandler(dependencies: HttpDependencies): (request: Inc
       let maxDurationTimer: NodeJS.Timeout | undefined;
       let polling = false;
       let pending = false;
+      let hiddenRetries = 0; // consecutive polls that saw committed-but-not-yet-safe rows
       let unsubscribe: (() => void) | undefined;
 
       const cleanup = () => {
@@ -738,7 +739,9 @@ export function createHttpHandler(dependencies: HttpDependencies): (request: Inc
             if (active && !response.destroyed) {
               if (pending) void poll();
               else {
-                const nextDelay = hasHidden ? 30 : (wakeup.isConnected() ? 15_000 : 2_000);
+                // Back off while an older transaction stays open (30 ms, 60 ms, ... up to 2 s) instead of querying every 30 ms.
+                hiddenRetries = hasHidden ? hiddenRetries + 1 : 0;
+                const nextDelay = hasHidden ? Math.min(30 * 2 ** (hiddenRetries - 1), 2_000) : (wakeup.isConnected() ? 15_000 : 2_000);
                 pollTimer = setTimeout(wake, nextDelay);
                 pollTimer.unref?.();
               }

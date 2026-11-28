@@ -1568,7 +1568,7 @@ export class SwarmsService {
     }
     const hasProjectDispatch = actions.some(a => a.type === 'project_dispatch');
     const dispatchGroupId = hasProjectDispatch ? newId() : undefined;
-    let dispatchedCount = 0;
+    const dispatchedTasks = new Set<string>(); // two dispatches can merge into one queued turn: count tasks, not actions
     let startedSwarm = false;
     // Cache own bot row once per applyTurnActions call (for handoff runner resolution).
     let cachedBotLoaded = false;
@@ -1591,7 +1591,7 @@ export class SwarmsService {
       try {
         const res = await this.applyTurnAction(db, p, ctx, act, budget, { dispatchGroupId, getOwnBot });
         await db.query(`RELEASE SAVEPOINT act_${i}`);
-        if (res.dispatched) dispatchedCount++;
+        if (res.dispatchedTaskId) dispatchedTasks.add(res.dispatchedTaskId);
         if (res.startedSwarm) startedSwarm = true;
       } catch (err) {
         if (!isActionError(err)) throw err;
@@ -1601,12 +1601,12 @@ export class SwarmsService {
       }
     }
 
-    if (dispatchGroupId && dispatchedCount > 0) {
+    if (dispatchGroupId && dispatchedTasks.size > 0) {
       await db.query(
         `INSERT INTO dispatch_groups
            (id, tenant_id, coordinator_scope, coordinator_thread_id, coordinator_agent_id, coordinator_bot_id, total)
          VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-        [dispatchGroupId, ctx.tenantId, ctx.scope, ctx.thread.id, ctx.agent.id, ctx.botId ?? null, dispatchedCount]
+        [dispatchGroupId, ctx.tenantId, ctx.scope, ctx.thread.id, ctx.agent.id, ctx.botId ?? null, dispatchedTasks.size]
       );
     }
 
@@ -1623,7 +1623,7 @@ export class SwarmsService {
       dispatchGroupId?: string;
       getOwnBot?: () => Promise<{ id: string; routing: Record<string, unknown>; rules: Record<string, unknown>; lead_agent_id: string } | undefined>;
     }
-  ): Promise<{ dispatched?: boolean; startedSwarm?: boolean }> {
+  ): Promise<{ dispatchedTaskId?: string; startedSwarm?: boolean }> {
     if (act.type === 'handoff') {
       const targetAgent = (await db.query<AgentRow>('SELECT * FROM agents WHERE id=$1', [act.to_agent])).rows[0]!;
       const handoffRef = {
@@ -1808,7 +1808,7 @@ export class SwarmsService {
       });
       if (!sent) return {};
       await this.postNotice(db, p, ctx.scope, ctx.thread.id, `Sent to ${sent.name}: ${clipUtf8(act.body, 200)}`);
-      return { dispatched: true };
+      return { dispatchedTaskId: sent.task_id };
     } else if (act.type === 'local_action') {
       // validateTurnGrant checked rules.local_actions; the action runs after commit (voice.ts runOriginActions).
       requireCondition(ctx.taskId, 409, 'invalid_state', 'local_action requires a turn task');
@@ -1966,7 +1966,7 @@ export class SwarmsService {
 
     // Fetch swarm metadata (goal, base_ref, thread_id) and completed upstream dependency results.
     const sw = (await db.query<{ thread_id: string | null; goal: string | null; base_ref: string | null }>(
-      'SELECT thread_id, goal, base_ref FROM swarms WHERE id=$1', [swarmId]
+      'SELECT thread_id, goal, base_ref FROM swarms WHERE id=$1 AND tenant_id=$2', [swarmId, p.tenantId]
     )).rows[0];
 
     let effectiveBaseRef: string | null = sw?.base_ref ?? null;
@@ -1982,9 +1982,9 @@ export class SwarmsService {
          LEFT JOIN agents a ON a.id = s.assignee_agent_id
          LEFT JOIN messages m ON m.id = s.result_message_id
          LEFT JOIN tasks t ON t.id = s.task_id
-         WHERE s.id = ANY($1::uuid[]) AND s.status = 'done'
+         WHERE s.id = ANY($1::uuid[]) AND s.swarm_id = $2 AND s.status = 'done'
          ORDER BY s.order_index ASC`,
-        [step.needs]
+        [step.needs, swarmId]
       )).rows;
 
       const editCommits = deps
