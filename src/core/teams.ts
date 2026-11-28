@@ -207,12 +207,12 @@ function runnerDisplayName(runner: RunnerConfig): string {
 }
 
 /**
- * The agent a person names for this message: "use agy to …", "ask codex …", "have claude …", or an @agy / @codex /
- * @claude anywhere. Only these three names; null means the bot's own runner decides as usual.
+ * The agent a person names for this message: "use agy to …", "ask codex …", "have claude …" starting any sentence,
+ * or "using agy" / @agy / @codex / @claude anywhere. Only these three names; null means the bot's own runner decides as usual.
  */
 export function requestedProvider(body: string): 'claude' | 'codex' | 'antigravity' | null {
-  const named = /^\s*(?:please\s+)?(?:use|ask|have|let|with|via|run\s+(?:this\s+)?(?:on|with))\s+(agy|antigravity|codex|claude)\b/iu.exec(body)
-    ?? /(?:^|\s)@(agy|antigravity|codex|claude)\b/iu.exec(body);
+  const named = /(?:^|[.!?;\n])\s*(?:please\s+)?(?:use|ask|have|let|with|via|run\s+(?:this\s+)?(?:on|with))\s+(agy|antigravity|codex|claude)\b/iu.exec(body)
+    ?? /(?:^|\s)(?:@|using\s+)(agy|antigravity|codex|claude)\b/iu.exec(body);
   if (!named) return null;
   const name = named[1]!.toLowerCase();
   return name === 'agy' || name === 'antigravity' ? 'antigravity' : name === 'claude' ? 'claude' : 'codex';

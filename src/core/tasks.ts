@@ -67,7 +67,10 @@ const UNATTENDED_SQL = UNATTENDED_INITIATORS.map(k => `'${k}'`).join(',');
 /** Unattended itself, or spawned (directly or not) by unattended work: the migration 049 trigger marks those by excluding antigravity. */
 const isUnattendedRow = (row: Pick<TaskRow,'initiator_kind'|'excluded_providers'>) =>
   Boolean(row.initiator_kind && UNATTENDED_INITIATORS.includes(row.initiator_kind)) || (row.excluded_providers ?? []).includes('antigravity');
-const TURN_HAS_PHOTO =`EXISTS (SELECT 1 FROM (SELECT has_attachments FROM messages WHERE thread_id=t.thread_id ORDER BY seq DESC LIMIT 40) m WHERE m.has_attachments)`;
+// A photo in the messages this turn answers (the last few, sent in the 30 minutes before it), not an old one in the history.
+const TURN_HAS_PHOTO =`EXISTS (SELECT 1 FROM (SELECT has_attachments, created_at FROM messages WHERE thread_id=t.thread_id
+  AND seq <= COALESCE((t.context_versions->>'message_seq')::bigint, 9223372036854775807) ORDER BY seq DESC LIMIT 5) m
+  WHERE m.has_attachments AND m.created_at > t.created_at - interval '30 minutes')`;
 export const VALID_CAPABILITIES = [AUTO_READ,AUTO_PATCH,'claude.read','claude.patch','codex.read','codex.patch','antigravity.read','antigravity.patch','demo.read'] as const;
 const date = (value:Date|null):string|null => value?.toISOString() ?? null;
 const expectedVersion = (value:unknown):number => integer(value, 'expected_version', 1, 2147483647);
@@ -1043,6 +1046,8 @@ export class TaskService {
             const actionRes = await this.swarms.applyTurnActions(db, p, turnCtx,
               budget.summary ? extracted.actions : extracted.actions.filter(a => a.type !== 'bot_appearance'), budget);
             startedSwarm = actionRes.startedSwarm;
+            // The dispatched bots answer and the fan-in synthesis reports them; a delegated follow-up could only say "no results yet".
+            if (extracted.actions.some(a => a.type === 'project_dispatch')) delete result.delegate;
             if (!budget.summary) for (const act of extracted.actions) {
               if (act.type !== 'bot_appearance') continue;
               const updated = (await db.query<{ version: number }>(
